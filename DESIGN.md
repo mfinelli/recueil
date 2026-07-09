@@ -1,4 +1,4 @@
-# Recueil — Design Document (v2)
+# Recueil — Design Document (v2.1)
 
 > **v2 changelog:** dashboard auth switched to direct session-based auth against
 > Postgres; added user roles and admin bootstrap; added capture idempotency key;
@@ -9,6 +9,14 @@
 > backend-side headless-Chrome screenshot service; clarified SingleFile
 > integration as a vendored library, not a separate installed extension;
 > acknowledged D1 mirroring risk explicitly; settled polling cadence.
+>
+> **v2.1 changelog:** AI-sourced tags are visually distinguished in the
+> dashboard; fully specified the Manage Devices screen (two new Worker
+> endpoints, backend passthrough, self-vs-admin revocation scope, and the
+> "revocation isn't a live push" caveat); switched to open registration
+> (with a future invite-only toggle noted but not required); designed the
+> first-admin bootstrap token. Terraform/Worker layout remains deliberately
+> deferred to implementation time.
 
 ## 1. Overview
 
@@ -332,13 +340,35 @@ than reusing the device-token mechanism and avoids needing a `tokens` table
 in Postgres — the earlier design's ambiguity about "does the backend keep
 its own copy of tokens" is resolved by not needing one.
 
-### Revoking a device token from the dashboard
+### Manage Devices dashboard screen
 
-Because D1 is the sole owner of device tokens, a future "manage devices"
-dashboard screen (list paired devices, revoke one) works by having the
-**backend make an outbound, authenticated call to the Worker** ("delete
-token row X") using the backend↔Worker service credential (see §5a) — never
-the reverse. This is consistent with the backend remaining outbound-only.
+Because D1 is the sole owner of device tokens, this isn't purely a UI-only
+addition — the data (`tokens.device_name`, `device_type`, `created_at`,
+`last_used_at`) already exists in D1, but the dashboard/backend has no
+existing path to read or mutate it. Three pieces are needed, all new:
+
+1. **Two new Worker endpoints**, gated by the backend↔Worker service secret
+   (§5a): `GET /internal/tokens?user_id=` (list a user's device tokens) and
+   `DELETE /internal/tokens/:id` (revoke one). Both simple, single-operation
+   endpoints, consistent with the "dumb Worker" principle.
+2. **A backend API passthrough**: the dashboard never talks to the Worker
+   directly (it has no bearer token or service secret of its own); it calls
+   the backend, which makes the outbound authenticated call to the Worker
+   and returns the result. This keeps the backend the single place that
+   holds the service secret.
+3. **Authorization scope, decided as:** a member can list/revoke only their
+   own devices; an admin can list/revoke *any* user's devices (useful for
+   responding to a compromised account without waiting on that user). The
+   Worker endpoints themselves don't need to know about roles — the backend
+   enforces this scoping before making the outbound call, based on the
+   dashboard session's role.
+
+One behavior worth documenting rather than treating as a bug: revocation is
+**not** a live push to the device. A revoked extension/PWA/CLI will keep
+working until its next request to the Worker, at which point the token
+lookup fails and it gets a 401 — at that point it needs to be re-paired.
+There's no mechanism (and none is planned) to immediately invalidate an
+in-flight session on the device side.
 
 ### 5a. Backend ↔ Worker service authentication
 
@@ -372,12 +402,34 @@ Alternatives considered and rejected:
 
 ### Account creation and roles
 
-- **Admin-creates-users**, not open signup, for the initial version — fits
-  the family/self-hosted use case and avoids needing email-verification
-  infrastructure. Open signup (for a future hosted/SaaS mode) is expected to
-  be a straightforward addition later, not a rearchitecture.
-- **Bootstrap:** on first dashboard access with zero existing users, the
-  dashboard prompts to create the first admin account.
+- **Open registration.** Anyone who can reach the dashboard can create a
+  `member` account via a signup form — no invite step. This is deliberately
+  consistent with the dashboard's threat model: reachability is already
+  gated by whatever network the operator chose (LAN/VPN/tunnel), so anyone
+  who can reach the signup form is presumed already trusted at the network
+  level, the same way anyone on a home LAN can usually reach a router's
+  admin page. This also lines up naturally with a future hosted/SaaS mode,
+  where open signup is the default expectation anyway. A config flag (e.g.
+  `ENABLE_OPEN_REGISTRATION=false`) is worth offering later for operators
+  who want invite-only instead, but isn't required for the initial version.
+- **Bootstrap token for the first admin.** On first startup, if `users` is
+  empty, the backend generates a random bootstrap token, prints it to the
+  backend's logs, and stores its hash (with an expiry — e.g. valid until
+  used or for 1 hour, whichever comes first) so it survives a restart within
+  that window:
+  ```sql
+  CREATE TABLE bootstrap_token (
+    token_hash TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used BOOLEAN NOT NULL DEFAULT FALSE
+  );
+  ```
+  The dashboard's "create first admin" screen requires this token as well as
+  a username/password. Once the first admin is created, the row is deleted
+  (or marked used, then cleaned up). This closes the narrow race where the
+  dashboard is briefly reachable on the network before the operator has
+  locked it down — without the token, reaching the setup screen isn't
+  enough to claim admin.
 - **Roles:** `admin` and `member`. Add to the `users` schema:
   ```sql
   ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
@@ -494,7 +546,10 @@ coverage don't apply here — Chrome/Chromium via chromedp is sufficient.
   `captures` table so enrichment status/failure never affects the capture's
   core validity.
 - AI-generated tags are written to the same `page_tags` table as manual tags,
-  distinguished by a `source` column (see §9).
+  distinguished by a `source` column (see §9). The dashboard visually
+  distinguishes them from manual tags (e.g. a small badge/icon or muted
+  styling) rather than rendering them identically — the `source` column
+  exists specifically to support this.
 
 ### Retry and failure handling
 
@@ -964,22 +1019,15 @@ Both should be backed up in the same job/window.
 
 ## 15. Open Questions / Future Decisions
 
-- Should AI-sourced tags (`page_tags.source = 'ai'`) be visually
-  distinguished from manual tags in the dashboard, or shown identically
-  once applied?
-- The "manage devices" dashboard screen (list paired devices, last used,
-  revoke) is enabled by data already in the schema (`tokens.last_used_at`
-  in D1) and by the backend↔Worker service secret, but the UI itself isn't
-  yet designed.
-- Whether to harden first-admin bootstrap with a one-time setup token
-  printed to backend logs (guards against the narrow race where the
-  dashboard is briefly reachable before the operator locks down
-  networking), versus the simpler "first user to reach the dashboard claims
-  admin" — currently leaning toward the latter for simplicity, revisit if
-  needed.
-- Open signup (for a future hosted/SaaS mode) is expected to layer onto the
-  existing `users`/`role` schema without rearchitecting it, but the actual
-  design (invite flow vs. open registration, tenant isolation) is not yet
-  specified.
-- Terraform/OpenTofu module layout and Worker API endpoint surface are the
-  logical next design steps after this document.
+All items from the previous revision have been resolved (AI tag styling,
+manage-devices design, bootstrap hardening, and registration model — see
+§5, §7). What remains open is purely implementation-phase, not
+architectural:
+
+- Terraform/OpenTofu module layout and the exact Worker API endpoint
+  surface (including the two new `/internal/tokens` endpoints from §5) are
+  the logical next design steps, to be worked out when those components are
+  actually built rather than speculatively now.
+- Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future
+  invite-only toggle) is worth building in the initial version or deferred
+  until someone actually asks for it.
