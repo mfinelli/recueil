@@ -9,9 +9,12 @@
   "type": "module",
   "scripts": {
     "check": "prettier --check .",
-    "fmt": "prettier --write ."
+    "fmt": "prettier --write .",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "prettier": "^3.9.4"
+    "@cloudflare/vitest-pool-workers": "^0.18.0",
+    "prettier": "^3.9.4",
+    "vitest": "^4.1.9"
   }
 }

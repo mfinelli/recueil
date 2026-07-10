@@ -16,19 +16,65 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Recueil Worker — phase 0 stub.
-//
-// No real logic yet. This exists so Terraform has a script to deploy and
-// bind D1 / R2 / the service secret to, so later phases can build directly
-// against env.DB, env.BUCKET, and env.SERVICE_SECRET without a second
-// infrastructure change. See the design doc §2/§11 for what this Worker
-// will eventually do: device auth, queue enqueue, presigned R2 URLs, D1
-// read/write, and the service-secret-gated backend endpoints.
+// This is intentionally minimal: only the /internal/users/mirror endpoint
+// that the backend needs to push the credential mirror on account
+// creation/password change.
+
 
 export default {
-  async fetch(request, env, ctx) {
-    return new Response("Recueil Worker: not yet implemented", {
-      status: 501,
-    });
+  async fetch(request, env) {
+    const url = new URL(request.url);
+
+    if (
+      request.method === "POST" &&
+      url.pathname === "/internal/users/mirror"
+    ) {
+      return handleUserMirror(request, env);
+    }
+
+    return new Response("Not Found", { status: 404 });
   },
 };
+
+export async function handleUserMirror(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  if (typeof body !== "object" || body === null) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { id, username, password_hash } = (body);
+  if (
+    !Number.isInteger(id) ||
+    typeof username !== "string" ||
+    typeof password_hash !== "string"
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO users (id, username, password_hash)
+       VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         username = excluded.username,
+         password_hash = excluded.password_hash`,
+    )
+      .bind(id, username, password_hash)
+      .run();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(`D1 error: ${message}`, { status: 500 });
+  }
+
+  return new Response(null, { status: 204 });
+}
