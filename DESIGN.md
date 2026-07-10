@@ -985,12 +985,18 @@ should be backed up in the same job/window.
 
 All items from the previous revision have been resolved (AI tag styling,
 manage-devices design, bootstrap hardening, and registration model — see §5,
-§7). What remains open is purely implementation-phase, not architectural:
+§7). Phase 0 (Cloudflare scaffolding — D1, R2, and a bare Worker, provisioned
+via a public Terraform module) is also complete and resolved the module layout
+question below in favor of a reusable module in `terraform/`, consumed via
+source = `"..."` (pinned to a tag once releases exist) from the operator's own
+root config. What remains open is purely implementation-phase, not
+architectural:
 
-- Terraform/OpenTofu module layout and the exact Worker API endpoint surface
-  (including the two new `/internal/tokens` endpoints from §5) are the logical
-  next design steps, to be worked out when those components are actually built
-  rather than speculatively now.
+- The exact Worker API endpoint surface (device auth, enqueue, presigned R2
+  URLs, the service-secret-gated backend endpoints including the two
+  `/internal/tokens` endpoints from §5) is still undesigned — the Worker
+  currently deployed is a stub with no routes. This is the logical next design
+  step.
 - Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
   toggle) is worth building in the initial version or deferred until someone
   actually asks for it.
