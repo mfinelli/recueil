@@ -27,6 +27,9 @@ jobs:
         with:
           cache: pnpm
           node-version: lts/*
+      - uses: sqlc-dev/setup-sqlc@v5
+        with:
+          sqlc-version: 1.31.1
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_wrapper: false
