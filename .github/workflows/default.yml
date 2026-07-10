@@ -36,6 +36,7 @@ jobs:
       - run: pnpm run lint
       - run: go mod download
       - run: "[[ -z $(go fmt ./...) ]]"
+      - run: make
       - run: go test -v ./...
       - run: go vet ./...
       - run: pnpm run test

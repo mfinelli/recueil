@@ -1,3 +1,5 @@
+/internal/db/*
 /node_modules
+/recueil
 /terraform/*.tfstate*
 /terraform/.terraform*
