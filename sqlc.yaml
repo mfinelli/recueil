@@ -1,0 +1,14 @@
+---
+version: "2"
+sql:
+  - engine: postgresql
+    gen:
+      go:
+        emit_empty_slices: true
+        emit_json_tags: true
+        emit_prepared_queries: true
+        out: internal/db
+        package: db
+        sql_package: pgx/v5
+    queries: queries
+    schema: migrations
