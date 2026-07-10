@@ -28,26 +28,14 @@ import (
 
 var cfgFile string
 
-// rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
-	Use:   "recueil",
-	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) { },
+	Use:     "recueil",
+	Short:   "Recueil backend server and admin CLI",
+	Version: "1.0.0",
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
@@ -55,37 +43,47 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
-
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.recueil.yaml)")
-
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
-}
-
-// initConfig reads in config file and ENV variables if set.
-func initConfig() {
-	if cfgFile != "" {
-		// Use config file from the flag.
-		viper.SetConfigFile(cfgFile)
-	} else {
-		// Find home directory.
-		home, err := os.UserHomeDir()
-		cobra.CheckErr(err)
-
-		// Search config in home directory with name ".recueil" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".recueil")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "",
+		"path to a TOML config file (optional)")
+	if err := rootCmd.MarkPersistentFlagFilename("config", "toml"); err != nil {
+		panic(err)
 	}
 
-	viper.AutomaticEnv() // read in environment variables that match
+	bindEnvOrPanic(
+		"database_url",
+		"listen_addr",
+		"worker_url",
+		"worker_service_secret",
+		"session_cookie_secure",
+		"cloudflare_account_id",
+		"cloudflare_d1_database_id",
+		"cloudflare_api_token",
+	)
+}
 
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+func bindEnvOrPanic(keys ...string) {
+	for _, k := range keys {
+		if err := viper.BindEnv(k); err != nil {
+			panic(err)
+		}
+	}
+}
+
+// initConfig wires up viper: TOML only, no format auto-detection, and no
+// automatic search of $HOME or the working directory (a config file is
+// either explicitly named via --config or not used at all).
+func initConfig() {
+	viper.SetConfigType("toml")
+	viper.AutomaticEnv()
+
+	if cfgFile == "" {
+		return
+	}
+
+	viper.SetConfigFile(cfgFile)
+	if err := viper.ReadInConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "error reading config file %s: %v\n",
+			cfgFile, err)
+		os.Exit(1)
 	}
 }
