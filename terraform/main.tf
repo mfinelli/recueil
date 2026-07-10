@@ -26,10 +26,11 @@ resource "cloudflare_r2_bucket" "this" {
 }
 
 resource "cloudflare_workers_script" "this" {
-  account_id   = var.account_id
-  script_name  = "${var.name_prefix}-recueil"
-  content_file = "${path.module}/index.js"
-  main_module  = "index.js"
+  account_id     = var.account_id
+  script_name    = "${var.name_prefix}-recueil"
+  content_file   = "${path.module}/index.js"
+  main_module    = "index.js"
+  content_sha256 = filesha256("${path.module}/index.js")
 
   # Bump periodically; pinned rather than computed dynamically since
   # Terraform has no "today" primitive worth adding a data source for.
