@@ -18,6 +18,10 @@ resource "random_password" "service_secret" {
 resource "cloudflare_d1_database" "worker_db" {
   account_id = var.account_id
   name       = "${var.name_prefix}-recueil"
+
+  read_replication = {
+    mode = "disabled"
+  }
 }
 
 resource "cloudflare_r2_bucket" "capture_buffer" {
