@@ -8,6 +8,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "check": "prettier --check .",
+    "fmt": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.4"
   }
 }
