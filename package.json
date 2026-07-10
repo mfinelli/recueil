@@ -1,0 +1,13 @@
+{
+  "name": "recueil",
+  "version": "1.0.0",
+  "description": "self-hosted webpage bookmarker and archiver",
+  "homepage": "https://github.com/mfinelli/recueil",
+  "author": "Mario Finelli",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  }
+}
