@@ -117,8 +117,10 @@ The desktop extension, the share-sheet PWA, and the CLI depend **only** on the
 Worker and R2 — both public, both authenticated via bearer token. None of them
 ever need the backend to be network-reachable. The backend's only required
 connectivity is **outbound**: polling the Worker/D1 API, pulling objects from
-R2, and (per §5) making occasional authenticated calls to the Worker for
-device-token revocation. It can run with zero inbound firewall rules and the
+R2, making occasional authenticated calls to the Worker for device-token
+revocation (§5), and — the one exception to "only ever talks to the Worker" — a
+direct, narrowly-scoped call to Cloudflare's D1 query API to run schema
+migrations at startup (§5b). It can run with zero inbound firewall rules and the
 entire archiving loop still works end to end.
 
 Backend network reachability is a concern **only** for the optional dashboard
@@ -310,13 +312,44 @@ CREATE TABLE tokens (
 );
 ```
 
-**Dashboard → direct session auth against Postgres.** The dashboard is a normal
-web app: it authenticates by checking `username`/`password_hash` directly in
-Postgres and issues its own session (cookie-based), with no bearer token, and no
-involvement of D1 or the Worker at all. This is simpler than reusing the
-device-token mechanism and avoids needing a `tokens` table in Postgres — the
-earlier design's ambiguity about "does the backend keep its own copy of tokens"
-is resolved by not needing one.
+**Dashboard → direct session auth against Postgres, DB-backed sessions.** The
+dashboard is a normal web app: it authenticates by checking
+`username`/`password_hash` directly in Postgres, with no involvement of D1 or
+the Worker at all. Sessions are **DB-backed** (a `sessions` table in Postgres),
+using the same hashed-opaque-token shape as device tokens above — a 32-byte
+CSPRNG value with a recognizable prefix (`rcl_sess_...`), stored as its SHA-256
+hash, with the raw value held only in an `HttpOnly`, `SameSite=Lax` cookie. This
+was a deliberate choice over a stateless signed cookie: it keeps sessions
+revocable the same way device tokens are (delete the row), at the cost of a DB
+lookup per authenticated request — an acceptable cost at this project's request
+volume, consistent with the reasoning already applied to device-token revocation
+and D1 polling elsewhere in this document.
+
+```sql
+-- Postgres
+CREATE TABLE sessions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY,
+  session_hash TEXT NOT NULL,
+  user_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT sessions_session_hash_key UNIQUE (session_hash),
+  CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_sessions_user_id ON sessions(user_id);
+```
+
+Sessions have a 30-day absolute TTL (`expires_at`) and no idle-timeout expiry —
+`last_seen_at` is updated on every authenticated request but isn't currently
+read by any feature; it's kept for a plausible future "your active sessions"
+dashboard view rather than actively driving expiry logic today. Logout deletes
+the row. This is simpler than reusing the device-token mechanism and avoids
+needing a `tokens` table in Postgres — the earlier design's ambiguity about
+"does the backend keep its own copy of tokens" is resolved by not needing one;
+`sessions` and D1's `tokens` are two distinct, independently-revocable
+credential systems for two distinct kinds of client.
 
 ### Manage Devices dashboard screen
 
@@ -377,6 +410,47 @@ Alternatives considered and rejected:
   more operational complexity (cert management, or an additional Cloudflare
   product dependency) for no real benefit at this scale.
 
+### 5b. Backend ↔ Cloudflare D1 migrations
+
+The backend applies D1 schema migrations itself, at startup, rather than
+requiring the operator to install and run `wrangler d1 migrations apply` —
+consistent with the same "no external tool needed to run the binary" goal that
+keeps Postgres migrations tool-managed only by current-implementation choice,
+not architectural necessity (see §15 for that side's open status). This means
+the backend needs to reach Cloudflare's D1 query API directly — the one place in
+the system where the backend talks to Cloudflare directly rather than
+exclusively through the Worker. This doesn't weaken the "backend stays fully
+non-public" property elsewhere in this document (§2, §11): that property is
+about _inbound_ reachability, which is unaffected; this is a new _outbound_ path
+only, initiated by the backend, never received by it.
+
+- **Migrations live at `terraform/worker/migrations/*.sql`** — the same files
+  that define the D1 schema conceptually, embedded into the Go binary via
+  `go:embed` at build time (not fetched at runtime). Applied migrations are
+  tracked in a `schema_migrations` table (§10) that the backend creates and owns
+  itself.
+- Deliberately **not** wrangler's `d1_migrations` table/convention — wrangler is
+  not part of this project's toolchain anywhere (see §15), and reusing that name
+  would risk two independent, uncoordinated bookkeeping systems touching the
+  same table if an operator ever pointed `wrangler` at the database directly out
+  of habit.
+- **Credential: a Cloudflare API token scoped to `D1:Edit` on this one
+  database** — provisioned via Terraform's `cloudflare_api_token` resource,
+  output as `sensitive`, copied into the backend's `.env` alongside the Worker
+  service secret from §5a. This is a materially different kind of credential
+  from the service secret: an actual Cloudflare account-level token, not an
+  application-level shared secret, and narrower in scope than a full-account
+  token.
+- Runs once at startup, alongside the bootstrap-admin check below — a no-op once
+  nothing's pending. Safe to call on every restart.
+
+This was a deliberate tradeoff, not an oversight: the alternative (a Worker
+endpoint that runs migrations, gated by the existing service secret, keeping the
+Worker as the sole thing that ever touches D1) was considered and rejected,
+because it would mean a schema change requires a Worker redeploy (a
+`terraform apply`) even when nothing about the Worker's own code changed — worse
+operator friction than holding one additional narrowly-scoped credential.
+
 ### Account creation and roles
 
 - **Open registration.** Anyone who can reach the dashboard can create a
@@ -389,23 +463,34 @@ Alternatives considered and rejected:
   expectation anyway. A config flag (e.g. `ENABLE_OPEN_REGISTRATION=false`) is
   worth offering later for operators who want invite-only instead, but isn't
   required for the initial version.
-- **Bootstrap token for the first admin.** On first startup, if `users` is
-  empty, the backend generates a random bootstrap token, prints it to the
-  backend's logs, and stores its hash (with an expiry — e.g. valid until used or
-  for 1 hour, whichever comes first) so it survives a restart within that
-  window:
-  ```sql
-  CREATE TABLE bootstrap_token (
-    token_hash TEXT NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    used BOOLEAN NOT NULL DEFAULT FALSE
-  );
-  ```
+- **Bootstrap token for the first admin, held in memory, not persisted.** On
+  startup, if `users` is empty, the backend generates a random bootstrap token
+  (32-byte CSPRNG, base64url-encoded, `rcl_bootstrap_...` prefix), prints it to
+  the backend's logs, and holds it — token value, a 1-hour expiry, and a
+  consumed flag — entirely in a process-local value, never written to Postgres.
+  A restart before the token is used simply generates a new one; the old one is
+  gone. This is a correction from an earlier revision of this design, which
+  specified a persisted `bootstrap_token` table: that approach had a real bug —
+  a restart before use would silently leave the _previous_ token valid until its
+  own expiry, alongside a newly generated one. The in-memory approach can't have
+  that failure mode, since there's nothing left to be stale after a restart.
+
   The dashboard's "create first admin" screen requires this token as well as a
-  username/password. Once the first admin is created, the row is deleted (or
-  marked used, then cleaned up). This closes the narrow race where the dashboard
-  is briefly reachable on the network before the operator has locked it down —
-  without the token, reaching the setup screen isn't enough to claim admin.
+  username/password. The token is only marked consumed after the admin account
+  is actually created **successfully** — not merely validated — so a request
+  that fails after validation (a username race, a transient DB error) can be
+  retried with the same token rather than requiring a full restart to get a
+  fresh one. This closes the narrow race where the dashboard is briefly
+  reachable on the network before the operator has locked it down — without the
+  token, reaching the setup screen isn't enough to claim admin.
+
+  This design assumes exactly one backend process. That assumption was already
+  implicit elsewhere (§5a's service-secret rotation reasoning assumes "single
+  backend per deployment"), but an in-memory, unshared bootstrap token makes it
+  a hard constraint for this one flow specifically: a second replica would hold
+  its own independent token, invisible to the first, until whichever one
+  processes the setup request wins.
+
 - **Roles:** `admin` and `member`. Add to the `users` schema:
   ```sql
   ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
@@ -433,6 +518,13 @@ doesn't mean zero risk:
   (bcrypt/argon2, human-chosen, weaker entropy) are the more sensitive item in
   the mirror, which is exactly why they use a proper slow/salted hash rather
   than SHA-256.
+- The backend's D1 migration credential (§5b) is a second, narrower extension of
+  this trust boundary — scoped to `D1:Edit` on one database, used only at
+  startup, and distinct from the Worker service secret. It doesn't change the
+  "Worker stays public, backend stays private" shape (it's outbound-only from
+  the backend, same as everything else in §2), but it is a second real
+  Cloudflare credential the backend now holds, worth naming plainly alongside
+  the rest of this section's tradeoffs.
 
 This tradeoff is accepted as part of the design and should be stated plainly in
 the repo's security documentation rather than left implicit.
@@ -657,14 +749,45 @@ Normalization strategy:
 than UUIDs) for smaller indexes and better insert/join performance at this
 project's scale.
 
+All constraints (primary keys, unique constraints, checks, and foreign keys) are
+explicitly named (`<table>_pkey`, `<table>_<column>_key`,
+`<table>_<column>_check`, `<table>_<column>_fkey`) rather than left to
+Postgres's auto-generated names — this makes later
+`ALTER TABLE ... DROP CONSTRAINT` migrations (e.g. changing the set of allowed
+`role` values) referenceable by a name stated in the migration file, rather than
+needing to look up whatever Postgres happened to call them. Applied below to
+`users` and `sessions`, the two tables actually implemented so far; the rest of
+this section's tables will pick up the same convention as they're implemented.
+
 ```sql
 CREATE TABLE users (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE,
+  id BIGINT GENERATED ALWAYS AS IDENTITY,
+  username TEXT NOT NULL,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL DEFAULT 'member',   -- 'admin' | 'member'
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  display_name TEXT,                 -- nullable; UI falls back to username
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT users_pkey PRIMARY KEY (id),
+  CONSTRAINT users_username_key UNIQUE (username),
+  CONSTRAINT users_role_check CHECK (role IN ('admin', 'member'))
 );
+
+-- Dashboard sessions (§5) — DB-backed, hashed opaque tokens, same shape as
+-- D1 device tokens. Revocation is a row delete (logout); no idle timeout,
+-- only the absolute expires_at.
+CREATE TABLE sessions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY,
+  session_hash TEXT NOT NULL,
+  user_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT sessions_session_hash_key UNIQUE (session_hash),
+  CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 
 -- One row per distinct URL ever archived, grouped by normalized_url
 CREATE TABLE pages (
@@ -758,25 +881,44 @@ CREATE TABLE ai_jobs (
 ```
 
 There is **no `tokens` table in Postgres** — device tokens are owned entirely by
-D1 (see §5), and the dashboard uses its own session mechanism against `users`
-directly, so no bearer-token table is needed on the backend side at all.
+D1 (see §5), and the dashboard uses its own DB-backed `sessions` table above, so
+no bearer-token table is needed on the backend side at all.
 
 ### D1 (Worker-owned — auth, queue, bookmark mirror only)
+
+D1 tables use `STRICT` (enforcing declared column types, since SQLite is
+dynamically typed by default) and, where a table's primary key is non-integer
+and only ever looked up by that key, `WITHOUT ROWID` (avoiding an unnecessary
+hidden-rowid indirection) — applied below to the tables actually implemented so
+far; the rest of this section's tables will pick up the same convention as
+they're implemented.
 
 `queue_items` and `pending_captures` use client-generated UUIDs rather than
 server-generated identity columns, for idempotency on retry (see §3c) and
 because the extension generates the ID before the row exists server-side.
 
 ```sql
+-- Bookkeeping for the backend's own D1 migration runner (§5b) — not
+-- wrangler's `d1_migrations` table; wrangler is not used anywhere in this
+-- project's toolchain (see §15).
+CREATE TABLE schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT, WITHOUT ROWID;
+
 -- Mirrors Postgres users.id and password_hash for device auth without
 -- ever exposing the backend. Does NOT include `role` — authorization is a
--- backend/dashboard concern only.
+-- backend/dashboard concern only. id is never D1-generated: it's always
+-- supplied explicitly from the Postgres-side value on every mirror-push
+-- INSERT, so plain `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT)
+-- is correct here — D1 only assigns its own value if a row is inserted
+-- with id omitted or NULL, which never happens on this path.
 CREATE TABLE users (
   id INTEGER PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
   password_hash TEXT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT;
 
 CREATE TABLE tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -834,24 +976,27 @@ captures** — archiving a page the user is already on, which was never queued i
 the first place.
 
 Backend↔Worker service calls (polling, mirror pushes, token revocation) are
-authenticated via the shared service secret (§5a), not a row in `tokens`.
+authenticated via the shared service secret (§5a), not a row in `tokens`. The
+backend's D1 migration runner (§5b) uses a separate, narrower Cloudflare API
+token, not the service secret, and is the only thing that ever writes to
+`schema_migrations`.
 
 ---
 
 ## 11. Components Summary
 
-| Component                 | Tech                                         | Reachability required                                              | Responsibility                                                                                                                            |
-| ------------------------- | -------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)    | Worker + R2 only                                                   | Poll queue, capture (HTML via vendored SingleFile, reader text), upload to R2                                                             |
-| Share-sheet PWA           | Static site, Cloudflare Pages                | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                         |
-| iOS Shortcut              | Apple Shortcuts                              | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                        |
-| CLI                       | Small script/binary                          | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                  |
-| Cloudflare Worker         | TypeScript/JS on Workers                     | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints |
-| D1                        | Cloudflare D1 (SQLite)                       | N/A (accessed via Worker only)                                     | Device tokens, queue, bookmark-list mirror                                                                                                |
-| R2                        | Cloudflare R2                                | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                 |
-| Backend                   | Go + Postgres, Docker Compose                | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API                   |
-| Screenshot service        | chromedp + `chromedp/headless-shell`, Docker | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline, produces thumbnails                                                                        |
-| Dashboard                 | Svelte                                       | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                        |
+| Component                 | Tech                                                                                                    | Reachability required                                              | Responsibility                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                               | Worker + R2 only                                                   | Poll queue, capture (HTML via vendored SingleFile, reader text), upload to R2                                                                                  |
+| Share-sheet PWA           | Static site, Cloudflare Pages                                                                           | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
+| iOS Shortcut              | Apple Shortcuts                                                                                         | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
+| CLI                       | Small script/binary                                                                                     | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
+| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
+| D1                        | Cloudflare D1 (SQLite)                                                                                  | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
+| R2                        | Cloudflare R2                                                                                           | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
+| Backend                   | Go + Postgres, Docker Compose                                                                           | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
+| Screenshot service        | chromedp + `chromedp/headless-shell`, Docker                                                            | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline, produces thumbnails                                                                                             |
+| Dashboard                 | Svelte                                                                                                  | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
 
 ---
 
@@ -863,9 +1008,11 @@ authenticated via the shared service secret (§5a), not a row in `tokens`.
   external backup tool can snapshot them directly from the host (see §14).
 - **Cloudflare side**: Terraform/OpenTofu module in the public repo,
   provisioning D1, R2, the Worker (and its routes/bindings), the Cloudflare
-  Pages project for the share-sheet PWA, and a `random_password` resource for
-  the backend↔Worker service secret (output as `sensitive`, to be copied into
-  the backend's `.env` after `terraform apply`).
+  Pages project for the share-sheet PWA, a `random_password` resource for the
+  backend↔Worker service secret (§5a), and a `cloudflare_api_token` resource
+  scoped to `D1:Edit` on the D1 database for the backend's migration runner
+  (§5b) — both output as `sensitive`, to be copied into the backend's `.env`
+  after `terraform apply`.
 - **Networking**: the repo takes no position on how the backend/dashboard is
   exposed beyond the local machine — that's a deployment-time decision left to
   the operator (LAN-only, reverse proxy, VPN, tunnel, etc.). The core archiving
@@ -887,16 +1034,34 @@ container over the network) plus a new service definition in
 
 ```
 recueil/
+├── main.go                  # main API/dashboard-serving binary — moved here
+│                               from cmd/server/ during Phase 1 implementation
 ├── cmd/
-│   ├── server/            # main API/dashboard-serving binary
 │   └── cli/                # recueil-cli, shares the same go.mod
 ├── internal/
-├── migrations/
+│   ├── config/              # env-based config loading
+│   ├── auth/                 # password hashing, session tokens, bootstrap flow
+│   ├── db/                    # sqlc-generated query code (renamed from
+│   │                            # an earlier `dbgen` during Phase 1)
+│   ├── d1migrate/             # embeds terraform/worker/migrations/*.sql,
+│   │                            # applies them via the Cloudflare D1 API (§5b)
+│   ├── mirror/                # pushes the credential mirror to the Worker
+│   └── httpapi/               # dashboard-facing HTTP handlers + router
+├── migrations/                # Postgres migrations (goose)
+├── queries/                    # sqlc source .sql query files
+├── sqlc.yaml
 ├── src/                     # Svelte dashboard source
 ├── Dockerfile
 ├── go.mod
-├── package.json             # dashboard's Vite/Svelte package.json
+├── package.json             # root: dashboard's Vite/Svelte deps, plus
+│                               # Worker test/lint devDependencies (vitest,
+│                               # @cloudflare/vitest-pool-workers, eslint) —
+│                               # the Worker directory has no package.json
+│                               # of its own; see §13a
 ├── vite.config.js
+├── vitest.config.js          # root-level; covers Worker tests now, expected
+│                               # to grow a Svelte-scoped project (§13a)
+├── eslint.config.js           # root-level; same per-directory-scoping plan
 │
 ├── extension/                # WebExtension, own package.json (needs bundling
 │   ├── src/                    # to pull in Readability.js and vendored
@@ -905,10 +1070,23 @@ recueil/
 │
 ├── terraform/                  # OpenTofu module
 │   ├── main.tf                   # includes random_password for the
-│   ├── variables.tf                # backend↔Worker service secret
+│   │                                # backend↔Worker service secret (§5a) and
+│   │                                # a cloudflare_api_token scoped to D1:Edit
+│   │                                # for the backend's migration runner (§5b)
+│   ├── variables.tf
 │   ├── outputs.tf
-│   ├── worker/                   # plain JS, no build step — deployed as-is
-│   │   └── index.js
+│   ├── worker/                   # plain JS, no build step for deployment —
+│   │   ├── index.js                # local test/lint tooling doesn't change that
+│   │   ├── migrations/            # D1 schema — applied by the backend (§5b),
+│   │   │   │                        # not by wrangler
+│   │   │   ├── 0000_schema_migrations.sql
+│   │   │   └── 0001_users.sql
+│   │   ├── tests/                 # @cloudflare/vitest-pool-workers — real
+│   │   │   │                        # simulated D1 via Miniflare, not mocks
+│   │   │   ├── apply-migrations.js
+│   │   │   ├── fetch.test.js
+│   │   │   └── handleUserMirror.test.js
+│   │   └── tsconfig.json          # @ts-check/JSDoc type-checking, index.js only
 │   └── pwa/                      # static share-target PWA, no build step
 │       ├── index.html
 │       └── manifest.json
@@ -925,12 +1103,91 @@ recueil/
 └── LICENSE
 ```
 
+Note: this tree reflects the Go package layout and Worker tooling as actually
+implemented in Phase 1, plus the root-level `vitest.config.js`/
+`eslint.config.js` placement agreed on during that work (§13a). The `cmd/cli/`
+entry is carried over unchanged from the previous revision and hasn't been
+revisited since the `main.go` move to root — worth confirming it still shares
+`go.mod` cleanly once the CLI is actually built.
+
 ### Notes on specific decisions
 
 (Unchanged from v1 — see original rationale for Go-at-root, CLI sharing the
 server's Go module, the dashboard's build output being embedded via `go:embed`,
 the Worker/PWA's no-build-step requirement, the extension's own
 directory/bundler, and `website/`'s self-containment.)
+
+### 13a. Implementation Stack & Tooling
+
+Concrete tooling choices made during implementation, kept here rather than split
+into a separate document — per this section's own placement, this is meant to be
+read before implementing the next piece, not discovered after the fact in a
+README that can drift out of sync with the architecture decisions around it.
+
+**Backend (Go):**
+
+- **Postgres access:** `pgx/v5` as the driver; `sqlc` for codegen from
+  `queries/*.sql` against the `migrations/` schema (`sql_package: pgx/v5`) — the
+  hand-written query files are the source of truth, the generated code under
+  `internal/db/` is regenerable, not hand-maintained.
+- **Postgres migrations:** `goose`, currently invoked as an external CLI
+  (`goose -dir migrations postgres "$DATABASE_URL" up`). Folding this into the
+  binary as a library (`goose.Up()` called from `main.go`, the same shape as
+  D1's migrations below) was raised and deliberately deferred, not rejected —
+  see §15.
+- **D1 migrations:** run by the backend itself at startup — embedded
+  (`go:embed`) SQL files applied via a direct call to Cloudflare's D1 query API
+  using the official `cloudflare-go` SDK. See §5b for the credential and
+  rationale; tracked in D1's `schema_migrations` table (§10), not wrangler's.
+- **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
+- **HTTP routing:** stdlib `net/http` with Go 1.22+ pattern-based routing
+  (`mux.HandleFunc("POST /api/...", ...)`) — no router library, consistent with
+  keeping dependencies minimal elsewhere in the project.
+- **Testing:** `testify`, with table-driven cases (`t.Run` subtests, or
+  `[]struct{...}` tables) where that reduces duplication rather than as a
+  blanket rule. For code that calls an external HTTP API, tests run against a
+  real `httptest.Server` plus that library's own base-URL override where one
+  exists (e.g. `option.WithBaseURL` for `cloudflare-go`), rather than a
+  hand-rolled interface mock — closer to the real request/response shape for the
+  same effort.
+
+**Cloudflare Worker:**
+
+- **No build step, ever.** Plain JS (ES modules), not TypeScript; deployed via
+  Terraform's Cloudflare provider directly, never `wrangler deploy`.
+- **Static type-checking without a build step:** `@ts-check` + JSDoc annotations
+  in `index.js`, checked via `tsc --noEmit` against a `tsconfig.json` scoped to
+  the deployed script only. Test files are deliberately out of that scope — they
+  import the `cloudflare:test` virtual module, which only exists inside the
+  Vitest pool's runtime and which plain `tsc` has no way to resolve.
+- **Linting:** ESLint (flat config), root-level (`eslint.config.js`), scoped
+  per-directory via each config object's `files` glob rather than a separate
+  config file per component. The Worker's own `index.js` needs
+  `globals.serviceworker` (for `Request`/`Response`/`URL`/`fetch`/`crypto`, none
+  of which are standard Node or browser globals as far as ESLint's built-in
+  knowledge goes); its test files additionally need `globals.vitest`. The same
+  file is expected to grow a Svelte-dashboard-scoped block later rather than
+  needing a file of its own.
+- **Testing:** `@cloudflare/vitest-pool-workers` — runs test files inside the
+  real `workerd` runtime (not a Node-side approximation of it), with Miniflare
+  providing a real local D1 database. The same `migrations/*.sql` files that
+  back §5b's runtime migrations are applied to that local database via
+  `readD1Migrations`/`applyD1Migrations`, so there's one schema source of truth
+  rather than a separate test fixture schema to keep in sync. Root-level
+  `vitest.config.js`, using Vitest's `projects` array (not the older, now
+  superseded `vitest.workspace.ts` mechanism) so the same file and the same
+  `vitest run` invocation will also cover Svelte dashboard tests once those
+  exist — each project scoped to its own runtime/environment (`workerd` for the
+  Worker, presumably `jsdom` or similar for Svelte component tests), never mixed
+  within one project.
+- Both the ESLint and Vitest devDependencies live in the root `package.json` —
+  the Worker's own directory has no `package.json` of its own and isn't a pnpm
+  workspace member. The "no build step" constraint is about what ships to
+  Cloudflare on deploy; it was never a constraint on what local tooling is
+  allowed to exist for development and CI.
+
+This section is expected to keep growing as the extension, dashboard, and CLI
+are built out.
 
 ---
 
@@ -989,14 +1246,30 @@ manage-devices design, bootstrap hardening, and registration model — see §5,
 via a public Terraform module) is also complete and resolved the module layout
 question below in favor of a reusable module in `terraform/`, consumed via
 source = `"..."` (pinned to a tag once releases exist) from the operator's own
-root config. What remains open is purely implementation-phase, not
-architectural:
+root config.
 
-- The exact Worker API endpoint surface (device auth, enqueue, presigned R2
-  URLs, the service-secret-gated backend endpoints including the two
-  `/internal/tokens` endpoints from §5) is still undesigned — the Worker
-  currently deployed is a stub with no routes. This is the logical next design
-  step.
+Phase 1 (backend + Postgres + bootstrap admin, §5) is also complete: session
+auth, the bootstrap-admin flow (§5, now in-memory as described there), and the
+Worker's first real route (`/internal/users/mirror`, §5, §5b) are built and
+tested. **`wrangler` is deliberately absent from this project's toolchain
+entirely** — the Worker deploys via Terraform's Cloudflare provider directly
+(not `wrangler deploy`), and D1 schema migrations run via a direct,
+backend-embedded call to Cloudflare's D1 query API (§5b) rather than
+`wrangler d1 migrations apply`. This is worth stating plainly since it's a real,
+deliberate absence rather than something that just hasn't come up yet.
+
+What remains open is purely implementation-phase, not architectural:
+
+- The rest of the Worker API endpoint surface (device auth, enqueue, presigned
+  R2 URLs, the remaining service-secret-gated backend endpoints including the
+  two `/internal/tokens` endpoints from §5) is still undesigned —
+  `/internal/users/mirror` (§5b) is the only route built so far. This is the
+  logical next design step.
 - Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
   toggle) is worth building in the initial version or deferred until someone
   actually asks for it.
+- Postgres migrations are still run via the external `goose` CLI (§13a), unlike
+  D1's now backend-embedded runner (§5b) — folding `goose` in as a library was
+  raised and deliberately deferred, not rejected. Worth revisiting for the same
+  "operator shouldn't need to install a tool to run the binary" reasoning that
+  motivated D1's approach.
