@@ -56,7 +56,7 @@ func TestReadMigrations(t *testing.T) {
 			name:      "rejects filenames outside the safe charset",
 			fsys:      fstest.MapFS{"0001-bad name!.sql": {Data: []byte("-- x")}},
 			wantErr:   true,
-			errSubstr: "outside [a-zA-Z0-9_]",
+			errSubstr: "invalid characters",
 		},
 		{
 			name:    "empty directory returns no ids and no error",
