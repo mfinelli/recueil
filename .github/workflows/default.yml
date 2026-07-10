@@ -32,9 +32,10 @@ jobs:
           tofu_wrapper: false
       - run: tofu fmt -check -recursive
       - run: pnpm run check
+      - run: pnpm run types
+      - run: pnpm run lint
       - run: go mod download
       - run: "[[ -z $(go fmt ./...) ]]"
       - run: go test -v ./...
       - run: go vet ./...
       - run: pnpm run test
-      - run: pnpm run types

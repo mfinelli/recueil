@@ -10,12 +10,16 @@
   "scripts": {
     "check": "prettier --check .",
     "fmt": "prettier --write .",
+    "lint": "eslint",
     "test": "vitest run",
     "types": "tsc -p terraform/tsconfig.json"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.0",
     "@cloudflare/workers-types": "^5.20260703.1",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
     "prettier": "^3.9.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"
