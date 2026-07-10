@@ -16,6 +16,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          cache: true
+          go-version-file: go.mod
       - uses: pnpm/action-setup@v6
         with:
           version: latest
@@ -28,3 +32,7 @@ jobs:
           tofu_wrapper: false
       - run: tofu fmt -check -recursive
       - run: pnpm run check
+      - run: go mod download
+      - run: "[[ -z $(go fmt ./...) ]]"
+      - run: go test -v ./...
+      - run: go vet ./...
