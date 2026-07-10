@@ -1,3 +1,21 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 // Package d1migrate applies pending D1 schema migrations at backend
 // startup, calling Cloudflare's D1 query API directly rather than going
 // through the Worker or requiring wrangler to be installed. This is the one
@@ -22,7 +40,6 @@ import (
 
 	"github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/d1"
-	"github.com/cloudflare/cloudflare-go/v7/option"
 )
 
 // bootstrapID must be the lowest-sorting migration: it creates
@@ -46,15 +63,12 @@ var idPattern = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 type Config struct {
 	AccountID  string
 	DatabaseID string
-	APIToken   string
 }
 
 // Run applies any migrations in `migrations` (the fs.Sub of a go:embed'd
 // directory) not yet recorded in schema_migrations, in filename sort order.
 // Safe to call on every startup (a no-op once nothing's pending).
-func Run(ctx context.Context, cfg Config, migrations fs.FS) error {
-	client := cloudflare.NewClient(option.WithAPIToken(cfg.APIToken))
-
+func Run(ctx context.Context, client *cloudflare.Client, cfg Config, migrations fs.FS) error {
 	ids, files, err := readMigrations(migrations)
 	if err != nil {
 		return err
