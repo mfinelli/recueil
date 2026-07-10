@@ -6,7 +6,7 @@
 # write Worker code against env.DB / env.BUCKET / env.SERVICE_SECRET
 # without a second infrastructure change.
 
-data "cloudflare_zones" "this" {
+data "cloudflare_zones" "zone" {
   name = var.zone_name
 }
 
@@ -15,17 +15,17 @@ resource "random_password" "service_secret" {
   special = false
 }
 
-resource "cloudflare_d1_database" "this" {
+resource "cloudflare_d1_database" "worker_db" {
   account_id = var.account_id
   name       = "${var.name_prefix}-recueil"
 }
 
-resource "cloudflare_r2_bucket" "this" {
+resource "cloudflare_r2_bucket" "capture_buffer" {
   account_id = var.account_id
   name       = "${var.name_prefix}-recueil"
 }
 
-resource "cloudflare_workers_script" "this" {
+resource "cloudflare_workers_script" "worker" {
   account_id     = var.account_id
   script_name    = "${var.name_prefix}-recueil"
   content_file   = "${path.module}/index.js"
@@ -40,12 +40,12 @@ resource "cloudflare_workers_script" "this" {
     {
       type = "d1"
       name = "DB"
-      id   = cloudflare_d1_database.this.id
+      id   = cloudflare_d1_database.worker_db.id
     },
     {
       type        = "r2_bucket"
       name        = "BUCKET"
-      bucket_name = cloudflare_r2_bucket.this.name
+      bucket_name = cloudflare_r2_bucket.capture_buffer.name
     },
     {
       type = "secret_text"
@@ -55,10 +55,9 @@ resource "cloudflare_workers_script" "this" {
   ]
 }
 
-resource "cloudflare_workers_custom_domain" "this" {
-  account_id  = var.account_id
-  zone_id     = data.cloudflare_zones.this.result[0].id
-  hostname    = "${var.worker_subdomain}.${var.zone_name}"
-  service     = cloudflare_workers_script.this.script_name
-  environment = "production"
+resource "cloudflare_workers_custom_domain" "worker_domain" {
+  account_id = var.account_id
+  zone_id    = data.cloudflare_zones.zone.result[0].id
+  hostname   = "${var.worker_subdomain}.${var.zone_name}"
+  service    = cloudflare_workers_script.worker.script_name
 }

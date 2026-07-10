@@ -12,14 +12,14 @@ output "d1_database_id" {
     ID of the D1 database backing the queue, device tokens, and
     bookmark/credential mirrors.
   EOT
-  value       = cloudflare_d1_database.this.id
+  value       = cloudflare_d1_database.worker_db.id
 }
 
 output "r2_bucket_name" {
   description = <<-EOT
     Name of the R2 bucket used as the temporary capture blob buffer.
   EOT
-  value       = cloudflare_r2_bucket.this.name
+  value       = cloudflare_r2_bucket.capture_buffer.name
 }
 
 output "service_secret" {
