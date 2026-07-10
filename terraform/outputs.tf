@@ -4,7 +4,7 @@ output "worker_url" {
     not a workers.dev subdomain — that subdomain is deliberately left
     disabled).
   EOT
-  value       = "https://${var.worker_hostname}"
+  value       = "https://${var.worker_subdomain}.${var.zone_name}"
 }
 
 output "d1_database_id" {

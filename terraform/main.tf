@@ -58,7 +58,7 @@ resource "cloudflare_workers_script" "this" {
 resource "cloudflare_workers_custom_domain" "this" {
   account_id  = var.account_id
   zone_id     = data.cloudflare_zones.this.result[0].id
-  hostname    = var.worker_hostname
+  hostname    = "${var.worker_subdomain}.${var.zone_name}"
   service     = cloudflare_workers_script.this.script_name
   environment = "production"
 }
