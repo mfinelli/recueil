@@ -20,8 +20,18 @@
 // that the backend needs to push the credential mirror on account
 // creation/password change.
 
+/**
+ * @typedef {Object} Env
+ * @property {D1Database} DB
+ * @property {string} SERVICE_SECRET
+ */
 
 export default {
+  /**
+   * @param {Request} request
+   * @param {Env} env
+   * @returns {Promise<Response>}
+   */
   async fetch(request, env) {
     const url = new URL(request.url);
 
@@ -36,12 +46,18 @@ export default {
   },
 };
 
+/**
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
 export async function handleUserMirror(request, env) {
   const serviceKey = request.headers.get("X-Service-Key");
   if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
     return new Response("Unauthorized", { status: 401 });
   }
 
+  /** @type {unknown} */
   let body;
   try {
     body = await request.json();
@@ -52,7 +68,8 @@ export async function handleUserMirror(request, env) {
   if (typeof body !== "object" || body === null) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
-  const { id, username, password_hash } = (body);
+  const { id, username, password_hash } =
+    /** @type {Record<string, unknown>} */ (body);
   if (
     !Number.isInteger(id) ||
     typeof username !== "string" ||
