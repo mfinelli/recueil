@@ -1,3 +1,5 @@
+// @ts-check
+
 /*
  * recueil: self-hosted webpage bookmarker and archiver
  * Copyright © 2026 Mario Finelli
