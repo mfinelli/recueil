@@ -1034,20 +1034,37 @@ container over the network) plus a new service definition in
 
 ```
 recueil/
-├── main.go                  # main API/dashboard-serving binary — moved here
+├── main.go                  # thin cmd.Execute() call (cobra) — moved here
 │                               from cmd/server/ during Phase 1 implementation
 ├── cmd/
-│   └── cli/                # recueil-cli, shares the same go.mod
+│   ├── root.go              # cobra root command, viper config wiring (§13a)
+│   └── cli/                 # recueil-cli, shares the same go.mod
 ├── internal/
-│   ├── config/              # env-based config loading
-│   ├── auth/                 # password hashing, session tokens, bootstrap flow
-│   ├── db/                    # sqlc-generated query code (renamed from
-│   │                            # an earlier `dbgen` during Phase 1)
-│   ├── d1migrate/             # embeds terraform/worker/migrations/*.sql,
-│   │                            # applies them via the Cloudflare D1 API (§5b)
-│   ├── mirror/                # pushes the credential mirror to the Worker
-│   └── httpapi/               # dashboard-facing HTTP handlers + router
-├── migrations/                # Postgres migrations (goose)
+│   ├── config/               # viper-based config: --config TOML file, env
+│   │                            # vars, defaults set in this package's own
+│   │                            # init() (§13a)
+│   ├── auth/                  # password hashing, session tokens, bootstrap flow
+│   ├── db/                     # sqlc-generated query code (renamed from
+│   │                             # an earlier `dbgen` during Phase 1)
+│   ├── pgmigrate/              # applies migrations/*.sql via goose's Provider
+│   │                             # API against an already-open pool (§13a)
+│   ├── dbtest/                 # Postgres integration-test harness: connects
+│   │                             # to docker-compose.test.yml, applies
+│   │                             # migrations via internal/pgmigrate, t.Cleanup
+│   │                             # fixture factories (§13a)
+│   ├── d1migrate/              # embeds terraform/worker/migrations/*.sql,
+│   │                             # applies them via the Cloudflare D1 API (§5b)
+│   ├── mirror/                 # pushes the credential mirror to the Worker
+│   └── httpapi/                # dashboard-facing HTTP handlers + chi router
+├── migrations/                 # Postgres migrations — plain .sql files, no
+│                                  # embed.go: main.go embeds these directly
+│                                  # (a sibling directory, no `..` needed) and
+│                                  # passes the fs.FS into pgmigrate.Run; the
+│                                  # test harness instead reads this same
+│                                  # directory straight off disk (os.DirFS),
+│                                  # since tests always run with the full repo
+│                                  # present and don't need go:embed's
+│                                  # binary-self-containment property (§13a)
 ├── queries/                    # sqlc source .sql query files
 ├── sqlc.yaml
 ├── src/                     # Svelte dashboard source
@@ -1062,6 +1079,12 @@ recueil/
 ├── vitest.config.js          # root-level; covers Worker tests now, expected
 │                               # to grow a Svelte-scoped project (§13a)
 ├── eslint.config.js           # root-level; same per-directory-scoping plan
+├── Makefile                   # test-db-up/test-db-down/test — the same
+│                                 # commands drive docker-compose.test.yml
+│                                 # locally and in CI (§13a)
+├── docker-compose.test.yml    # dedicated ephemeral test Postgres (§13a) —
+│                                 # distinct port + tmpfs, separate from the
+│                                 # dev database below
 │
 ├── extension/                # WebExtension, own package.json (needs bundling
 │   ├── src/                    # to pull in Readability.js and vendored
@@ -1099,16 +1122,19 @@ recueil/
 │
 ├── pnpm-workspace.yaml
 ├── docker-compose.yml            # backend + postgres + screenshot sidecar
+│                                    # (dev database — see docker-compose.test.yml
+│                                    # above for the separate test one)
 ├── README.md                      # includes backup guidance, see §14
 └── LICENSE
 ```
 
-Note: this tree reflects the Go package layout and Worker tooling as actually
-implemented in Phase 1, plus the root-level `vitest.config.js`/
-`eslint.config.js` placement agreed on during that work (§13a). The `cmd/cli/`
-entry is carried over unchanged from the previous revision and hasn't been
-revisited since the `main.go` move to root — worth confirming it still shares
-`go.mod` cleanly once the CLI is actually built.
+Note: this tree reflects the Go package layout, Worker tooling, and the Postgres
+testing/migration setup as actually implemented, plus the root-level
+`vitest.config.js`/`eslint.config.js` placement agreed on during that work
+(§13a). The `cmd/cli/` entry is carried over unchanged from the previous
+revision and hasn't been revisited since the `main.go`/`cobra` restructure —
+worth confirming it still shares `go.mod` cleanly once the CLI is actually
+built.
 
 ### Notes on specific decisions
 
@@ -1130,26 +1156,87 @@ README that can drift out of sync with the architecture decisions around it.
   `queries/*.sql` against the `migrations/` schema (`sql_package: pgx/v5`) — the
   hand-written query files are the source of truth, the generated code under
   `internal/db/` is regenerable, not hand-maintained.
-- **Postgres migrations:** `goose`, currently invoked as an external CLI
-  (`goose -dir migrations postgres "$DATABASE_URL" up`). Folding this into the
-  binary as a library (`goose.Up()` called from `main.go`, the same shape as
-  D1's migrations below) was raised and deliberately deferred, not rejected —
-  see §15.
+- **Postgres migrations:** `goose`, as a library — not the external CLI. Uses
+  goose's `Provider` API (`goose.NewProvider`/`WithStore`/ `WithSessionLocker`)
+  rather than its older package-level `SetBaseFS`/ `SetDialect` functions: those
+  mutate shared package-global state, which is a genuine data race if ever
+  called concurrently within one process (confirmed with `-race` — two
+  goroutines calling them simultaneously race immediately, even setting
+  identical values); `Provider` scopes all config to the call and is documented
+  safe for concurrent use (confirmed: 8 concurrent calls against the same pool,
+  zero race warnings). Bookkeeping lives in a table named `schema_migrations`
+  (via `WithStore`), matching D1's migration bookkeeping table name, not goose's
+  default `goose_db_version`. Also takes a Postgres session (advisory) lock for
+  the duration of a migration run (`WithSessionLocker`), so two processes racing
+  to migrate the same database — a rolling deploy briefly overlapping two
+  backend instances, a stray manual invocation — serialize rather than
+  interleave. Takes an already-open `*pgxpool.Pool` rather than a database URL,
+  so a caller that already has a pool (production startup, the test harness
+  below) doesn't open a second connection just to migrate. This resolves the
+  goose-as-library question raised and deliberately deferred earlier (see §15) —
+  and ends up going a step further than D1's migration runner by adding the
+  session lock, which D1's Cloudflare-API-based approach has no equivalent for.
+- **Postgres test harness:** `internal/dbtest` — connects to a dedicated,
+  ephemeral test Postgres container (`docker-compose.test.yml`; a distinct port
+  from the dev database so both can run at once; `tmpfs` data directory so every
+  start is genuinely clean, unlike dev's bind-mounted durability), applies
+  migrations via the same `internal/pgmigrate` code path production startup uses
+  — not a separate test-only migration runner — and provides
+  `t.Cleanup`-registering fixture factories (`CreateUser`, `CreateSession`).
+  Fails the test hard (`t.Fatalf`) if the database isn't reachable, never skips:
+  a missing test database should be loud everywhere it happens, not quietly
+  hidden behind a passing (skipped) run. `Reset` (for tests needing a
+  guaranteed-clean starting state) truncates every table in the schema
+  discovered dynamically via `pg_tables`, not a hardcoded list — so it doesn't
+  need updating every time a migration adds a table, and correctly clears tables
+  with no foreign-key path back to `users` at all, which a hardcoded
+  `TRUNCATE users CASCADE` would silently miss. `testcontainers-go` was
+  considered for container provisioning and rejected: its dependency tree (a
+  full Docker API client, containerd, OpenTelemetry, `gopsutil`) is heavier than
+  anything else in this project, including Viper.
+  `make test-db-up`/`test-db-down`/`test` drive the same
+  `docker-compose.test.yml` locally and in CI, rather than a separately
+  maintained GitHub Actions `services:` block.
 - **D1 migrations:** run by the backend itself at startup — embedded
   (`go:embed`) SQL files applied via a direct call to Cloudflare's D1 query API
   using the official `cloudflare-go` SDK. See §5b for the credential and
   rationale; tracked in D1's `schema_migrations` table (§10), not wrangler's.
+- **CLI / config:** `cobra` for command structure (`main.go` is now a thin
+  `cmd.Execute()` call; the root command and its flags live in `cmd/`) and
+  `viper` for configuration — an explicit `--config` TOML file (shell completion
+  restricted to `.toml` via `MarkPersistentFlagFilename`, no automatic search of
+  `$HOME` or the working directory the way cobra-cli's default scaffold does),
+  environment variables, and in-package defaults. Defaults are set in
+  `internal/config`'s own `init()`, not in `cmd/root.go` — they need to apply
+  regardless of which binary or test calls `config.Load()`, not only when
+  `cmd`'s `init()` has already run. Viper pulls in a notably heavier dependency
+  tree than most choices in this project — parsers for formats never used (YAML,
+  HCL, Java properties, INI, dotenv) alongside the one actually used (TOML) —
+  accepted for the CLI-ecosystem integration cobra and viper provide together,
+  on the reasoning that Go's own dead-code elimination strips the unused format
+  parsers from the final binary regardless of how large the source dependency
+  is.
 - **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
-- **HTTP routing:** stdlib `net/http` with Go 1.22+ pattern-based routing
-  (`mux.HandleFunc("POST /api/...", ...)`) — no router library, consistent with
-  keeping dependencies minimal elsewhere in the project.
+- **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
+  transitive dependencies, and its middleware signature
+  (`func(http.Handler) http.Handler`) is identical to stdlib's own convention,
+  so `internal/auth`'s `RequireSession`/`RequireAdmin` needed no changes to work
+  as ordinary chi middleware. This supersedes the earlier phase-1 choice of
+  stdlib `net/http`'s own pattern routing with no router library at all —
+  reasonable for three routes, less so once route grouping (stating an auth
+  requirement once for a whole group, e.g. future admin-scoped routes under §5's
+  Manage Devices screen) and middleware composition became the actual friction,
+  rather than routing itself.
 - **Testing:** `testify`, with table-driven cases (`t.Run` subtests, or
   `[]struct{...}` tables) where that reduces duplication rather than as a
   blanket rule. For code that calls an external HTTP API, tests run against a
   real `httptest.Server` plus that library's own base-URL override where one
   exists (e.g. `option.WithBaseURL` for `cloudflare-go`), rather than a
   hand-rolled interface mock — closer to the real request/response shape for the
-  same effort.
+  same effort. Handler-level tests (`internal/httpapi`) are written as external
+  `_test` packages deliberately — exercising only the package's exported
+  constructors, the same way a real caller would, rather than reaching into
+  unexported internals.
 
 **Cloudflare Worker:**
 
@@ -1258,6 +1345,18 @@ backend-embedded call to Cloudflare's D1 query API (§5b) rather than
 `wrangler d1 migrations apply`. This is worth stating plainly since it's a real,
 deliberate absence rather than something that just hasn't come up yet.
 
+Since that revision, Postgres migrations were also moved off the external
+`goose` CLI and onto goose-as-a-library (§13a), resolving the item this section
+previously left open — Postgres now mirrors D1's "the binary applies its own
+migrations" shape, and in one respect goes further (a session advisory lock
+around the migration run, which D1's Cloudflare-API-based approach has no
+equivalent for). `chi` also replaced stdlib `net/http`'s own routing (§13a) once
+route grouping and middleware composition became the actual friction as the API
+surface grew past a handful of routes; `cobra` and `viper` were adopted for CLI
+structure and configuration. None of these supersede an architectural decision
+recorded elsewhere in this document — they're implementation-phase tooling
+choices, tracked in §13a rather than here.
+
 What remains open is purely implementation-phase, not architectural:
 
 - The rest of the Worker API endpoint surface (device auth, enqueue, presigned
@@ -1268,8 +1367,3 @@ What remains open is purely implementation-phase, not architectural:
 - Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
   toggle) is worth building in the initial version or deferred until someone
   actually asks for it.
-- Postgres migrations are still run via the external `goose` CLI (§13a), unlike
-  D1's now backend-embedded runner (§5b) — folding `goose` in as a library was
-  raised and deliberately deferred, not rejected. Worth revisiting for the same
-  "operator shouldn't need to install a tool to run the binary" reasoning that
-  motivated D1's approach.
