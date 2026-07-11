@@ -1034,10 +1034,22 @@ container over the network) plus a new service definition in
 
 ```
 recueil/
-├── main.go                  # thin cmd.Execute() call (cobra) — moved here
-│                               from cmd/server/ during Phase 1 implementation
+├── main.go                  # embeds Postgres migrations/ and D1's
+│                               # terraform/worker/migrations/ (embed
+│                               # directives can't reach either from cmd/,
+│                               # one directory below both — see cmd/server.go),
+│                               # assigns them to exported cmd package vars,
+│                               # then os.Exit(cmd.Execute())
 ├── cmd/
-│   ├── root.go              # cobra root command, viper config wiring (§13a)
+│   ├── root.go              # cobra root command; owns the one signal-aware
+│   │                           # context (SIGINT/SIGTERM), threaded to
+│   │                           # subcommands via cmd.Context() rather than
+│   │                           # each subcommand creating its own (§13a)
+│   ├── server.go             # `recueil server` — the actual backend startup:
+│   │                            # config, both migration runs (via fs.Sub on
+│   │                            # the embedded FS's from main.go), the
+│   │                            # bootstrap holder, httpapi wiring, graceful
+│   │                            # shutdown on cmd.Context().Done()
 │   └── cli/                 # recueil-cli, shares the same go.mod
 ├── internal/
 │   ├── config/               # viper-based config: --config TOML file, env
@@ -1052,10 +1064,15 @@ recueil/
 │   │                             # to docker-compose.test.yml, applies
 │   │                             # migrations via internal/pgmigrate, t.Cleanup
 │   │                             # fixture factories (§13a)
-│   ├── d1migrate/              # embeds terraform/worker/migrations/*.sql,
-│   │                             # applies them via the Cloudflare D1 API (§5b)
+│   ├── d1migrate/              # applies D1 migrations via the Cloudflare
+│   │                             # API (§5b) against an fs.FS the caller
+│   │                             # supplies — main.go embeds
+│   │                             # terraform/worker/migrations/*.sql and
+│   │                             # passes it in, same pattern as pgmigrate
 │   ├── mirror/                 # pushes the credential mirror to the Worker
-│   └── httpapi/                # dashboard-facing HTTP handlers + chi router
+│   └── httpapi/                # dashboard-facing HTTP handlers + chi router;
+│                                  # also mounts /info, /ping, /health
+│                                  # (unauthenticated — §13a) on the same router
 ├── migrations/                 # Postgres migrations — plain .sql files, no
 │                                  # embed.go: main.go embeds these directly
 │                                  # (a sibling directory, no `..` needed) and
@@ -1201,21 +1218,44 @@ README that can drift out of sync with the architecture decisions around it.
   (`go:embed`) SQL files applied via a direct call to Cloudflare's D1 query API
   using the official `cloudflare-go` SDK. See §5b for the credential and
   rationale; tracked in D1's `schema_migrations` table (§10), not wrangler's.
-- **CLI / config:** `cobra` for command structure (`main.go` is now a thin
-  `cmd.Execute()` call; the root command and its flags live in `cmd/`) and
-  `viper` for configuration — an explicit `--config` TOML file (shell completion
-  restricted to `.toml` via `MarkPersistentFlagFilename`, no automatic search of
-  `$HOME` or the working directory the way cobra-cli's default scaffold does),
-  environment variables, and in-package defaults. Defaults are set in
-  `internal/config`'s own `init()`, not in `cmd/root.go` — they need to apply
-  regardless of which binary or test calls `config.Load()`, not only when
-  `cmd`'s `init()` has already run. Viper pulls in a notably heavier dependency
-  tree than most choices in this project — parsers for formats never used (YAML,
-  HCL, Java properties, INI, dotenv) alongside the one actually used (TOML) —
-  accepted for the CLI-ecosystem integration cobra and viper provide together,
-  on the reasoning that Go's own dead-code elimination strips the unused format
-  parsers from the final binary regardless of how large the source dependency
-  is.
+- **CLI / config:** `cobra` for command structure — `main.go` embeds both
+  migration directories and hands them to the `cmd` package (see the repo tree
+  above), then `os.Exit(cmd.Execute())`; the actual backend startup lives in
+  `cmd/server.go` as a `recueil server` subcommand, not in `main.go` itself.
+  `Execute()` owns a single signal-aware context (`signal.NotifyContext` on
+  `SIGINT`/`SIGTERM`) passed to `rootCmd` via `ExecuteContext`; subcommands read
+  it back via `cmd.Context()` rather than each creating its own — confirmed for
+  real that this context reaches a subcommand's `RunE` correctly and that its
+  cancellation is what `cmd/server.go` waits on to shut the HTTP server down
+  gracefully (a real behavior this gained over the phase-1 `main.go`, which
+  built a cancellable context but never actually used it). `viper` for
+  configuration — an explicit `--config` TOML file (shell completion restricted
+  to `.toml` via `MarkPersistentFlagFilename`, no automatic search of `$HOME` or
+  the working directory the way cobra-cli's default scaffold does), environment
+  variables, and in-package defaults. Defaults are set in `internal/config`'s
+  own `init()`, not in `cmd/root.go` — they need to apply regardless of which
+  binary or test calls `config.Load()`, not only when `cmd`'s `init()` has
+  already run. Viper pulls in a notably heavier dependency tree than most
+  choices in this project — parsers for formats never used (YAML, HCL, Java
+  properties, INI, dotenv) alongside the one actually used (TOML) — accepted for
+  the CLI-ecosystem integration cobra and viper provide together, on the
+  reasoning that Go's own dead-code elimination strips the unused format parsers
+  from the final binary regardless of how large the source dependency is.
+- **Health checks:** `go.finelli.dev/healthchecks` (module
+  `github.com/mfinelli/go-healthchecks`), mounted directly on the same chi
+  router as the dashboard API (`internal/httpapi`) rather than a second port —
+  `/info` (build metadata), `/ping` (machine-consumable status code, for a
+  Docker `HEALTHCHECK` or uptime monitor), `/health` (always `200`,
+  human-readable JSON detail on failure). Deliberately unauthenticated and
+  registered outside the `RequireSession` group. Two things confirmed against
+  the real library rather than assumed from its docs: it declares
+  `package healthcheck` (singular) despite the plural import path, and its
+  handlers are returned as the library's own unexported function type, not
+  `http.HandlerFunc` — chi's `Get` requires the latter specifically, so mounting
+  them needs an explicit `http.HandlerFunc(hc.Health())` conversion, not a
+  direct pass. The `Check` function itself calls a small `Ping` method added to
+  `internal/db.Queries` (`SELECT 1` through the existing `DBTX` interface)
+  rather than threading the raw `*pgxpool.Pool` into `httpapi`.
 - **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
 - **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
   transitive dependencies, and its middleware signature
