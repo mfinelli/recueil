@@ -10,10 +10,12 @@ test harness) and resolved the goose-as-library item §15 had left open. Round
 three updated §13/§13a for `cmd/server.go` (the actual `recueil server`
 subcommand, and `main.go`'s real role embedding both migration directories),
 `Execute()` owning a single signal-aware context threaded via `cmd.Context()`,
-and the health-check endpoints mounted on `internal/httpapi`'s router. This
-round adds §13a's Metrics and HTTP middleware entries (Prometheus, `httplog`,
-the chi middleware stack) and records OpenTelemetry as considered and
-deliberately deferred, with the condition under which it'd be worth revisiting._
+and the health-check endpoints mounted on `internal/httpapi`'s router. Round
+four added §13a's Metrics and HTTP middleware entries (Prometheus, `httplog`,
+the chi middleware stack) and recorded OpenTelemetry as considered and
+deliberately deferred, with the condition under which it'd be worth revisiting.
+This round adds the new §3d (manual upload, bypassing the queue/R2/D1/Worker
+entirely) and the `captures.source` column it introduces (§10)._
 
 ## 1. Overview
 
@@ -245,6 +247,58 @@ under the same logical page. The backend groups captures by `normalized_url`
 (see §9, URL normalization) into a `pages` row, and each individual capture
 becomes a new `captures` row linked to that page. The dashboard shows all
 historical versions of a page with their capture timestamps.
+
+### 3d. Manual upload (bypassing the queue)
+
+For the case where a page was captured somewhere Recueil's own extension wasn't
+installed — received as an email attachment, saved from a device without the
+extension, handed over by someone else — the dashboard supports directly
+uploading an already-captured, fully inlined SingleFile-style HTML file plus the
+URL it came from. This is a genuinely different pathway from §3's queue-based
+flow, not a variant of it:
+
+- **Bypasses R2, D1, and the Worker entirely.** The dashboard already talks
+  directly to the backend (§2, §11 — that's the one thing dashboard reachability
+  is for), so this is a single authenticated `POST` straight into the backend,
+  gated by the same `RequireSession` middleware as any other dashboard endpoint,
+  scoped to the authenticated user the same way any other capture is
+  (`pages.user_id`).
+- **Reader text is extracted client-side, in the dashboard's own browser,
+  before/during upload** — the dashboard runs Readability.js against the
+  uploaded HTML and sends the extracted text alongside the raw HTML, mirroring
+  exactly how the extension does it today (§3a: extraction happens in a real
+  browser, never server-side). This keeps the principle consistent across both
+  capture paths rather than introducing a Go-side Readability port for this one
+  pathway. The page title is read the same way, from the uploaded HTML's
+  `<title>` tag, rather than requiring a separate manual field.
+- **No idempotency-by-UUID machinery, unlike §3c.** §3c's `source_capture_id`
+  scheme exists to protect an unattended, multi-step background process
+  (extension → R2 → Worker → backend poll) against double-insertion on
+  crash-recovery retry. A manual upload is a single synchronous, foreground,
+  user-initiated request with no equivalent multi-step window to protect — so
+  every submission is simply treated as a new intentional capture, no
+  deduplication against prior identical uploads. `captures.source_capture_id`
+  stays `NULL` for these rows (already nullable, so no schema change was needed
+  to allow this).
+- **Everything downstream of ingestion is unchanged**: content and reader-text
+  hashing (§3b), URL normalization (§9), grouping into `pages` by
+  `normalized_url` — a manual upload of an already-captured URL is just another
+  new version under the same page, identical in kind to any other re-archive
+  above. The async screenshot job (§6) and AI enrichment (§7) both apply
+  unmodified, since §6 already explicitly operates on "already-captured, fully
+  inlined SingleFile HTML" — which is exactly the shape of a manually uploaded
+  file.
+- **One real, concrete conflict with existing infrastructure, worth flagging
+  rather than discovering later**: SingleFile archives with inlined images/fonts
+  routinely run tens of megabytes, while the global
+  `middleware.RequestSize(1 << 20)` (§13a) caps every request body at 1MB. This
+  upload endpoint needs its own, much larger `RequestSize` scoped to just that
+  route — the same "scope it, don't rely on the global default" pattern already
+  used for `AllowContentType` on `/api` (§13a).
+- **Schema addition**: `captures.source TEXT` (`'extension'` |
+  `'manual_upload'`), mirroring the existing `page_tags.source` (`'manual'` |
+  `'ai'`) pattern — lets the dashboard show capture origin directly rather than
+  inferring it from whether `source_capture_id` happens to be `NULL`. See §10.
 
 ---
 
@@ -819,7 +873,12 @@ CREATE TABLE captures (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   source_capture_id TEXT UNIQUE,     -- pending_captures.id (D1), for
-                                      -- ingestion idempotency (see §3c)
+                                      -- ingestion idempotency (see §3c);
+                                      -- NULL for manual uploads (§3d), which
+                                      -- have no equivalent crash-recovery
+                                      -- window to protect
+  source TEXT NOT NULL DEFAULT 'extension',  -- 'extension' | 'manual_upload'
+                                      -- (§3d) — mirrors page_tags.source
   raw_url TEXT NOT NULL,
   title TEXT,
   html_path TEXT NOT NULL,           -- local disk path, zstd-compressed
