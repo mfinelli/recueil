@@ -45,6 +45,8 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_wrapper: false
+      - run: go install github.com/kisielk/errcheck@latest
+      - run: go install github.com/go-critic/go-critic/cmd/go-critic@latest
       - run: tofu fmt -check -recursive
       - run: pnpm run check
       - run: pnpm run types
@@ -56,3 +58,10 @@ jobs:
       - run: go vet ./...
       - run: pnpm run test
       - run: ./scripts/versions.bash
+      - uses: dominikh/staticcheck-action@v1
+        with:
+          install-go: false
+      - run: >-
+          go-critic check -checkGenerated=false -checkTests=true -enableAll
+          ./...
+      - run: errcheck -ignoregenerated ./...

@@ -25,7 +25,7 @@ const (
 // and its SHA-256 hex hash (to store in the DB). Same shape as the device
 // bearer tokens: 256 bits of entropy, so the stored hash alone isn't
 // enough to reconstruct a usable token.
-func GenerateSessionToken() (raw string, hash string, err error) {
+func GenerateSessionToken() (raw, hash string, err error) {
 	buf := make([]byte, 32)
 	if _, err = rand.Read(buf); err != nil {
 		return "", "", err

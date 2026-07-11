@@ -118,7 +118,7 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warning: failed to push credential mirror for new user %d: %v", user.ID, err)
 	}
 
-	s.startSession(w, r, user)
+	s.startSession(w, r, &user)
 	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
 }
 
@@ -155,7 +155,7 @@ func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
 		log.Printf("warning: failed to push credential mirror for new user %d: %v", user.ID, err)
 	}
 
-	s.startSession(w, r, user)
+	s.startSession(w, r, &user)
 	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
 }
 
@@ -179,7 +179,7 @@ func (s *Server) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.startSession(w, r, user)
+	s.startSession(w, r, &user)
 	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
 }
 
@@ -204,7 +204,7 @@ func (s *Server) Me(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
 }
 
-func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user db.User) {
+func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.User) {
 	raw, hash, err := auth.GenerateSessionToken()
 	if err != nil {
 		log.Printf("failed to generate session token: %v", err)

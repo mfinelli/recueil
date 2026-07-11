@@ -29,6 +29,12 @@ fmt:
   pnpm run fmt
   tofu fmt -recursive
 
+lint:
+  errcheck -ignoregenerated ./...
+  go-critic check -checkGenerated=false -checkTests=true -enableAll ./...
+  staticcheck ./...
+  pnpm run lint
+
 serve:
   make all
   ./recueil server --config local.toml

@@ -169,7 +169,7 @@ func TestRequireSession(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
 				handlerCalled = false
-				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 				tt.setupRequest(r)
 				w := httptest.NewRecorder()
 
@@ -243,7 +243,7 @@ func TestRequireSession(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 				})
 
-				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 				r.AddCookie(tt.makeCookie(t))
 				w := httptest.NewRecorder()
 
@@ -277,7 +277,7 @@ func TestRequireAdmin(t *testing.T) {
 	})
 
 	t.Run("admin role is allowed through", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		r.AddCookie(sessionCookieFor(t, "admin"))
 		w := httptest.NewRecorder()
 
@@ -286,7 +286,7 @@ func TestRequireAdmin(t *testing.T) {
 	})
 
 	t.Run("member role is forbidden", func(t *testing.T) {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
 		r.AddCookie(sessionCookieFor(t, "member"))
 		w := httptest.NewRecorder()
 

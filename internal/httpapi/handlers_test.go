@@ -150,7 +150,7 @@ func TestSetup(t *testing.T) {
 		server, rawToken := newTestServer(t, pool, mirrorServer.URL)
 		deleteUserByUsername(t, pool, "setup-success")
 
-		body := fmt.Sprintf(`{"bootstrap_token":"%s","username":"setup-success","password":"hunter2"}`, rawToken)
+		body := fmt.Sprintf(`{"bootstrap_token":%q,"username":"setup-success","password":"hunter2"}`, rawToken)
 		resp, err := http.Post(server.URL+"/api/setup", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 
@@ -173,7 +173,7 @@ func TestSetup(t *testing.T) {
 		server, rawToken := newTestServer(t, pool, mirrorServer.URL)
 		deleteUserByUsername(t, pool, "setup-reuse")
 
-		body := fmt.Sprintf(`{"bootstrap_token":"%s","username":"setup-reuse","password":"hunter2"}`, rawToken)
+		body := fmt.Sprintf(`{"bootstrap_token":%q,"username":"setup-reuse","password":"hunter2"}`, rawToken)
 		resp1, err := http.Post(server.URL+"/api/setup", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		require.Equal(t, http.StatusCreated, resp1.StatusCode)
@@ -191,7 +191,7 @@ func TestSetup(t *testing.T) {
 		server, rawToken := newTestServer(t, pool, brokenMirror.URL)
 		deleteUserByUsername(t, pool, "setup-mirrorfail")
 
-		body := fmt.Sprintf(`{"bootstrap_token":"%s","username":"setup-mirrorfail","password":"hunter2"}`, rawToken)
+		body := fmt.Sprintf(`{"bootstrap_token":%q,"username":"setup-mirrorfail","password":"hunter2"}`, rawToken)
 		resp, err := http.Post(server.URL+"/api/setup", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusCreated, resp.StatusCode, "mirror push failure must not block account creation")
@@ -204,7 +204,7 @@ func TestSetup(t *testing.T) {
 		dbtest.CreateUser(t, pool, "member")
 		server, rawToken := newTestServer(t, pool, unreachable)
 
-		body := fmt.Sprintf(`{"bootstrap_token":"%s","username":"setup-toolate","password":"hunter2"}`, rawToken)
+		body := fmt.Sprintf(`{"bootstrap_token":%q,"username":"setup-toolate","password":"hunter2"}`, rawToken)
 		resp, err := http.Post(server.URL+"/api/setup", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusConflict, resp.StatusCode)
@@ -247,7 +247,7 @@ func TestRegister(t *testing.T) {
 		existing := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
 
-		body := fmt.Sprintf(`{"username":"%s","password":"hunter2"}`, existing.Username)
+		body := fmt.Sprintf(`{"username":%q,"password":"hunter2"}`, existing.Username)
 		resp, err := http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusConflict, resp.StatusCode)
@@ -296,7 +296,7 @@ func TestLogin(t *testing.T) {
 		user := createUserWithPassword(t, pool, "login-wrongpw", "correct-password")
 		server, _ := newTestServer(t, pool, unreachable)
 
-		body := fmt.Sprintf(`{"username":"%s","password":"incorrect-password"}`, user.Username)
+		body := fmt.Sprintf(`{"username":%q,"password":"incorrect-password"}`, user.Username)
 		resp, err := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
@@ -306,7 +306,7 @@ func TestLogin(t *testing.T) {
 		user := createUserWithPassword(t, pool, "login-success", "correct-password")
 		server, _ := newTestServer(t, pool, unreachable)
 
-		body := fmt.Sprintf(`{"username":"%s","password":"correct-password"}`, user.Username)
+		body := fmt.Sprintf(`{"username":%q,"password":"correct-password"}`, user.Username)
 		resp, err := http.Post(server.URL+"/api/auth/login", "application/json", strings.NewReader(body))
 		require.NoError(t, err)
 
@@ -330,7 +330,7 @@ func TestLogout(t *testing.T) {
 			SessionHash: hash, UserID: user.ID, ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		})
 
-		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/auth/logout", nil)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/auth/logout", http.NoBody)
 		require.NoError(t, err)
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: raw})
 		resp, err := http.DefaultClient.Do(req)
@@ -348,7 +348,7 @@ func TestLogout(t *testing.T) {
 		// The session must actually be gone from the DB, not just the
 		// cookie cleared client-side: reusing the same (pre-logout) raw
 		// token against /api/auth/me must now be rejected.
-		req2, err := http.NewRequest(http.MethodGet, server.URL+"/api/auth/me", nil)
+		req2, err := http.NewRequest(http.MethodGet, server.URL+"/api/auth/me", http.NoBody)
 		require.NoError(t, err)
 		req2.AddCookie(&http.Cookie{Name: sessionCookieName, Value: raw})
 		resp2, err := http.DefaultClient.Do(req2)
@@ -375,7 +375,7 @@ func TestMe(t *testing.T) {
 			SessionHash: hash, UserID: user.ID, ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		})
 
-		req, err := http.NewRequest(http.MethodGet, server.URL+"/api/auth/me", nil)
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/api/auth/me", http.NoBody)
 		require.NoError(t, err)
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: raw})
 		resp, err := http.DefaultClient.Do(req)

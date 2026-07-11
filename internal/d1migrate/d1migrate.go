@@ -184,8 +184,8 @@ func appliedIDs(
 	}
 
 	applied := make(map[string]bool)
-	for _, result := range page.Result {
-		for _, row := range result.Results {
+	for i := range page.Result {
+		for _, row := range page.Result[i].Results {
 			rowMap, ok := row.(map[string]any)
 			if !ok {
 				continue

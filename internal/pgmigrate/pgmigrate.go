@@ -40,7 +40,7 @@ import (
 // call on every startup, and safe to call concurrently.
 func Run(ctx context.Context, pool *pgxpool.Pool, migrations fs.FS) error {
 	db := stdlib.OpenDBFromPool(pool)
-	defer db.Close() // closes only this *sql.DB wrapper, not the underlying pool
+	defer func() { _ = db.Close() }() // closes only this *sql.DB wrapper, not the underlying pool
 
 	store, err := database.NewStore(database.DialectPostgres, "schema_migrations")
 	if err != nil {

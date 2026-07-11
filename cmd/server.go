@@ -92,7 +92,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	queries := db.New(pool)
 
-	if err := runD1Migrations(cmd.Context(), cfg); err != nil {
+	if err := runD1Migrations(cmd.Context(), &cfg); err != nil {
 		return fmt.Errorf("applying D1 migrations: %w", err)
 	}
 
@@ -138,7 +138,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func runD1Migrations(ctx context.Context, cfg config.Config) error {
+func runD1Migrations(ctx context.Context, cfg *config.Config) error {
 	client := cloudflare.NewClient(option.WithAPIToken(cfg.CloudflareAPIToken))
 	d1Cfg := d1migrate.Config{
 		AccountID:  cfg.CloudflareAccountID,
