@@ -23,9 +23,9 @@
 // formats (YAML, JSON, HCL, etc.) are supported, even though Viper itself
 // can parse them (see cmd/root.go's initConfig for where that's enforced).
 //
-// Defaults live here, in init(), rather than in cmd/root.go — they need to
+// Defaults live here, in init(), rather than in cmd/root.go (they need to
 // apply regardless of which binary or test calls Load(), not only when
-// cmd's own init() has run first.
+// cmd's own init() has run first).
 package config
 
 import (

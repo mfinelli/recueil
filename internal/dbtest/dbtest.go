@@ -75,7 +75,7 @@ func Setup(t *testing.T) *pgxpool.Pool {
 	t.Cleanup(pool.Close)
 
 	if err := pgmigrate.Run(ctx, pool, os.DirFS(migrationsDir())); err != nil {
-		t.Fatalf("test database not available (%v) — run `make test-db-up` first", err)
+		t.Fatalf("test database not available (%v)", err)
 	}
 
 	return pool
