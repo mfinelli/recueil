@@ -25,12 +25,16 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/go-chi/httplog/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/mfinelli/recueil/internal/auth"
@@ -67,6 +71,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	logger := httplog.NewLogger("recueil", httplog.Options{
+		LogLevel: slog.LevelInfo,
+		JSON:     !isatty.IsTerminal(os.Stdout.Fd()),
+	})
+
 	pool, err := pgxpool.New(cmd.Context(), cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("connecting to postgres: %w", err)
@@ -94,7 +103,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure)
-	router, err := httpapi.NewRouter(server, pool, queries, httpapi.BuildInfo{
+	router, err := httpapi.NewRouter(server, pool, queries, logger, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,
 		BuildDate: Date,

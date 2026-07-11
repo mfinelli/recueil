@@ -34,8 +34,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httplog/v2"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.finelli.dev/healthchecks/v2"
@@ -51,8 +54,15 @@ type BuildInfo struct {
 	BuildDate string
 }
 
-func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, build BuildInfo) (http.Handler, error) {
+func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Logger, build BuildInfo) (http.Handler, error) {
 	r := chi.NewRouter()
+
+	r.Use(httplog.RequestLogger(logger, []string{}))
+	r.Use(middleware.CleanPath)
+	r.Use(middleware.RequestSize(1 << 20)) // 1MB cap on request bodies
+	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(middleware.Compress(5, "application/json", "text/plain"))
+	r.Use(middleware.GetHead)
 
 	hc := healthcheck.Config{
 		Version:   build.Version,
@@ -62,26 +72,29 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, build BuildInfo) (h
 			return pool.Ping(ctx)
 		},
 	}
-
 	r.Get("/info", http.HandlerFunc(hc.Info()))
 	r.Get("/ping", http.HandlerFunc(hc.Ping()))
 	r.Get("/health", http.HandlerFunc(hc.Health()))
-
-	r.Post("/api/setup", s.Setup)
-	r.Post("/api/auth/register", s.Register)
-	r.Post("/api/auth/login", s.Login)
-	r.Post("/api/auth/logout", s.Logout)
-
-	r.Group(func(r chi.Router) {
-		r.Use(auth.RequireSession(q))
-		r.Get("/api/auth/me", s.Me)
-	})
 
 	registry, err := metrics.NewRegistry(q)
 	if err != nil {
 		return nil, fmt.Errorf("building metrics registry: %w", err)
 	}
 	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+
+	r.Route("/api", func(r chi.Router) {
+		r.Use(middleware.AllowContentType("application/json"))
+
+		r.Post("/setup", s.Setup)
+		r.Post("/auth/register", s.Register)
+		r.Post("/auth/login", s.Login)
+		r.Post("/auth/logout", s.Logout)
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireSession(q))
+			r.Get("/auth/me", s.Me)
+		})
+	})
 
 	return r, nil
 }

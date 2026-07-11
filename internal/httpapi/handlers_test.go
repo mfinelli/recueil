@@ -22,12 +22,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-chi/httplog/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
@@ -60,7 +63,9 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	require.NoError(t, err)
 
 	s := httpapi.NewServer(q, m, bootstrap, false)
-	r, err := httpapi.NewRouter(s, pool, q, httpapi.BuildInfo{})
+	logger := httplog.NewLogger("recueil-test")
+	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{})
 	require.NoError(t, err)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)

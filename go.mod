@@ -5,7 +5,9 @@ go 1.26.5
 require (
 	github.com/cloudflare/cloudflare-go/v7 v7.7.0
 	github.com/go-chi/chi/v5 v5.3.1
+	github.com/go-chi/httplog/v2 v2.1.1
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/mattn/go-isatty v0.0.22
 	github.com/pressly/goose/v3 v3.27.2
 	github.com/prometheus/client_golang v1.23.2
 	github.com/spf13/cobra v1.10.2
