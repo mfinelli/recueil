@@ -94,11 +94,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure)
-	router := httpapi.NewRouter(server, pool, queries, httpapi.BuildInfo{
+	router, err := httpapi.NewRouter(server, pool, queries, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,
 		BuildDate: Date,
 	})
+	if err != nil {
+		return fmt.Errorf("creating router: %w", err)
+	}
 
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,

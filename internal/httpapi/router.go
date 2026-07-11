@@ -32,14 +32,17 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.finelli.dev/healthchecks/v2"
 
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/metrics"
 )
 
 type BuildInfo struct {
@@ -48,7 +51,7 @@ type BuildInfo struct {
 	BuildDate string
 }
 
-func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, build BuildInfo) http.Handler {
+func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, build BuildInfo) (http.Handler, error) {
 	r := chi.NewRouter()
 
 	hc := healthcheck.Config{
@@ -74,5 +77,11 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, build BuildInfo) ht
 		r.Get("/api/auth/me", s.Me)
 	})
 
-	return r
+	registry, err := metrics.NewRegistry(q)
+	if err != nil {
+		return nil, fmt.Errorf("building metrics registry: %w", err)
+	}
+	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+
+	return r, nil
 }
