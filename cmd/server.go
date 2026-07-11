@@ -26,8 +26,6 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v7"
@@ -69,10 +67,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	pool, err := pgxpool.New(cmd.Context(), cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("connecting to postgres: %w", err)
 	}
@@ -82,17 +77,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("preparing embedded postgres migrations: %w", err)
 	}
-	if err := pgmigrate.Run(ctx, pool, postgresMigrations); err != nil {
+	if err := pgmigrate.Run(cmd.Context(), pool, postgresMigrations); err != nil {
 		return fmt.Errorf("applying postgres migrations: %w", err)
 	}
 
 	queries := db.New(pool)
 
-	if err := runD1Migrations(ctx, cfg); err != nil {
+	if err := runD1Migrations(cmd.Context(), cfg); err != nil {
 		return fmt.Errorf("applying D1 migrations: %w", err)
 	}
 
-	bootstrap, err := newBootstrapHolder(ctx, queries)
+	bootstrap, err := newBootstrapHolder(cmd.Context(), queries)
 	if err != nil {
 		return fmt.Errorf("preparing bootstrap token: %w", err)
 	}
@@ -123,7 +118,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	select {
 	case err := <-serveErr:
 		return err
-	case <-ctx.Done():
+	case <-cmd.Context().Done():
 		log.Println("shutting down...")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()

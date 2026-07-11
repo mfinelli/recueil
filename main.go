@@ -20,6 +20,7 @@ package main
 
 import (
 	"embed"
+	"os"
 
 	"github.com/mfinelli/recueil/cmd"
 )
@@ -40,5 +41,8 @@ func main() {
 	cmd.Version = version
 	cmd.PostgresMigrationsFS = postgresMigrationsFS
 	cmd.D1MigrationsFS = d1MigrationsFS
-	cmd.Execute()
+
+	if r := cmd.Execute(); r != 0 {
+		os.Exit(r)
+	}
 }
