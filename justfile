@@ -29,6 +29,10 @@ fmt:
   pnpm run fmt
   tofu fmt -recursive
 
+serve:
+  make all
+  ./recueil server --config local.toml
+
 test:
   go test ./...
   pnpm run test

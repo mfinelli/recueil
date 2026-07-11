@@ -1,0 +1,5 @@
+database_url = "postgres://recueil:recueil@localhost:5432/recueil"
+worker_url = "127.0.0.1"
+worker_service_secret = "none"
+cloudflare_account_id = "todo"
+cloudflare_d1_database_id = "todo"

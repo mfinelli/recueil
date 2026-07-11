@@ -18,8 +18,15 @@ SOURCES := $(shell find . -name '*.go' -not -name '*_test.go')
 MIGRATIONS := $(wildcard migrations/*.sql)
 QUERIES := $(wildcard queries/*.sql)
 
+DATE := date
+GIT := git
 GO := go
+JQ := jq
 SQLC := sqlc
+
+ifeq ($(shell uname), Darwin)
+        DATE := gdate
+endif
 
 all: recueil
 
@@ -30,7 +37,10 @@ recueil: $(SOURCES) internal/db/db.go
 	$(GO) build -o $@ \
 		-trimpath \
 		-mod=readonly \
-		-ldflags "-s -w -linkmode=external" \
+		-ldflags "-s -w -linkmode=external \
+			-X main.commit=$(shell $(GIT) rev-parse --short HEAD) \
+			-X main.date=$(shell $(DATE) --utc --iso-8601=seconds) \
+			-X main.version=$(shell $(JQ) -r .version package.json)" \
 		main.go
 
 internal/db/db.go: $(MIGRATIONS) $(QUERIES) sqlc.yaml

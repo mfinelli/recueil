@@ -30,7 +30,14 @@ var postgresMigrationsFS embed.FS
 //go:embed terraform/migrations/*.sql
 var d1MigrationsFS embed.FS
 
+var commit string
+var date string
+var version string
+
 func main() {
+	cmd.Commit = commit
+	cmd.Date = date
+	cmd.Version = version
 	cmd.PostgresMigrationsFS = postgresMigrationsFS
 	cmd.D1MigrationsFS = d1MigrationsFS
 	cmd.Execute()

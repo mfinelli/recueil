@@ -31,15 +31,38 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.finelli.dev/healthchecks/v2"
+
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
 )
 
-func NewRouter(s *Server, q *db.Queries) http.Handler {
+type BuildInfo struct {
+	Version   string
+	GitSHA    string
+	BuildDate string
+}
+
+func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, build BuildInfo) http.Handler {
 	r := chi.NewRouter()
+
+	hc := healthcheck.Config{
+		Version:   build.Version,
+		GitSha:    build.GitSHA,
+		BuildDate: build.BuildDate,
+		Check: func(ctx context.Context) error {
+			return pool.Ping(ctx)
+		},
+	}
+
+	r.Get("/info", http.HandlerFunc(hc.Info()))
+	r.Get("/ping", http.HandlerFunc(hc.Ping()))
+	r.Get("/health", http.HandlerFunc(hc.Health()))
 
 	r.Post("/api/setup", s.Setup)
 	r.Post("/api/auth/register", s.Register)

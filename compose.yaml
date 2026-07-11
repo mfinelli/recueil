@@ -1,8 +1,20 @@
 ---
 services:
+  postgresql-local:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: recueil
+      POSTGRES_USER: recueil
+      POSTGRES_PASSWORD: recueil
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - recueilpsql:/var/lib/postgresql
+    profiles:
+      - local
+
   postgresql-test:
     image: postgres:18-alpine
-    container_name: postgresql
     environment:
       POSTGRES_DB: recueil
       POSTGRES_USER: recueil
@@ -22,3 +34,6 @@ services:
       retries: 20
     profiles:
       - test
+
+volumes:
+  recueilpsql:

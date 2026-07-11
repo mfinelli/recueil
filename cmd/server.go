@@ -47,6 +47,10 @@ import (
 var (
 	PostgresMigrationsFS embed.FS
 	D1MigrationsFS       embed.FS
+
+	Commit  string
+	Date    string
+	Version string
 )
 
 var serverCmd = &cobra.Command{
@@ -95,7 +99,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure)
-	router := httpapi.NewRouter(server, queries)
+	router := httpapi.NewRouter(server, pool, queries, httpapi.BuildInfo{
+		Version:   Version,
+		GitSHA:    Commit,
+		BuildDate: Date,
+	})
 
 	httpServer := &http.Server{
 		Addr:    cfg.ListenAddr,
