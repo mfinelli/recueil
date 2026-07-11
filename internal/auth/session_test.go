@@ -28,7 +28,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/dbtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,40 +142,155 @@ func TestUserFromContext(t *testing.T) {
 // TestRequireSession_NoDatabaseNeeded covers only the branch that returns
 // before ever touching *db.Queries (passing nil confirms that path really
 // doesn't dereference it).
-func TestRequireSession_NoDatabaseNeeded(t *testing.T) {
-	handlerCalled := false
+func TestRequireSession(t *testing.T) {
+	t.Run("No Database", func(t *testing.T) {
+		handlerCalled := false
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		tests := []struct {
+			name         string
+			setupRequest func(r *http.Request)
+		}{
+			{
+				name:         "no session cookie at all",
+				setupRequest: func(r *http.Request) {},
+			},
+			{
+				name: "session cookie present but empty",
+				setupRequest: func(r *http.Request) {
+					r.AddCookie(&http.Cookie{Name: cookieName, Value: ""})
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				handlerCalled = false
+				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				tt.setupRequest(r)
+				w := httptest.NewRecorder()
+
+				RequireSession(nil)(next).ServeHTTP(w, r)
+
+				assert.Equal(t, http.StatusUnauthorized, w.Code)
+				assert.False(t, handlerCalled, "the wrapped handler must never run without a valid session")
+			})
+		}
+	})
+
+	t.Run("With Database", func(t *testing.T) {
+		pool := dbtest.Setup(t)
+		q := db.New(pool)
+
+		tests := []struct {
+			name       string
+			makeCookie func(t *testing.T) *http.Cookie
+			wantStatus int
+			wantCalled bool
+		}{
+			{
+				name: "valid, unexpired session succeeds",
+				makeCookie: func(t *testing.T) *http.Cookie {
+					user := dbtest.CreateUser(t, pool, "member")
+					raw, hash, err := GenerateSessionToken()
+					require.NoError(t, err)
+					dbtest.CreateSession(t, pool, db.CreateSessionParams{
+						SessionHash: hash,
+						UserID:      user.ID,
+						ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+					})
+					return &http.Cookie{Name: cookieName, Value: raw}
+				},
+				wantStatus: http.StatusOK,
+				wantCalled: true,
+			},
+			{
+				name: "expired session is rejected",
+				makeCookie: func(t *testing.T) *http.Cookie {
+					user := dbtest.CreateUser(t, pool, "member")
+					raw, hash, err := GenerateSessionToken()
+					require.NoError(t, err)
+					dbtest.CreateSession(t, pool, db.CreateSessionParams{
+						SessionHash: hash,
+						UserID:      user.ID,
+						ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true}, // already expired
+					})
+					return &http.Cookie{Name: cookieName, Value: raw}
+				},
+				wantStatus: http.StatusUnauthorized,
+				wantCalled: false,
+			},
+			{
+				name: "well-formed but unknown token is rejected",
+				makeCookie: func(t *testing.T) *http.Cookie {
+					raw, _, err := GenerateSessionToken()
+					require.NoError(t, err)
+					return &http.Cookie{Name: cookieName, Value: raw} // never inserted
+				},
+				wantStatus: http.StatusUnauthorized,
+				wantCalled: false,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				handlerCalled := false
+				next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					handlerCalled = true
+					w.WriteHeader(http.StatusOK)
+				})
+
+				r := httptest.NewRequest(http.MethodGet, "/", nil)
+				r.AddCookie(tt.makeCookie(t))
+				w := httptest.NewRecorder()
+
+				RequireSession(q)(next).ServeHTTP(w, r)
+
+				assert.Equal(t, tt.wantStatus, w.Code)
+				assert.Equal(t, tt.wantCalled, handlerCalled)
+			})
+		}
+	})
+}
+
+func TestRequireAdmin(t *testing.T) {
+	pool := dbtest.Setup(t)
+	q := db.New(pool)
+
+	sessionCookieFor := func(t *testing.T, role string) *http.Cookie {
+		user := dbtest.CreateUser(t, pool, role)
+		raw, hash, err := GenerateSessionToken()
+		require.NoError(t, err)
+		dbtest.CreateSession(t, pool, db.CreateSessionParams{
+			SessionHash: hash,
+			UserID:      user.ID,
+			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+		})
+		return &http.Cookie{Name: cookieName, Value: raw}
+	}
+
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handlerCalled = true
 		w.WriteHeader(http.StatusOK)
 	})
 
-	tests := []struct {
-		name         string
-		setupRequest func(r *http.Request)
-	}{
-		{
-			name:         "no session cookie at all",
-			setupRequest: func(r *http.Request) {},
-		},
-		{
-			name: "session cookie present but empty",
-			setupRequest: func(r *http.Request) {
-				r.AddCookie(&http.Cookie{Name: cookieName, Value: ""})
-			},
-		},
-	}
+	t.Run("admin role is allowed through", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.AddCookie(sessionCookieFor(t, "admin"))
+		w := httptest.NewRecorder()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handlerCalled = false
-			r := httptest.NewRequest(http.MethodGet, "/", nil)
-			tt.setupRequest(r)
-			w := httptest.NewRecorder()
+		RequireAdmin(q)(next).ServeHTTP(w, r)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
 
-			RequireSession(nil)(next).ServeHTTP(w, r)
+	t.Run("member role is forbidden", func(t *testing.T) {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.AddCookie(sessionCookieFor(t, "member"))
+		w := httptest.NewRecorder()
 
-			assert.Equal(t, http.StatusUnauthorized, w.Code)
-			assert.False(t, handlerCalled, "the wrapped handler must never run without a valid session")
-		})
-	}
+		RequireAdmin(q)(next).ServeHTTP(w, r)
+		assert.Equal(t, http.StatusForbidden, w.Code)
+	})
 }
