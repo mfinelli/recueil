@@ -14,8 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-SOURCES := $(wildcard *.go cmd/*.go)
-
+SOURCES := $(shell find . -name '*.go' -not -name '*_test.go')
 MIGRATIONS := $(wildcard migrations/*.sql)
 QUERIES := $(wildcard queries/*.sql)
 
