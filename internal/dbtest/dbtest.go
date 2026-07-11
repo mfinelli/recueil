@@ -1,0 +1,149 @@
+// Package dbtest is the Postgres integration-test harness: connects to the
+// dedicated test container started via compose.yaml (see `just compose test`),
+// applies migrations (via internal/pgmigrate), and provides
+// t.Cleanup-registering fixture factories for common rows.
+//
+// Reads migrations straight off disk (os.DirFS), not via go:embed (unlike
+// the production binary, tests always run with the full repo checked out,
+// so there's no need for the binary-self-containment property go:embed
+// exists for).
+package dbtest
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/require"
+
+	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/pgmigrate"
+)
+
+const testDatabaseURL = "postgres://recueil:recueil@localhost:5432/recueil"
+
+// migrationsDir locates the repo's migrations/ directory relative to this
+// source file's own location, not relative to the calling test's working
+// directory. go test sets the process cwd to whichever package's tests are
+// running so a caller-relative path like "../../migrations" would happen to
+// work today (every current caller lives under internal/<pkg>/, the same
+// depth), but that's an implicit, easy-to-silently-break assumption about
+// every future caller's location. Anchoring to runtime.Caller(0) instead
+// ties the path to dbtest.go's own fixed position in the repo, which
+// doesn't change no matter what calls it.
+func migrationsDir() string {
+	_, thisFile, _, _ := runtime.Caller(0)
+	return filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations")
+}
+
+// Setup opens a pool to the test Postgres container and applies all
+// pending migrations against it (via internal/pgmigrate), reusing the same
+// pool for the actual test afterward rather than opening a separate connection
+// just to migrate.
+func Setup(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+
+	pool, err := pgxpool.New(ctx, testDatabaseURL)
+	require.NoError(t, err, "malformed database URL")
+	t.Cleanup(pool.Close)
+
+	if err := pgmigrate.Run(ctx, pool, os.DirFS(migrationsDir())); err != nil {
+		t.Fatalf("test database not available (%v) — run `make test-db-up` first", err)
+	}
+
+	return pool
+}
+
+// Reset truncates every table in the public schema (cascading), except
+// goose's own bookkeeping table (wiping that would make the next Setup() call
+// think no migrations had ever been applied, and it would then try, and fail,
+// to re-run CREATE TABLE against tables that already exist).
+//
+// Tables are discovered dynamically via pg_tables rather than named in a
+// hardcoded list, specifically so this doesn't need updating every time a
+// migration adds a new table.
+func Reset(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+
+	rows, err := pool.Query(ctx,
+		`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename != 'schema_migrations'`)
+	require.NoError(t, err)
+
+	var tables []string
+	for rows.Next() {
+		var name string
+		require.NoError(t, rows.Scan(&name))
+		tables = append(tables, name)
+	}
+	rows.Close()
+	require.NoError(t, rows.Err())
+
+	if len(tables) == 0 {
+		return
+	}
+
+	quoted := make([]string, len(tables))
+	for i, name := range tables {
+		quoted[i] = pgx.Identifier{name}.Sanitize()
+	}
+
+	_, err = pool.Exec(ctx, fmt.Sprintf("TRUNCATE %s CASCADE", strings.Join(quoted, ", ")))
+	require.NoError(t, err)
+}
+
+// CreateUser inserts a test user with a randomized, collision-safe
+// username and registers a t.Cleanup to delete it. Sessions created
+// against this user (see CreateSession) don't need their own cleanup since
+// they cascade-delete via ON DELETE CASCADE when this runs.
+func CreateUser(t *testing.T, pool *pgxpool.Pool, role string) db.User {
+	t.Helper()
+	ctx := context.Background()
+	q := db.New(pool)
+
+	user, err := q.CreateUser(ctx, db.CreateUserParams{
+		Username:     "test-user-" + randomSuffix(t),
+		PasswordHash: "unused-in-these-tests",
+		Role:         role,
+	})
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		// Raw SQL deliberately, not a sqlc query: there's no DeleteUser
+		// feature yet to back one. If/when one exists, switch this to call
+		// it instead of maintaining a second deletion path.
+		_, _ = pool.Exec(context.Background(), "DELETE FROM users WHERE id = $1", user.ID)
+	})
+
+	return user
+}
+
+// CreateSession inserts a session row directly from the given params; the
+// caller (e.g. internal/auth's own tests) is responsible for generating a
+// real token/hash pair via auth.GenerateSessionToken, since this package
+// doesn't import auth. No separate cleanup: cascades away with the owning
+// user via CreateUser's cleanup.
+func CreateSession(t *testing.T, pool *pgxpool.Pool, params db.CreateSessionParams) db.Session {
+	t.Helper()
+	session, err := db.New(pool).CreateSession(context.Background(), params)
+	require.NoError(t, err)
+	return session
+}
+
+// TODO: we should switch to faker or similar
+func randomSuffix(t *testing.T) string {
+	t.Helper()
+	buf := make([]byte, 8)
+	_, err := rand.Read(buf)
+	require.NoError(t, err)
+	return hex.EncodeToString(buf)
+}

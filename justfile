@@ -18,6 +18,9 @@
 default:
   @just --list
 
+compose PROFILE:
+  docker compose --profile={{ PROFILE }} up
+
 create-migration NAME:
   goose -dir migrations -s create {{ NAME }} sql
 
