@@ -1,5 +1,20 @@
 # Recueil — Design Document
 
+_Updated after Phase 1 implementation, then several more times after the tooling
+work that followed it. Round one concentrated in §5 (bootstrap token redesign,
+dashboard session auth resolved), the new §5b, §10 (schema for
+`users`/`sessions`/`schema_migrations` resolved), the new §13a, and §15. Round
+two updated §13 (repository tree) and §13a (CLI/config via cobra+viper, `chi`
+replacing stdlib routing, goose moved to its `Provider` API, the new Postgres
+test harness) and resolved the goose-as-library item §15 had left open. Round
+three updated §13/§13a for `cmd/server.go` (the actual `recueil server`
+subcommand, and `main.go`'s real role embedding both migration directories),
+`Execute()` owning a single signal-aware context threaded via `cmd.Context()`,
+and the health-check endpoints mounted on `internal/httpapi`'s router. This
+round adds §13a's Metrics and HTTP middleware entries (Prometheus, `httplog`,
+the chi middleware stack) and records OpenTelemetry as considered and
+deliberately deferred, with the condition under which it'd be worth revisiting._
+
 ## 1. Overview
 
 Recueil is a self-hosted personal web archiving tool. It replaces a Frankenstein
@@ -1256,6 +1271,34 @@ README that can drift out of sync with the architecture decisions around it.
   direct pass. The `Check` function itself calls a small `Ping` method added to
   `internal/db.Queries` (`SELECT 1` through the existing `DBTX` interface)
   rather than threading the raw `*pgxpool.Pool` into `httpapi`.
+- **Metrics:** `/metrics`, Prometheus exposition format, mounted on the same chi
+  router (`internal/metrics`). Standard Go runtime and process collectors
+  (`collectors.NewGoCollector`/`NewProcessCollector`) plus a custom
+  `recueil_users_total` gauge — a `prometheus.Collector` that queries
+  `CountUsers` fresh on every scrape rather than maintaining cached state,
+  expected to grow (pages, captures, collections) as those features exist.
+  Deliberately built on its own `prometheus.NewRegistry()`, not the global
+  `prometheus.DefaultRegisterer` — same reasoning as choosing goose's `Provider`
+  API over its package-level `SetBaseFS`/`SetDialect`: avoids hidden shared
+  mutable state that could collide across multiple instantiations (confirmed via
+  test: two independently-built registries never collide, which they would under
+  the global default). A failed collection (e.g. the DB unreachable) is logged
+  and simply omits that one metric rather than failing the whole scrape —
+  confirmed for real, both the success and failure paths. **OpenTelemetry
+  (distributed tracing) was considered and deliberately deferred, not rejected
+  outright.** The core API/SDK (`go.opentelemetry.io/otel`) is actually light on
+  its own (just `go-logr`), but any real exporter — confirmed even the
+  OTLP-over-HTTP variant, not just gRPC — pulls in `google.golang.org/grpc`'s
+  full tree, comparable in weight to `testcontainers-go` (§13a, rejected earlier
+  for the same reason). More fundamentally, tracing's value scales with a
+  request's hop count across services, and this project's current call graph is
+  shallow (one backend process, Postgres, occasional Worker calls) — the
+  architectural case isn't there yet, and self-hosted personal-scale operators
+  are unlikely to be running a trace backend to send spans to regardless. Worth
+  revisiting once the screenshot service (§6) and AI enrichment (§7) exist as a
+  genuine async multi-stage pipeline — that's the shape (multiple hops,
+  independent failure points, a second real process boundary in the chromedp
+  sidecar) where tracing's value proposition actually applies here.
 - **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
 - **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
   transitive dependencies, and its middleware signature
@@ -1267,6 +1310,36 @@ README that can drift out of sync with the architecture decisions around it.
   requirement once for a whole group, e.g. future admin-scoped routes under §5's
   Manage Devices screen) and middleware composition became the actual friction,
   rather than routing itself.
+- **HTTP middleware:** `github.com/go-chi/httplog/v2` for structured request
+  logging, plus a handful of chi's own middlewares — chosen and ordered based on
+  what actually held up under testing, not just chi's defaults.
+  `httplog.RequestLogger` already wraps chi's own `RequestID` and `Recoverer`
+  internally (confirmed via source and by deliberately panicking a handler:
+  clean `500`, full stacktrace logged, server kept running) — neither needed
+  adding separately. `CleanPath` is kept; `RedirectSlashes` deliberately is not,
+  because `CleanPath`'s `path.Clean()` silently strips a trailing slash into
+  chi's internal `RoutePath` before any redirect-based slash-handling middleware
+  would ever see one — confirmed for real that a `POST` to a trailing-slash
+  route variant hits the handler directly with no visible redirect, same method,
+  making `RedirectSlashes` inert given this ordering (and a silent internal
+  normalization is the safer behavior for a JSON API regardless — no HTTP
+  redirect method-preservation question ever arises). `RequestSize` (1MB cap)
+  and `Timeout` (30s, returning `504`) are route-agnostic hardening applied
+  globally; `AllowContentType("application/json")` is scoped to the `/api`
+  sub-router specifically, since it's enforcing the JSON API's data contract,
+  not a general protection every current or future route should inherit
+  (confirmed harmless on bodyless requests either way — it skips the check when
+  `r.ContentLength == 0` — but scoped for what it communicates, not because
+  scoping changes behavior today). `RealIP` was considered and deliberately not
+  added: genuinely useful behind a trusted reverse proxy, but this project
+  treats network exposure (LAN-only, VPN, tunnel, reverse proxy) as entirely the
+  operator's choice (§2, §12) — blindly trusting a client-supplied header
+  without knowing a proxy is actually in front would let anyone reachable spoof
+  their IP in logs. `pprof` (`middleware.Profiler`) was also considered and
+  deliberately not added: useful for an operator diagnosing their own instance,
+  but exposes sensitive runtime info and its own CPU-cost surface, not something
+  to mount on the same unauthenticated router as health checks without a
+  separate, deliberate decision about how it's gated.
 - **Testing:** `testify`, with table-driven cases (`t.Run` subtests, or
   `[]struct{...}` tables) where that reduces duplication rather than as a
   blanket rule. For code that calls an external HTTP API, tests run against a
