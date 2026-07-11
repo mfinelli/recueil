@@ -19,6 +19,7 @@ CREATE TABLE users (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   username TEXT NOT NULL,
   password_hash TEXT NOT NULL,
+  pairing_token_enc TEXT,
   role TEXT NOT NULL DEFAULT 'member',
   display_name TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

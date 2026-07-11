@@ -30,6 +30,8 @@ import (
 )
 
 func TestPushUser(t *testing.T) {
+	hash := "hashed-pairing-token"
+
 	tests := []struct {
 		name         string
 		serverStatus int
@@ -58,13 +60,13 @@ func TestPushUser(t *testing.T) {
 			defer server.Close()
 
 			client := NewClient(server.URL, "test-secret")
-			err := client.PushUser(context.Background(), 42, "mario", "hashed-pw")
+			err := client.PushUser(context.Background(), 42, &hash)
 
 			assert.Equal(t, http.MethodPost, gotMethod)
 			assert.Equal(t, "/internal/users/mirror", gotPath)
 			assert.Equal(t, "test-secret", gotServiceKey, "service secret must be sent as X-Service-Key")
 			assert.Equal(t, "application/json", gotContentType)
-			assert.Equal(t, userMirrorPayload{ID: 42, Username: "mario", PasswordHash: "hashed-pw"}, gotBody)
+			assert.Equal(t, userMirrorPayload{ID: 42, PairingTokenHash: &hash}, gotBody)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -75,13 +77,30 @@ func TestPushUser(t *testing.T) {
 		})
 	}
 
+	t.Run("nil pairingTokenHash marshals to JSON null (revoke)", func(t *testing.T) {
+		var gotRaw map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotRaw))
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		client := NewClient(server.URL, "test-secret")
+		err := client.PushUser(context.Background(), 42, nil)
+		require.NoError(t, err)
+
+		gotHash, present := gotRaw["pairing_token_hash"]
+		assert.True(t, present, "pairing_token_hash key must still be present in the JSON body")
+		assert.Nil(t, gotHash, "pairing_token_hash must marshal to JSON null, not be omitted")
+	})
+
 	t.Run("network failure (server unreachable)", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		unreachableURL := server.URL
 		server.Close() // closed before any request is made, so the connection is refused
 
 		client := NewClient(unreachableURL, "test-secret")
-		err := client.PushUser(context.Background(), 1, "x", "y")
+		err := client.PushUser(context.Background(), 1, &hash)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mirror push request failed")

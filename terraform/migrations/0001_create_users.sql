@@ -16,12 +16,19 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
--- Mirrors Postgres users.id and password_hash for device auth without ever
--- exposing the backend. Does NOT include `role` (authorization is a
--- backend/dashboard concern only).
+-- Mirrors Postgres users.id only, for device pairing, without ever
+-- exposing the backend or anything password-derived. Does NOT include `role`
+-- (authorization is a backend/dashboard concern only) or `username` (pairing
+-- is single-credential -- a device submits only the pairing token, so the
+-- Worker never looks a user up by name).
+--
+-- pairing_token_hash is nullable: a revoked user (DELETE /api/pairing-token,
+-- no reissue) has this cleared to NULL until they regenerate. A NULL column
+-- value can never match a bound, non-null lookup parameter, so no
+-- special-casing is needed in the pairing-lookup query for a revoked user
+-- to correctly fail to pair.
 CREATE TABLE users (
   id INTEGER PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
+  pairing_token_hash TEXT UNIQUE,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT;

@@ -17,8 +17,8 @@
  */
 
 -- name: CreateUser :one
-INSERT INTO users (username, password_hash, role, display_name)
-VALUES ($1, $2, $3, $4) RETURNING *;
+INSERT INTO users (username, password_hash, pairing_token_enc, role, display_name)
+VALUES ($1, $2, $3, $4, $5) RETURNING *;
 
 -- name: GetUserByUsername :one
 SELECT * FROM users WHERE username = $1;
@@ -31,4 +31,10 @@ SELECT COUNT(*) FROM users;
 
 -- name: UpdateUserPassword :exec
 UPDATE users SET password_hash = $2, updated_at = NOW()
+WHERE id = $1;
+
+-- name: UpdatePairingToken :exec
+-- Used both to set a new pairing_token_enc (regenerate) and to clear it to
+-- NULL (revoke without reissue) -- pass a NULL pgtype.Text for the latter.
+UPDATE users SET pairing_token_enc = $2, updated_at = NOW()
 WHERE id = $1;

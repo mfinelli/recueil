@@ -41,6 +41,11 @@ type Config struct {
 	WorkerServiceSecret string `mapstructure:"worker_service_secret"`
 	SessionCookieSecure bool   `mapstructure:"session_cookie_secure"`
 
+	// PairingTokenKey is a base64-encoded 32-byte AES-256 key, used to
+	// reversibly encrypt/decrypt each account's pairing token for storage
+	// in Postgres. Operator-generated (e.g. `openssl rand -base64 32`);
+	PairingTokenKey string `mapstructure:"pairing_token_key"`
+
 	CloudflareAccountID    string `mapstructure:"cloudflare_account_id"`
 	CloudflareD1DatabaseID string `mapstructure:"cloudflare_d1_database_id"`
 	CloudflareAPIToken     string `mapstructure:"cloudflare_api_token"`
@@ -66,6 +71,9 @@ func Load() (Config, error) {
 	}
 	if cfg.WorkerServiceSecret == "" {
 		missing = append(missing, "worker_service_secret")
+	}
+	if cfg.PairingTokenKey == "" {
+		missing = append(missing, "pairing_token_key")
 	}
 	if cfg.CloudflareAccountID == "" {
 		missing = append(missing, "cloudflare_account_id")

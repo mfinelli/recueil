@@ -17,8 +17,9 @@
  */
 
 // Package httpapi is the dashboard-facing HTTP API: registration, login,
-// logout, the bootstrap-token-gated first-admin setup, and a
-// session-protected /api/auth/me. Routed via chi, with
+// logout, the bootstrap-token-gated first-admin setup, a session-protected
+// /api/auth/me, and session-protected pairing-token management
+// (view/regenerate/revoke). Routed via chi, with
 // auth.RequireSession/RequireAdmin used as ordinary chi middleware (no
 // httpapi-specific auth plumbing of its own).
 //
@@ -93,6 +94,9 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireSession(q))
 			r.Get("/auth/me", s.Me)
+			r.Get("/pairing-token", s.GetPairingToken)
+			r.Post("/pairing-token/regenerate", s.RegeneratePairingToken)
+			r.Delete("/pairing-token", s.RevokePairingToken)
 		})
 	})
 

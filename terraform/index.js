@@ -19,8 +19,8 @@
  */
 
 // This is intentionally minimal: only the /internal/users/mirror endpoint
-// that the backend needs to push the credential mirror on account
-// creation/password change.
+// that the backend needs to push the pairing-token mirror on account
+// creation, pairing-token regeneration, or pairing-token revocation.
 
 /**
  * @typedef {Object} Env
@@ -70,25 +70,30 @@ export async function handleUserMirror(request, env) {
   if (typeof body !== "object" || body === null) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
-  const { id, username, password_hash } =
-    /** @type {Record<string, unknown>} */ (body);
+  const { id, pairing_token_hash } = /** @type {Record<string, unknown>} */ (
+    body
+  );
+  // pairing_token_hash is nullable: a revoke push (DELETE
+  // /api/pairing-token, no reissue) sends JSON null to clear the mirrored
+  // hash, so no submitted token can ever pair against a revoked account
+  // until a regenerate. Anything other than a non-empty string or null is
+  // rejected.
   if (
     !Number.isInteger(id) ||
-    typeof username !== "string" ||
-    typeof password_hash !== "string"
+    (pairing_token_hash !== null && typeof pairing_token_hash !== "string") ||
+    pairing_token_hash === ""
   ) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
 
   try {
     await env.DB.prepare(
-      `INSERT INTO users (id, username, password_hash)
-       VALUES (?, ?, ?)
+      `INSERT INTO users (id, pairing_token_hash)
+       VALUES (?, ?)
        ON CONFLICT(id) DO UPDATE SET
-         username = excluded.username,
-         password_hash = excluded.password_hash`,
+         pairing_token_hash = excluded.pairing_token_hash`,
     )
-      .bind(id, username, password_hash)
+      .bind(id, pairing_token_hash)
       .run();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

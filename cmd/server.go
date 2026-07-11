@@ -101,8 +101,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("preparing bootstrap token: %w", err)
 	}
 
+	pairingKey, err := auth.ParsePairingKey(cfg.PairingTokenKey)
+	if err != nil {
+		return fmt.Errorf("parsing pairing token key: %w", err)
+	}
+
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
-	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure)
+	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
 	router, err := httpapi.NewRouter(server, pool, queries, logger, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,

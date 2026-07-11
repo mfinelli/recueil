@@ -35,63 +35,73 @@ describe("handleUserMirror", () => {
   it.each([
     [
       "missing service key header",
-      mirrorRequest({ id: 1, username: "a", password_hash: "h" }, {}),
+      mirrorRequest({ id: 1, pairing_token_hash: "h" }, {}),
       401,
     ],
     [
       "wrong service key",
       mirrorRequest(
-        { id: 1, username: "a", password_hash: "h" },
+        { id: 1, pairing_token_hash: "h" },
         { "X-Service-Key": "wrong" },
       ),
       401,
     ],
     ["invalid JSON body", mirrorRequest("not json"), 400],
-    ["missing username", mirrorRequest({ id: 1, password_hash: "h" }), 400],
+    ["missing pairing_token_hash key entirely", mirrorRequest({ id: 1 }), 400],
     [
       "non-integer id",
-      mirrorRequest({ id: "1", username: "a", password_hash: "h" }),
+      mirrorRequest({ id: "1", pairing_token_hash: "h" }),
       400,
     ],
     ["null body", mirrorRequest(null), 400],
+    [
+      "empty-string pairing_token_hash is rejected (use null to revoke, not empty string)",
+      mirrorRequest({ id: 1, pairing_token_hash: "" }),
+      400,
+    ],
+    [
+      "non-string, non-null pairing_token_hash",
+      mirrorRequest({ id: 1, pairing_token_hash: 12345 }),
+      400,
+    ],
   ])("rejects: %s", async (_name, request, expectedStatus) => {
     const response = await handleUserMirror(request, env);
     expect(response.status).toBe(expectedStatus);
   });
 
-  it("inserts a new row on first mirror push", async () => {
+  it("inserts a new row on first mirror push (account creation)", async () => {
     const response = await handleUserMirror(
-      mirrorRequest({ id: 42, username: "mario", password_hash: "hash-1" }),
+      mirrorRequest({ id: 42, pairing_token_hash: "hash-1" }),
       env,
     );
     expect(response.status).toBe(204);
 
     const row = await env.DB.prepare(
-      "SELECT id, username, password_hash FROM users WHERE id = ?",
+      "SELECT id, pairing_token_hash FROM users WHERE id = ?",
     )
       .bind(42)
       .first();
-    expect(row).toEqual({ id: 42, username: "mario", password_hash: "hash-1" });
+    expect(row).toEqual({ id: 42, pairing_token_hash: "hash-1" });
   });
 
-  it("upserts on a repeat push for the same id (password change / re-push)", async () => {
+  it("upserts on a repeat push for the same id (pairing-token regenerate)", async () => {
     await handleUserMirror(
-      mirrorRequest({ id: 42, username: "mario", password_hash: "hash-1" }),
+      mirrorRequest({ id: 42, pairing_token_hash: "hash-1" }),
       env,
     );
 
     const response = await handleUserMirror(
-      mirrorRequest({ id: 42, username: "mario", password_hash: "hash-2" }),
+      mirrorRequest({ id: 42, pairing_token_hash: "hash-2" }),
       env,
     );
     expect(response.status).toBe(204);
 
     const row = await env.DB.prepare(
-      "SELECT password_hash FROM users WHERE id = ?",
+      "SELECT pairing_token_hash FROM users WHERE id = ?",
     )
       .bind(42)
       .first();
-    expect(row).toEqual({ password_hash: "hash-2" });
+    expect(row).toEqual({ pairing_token_hash: "hash-2" });
 
     const count = await env.DB.prepare(
       "SELECT count(*) as n FROM users WHERE id = ?",
@@ -99,5 +109,40 @@ describe("handleUserMirror", () => {
       .bind(42)
       .first();
     expect(count).toEqual({ n: 1 });
+  });
+
+  it("a null pairing_token_hash push clears the mirror (revoke, no reissue)", async () => {
+    await handleUserMirror(
+      mirrorRequest({ id: 42, pairing_token_hash: "hash-1" }),
+      env,
+    );
+
+    const response = await handleUserMirror(
+      mirrorRequest({ id: 42, pairing_token_hash: null }),
+      env,
+    );
+    expect(response.status).toBe(204);
+
+    const row = await env.DB.prepare(
+      "SELECT pairing_token_hash FROM users WHERE id = ?",
+    )
+      .bind(42)
+      .first();
+    expect(row).toEqual({ pairing_token_hash: null });
+  });
+
+  it("accepts a null pairing_token_hash on first push too (defensive; not expected in practice)", async () => {
+    const response = await handleUserMirror(
+      mirrorRequest({ id: 99, pairing_token_hash: null }),
+      env,
+    );
+    expect(response.status).toBe(204);
+
+    const row = await env.DB.prepare(
+      "SELECT pairing_token_hash FROM users WHERE id = ?",
+    )
+      .bind(99)
+      .first();
+    expect(row).toEqual({ pairing_token_hash: null });
   });
 });

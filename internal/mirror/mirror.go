@@ -46,18 +46,24 @@ func NewClient(baseURL, serviceSecret string) *Client {
 }
 
 type userMirrorPayload struct {
-	ID           int64  `json:"id"`
-	Username     string `json:"username"`
-	PasswordHash string `json:"password_hash"`
+	ID               int64   `json:"id"`
+	PairingTokenHash *string `json:"pairing_token_hash"`
 }
 
-// PushUser upserts a user's id/username/password_hash into the D1 mirror.
-// Called on account creation (including the first-admin bootstrap flow) and
-// on password change. Failure here doesn't roll back the Postgres write
-// (account creation is not currently retried on mirror-push failure); the
-// resync command planned in §14/§15 is the intended repair path for drift.
-func (c *Client) PushUser(ctx context.Context, id int64, username, passwordHash string) error {
-	body, err := json.Marshal(userMirrorPayload{ID: id, Username: username, PasswordHash: passwordHash})
+// PushUser upserts a user's id/pairing_token_hash into the D1 mirror.
+//
+// Called on account creation, pairing-token regeneration, and
+// pairing-token revocation. Pass a non-nil pairingTokenHash for
+// creation/regeneration; pass nil for revocation (clears the mirrored
+// hash to D1 NULL, so no submitted token can pair against this account
+// until a regenerate).
+//
+// Failure here doesn't roll back the Postgres write (account creation,
+// regenerate, and revoke are not currently retried on mirror-push
+// failure); the resync command (planned) is the intended repair path for
+// drift.
+func (c *Client) PushUser(ctx context.Context, id int64, pairingTokenHash *string) error {
+	body, err := json.Marshal(userMirrorPayload{ID: id, PairingTokenHash: pairingTokenHash})
 	if err != nil {
 		return err
 	}

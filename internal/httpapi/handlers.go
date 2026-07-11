@@ -35,10 +35,11 @@ type Server struct {
 	Mirror       *mirror.Client
 	Bootstrap    *auth.BootstrapTokenHolder
 	CookieSecure bool
+	PairingKey   auth.PairingKey
 }
 
-func NewServer(q *db.Queries, m *mirror.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool) *Server {
-	return &Server{Queries: q, Mirror: m, Bootstrap: bootstrap, CookieSecure: cookieSecure}
+func NewServer(q *db.Queries, m *mirror.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey) *Server {
+	return &Server{Queries: q, Mirror: m, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey}
 }
 
 type credentials struct {
@@ -56,6 +57,10 @@ type userResponse struct {
 	ID       int64  `json:"id"`
 	Username string `json:"username"`
 	Role     string `json:"role"`
+}
+
+type pairingTokenResponse struct {
+	PairingToken string `json:"pairing_token"`
 }
 
 // POST /api/setup: creates the first admin account, gated by the bootstrap
@@ -88,16 +93,29 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var user db.User
+	var pairingHash string
 	var createErr error
 	err = s.Bootstrap.Use(req.BootstrapToken, func() error {
 		hash, err := auth.HashPassword(req.Password)
 		if err != nil {
 			return err
 		}
+
+		var pairingRaw string
+		pairingRaw, pairingHash, err = auth.GeneratePairingToken()
+		if err != nil {
+			return err
+		}
+		pairingEnc, err := auth.EncryptPairingToken(s.PairingKey, pairingRaw)
+		if err != nil {
+			return err
+		}
+
 		user, createErr = s.Queries.CreateUser(ctx, db.CreateUserParams{
-			Username:     req.Username,
-			PasswordHash: hash,
-			Role:         "admin",
+			Username:        req.Username,
+			PasswordHash:    hash,
+			PairingTokenEnc: pgtype.Text{String: pairingEnc, Valid: true},
+			Role:            "admin",
 		})
 		return createErr
 	})
@@ -111,11 +129,11 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Mirror.PushUser(ctx, user.ID, user.Username, user.PasswordHash); err != nil {
+	if err := s.Mirror.PushUser(ctx, user.ID, &pairingHash); err != nil {
 		// Doesn't roll back account creation (see internal/mirror's
 		// PushUser doc comment). Dashboard login works immediately; device
-		// auth for this user is broken until a resync runs.
-		log.Printf("warning: failed to push credential mirror for new user %d: %v", user.ID, err)
+		// pairing for this user is broken until a resync runs.
+		log.Printf("warning: failed to push pairing-token mirror for new user %d: %v", user.ID, err)
 	}
 
 	s.startSession(w, r, &user)
@@ -141,18 +159,30 @@ func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	pairingRaw, pairingHash, err := auth.GeneratePairingToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	pairingEnc, err := auth.EncryptPairingToken(s.PairingKey, pairingRaw)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
 	user, err := s.Queries.CreateUser(ctx, db.CreateUserParams{
-		Username:     req.Username,
-		PasswordHash: hash,
-		Role:         "member",
+		Username:        req.Username,
+		PasswordHash:    hash,
+		PairingTokenEnc: pgtype.Text{String: pairingEnc, Valid: true},
+		Role:            "member",
 	})
 	if err != nil {
 		writeError(w, http.StatusConflict, "username already taken")
 		return
 	}
 
-	if err := s.Mirror.PushUser(ctx, user.ID, user.Username, user.PasswordHash); err != nil {
-		log.Printf("warning: failed to push credential mirror for new user %d: %v", user.ID, err)
+	if err := s.Mirror.PushUser(ctx, user.ID, &pairingHash); err != nil {
+		log.Printf("warning: failed to push pairing-token mirror for new user %d: %v", user.ID, err)
 	}
 
 	s.startSession(w, r, &user)
@@ -202,6 +232,97 @@ func (s *Server) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
+}
+
+// GET /api/pairing-token: decrypts and returns the current user's pairing
+// token, so it's always viewable on the dashboard rather than only shown
+// once at creation (this credential's stakes differ from a login password or
+// session token, and losing it shouldn't force an immediate regenerate).
+func (s *Server) GetPairingToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	if !user.PairingTokenEnc.Valid {
+		writeError(w, http.StatusNotFound, "no pairing token; regenerate one")
+		return
+	}
+
+	raw, err := auth.DecryptPairingToken(s.PairingKey, user.PairingTokenEnc.String)
+	if err != nil {
+		log.Printf("warning: failed to decrypt pairing token for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, pairingTokenResponse{PairingToken: raw})
+}
+
+// POST /api/pairing-token/regenerate: issues a new pairing token, replacing
+// both the Postgres (encrypted) and D1 (hashed) copies. Any device that
+// tries to pair using the previous token will fail; already-issued device
+// bearer tokens are unaffected (revocation is never a live push to an
+// already-paired device).
+func (s *Server) RegeneratePairingToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	ctx := r.Context()
+
+	raw, hash, err := auth.GeneratePairingToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	enc, err := auth.EncryptPairingToken(s.PairingKey, raw)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := s.Queries.UpdatePairingToken(ctx, db.UpdatePairingTokenParams{
+		ID:              user.ID,
+		PairingTokenEnc: pgtype.Text{String: enc, Valid: true},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := s.Mirror.PushUser(ctx, user.ID, &hash); err != nil {
+		log.Printf("warning: failed to push regenerated pairing-token mirror for user %d: %v", user.ID, err)
+	}
+
+	writeJSON(w, http.StatusOK, pairingTokenResponse{PairingToken: raw})
+}
+
+// DELETE /api/pairing-token: revokes without reissuing, blocking further
+// device pairing until a regenerate. Already-issued device bearer tokens
+// are unaffected, same as regenerate above.
+func (s *Server) RevokePairingToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	ctx := r.Context()
+
+	if err := s.Queries.UpdatePairingToken(ctx, db.UpdatePairingTokenParams{
+		ID:              user.ID,
+		PairingTokenEnc: pgtype.Text{Valid: false},
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := s.Mirror.PushUser(ctx, user.ID, nil); err != nil {
+		log.Printf("warning: failed to push pairing-token revoke to mirror for user %d: %v", user.ID, err)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.User) {

@@ -30,6 +30,7 @@ func allRequiredSet() {
 	viper.Set("database_url", "postgres://x")
 	viper.Set("worker_url", "https://worker.example")
 	viper.Set("worker_service_secret", "secret")
+	viper.Set("pairing_token_key", "dGVzdC1wYWlyaW5nLXRva2VuLWtleS0zMi1ieXRlcyE=")
 	viper.Set("cloudflare_account_id", "acct")
 	viper.Set("cloudflare_d1_database_id", "db")
 	viper.Set("cloudflare_api_token", "token")
@@ -52,6 +53,7 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, "postgres://x", cfg.DatabaseURL)
 				assert.Equal(t, "https://worker.example", cfg.WorkerURL)
 				assert.Equal(t, "secret", cfg.WorkerServiceSecret)
+				assert.Equal(t, "dGVzdC1wYWlyaW5nLXRva2VuLWtleS0zMi1ieXRlcyE=", cfg.PairingTokenKey)
 				assert.Equal(t, "acct", cfg.CloudflareAccountID)
 				assert.Equal(t, "db", cfg.CloudflareD1DatabaseID)
 				assert.Equal(t, "token", cfg.CloudflareAPIToken)
@@ -83,7 +85,7 @@ func TestLoad(t *testing.T) {
 			name:        "missing all required fields lists every one",
 			setup:       func() {},
 			wantErr:     true,
-			errContains: "database_url worker_url worker_service_secret cloudflare_account_id cloudflare_d1_database_id cloudflare_api_token",
+			errContains: "database_url worker_url worker_service_secret pairing_token_key cloudflare_account_id cloudflare_d1_database_id cloudflare_api_token",
 		},
 		{
 			name: "missing a single required field is still caught",
@@ -93,6 +95,15 @@ func TestLoad(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "worker_service_secret",
+		},
+		{
+			name: "missing pairing_token_key is caught too",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("pairing_token_key", "")
+			},
+			wantErr:     true,
+			errContains: "pairing_token_key",
 		},
 	}
 

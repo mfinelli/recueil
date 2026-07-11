@@ -39,6 +39,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
@@ -129,9 +130,10 @@ func CreateUser(t *testing.T, pool *pgxpool.Pool, role string) db.User {
 	q := db.New(pool)
 
 	user, err := q.CreateUser(ctx, db.CreateUserParams{
-		Username:     "test-user-" + randomSuffix(t),
-		PasswordHash: "unused-in-these-tests",
-		Role:         role,
+		Username:        "test-user-" + randomSuffix(t),
+		PasswordHash:    "unused-in-these-tests",
+		PairingTokenEnc: pgtype.Text{String: "unused-in-these-tests", Valid: true},
+		Role:            role,
 	})
 	require.NoError(t, err)
 
