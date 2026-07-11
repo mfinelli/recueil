@@ -60,7 +60,9 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	require.NoError(t, err)
 
 	s := httpapi.NewServer(q, m, bootstrap, false)
-	srv := httptest.NewServer(httpapi.NewRouter(s, pool, q, httpapi.BuildInfo{}))
+	r, err := httpapi.NewRouter(s, pool, q, httpapi.BuildInfo{})
+	require.NoError(t, err)
+	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
 	return srv, rawToken
