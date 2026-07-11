@@ -15,7 +15,18 @@ four added §13a's Metrics and HTTP middleware entries (Prometheus, `httplog`,
 the chi middleware stack) and recorded OpenTelemetry as considered and
 deliberately deferred, with the condition under which it'd be worth revisiting.
 This round adds the new §3d (manual upload, bypassing the queue/R2/D1/Worker
-entirely) and the `captures.source` column it introduces (§10)._
+entirely) and the `captures.source` column it introduces (§10). Round five,
+prompted by discovering that the D1 password-hash mirror would require verifying
+a slow hash (bcrypt) inside a CPU-limited Cloudflare Worker — infeasible at any
+cost factor on the free tier, and not fixable by swapping in a faster
+Worker-native primitive without still mirroring password-derived material into
+D1. Replaces the D1 password-hash mirror entirely with a separate,
+single-purpose per-user **pairing token**: D1 no longer stores anything
+password-derived, in any form. Updates §2's architecture diagram, §5's
+device-authentication design, §10's Postgres and D1 `users` tables, and the
+D1-mirror security discussion accordingly. This is a retrofit of already-built
+Phase 1 code (the `/internal/users/mirror` route and D1 `users` schema), not
+purely new Phase 2 scope — noted in §15._
 
 ## 1. Overview
 
@@ -109,8 +120,8 @@ Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML.
         │  - runs optional AI enrichment (summary/tags)      │
         │  - pushes bookmark-list mirror row to D1 ───────────┘
         │    (via Worker, after each capture is processed)
-        │  - pushes password-hash mirror to D1 ────────────────┘
-        │    (via Worker, on account creation/password change)
+        │  - pushes pairing-token-hash mirror to D1 ───────────┘
+        │    (via Worker, on account creation/regeneration/revocation)
         │  - authenticates the dashboard directly (session      │
         │    auth against its own Postgres `users` table —       │
         │    no token/D1 involvement)                              │
@@ -345,28 +356,80 @@ flow, not a variant of it:
 
 ### Two separate authentication mechanisms
 
-**Devices (extension, PWA, CLI) → opaque bearer tokens, D1-owned.** This is
-unchanged from the original design:
+**Devices (extension, PWA, CLI) → opaque bearer tokens, backed by a per-user
+pairing token, D1-owned.**
 
-- Postgres `users` is the source of truth for accounts. On account creation or
-  password change, the backend pushes the **hash only** to a mirrored `users`
-  table in D1. The Worker checks the D1 mirror directly and never talks to the
-  backend to authenticate a device — this is what lets the backend stay fully
-  non-public.
-- Device pairing: a device authenticates once via username/password (or a
-  pairing code) against the Worker, which checks the D1 mirror and issues an
-  **opaque bearer token** — a 32-byte CSPRNG-generated random value,
-  base64url-encoded with a human-recognizable prefix (e.g. `rcl_live_...`). A
-  JWT would add signing/claims-schema complexity for no benefit here, since a DB
-  lookup already happens on every request (to support per-device revocation) and
-  request volume is low.
-- **Revocation:** every issued token is stored (hashed, `SHA-256(token)`) so
-  revocation is just deleting a row — simpler at this request volume than a
-  refresh-token rotation scheme. Plain SHA-256 (not password-style hashing) is
-  appropriate because the token already has ~256 bits of entropy; a leaked hash
-  alone doesn't let an attacker reconstruct a usable token.
-- D1 remains the **sole** owner of device tokens — there is no copy of this
-  table in Postgres.
+An earlier revision of this design had the backend mirror the account's **bcrypt
+password hash** into D1, verified by the Worker at pairing time against a
+submitted username/password. That approach turned out to be infeasible on its
+own terms, independent of the security question: bcrypt is designed to cost on
+the order of 100-300ms even in native code, and Cloudflare Workers on the free
+tier are capped at 10ms of CPU time per request. There is no cost factor that
+gets bcrypt (or an equivalent memory-hard hash) under that ceiling without
+weakening it past the point of doing its job — and there's no native bcrypt in
+the `workerd` runtime anyway, so a pure-JS implementation would only be slower
+still. A Worker-native fast primitive (PBKDF2 via `crypto.subtle.deriveBits`,
+which _would_ fit the CPU budget) was considered as a fix and rejected: it still
+means mirroring password-derived material into D1, just under a different
+algorithm, and doesn't address the underlying exposure.
+
+Instead, each account gets a separate, single-purpose credential — a **pairing
+token** — used only to authenticate a device once in exchange for a bearer
+token. It is never used to log into the dashboard, and the dashboard password is
+never used to pair a device:
+
+- Generated automatically at account creation: 32-byte CSPRNG value,
+  base64url-encoded, `rcl_pair_...` prefix. One per user, valid indefinitely
+  until regenerated or revoked (not single-use, not scoped per-device).
+- **Postgres stores it reversibly** — `users.pairing_token_enc`, AES-256-GCM
+  (`crypto/aes`/`crypto/cipher`, stdlib) — a deliberate departure from how every
+  other credential in this system is stored. This is justified specifically
+  because a pairing token isn't a user-chosen secret carrying the same stakes as
+  a password; it's closer in kind to an API key, and the dashboard needs to
+  redisplay it on demand (see below) rather than forcing a regenerate-to-view
+  flow the way a show-once bearer/session token does. The AES key
+  (`PAIRING_TOKEN_KEY`, 32 random bytes, base64-encoded) is operator-generated
+  and lives in the backend's `.env` alongside the Worker service secret (§5a)
+  and D1 migration credential (§5b) — it isn't Cloudflare/Terraform-managed,
+  since it never needs to leave the backend's own trust boundary.
+- **D1 stores only `SHA-256(pairing_token)`** — the same shape and reasoning as
+  the existing device-token/session-token hashing: the token already carries
+  ~256 bits of entropy, so a leaked hash alone doesn't yield a usable
+  credential. Unlike the password-hash mirror it replaces, a full D1 compromise
+  now exposes nothing password-derived at all — only a credential whose sole
+  purpose is pairing new devices, independently revocable from the account's
+  actual login credential.
+- **Device pairing is single-credential.** A device submits only the pairing
+  token to the Worker — no username. The Worker hashes it, looks up the owning
+  `user_id` directly (a pairing token hashes to exactly one account), and issues
+  an opaque bearer token exactly as originally designed: 32-byte CSPRNG,
+  `rcl_live_...` prefix, hashed at rest (`SHA-256`) in D1's `tokens` table,
+  revoked by row deletion. Nothing about bearer-token issuance, storage, or
+  revocation changes from the original design — only what's submitted to obtain
+  one. A JWT was considered here too (for the same reasons as the original
+  design) and rejected for the same reason: a DB lookup already happens on every
+  request for revocation, so a JWT's main benefit doesn't apply, and it adds
+  signing/claims-schema surface for no payoff at this scale.
+- **Pairing-token management** — new session-gated backend endpoints
+  (dashboard-facing, not Worker-facing):
+  - `GET /api/pairing-token` — decrypts and returns the current token, so it's
+    always viewable on the dashboard. (Show-once-then-hash-only, the pattern
+    used for bearer/session tokens, was considered and rejected specifically for
+    this credential: losing it would otherwise force a regenerate, which is a
+    worse default for something a person may not immediately save to a password
+    manager, unlike a login password or session token.)
+  - `POST /api/pairing-token/regenerate` — issues a new token, overwrites both
+    the Postgres (encrypted) and D1 (hashed) copies.
+  - `DELETE /api/pairing-token` — revokes without reissuing, blocking further
+    device pairing until a regenerate.
+  - All three are built alongside Phase 2's device-auth work even though the
+    dashboard UI to call them doesn't exist until much later — this avoids a
+    second pass through `internal/auth` solely for the dashboard's sake once
+    it's built.
+- **D1's `users` table (§10) is no longer a credential mirror in the login
+  sense.** It exists purely to hold `pairing_token_hash` and give
+  `queue_items`/`tokens`/etc. a `user_id` foreign key target — nothing else
+  about an account needs to live there.
 
 ```sql
 -- D1
@@ -582,11 +645,17 @@ doesn't mean zero risk:
 - Cloudflare, as the D1 host, has access to the data at rest — using any managed
   cloud service extends the trust boundary to that provider, which is a standard
   tradeoff of this architecture and not unique to Recueil.
-- The practical residual risk is low: bearer-token hashes are SHA-256 of 256-bit
-  random values, so a leak alone doesn't yield a usable token. Password hashes
-  (bcrypt/argon2, human-chosen, weaker entropy) are the more sensitive item in
-  the mirror, which is exactly why they use a proper slow/salted hash rather
-  than SHA-256.
+- The practical residual risk is low, and lower than the design's original
+  revision: every credential D1 now holds — bearer-token hashes, the
+  pairing-token hash — is `SHA-256` of a CSPRNG-generated, ~256-bit-entropy
+  value, not anything human-chosen. There is no longer a password-derived value
+  of any kind in D1's mirror, so the earlier "password hashes need a proper
+  slow/salted hash, not SHA-256" caveat no longer applies to anything D1 stores.
+  The corresponding new risk lives entirely on the Postgres side instead:
+  `users.pairing_token_enc` is reversible by design (see §5), so a compromise of
+  both a Postgres backup and the `PAIRING_TOKEN_KEY` would expose usable pairing
+  tokens — notably, still not the account password itself, and a pairing token
+  alone only grants the ability to pair a new device, not dashboard access.
 - The backend's D1 migration credential (§5b) is a second, narrower extension of
   this trust boundary — scoped to `D1:Edit` on one database, used only at
   startup, and distinct from the Worker service secret. It doesn't change the
@@ -832,7 +901,11 @@ this section's tables will pick up the same convention as they're implemented.
 CREATE TABLE users (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   username TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT NOT NULL,       -- bcrypt; verified backend-side only,
+                                      -- never mirrored anywhere (see §5)
+  pairing_token_enc TEXT NOT NULL,   -- AES-256-GCM, reversible; source for
+                                      -- the D1 pairing_token_hash mirror and
+                                      -- for dashboard redisplay (§5)
   role TEXT NOT NULL DEFAULT 'member',   -- 'admin' | 'member'
   display_name TEXT,                 -- nullable; UI falls back to username
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -980,17 +1053,20 @@ CREATE TABLE schema_migrations (
   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;
 
--- Mirrors Postgres users.id and password_hash for device auth without
--- ever exposing the backend. Does NOT include `role` — authorization is a
--- backend/dashboard concern only. id is never D1-generated: it's always
--- supplied explicitly from the Postgres-side value on every mirror-push
--- INSERT, so plain `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT)
--- is correct here — D1 only assigns its own value if a row is inserted
--- with id omitted or NULL, which never happens on this path.
+-- Mirrors Postgres users.id for device pairing without ever exposing the
+-- backend. Holds only pairing_token_hash — no password-derived value of
+-- any kind (see §5's redesign away from a password-hash mirror). Does NOT
+-- include `role` — authorization is a backend/dashboard concern only. id
+-- is never D1-generated: it's always supplied explicitly from the
+-- Postgres-side value on every mirror-push INSERT, so plain
+-- `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT) is correct here —
+-- D1 only assigns its own value if a row is inserted with id omitted or
+-- NULL, which never happens on this path. `username` is dropped entirely:
+-- pairing is single-credential (submit the pairing token, no username), so
+-- the Worker never needs to look a user up by name.
 CREATE TABLE users (
   id INTEGER PRIMARY KEY,
-  username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
+  pairing_token_hash TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT;
 
@@ -1539,3 +1615,8 @@ What remains open is purely implementation-phase, not architectural:
 - Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
   toggle) is worth building in the initial version or deferred until someone
   actually asks for it.
+- The pairing-token redesign (this revision) retrofits already-built Phase 1
+  code: the `/internal/users/mirror` Worker route and D1 `users` schema both
+  need to change from password-hash mirroring to pairing-token-hash mirroring
+  before Phase 2's device-pairing endpoint can be built against them. This is
+  scoped as part of Phase 2's work, not a separate phase.
