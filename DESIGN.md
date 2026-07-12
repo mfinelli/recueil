@@ -26,7 +26,14 @@ password-derived, in any form. Updates §2's architecture diagram, §5's
 device-authentication design, §10's Postgres and D1 `users` tables, and the
 D1-mirror security discussion accordingly. This is a retrofit of already-built
 Phase 1 code (the `/internal/users/mirror` route and D1 `users` schema), not
-purely new Phase 2 scope — noted in §15._
+purely new Phase 2 scope — noted in §15. Round six documents Phase 2 as actually
+built: the `/pair`, `/queue` (enqueue/read/claim), and `/internal/tokens`
+(list/revoke) Worker endpoints, plus a `/internal/queue-items/cleanup` endpoint
+added once implementation surfaced that successfully-processed queue items had
+no retention/cleanup story. Updates §5's `tokens` schema (`STRICT`, an index),
+§8 (the claim endpoint's actual 410/409/404 semantics, and the new queue-item
+cleanup design), §10's D1 schema (both tables' actual implemented shape), and
+resolves the corresponding item in §15._
 
 ## 1. Overview
 
@@ -409,7 +416,13 @@ never used to pair a device:
   one. A JWT was considered here too (for the same reasons as the original
   design) and rejected for the same reason: a DB lookup already happens on every
   request for revocation, so a JWT's main benefit doesn't apply, and it adds
-  signing/claims-schema surface for no payoff at this scale.
+  signing/claims-schema surface for no payoff at this scale. Implemented as
+  `POST /pair` (request: `pairing_token`, `device_name`, `device_type`;
+  response: the raw bearer token, shown exactly once). `tokens.last_used_at` is
+  touched on every subsequent authenticated device request (`POST /queue`,
+  `GET /queue`, `POST /queue/:id/claim`) via a fire-and-forget write
+  (`ExecutionContext.waitUntil`), so it never adds latency to the request it's
+  authenticating.
 - **Pairing-token management** — new session-gated backend endpoints
   (dashboard-facing, not Worker-facing):
   - `GET /api/pairing-token` — decrypts and returns the current token, so it's
@@ -439,9 +452,11 @@ CREATE TABLE tokens (
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
   device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli'
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_used_at TIMESTAMP
-);
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at TEXT
+) STRICT;
+
+CREATE INDEX idx_tokens_user_id ON tokens(user_id);
 ```
 
 **Dashboard → direct session auth against Postgres, DB-backed sessions.** The
@@ -488,17 +503,25 @@ credential systems for two distinct kinds of client.
 Because D1 is the sole owner of device tokens, this isn't purely a UI-only
 addition — the data (`tokens.device_name`, `device_type`, `created_at`,
 `last_used_at`) already exists in D1, but the dashboard/backend has no existing
-path to read or mutate it. Three pieces are needed, all new:
+path to read or mutate it. Three pieces are needed:
 
 1. **Two new Worker endpoints**, gated by the backend↔Worker service secret
    (§5a): `GET /internal/tokens?user_id=` (list a user's device tokens) and
-   `DELETE /internal/tokens/:id` (revoke one). Both simple, single-operation
-   endpoints, consistent with the "dumb Worker" principle.
+   `DELETE /internal/tokens/:id?user_id=` (revoke one). Both simple,
+   single-operation endpoints, consistent with the "dumb Worker" principle.
+   **Built as part of Phase 2.** The revoke endpoint's `user_id` query parameter
+   is not just for listing — it's also required on the delete call and checked
+   against the token's actual owning user before the row is removed; a mismatch
+   deletes nothing rather than someone else's device. This is a deliberate
+   belt-and-suspenders addition beyond the original design: the Worker still
+   doesn't know about roles (see point 3 below, unchanged), but this catches a
+   backend-side bug that passes the wrong `user_id`/token `id` pair, at no real
+   cost.
 2. **A backend API passthrough**: the dashboard never talks to the Worker
    directly (it has no bearer token or service secret of its own); it calls the
    backend, which makes the outbound authenticated call to the Worker and
    returns the result. This keeps the backend the single place that holds the
-   service secret.
+   service secret. **Not yet built** — depends on the dashboard existing.
 3. **Authorization scope, decided as:** a member can list/revoke only their own
    devices; an admin can list/revoke _any_ user's devices (useful for responding
    to a compromised account without waiting on that user). The Worker endpoints
@@ -789,6 +812,36 @@ screenshot job in §6.
 - Claiming is done with a conditional update (`WHERE status = 'pending'`) to
   prevent two devices from grabbing the same item simultaneously; a claimed item
   records which device claimed it and when.
+- Implemented as three bearer-token-authenticated Worker endpoints, all
+  operating purely between a device and D1 — the backend never touches
+  `queue_items` at all:
+  - `POST /queue` — enqueue. `id` is client-generated (idempotent retry via
+    `INSERT ... ON CONFLICT(id) DO NOTHING` — see §3c's identical reasoning for
+    `pending_captures`).
+  - `GET /queue` — lists this user's pending items, plus any claimed item whose
+    claim has gone stale (see visibility timeout below). Listing never claims.
+  - `POST /queue/:id/claim` — the actual atomic claim, via a conditional
+    `UPDATE ... WHERE ... RETURNING`. This, not the listing endpoint, is where
+    the two-devices-race-for-the-same-item risk actually lives, and where the
+    phase-2 brief's instruction to "build the idempotency and visibility-timeout
+    logic in at this point, not later" was aimed.
+
+**Claim failure is not a single status code.** A failed claim distinguishes
+three cases, decided during Phase 2 rather than left as a uniform `409`:
+
+- `404` — the item doesn't exist, or belongs to a different user. These two
+  cases are deliberately collapsed together rather than distinguished, so a
+  claim attempt never leaks cross-user existence.
+- `410` — the item is in a terminal state (`captured` or `failed`): it used to
+  be claimable and permanently isn't anymore. This is more precise than a bare
+  404 (which conventionally means "wrong ID") for "this happened, but it's
+  over."
+- `409` — the item is actively claimed by another device and the claim hasn't
+  gone stale yet: a genuine, temporary conflict worth retrying later.
+
+Distinguishing these costs one extra `SELECT`, but only on the failure path — a
+successful claim is still a single `UPDATE ... RETURNING` with no additional
+round trip.
 
 ### Queue visibility timeout
 
@@ -804,6 +857,36 @@ WHERE status = 'pending'
 15 minutes is comfortably more than enough time to pull 2-3 blobs from R2 and
 write a DB record, and this avoids needing a Cron Trigger or any additional
 scheduled infrastructure, consistent with the "dumb Worker" philosophy.
+
+### Queue item cleanup
+
+Nothing above ever removes a terminal-state `queue_items` row on its own — a
+`captured` or `failed` item exists purely to support the 410 semantics above,
+and would otherwise accumulate forever. Surfaced during Phase 2 implementation,
+not anticipated in the original design:
+
+- **`POST /internal/queue-items/cleanup`**, service-secret gated, called on the
+  backend's own schedule (once or twice a day is plenty) — deliberately **not**
+  a Cloudflare Cron Trigger, for exactly the same "keep the Worker dumb, let the
+  backend own scheduling" reasoning already applied to the visibility-timeout
+  reclaim above. Not scoped to a single user — this is a maintenance sweep
+  across the whole deployment, not a per-device operation, so it takes no
+  `user_id` parameter the way the device-facing endpoints do.
+- **Deletes only `captured` items**, and only once older than a 72-hour
+  retention window (long enough to be useful for auditability/debugging shortly
+  after the fact, short enough not to accumulate indefinitely). `failed` items
+  are deliberately **not** touched — they're kept indefinitely for now. What to
+  do about them long-term (surface them to the user, retry them, expire them on
+  a separate/longer schedule) is an open question, not decided here — see §15.
+- **The retention clock is `claimed_at`, not `created_at`.** An item can sit
+  `pending` for a long time before being claimed; it's time since actual
+  completion that should drive retention, not time since the original enqueue.
+  There is no dedicated "when did this finish" timestamp on `queue_items` today
+  — `claimed_at` is used as a pragmatic proxy, reasonable at this project's
+  scale since the gap between a successful claim and the capture actually
+  completing is seconds to minutes, not enough to matter for a 72-hour window.
+  If a future phase's `complete`/`fail` endpoint adds a dedicated completion
+  timestamp, this is a one-line filter change, not a design change.
 
 ### Bookmark-list mirror (extension as a browsable list)
 
@@ -1076,11 +1159,18 @@ CREATE TABLE tokens (
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
   device_type TEXT NOT NULL,        -- 'extension' | 'pwa' | 'cli'
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_used_at TIMESTAMP
-);
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at TEXT
+) STRICT;
 
--- URLs waiting to be archived by the desktop extension
+CREATE INDEX idx_tokens_user_id ON tokens(user_id);
+
+-- URLs waiting to be archived by the desktop extension. Enqueued and claimed
+-- entirely by devices via their own bearer tokens (§8) -- the backend never
+-- touches this table directly. WITHOUT ROWID for the same client-generated-
+-- UUID-primary-key reason as pending_captures below; the composite index is
+-- not a bare user_id index because every poll/claim query filters on both
+-- user_id and status together (§8).
 CREATE TABLE queue_items (
   id TEXT PRIMARY KEY,              -- client-generated UUID
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -1088,9 +1178,13 @@ CREATE TABLE queue_items (
   added_by_token_id INTEGER REFERENCES tokens(id),
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
   claimed_by_token_id INTEGER REFERENCES tokens(id),
-  claimed_at TIMESTAMP,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+  claimed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX idx_queue_items_user_status ON queue_items(user_id, status);
+CREATE INDEX idx_queue_items_added_by_token_id ON queue_items(added_by_token_id);
+CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token_id);
 
 -- Completed captures awaiting backend pickup from R2.
 -- Note: r2_key_thumbnail has been removed — screenshots are generated
@@ -1125,11 +1219,15 @@ CREATE INDEX idx_archived_pages_user ON archived_pages(user_id);
 captures** — archiving a page the user is already on, which was never queued in
 the first place.
 
-Backend↔Worker service calls (polling, mirror pushes, token revocation) are
-authenticated via the shared service secret (§5a), not a row in `tokens`. The
-backend's D1 migration runner (§5b) uses a separate, narrower Cloudflare API
-token, not the service secret, and is the only thing that ever writes to
-`schema_migrations`.
+`queue_items` rows are not permanent once `captured` — see §8's queue-item
+cleanup subsection for the retention/deletion policy (`failed` rows are kept
+indefinitely for now; only `captured` rows are ever swept).
+
+Backend↔Worker service calls (polling, mirror pushes, token revocation, queue-
+item cleanup) are authenticated via the shared service secret (§5a), not a row
+in `tokens`. The backend's D1 migration runner (§5b) uses a separate, narrower
+Cloudflare API token, not the service secret, and is the only thing that ever
+writes to `schema_migrations`.
 
 ---
 
@@ -1607,16 +1705,30 @@ choices, tracked in §13a rather than here.
 
 What remains open is purely implementation-phase, not architectural:
 
-- The rest of the Worker API endpoint surface (device auth, enqueue, presigned
-  R2 URLs, the remaining service-secret-gated backend endpoints including the
-  two `/internal/tokens` endpoints from §5) is still undesigned —
-  `/internal/users/mirror` (§5b) is the only route built so far. This is the
-  logical next design step.
 - Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
   toggle) is worth building in the initial version or deferred until someone
   actually asks for it.
-- The pairing-token redesign (this revision) retrofits already-built Phase 1
+- The pairing-token redesign (round five) retrofitted already-built Phase 1
   code: the `/internal/users/mirror` Worker route and D1 `users` schema both
-  need to change from password-hash mirroring to pairing-token-hash mirroring
-  before Phase 2's device-pairing endpoint can be built against them. This is
-  scoped as part of Phase 2's work, not a separate phase.
+  changed from password-hash mirroring to pairing-token-hash mirroring before
+  Phase 2's device-pairing endpoint could be built against them. This is now
+  complete.
+- **Resolved this round:** the Worker API endpoint surface flagged as "the
+  logical next design step" in the previous revision — device pairing
+  (`POST /pair`), the queue (`POST /queue`, `GET /queue`,
+  `POST /queue/:id/claim`), device-token management
+  (`GET`/`DELETE /internal/tokens`), and queue-item cleanup
+  (`POST /internal/queue-items/cleanup`) — is now built and tested (§5, §8,
+  §10). What's _not_ built yet, and remains the next logical step: presigned R2
+  upload URLs, and the `complete`/`fail` endpoints that transition a claimed
+  queue item to `captured`/`failed` and write the corresponding
+  `pending_captures` row — deliberately deferred out of Phase 2, since that work
+  is entangled with the capture-upload pipeline's shape rather than the
+  queue/auth mechanics Phase 2 was scoped to.
+- **New this round:** what to do with `failed` queue items long-term. §8's
+  cleanup endpoint deliberately never removes them (only `captured` items are
+  swept), but "keep forever, do nothing else" isn't a real long-term answer —
+  surfacing them to the user, a retry mechanism, or a separate (probably much
+  longer, or manually-triggered) expiry are all plausible and none has been
+  decided. Blocked on the `complete`/`fail` endpoints existing at all, since
+  there's no way to mark an item `failed` yet.
