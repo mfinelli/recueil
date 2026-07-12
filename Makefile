@@ -28,6 +28,8 @@ ifeq ($(shell uname), Darwin)
         DATE := gdate
 endif
 
+GITSHA ?= $(shell $(GIT) rev-parse --short HEAD)
+
 all: recueil
 
 clean:
@@ -38,7 +40,7 @@ recueil: $(SOURCES) internal/db/db.go
 		-trimpath \
 		-mod=readonly \
 		-ldflags "-s -w -linkmode=external \
-			-X main.commit=$(shell $(GIT) rev-parse --short HEAD) \
+			-X main.commit=$(GITSHA) \
 			-X main.date=$(shell $(DATE) --utc --iso-8601=seconds) \
 			-X main.version=$(shell $(JQ) -r .version package.json)" \
 		main.go

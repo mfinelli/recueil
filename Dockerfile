@@ -22,7 +22,7 @@ FROM golang:alpine AS gotools
 WORKDIR /app
 RUN go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
-FROM golang:alpine AS buildgo
+FROM golang:1.26.5-alpine AS buildgo
 ARG GITSHA
 WORKDIR /app
 RUN apk add coreutils gawk gcc git jq make musl-dev

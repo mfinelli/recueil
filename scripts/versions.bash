@@ -28,19 +28,70 @@ fi
 
 function myversion() {
   echo "CHECKING MY VERSION"
-  local packagejson cmdroot
+  local dockerfile dockerlabel cmdroot packagejson
 
   packagejson="$(jq -r .version package.json)"
   cmdroot="$(grep -m1 Version: cmd/root.go | awk -F\" '{print $2}')"
+  dockerlabel=org.opencontainers.image.version
+  dockerfile="$(grep $dockerlabel Dockerfile | awk -F= '{print $2}')"
 
   if [[ $packagejson != "$cmdroot" ]]; then
     echo >&2 "error: cmd/root.go version mismatch"
     exit 1
   fi
 
+  if [[ v$packagejson != "$dockerfile" ]]; then
+    echo >&2 "error: Dockerfile version mismatch"
+    exit 1
+  fi
+
   echo "MY VERSION OK"
 }
 
+function sqlc() {
+  echo "CHECKING SQLC VERSION"
+  local dockerfile github ghsqlc
+
+  ghsqlc=sqlc-dev/setup-sqlc@v5
+  github="$(yq e ".jobs.main.steps[] | select(.uses == \"$ghsqlc\") | \
+    .with.sqlc-version" .github/workflows/default.yml)"
+
+  if [[ -z $github ]]; then
+    echo >&2 "error: can't get sqlc version from github workflow"
+    echo >&2 "       did you update the version of the action? you need to"
+    echo >&2 "       update this script too"
+    exit 1
+  fi
+
+  dockerfile="$(grep "RUN go install github.com/sqlc-dev/sqlc" Dockerfile |
+    awk -F@ '{print $2}')"
+
+  if [[ v$github != "$dockerfile" ]]; then
+    echo >&2 "error: Dockerfile version mismatch"
+    exit 1
+  fi
+
+  echo "SQLC VERSION OK"
+}
+
+function gover() {
+  echo "CHECKING GO VERSION"
+  local dockerfile gomod
+
+  gomod="$(grep "^go " go.mod | awk '{print $2}')"
+  dockerfile="$(grep "AS buildgo" Dockerfile | awk '{print $2}' |
+    awk -F: '{print $2}')"
+
+  if [[ ${gomod}-alpine != "$dockerfile" ]]; then
+    echo >&2 "error: Dockerfile version mismatch"
+    exit 1
+  fi
+
+  echo "GO VERSION OK"
+}
+
 myversion
+sqlc
+gover
 
 exit 0
