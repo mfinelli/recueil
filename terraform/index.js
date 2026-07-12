@@ -26,11 +26,19 @@
 //   authenticated by a device's own bearer token
 // - GET/DELETE /internal/tokens: service-secret-gated device-token
 //   management, called by the backend on the dashboard's behalf
+// - POST /internal/queue-items/cleanup: service-secret-gated retention sweep
+// - POST /captures/upload-urls, POST /queue/:id/complete,
+//   POST /queue/:id/fail: presigned R2 upload issuance and the
+//   claimed-item-to-captured/failed transition
 
 /**
  * @typedef {Object} Env
  * @property {D1Database} DB
  * @property {string} SERVICE_SECRET
+ * @property {string} R2_ACCOUNT_ID
+ * @property {string} R2_BUCKET_NAME
+ * @property {string} R2_ACCESS_KEY_ID
+ * @property {string} R2_ACCESS_KEY_SECRET
  */
 
 /**
@@ -104,6 +112,263 @@ async function authenticateDevice(request, env, ctx) {
   return { tokenId: row.id, userId: row.user_id };
 }
 
+// Hand-rolled AWS SigV4 query-string ("presigned URL") signing for R2's
+// S3-compatible API, used by handleGetUploadUrls below. Any dependency would
+// conflict with the "plain JS, no build step, no dependencies"
+// constraint that governs everything else here. The algorithm itself is a fixed
+// public spec (AWS Signature Version 4), fully implementable against Web Crypto's
+// crypto.subtle, standard in the workerd runtime.
+//
+// R2's S3-compatible endpoint accepts SigV4 exactly like S3 does, with
+// region "auto" and service "s3" (Cloudflare's R2 API docs). This
+// implementation is verified two ways in terraform/tests/r2-presign.test.js:
+// against AWS's own published presigned-URL worked example, and against
+// the official @smithy/signature-v4 signer (the library aws-sdk-js v3
+// itself uses) for arbitrary R2-shaped requests -- a test-only dependency,
+// never shipped here, that catches any drift from the real spec without
+// relying on a hand-typed copy of the algorithm to check itself.
+
+const R2_SIGV4_REGION = "auto";
+const R2_SIGV4_SERVICE = "s3";
+const R2_SIGV4_ALGORITHM = "AWS4-HMAC-SHA256";
+
+/**
+ * @param {string} str
+ * @returns {Uint8Array}
+ */
+function utf8(str) {
+  return new TextEncoder().encode(str);
+}
+
+/**
+ * @param {ArrayBuffer} buf
+ * @returns {string}
+ */
+function hex(buf) {
+  return [...new Uint8Array(buf)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * HMAC-SHA256, returning the raw signature bytes (needed for signing-key
+ * derivation, where each step's output becomes the next step's key -- only
+ * the final signature is ever hex-encoded).
+ *
+ * @param {Uint8Array | ArrayBuffer} key
+ * @param {string} message
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function hmacRaw(key, message) {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    key,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return crypto.subtle.sign("HMAC", cryptoKey, utf8(message));
+}
+
+/**
+ * Derives the SigV4 signing key: HMAC chain of
+ * date -> region -> service -> "aws4_request", each keyed by the previous
+ * step's output, starting from "AWS4" + the raw secret key. region/service
+ * are parameters (rather than hardcoded to R2's "auto"/"s3") purely so
+ * tests can reproduce AWS's own published presigned-URL worked example
+ * (which uses "us-east-1"/"s3") against this exact function, not a
+ * re-typed copy of it -- presignR2Url below always calls this with R2's
+ * fixed values.
+ *
+ * @param {string} secretAccessKey
+ * @param {string} dateStamp - YYYYMMDD
+ * @param {string} region
+ * @param {string} service
+ * @returns {Promise<ArrayBuffer>}
+ */
+export async function deriveSigningKey(
+  secretAccessKey,
+  dateStamp,
+  region,
+  service,
+) {
+  const kDate = await hmacRaw(utf8(`AWS4${secretAccessKey}`), dateStamp);
+  const kRegion = await hmacRaw(kDate, region);
+  const kService = await hmacRaw(kRegion, service);
+  return hmacRaw(kService, "aws4_request");
+}
+
+/**
+ * RFC 3986 URI encoding. encodeURIComponent already escapes "/" (as
+ * %2F), but leaves !'()* and ~ untouched (or, for ~, correctly leaves it
+ * unescaped -- it's an RFC 3986 unreserved character). AWS's spec requires
+ * !'()* to also be percent-encoded, which encodeURIComponent doesn't do on
+ * its own.
+ *
+ * @param {string} str
+ * @returns {string}
+ */
+export function uriEncode(str) {
+  return encodeURIComponent(str).replace(
+    /[!'()*]/g,
+    (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase(),
+  );
+}
+
+/**
+ * Canonical-URI-encodes a path: each segment is URI-encoded independently
+ * (so a literal "/" separator is never itself escaped), matching AWS's
+ * requirement that canonical URI encoding preserve path separators.
+ *
+ * @param {string} path - must start with "/"
+ * @returns {string}
+ */
+export function encodePath(path) {
+  return path
+    .split("/")
+    .map((segment) => uriEncode(segment))
+    .join("/");
+}
+
+/**
+ * @typedef {Object} PresignParams
+ * @property {string} accountId - Cloudflare account ID (R2 S3 host is
+ *   `<accountId>.r2.cloudflarestorage.com`)
+ * @property {string} bucketName
+ * @property {string} accessKeyId
+ * @property {string} secretAccessKey
+ * @property {string} key - object key within the bucket, no leading slash
+ * @property {"GET" | "PUT"} method
+ * @property {number} expiresInSeconds
+ * @property {string} [checksumSha256Base64] - base64-encoded SHA-256 of the
+ *   exact bytes about to be uploaded. When supplied, it's bound into the
+ *   signature as a required `x-amz-checksum-sha256` header (R2's "Flexible
+ *   Checksums" feature -- a genuinely separate mechanism from the SigV4
+ *   payload-hash slot below): the caller's real PUT request must resend
+ *   this exact header/value, and R2 independently verifies the uploaded
+ *   bytes against it, rejecting the upload on any mismatch. This is what
+ *   actually catches transfer corruption or a swapped body -- not the
+ *   payload-hash slot itself (see below). Every capture path this project
+ *   plans always has the content in hand before requesting a presigned
+ *   URL (SingleFile/Readability extraction finishes in-browser first), so
+ *   omitting this should be the exception, not the default.
+ * @property {Date} [now] - injectable for deterministic tests; defaults to
+ *   the real current time
+ */
+
+/**
+ * Builds a SigV4 presigned URL for R2's S3-compatible API. Query-string
+ * ("presigned URL") auth, not header auth -- the whole point is that the
+ * fake extension script (and eventually the real one) can PUT straight to
+ * this URL with no credentials of its own, no custom headers required to
+ * merely authenticate, and no Authorization header to construct.
+ *
+ * Two genuinely distinct mechanisms are in play here, worth not
+ * conflating (a real point of confusion working this out -- see
+ * terraform/tests/r2-presign.test.js and the PresignParams doc above):
+ * - The SigV4 "payload hash" slot (the last line of the canonical
+ *   request) is a *signing* input, not a content-integrity check. R2's
+ *   own documented presigned-URL examples leave it as the literal string
+ *   "UNSIGNED-PAYLOAD" even for uploads, since the payload isn't known at
+ *   signing time in the general case -- and per AWS's own guidance,
+ *   presigned URLs "typically don't need to include the content hash in
+ *   the signature calculation" at all. This implementation always uses
+ *   that literal, matching R2's convention.
+ * - Real content-integrity verification -- R2 rejecting an upload whose
+ *   bytes don't match what the caller declared -- is a separate feature
+ *   ("Flexible Checksums"), via an `x-amz-checksum-sha256` *header*
+ *   (distinct name from `x-amz-content-sha256` above), base64-encoded,
+ *   bound into the signature as a normal signed header. That's what
+ *   checksumSha256Base64 wires up below.
+ *
+ * @param {PresignParams} params
+ * @returns {Promise<string>}
+ */
+export async function presignR2Url({
+  accountId,
+  bucketName,
+  accessKeyId,
+  secretAccessKey,
+  key,
+  method,
+  expiresInSeconds,
+  checksumSha256Base64,
+  now,
+}) {
+  const host = `${accountId}.r2.cloudflarestorage.com`;
+  const date = now ?? new Date();
+  // YYYYMMDDTHHMMSSZ, stripping the "-", ":" separators and millisecond
+  // fraction that Date#toISOString includes but AWS's amz-date format
+  // doesn't allow.
+  const amzDate = date
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}/, "");
+  const dateStamp = amzDate.slice(0, 8);
+  const credentialScope = `${dateStamp}/${R2_SIGV4_REGION}/${R2_SIGV4_SERVICE}/aws4_request`;
+  const credential = `${accessKeyId}/${credentialScope}`;
+
+  const canonicalUri = encodePath(`/${bucketName}/${key}`);
+
+  /** @type {[string, string][]} */
+  const queryPairs = [
+    ["X-Amz-Algorithm", R2_SIGV4_ALGORITHM],
+    ["X-Amz-Credential", credential],
+    ["X-Amz-Date", amzDate],
+    ["X-Amz-Expires", String(expiresInSeconds)],
+    // SignedHeaders' *value* (not the query param set itself) changes
+    // below when a checksum is supplied -- "host" alone otherwise, or
+    // "host;x-amz-checksum-sha256" when binding a checksum. Header names
+    // are sorted alphabetically per SigV4's canonical-headers rule, and
+    // "host" < "x-amz-checksum-sha256" already.
+    [
+      "X-Amz-SignedHeaders",
+      checksumSha256Base64 ? "host;x-amz-checksum-sha256" : "host",
+    ],
+  ];
+  // AWS requires canonical query params sorted by (encoded) key.
+  queryPairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  const canonicalQueryString = queryPairs
+    .map(([k, v]) => `${uriEncode(k)}=${uriEncode(v)}`)
+    .join("&");
+
+  const canonicalHeaders = checksumSha256Base64
+    ? `host:${host}\nx-amz-checksum-sha256:${checksumSha256Base64}\n`
+    : `host:${host}\n`;
+  const signedHeaders = checksumSha256Base64
+    ? "host;x-amz-checksum-sha256"
+    : "host";
+  // UNSIGNED-PAYLOAD, always -- see the function doc above for why this
+  // is a signing-input default, not the content-integrity mechanism.
+  const payloadHash = "UNSIGNED-PAYLOAD";
+
+  const canonicalRequest = [
+    method,
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join("\n");
+
+  const stringToSign = [
+    R2_SIGV4_ALGORITHM,
+    amzDate,
+    credentialScope,
+    await sha256Hex(canonicalRequest),
+  ].join("\n");
+
+  const signingKey = await deriveSigningKey(
+    secretAccessKey,
+    dateStamp,
+    R2_SIGV4_REGION,
+    R2_SIGV4_SERVICE,
+  );
+  const signature = hex(await hmacRaw(signingKey, stringToSign));
+
+  return `https://${host}${canonicalUri}?${canonicalQueryString}&X-Amz-Signature=${signature}`;
+}
+
 export default {
   /**
    * @param {Request} request
@@ -141,6 +406,17 @@ export default {
     }
     if (method === "POST" && pathname === "/internal/queue-items/cleanup") {
       return handleCleanupQueueItems(request, env);
+    }
+    if (method === "POST" && pathname === "/captures/upload-urls") {
+      return handleGetUploadUrls(request, env, ctx);
+    }
+    const completeMatch = pathname.match(/^\/queue\/([^/]+)\/complete$/);
+    if (method === "POST" && completeMatch) {
+      return handleCompleteQueueItem(request, env, ctx, completeMatch[1]);
+    }
+    const failMatch = pathname.match(/^\/queue\/([^/]+)\/fail$/);
+    if (method === "POST" && failMatch) {
+      return handleFailQueueItem(request, env, ctx, failMatch[1]);
     }
 
     return new Response("Not Found", { status: 404 });
@@ -557,4 +833,312 @@ export async function handleCleanupQueueItems(request, env) {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+// How long a presigned upload URL remains valid. Comfortably more than
+// enough time for a device to PUT a large inlined-HTML capture over a slow
+// connection, without leaving signed URLs usable indefinitely.
+const UPLOAD_URL_EXPIRY_SECONDS = 900;
+
+// A lowercase 64-character hex string -- what crypto.subtle.digest("SHA-256",
+// ...) produces once hex-encoded, and the format this codebase already uses
+// elsewhere (sha256Hex above). Required shape for content_sha256_html /
+// content_sha256_reader in handleGetUploadUrls's request body.
+const HEX_SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * Converts a lowercase hex SHA-256 digest to base64, the encoding R2's
+ * Flexible Checksums feature (`x-amz-checksum-sha256`) expects -- distinct
+ * from the hex convention used everywhere else in this codebase, so the
+ * conversion happens once, here, rather than asking every caller to know
+ * both encodings.
+ *
+ * @param {string} hexDigest - exactly 64 lowercase hex characters
+ * @returns {string}
+ */
+function hexToBase64(hexDigest) {
+  const bytes = new Uint8Array(hexDigest.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hexDigest.slice(i * 2, i * 2 + 2), 16);
+  }
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Builds the deterministic R2 object key for a given user + capture, so the
+ * Worker never has to trust a client-supplied key at completion time (see
+ * handleCompleteQueueItem) -- the key is entirely a function of who's
+ * authenticated and which capture_id they supplied, both already verified.
+ *
+ * @param {number} userId
+ * @param {string} captureId
+ * @returns {string}
+ */
+function captureObjectKey(userId, captureId) {
+  return `pending/${userId}/${captureId}/page.html`;
+}
+
+/**
+ * POST /captures/upload-urls: issues a presigned R2 PUT URL for a capture's
+ * one artifact Purely stateless signing, no D1 read or write -- capture_id is
+ * client-generated (the same client-generated-UUID idempotency pattern as
+ * queue_items.id and pending_captures.id) so nothing needs to be reserved
+ * server-side before a device starts uploading.
+ *
+ * content_sha256_html is required: every capture path this project plans
+ * has the exact HTML bytes in hand before ever talking to the Worker
+ * (SingleFile capture finishes fully in-browser first), so there's no
+ * legitimate case for skipping the checksum binding described in
+ * presignR2Url's doc above -- R2 will reject the upload if the real bytes
+ * don't hash to what's declared here, catching transfer corruption or a
+ * swapped body, not just authenticating that some device was allowed to
+ * write to this key.
+ *
+ * Deliberately not scoped to a queue item: pending_captures.queue_item_id
+ * is nullable to support direct captures, so upload-URL issuance shouldn't require
+ * one either. Phase 3's fake extension always supplies one via the queue, but a
+ * future direct-capture path can call this same endpoint unchanged.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleGetUploadUrls(request, env, ctx) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  if (
+    !env.R2_ACCOUNT_ID ||
+    !env.R2_BUCKET_NAME ||
+    !env.R2_ACCESS_KEY_ID ||
+    !env.R2_ACCESS_KEY_SECRET
+  ) {
+    // A misconfigured deployment (operator never provisioned the R2 S3 API
+    // credential -- see manual-step note) should fail loudly here, not produce
+    // a broken presigned URL a device then fails to PUT against with a
+    // confusing error.
+    return new Response("R2 credentials not configured", { status: 500 });
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { capture_id, content_sha256_html } =
+    /** @type {Record<string, unknown>} */ (body);
+  if (
+    typeof capture_id !== "string" ||
+    capture_id === "" ||
+    typeof content_sha256_html !== "string" ||
+    !HEX_SHA256_PATTERN.test(content_sha256_html)
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  const key = captureObjectKey(auth.userId, capture_id);
+  const checksumHtmlBase64 = hexToBase64(content_sha256_html);
+
+  const uploadUrlHtml = await presignR2Url({
+    accountId: env.R2_ACCOUNT_ID,
+    bucketName: env.R2_BUCKET_NAME,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_ACCESS_KEY_SECRET,
+    method: /** @type {"PUT"} */ ("PUT"),
+    expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
+    key,
+    checksumSha256Base64: checksumHtmlBase64,
+  });
+
+  return new Response(
+    JSON.stringify({
+      capture_id,
+      upload_url_html: uploadUrlHtml,
+      r2_key_html: key,
+      expires_in_seconds: UPLOAD_URL_EXPIRY_SECONDS,
+      // The caller's real PUT MUST include this exact header (name and
+      // value) or R2 will reject the request: it's bound into the
+      // signature, and R2 separately verifies the uploaded bytes against it.
+      required_headers_html: { "x-amz-checksum-sha256": checksumHtmlBase64 },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /queue/:id/complete: notifies the Worker that a claimed queue item's
+ * capture has finished uploading to R2, writing the corresponding
+ * pending_captures row and transitioning the queue item to 'captured'.
+ *
+ * Idempotency: capture_id is the pending_captures primary key,
+ * client-generated once and reused on any retry. A retry after a
+ * crash (the row already exists) is detected up front and short-circuits
+ * to success -- deliberately *before* re-checking the queue item's status,
+ * since by the time a retry happens the first attempt may have already
+ * flipped it to 'captured', which would otherwise look like a stale/
+ * terminal-item 410 rather than the successful no-op it actually is.
+ *
+ * r2_key_html is never taken from the request body -- it's recomputed from
+ * auth.userId + capture_id (see captureObjectKey), the same deterministic
+ * scheme handleGetUploadUrls used to issue the presigned URL. This means a
+ * device can't claim an arbitrary R2 key belongs to this capture; it can
+ * only ever reference the key it was actually presigned to upload to.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @param {string} itemId
+ * @returns {Promise<Response>}
+ */
+export async function handleCompleteQueueItem(request, env, ctx, itemId) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { capture_id, captured_at } = /** @type {Record<string, unknown>} */ (
+    body
+  );
+  if (
+    typeof capture_id !== "string" ||
+    capture_id === "" ||
+    typeof captured_at !== "string" ||
+    captured_at === ""
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  const existing = await env.DB.prepare(
+    "SELECT id FROM pending_captures WHERE id = ?",
+  )
+    .bind(capture_id)
+    .first();
+  if (existing) {
+    // Already recorded by an earlier attempt -- nothing left to do.
+    return new Response(null, { status: 204 });
+  }
+
+  const queueItem = /** @type {{
+    id: string,
+    user_id: number,
+    url: string,
+    status: string,
+    claimed_by_token_id: number | null,
+  } | null} */ (
+    await env.DB.prepare(
+      "SELECT id, user_id, url, status, claimed_by_token_id FROM queue_items WHERE id = ? AND user_id = ?",
+    )
+      .bind(itemId, auth.userId)
+      .first()
+  );
+  if (!queueItem) {
+    return new Response("Not Found", { status: 404 });
+  }
+  if (queueItem.status === "captured" || queueItem.status === "failed") {
+    return new Response("Item already processed", { status: 410 });
+  }
+  if (
+    queueItem.status !== "claimed" ||
+    queueItem.claimed_by_token_id !== auth.tokenId
+  ) {
+    return new Response("Item not claimed by this device", { status: 409 });
+  }
+
+  const r2KeyHtml = captureObjectKey(auth.userId, capture_id);
+
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO pending_captures
+           (id, user_id, queue_item_id, url, r2_key_html, captured_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        capture_id,
+        auth.userId,
+        itemId,
+        queueItem.url,
+        r2KeyHtml,
+        captured_at,
+      ),
+      env.DB.prepare(
+        "UPDATE queue_items SET status = 'captured' WHERE id = ?",
+      ).bind(itemId),
+    ]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(`D1 error: ${message}`, { status: 500 });
+  }
+
+  return new Response(
+    JSON.stringify({ id: capture_id, r2_key_html: r2KeyHtml }),
+    { status: 201, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /queue/:id/fail: transitions a claimed queue item to 'failed' --
+ * the capture attempt didn't produce anything to upload (the tab crashed,
+ * the page turned out to require login, etc.), so there's no
+ * pending_captures row to write, only a status change.
+ *
+ * Shares the claim endpoint's three-way failure semantics (404/410/409 --
+ * see handleClaimQueueItem) rather than inventing new ones: a device can
+ * only fail an item it currently holds the claim on.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @param {string} itemId
+ * @returns {Promise<Response>}
+ */
+export async function handleFailQueueItem(request, env, ctx, itemId) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  const queueItem = /** @type {{
+    status: string,
+    claimed_by_token_id: number | null,
+  } | null} */ (
+    await env.DB.prepare(
+      "SELECT status, claimed_by_token_id FROM queue_items WHERE id = ? AND user_id = ?",
+    )
+      .bind(itemId, auth.userId)
+      .first()
+  );
+  if (!queueItem) {
+    return new Response("Not Found", { status: 404 });
+  }
+  if (queueItem.status === "captured" || queueItem.status === "failed") {
+    return new Response("Item already processed", { status: 410 });
+  }
+  if (
+    queueItem.status !== "claimed" ||
+    queueItem.claimed_by_token_id !== auth.tokenId
+  ) {
+    return new Response("Item not claimed by this device", { status: 409 });
+  }
+
+  await env.DB.prepare("UPDATE queue_items SET status = 'failed' WHERE id = ?")
+    .bind(itemId)
+    .run();
+
+  return new Response(null, { status: 204 });
 }

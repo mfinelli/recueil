@@ -15,9 +15,12 @@
     "types": "tsc -p terraform/tsconfig.json"
   },
   "devDependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
     "@cloudflare/vitest-pool-workers": "^0.18.0",
     "@cloudflare/workers-types": "^5.20260703.1",
     "@eslint/js": "^10.0.1",
+    "@smithy/protocol-http": "^5.5.6",
+    "@smithy/signature-v4": "^5.6.2",
     "eslint": "^10.6.0",
     "globals": "^17.7.0",
     "prettier": "^3.9.4",

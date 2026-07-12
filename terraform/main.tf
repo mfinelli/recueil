@@ -66,6 +66,35 @@ resource "cloudflare_workers_script" "worker" {
       name = "SERVICE_SECRET"
       text = random_password.service_secret.result
     },
+    {
+      # Not secret -- the account ID is not sensitive on its own (it's
+      # visible in every Cloudflare dashboard URL and API response for this
+      # account) -- but it must match whatever account var.r2_access_key_id/
+      # var.r2_secret_access_key were issued against, so it's derived from
+      # the same var.account_id already passed into this module rather than
+      # a separately-typed value that could drift out of sync with it.
+      type = "plain_text"
+      name = "R2_ACCOUNT_ID"
+      text = var.account_id
+    },
+    {
+      type = "plain_text"
+      name = "R2_BUCKET_NAME"
+      text = cloudflare_r2_bucket.capture_buffer.name
+    },
+    {
+      # R2 S3 API credentials for presigned upload URLs (design doc §3/§6).
+      # Manually provisioned -- see variables.tf's r2_access_key_id for why
+      # Terraform can't create this resource itself.
+      type = "secret_text"
+      name = "R2_ACCESS_KEY_ID"
+      text = var.r2_access_key_id
+    },
+    {
+      type = "secret_text"
+      name = "R2_ACCESS_KEY_SECRET"
+      text = var.r2_secret_access_key
+    },
   ]
 }
 

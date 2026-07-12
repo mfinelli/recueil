@@ -50,3 +50,27 @@ variable "worker_subdomain" {
   EOT
   type        = string
 }
+
+variable "r2_access_key_id" {
+  description = <<-EOT
+    Access Key ID for R2's S3-compatible API, used by the Worker to build
+    presigned upload URLs (design doc §3/§6). There is no Terraform resource
+    that provisions this credential -- unlike the D1 database, R2 bucket, or
+    the Worker's own service secret, R2 API tokens (Access Key ID + Secret
+    Access Key) must be created once, manually, via the Cloudflare dashboard
+    (Account Home > R2 > Manage R2 API Tokens > Create API Token, with
+    read+write permission scoped to this bucket) or the R2 API directly, then
+    supplied here. See terraform/README.md for the exact steps.
+  EOT
+  type        = string
+  sensitive   = true
+}
+
+variable "r2_secret_access_key" {
+  description = <<-EOT
+    Secret Access Key paired with var.r2_access_key_id. See that variable's
+    description for why this can't be Terraform-provisioned directly.
+  EOT
+  type        = string
+  sensitive   = true
+}

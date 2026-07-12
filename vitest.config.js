@@ -21,6 +21,14 @@ export default defineConfig(async () => {
                 bindings: {
                   SERVICE_SECRET: "test-service-secret",
                   TEST_MIGRATIONS: migrations,
+                  // Fake R2 S3 API credentials -- only exercised for
+                  // presigned-URL *construction* in tests (see
+                  // handleGetUploadUrls tests), never a real upload, so
+                  // any well-formed values work.
+                  R2_ACCOUNT_ID: "test-account-id",
+                  R2_BUCKET_NAME: "test-bucket",
+                  R2_ACCESS_KEY_ID: "test-access-key-id",
+                  R2_ACCESS_KEY_SECRET: "test-access-key-secret",
                 },
               },
             }),

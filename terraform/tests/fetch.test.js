@@ -122,4 +122,44 @@ describe("fetch (router)", () => {
     });
     expect(response.status).toBe(404);
   });
+
+  it("routes POST /captures/upload-urls to handleGetUploadUrls (401 with no auth confirms it was reached)", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/captures/upload-urls",
+      { method: "POST", body: JSON.stringify({ capture_id: "x" }) },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /queue/:id/complete, extracting the id from the path correctly", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/queue/some-id/complete",
+      { method: "POST" },
+    );
+    // No auth -> 401, which still confirms routing (not 404) reached
+    // handleCompleteQueueItem.
+    expect(response.status).toBe(401);
+  });
+
+  it("does not match /queue/complete (missing the id segment) as a complete route", async () => {
+    const response = await SELF.fetch("https://example.com/queue/complete", {
+      method: "POST",
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("routes POST /queue/:id/fail, extracting the id from the path correctly", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/queue/some-id/fail",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("does not match /queue/fail (missing the id segment) as a fail route", async () => {
+    const response = await SELF.fetch("https://example.com/queue/fail", {
+      method: "POST",
+    });
+    expect(response.status).toBe(404);
+  });
 });

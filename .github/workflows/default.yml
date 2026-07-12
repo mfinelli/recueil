@@ -34,7 +34,7 @@ jobs:
           go-version-file: go.mod
       - uses: pnpm/action-setup@v6
         with:
-          version: latest
+          version: "11.11.0" # TODO: https://github.com/pnpm/action-setup/issues/276
       - uses: actions/setup-node@v6
         with:
           cache: pnpm
@@ -48,6 +48,7 @@ jobs:
       - run: go install github.com/kisielk/errcheck@latest
       - run: go install github.com/go-critic/go-critic/cmd/go-critic@latest
       - run: tofu fmt -check -recursive
+      - run: pnpm ci
       - run: pnpm run check
       - run: pnpm run types
       - run: pnpm run lint
