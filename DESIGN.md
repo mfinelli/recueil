@@ -1,40 +1,5 @@
 # Recueil — Design Document
 
-_Updated after Phase 1 implementation, then several more times after the tooling
-work that followed it. Round one concentrated in §5 (bootstrap token redesign,
-dashboard session auth resolved), the new §5b, §10 (schema for
-`users`/`sessions`/`schema_migrations` resolved), the new §13a, and §15. Round
-two updated §13 (repository tree) and §13a (CLI/config via cobra+viper, `chi`
-replacing stdlib routing, goose moved to its `Provider` API, the new Postgres
-test harness) and resolved the goose-as-library item §15 had left open. Round
-three updated §13/§13a for `cmd/server.go` (the actual `recueil server`
-subcommand, and `main.go`'s real role embedding both migration directories),
-`Execute()` owning a single signal-aware context threaded via `cmd.Context()`,
-and the health-check endpoints mounted on `internal/httpapi`'s router. Round
-four added §13a's Metrics and HTTP middleware entries (Prometheus, `httplog`,
-the chi middleware stack) and recorded OpenTelemetry as considered and
-deliberately deferred, with the condition under which it'd be worth revisiting.
-This round adds the new §3d (manual upload, bypassing the queue/R2/D1/Worker
-entirely) and the `captures.source` column it introduces (§10). Round five,
-prompted by discovering that the D1 password-hash mirror would require verifying
-a slow hash (bcrypt) inside a CPU-limited Cloudflare Worker — infeasible at any
-cost factor on the free tier, and not fixable by swapping in a faster
-Worker-native primitive without still mirroring password-derived material into
-D1. Replaces the D1 password-hash mirror entirely with a separate,
-single-purpose per-user **pairing token**: D1 no longer stores anything
-password-derived, in any form. Updates §2's architecture diagram, §5's
-device-authentication design, §10's Postgres and D1 `users` tables, and the
-D1-mirror security discussion accordingly. This is a retrofit of already-built
-Phase 1 code (the `/internal/users/mirror` route and D1 `users` schema), not
-purely new Phase 2 scope — noted in §15. Round six documents Phase 2 as actually
-built: the `/pair`, `/queue` (enqueue/read/claim), and `/internal/tokens`
-(list/revoke) Worker endpoints, plus a `/internal/queue-items/cleanup` endpoint
-added once implementation surfaced that successfully-processed queue items had
-no retention/cleanup story. Updates §5's `tokens` schema (`STRICT`, an index),
-§8 (the claim endpoint's actual 410/409/404 semantics, and the new queue-item
-cleanup design), §10's D1 schema (both tables' actual implemented shape), and
-resolves the corresponding item in §15._
-
 ## 1. Overview
 
 Recueil is a self-hosted personal web archiving tool. It replaces a Frankenstein
