@@ -20,6 +20,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
   handleClaimQueueItem,
+  handleCleanupQueueItems,
   handleEnqueue,
   handleListQueue,
 } from "../index.js";
@@ -491,5 +492,153 @@ describe("handleClaimQueueItem", () => {
       "x",
     );
     expect(response.status).toBe(401);
+  });
+});
+
+function serviceRequest(path) {
+  return new Request(`https://example.com${path}`, {
+    method: "POST",
+    headers: { "X-Service-Key": "test-service-secret" },
+  });
+}
+
+async function insertQueueItem(id, userId, status, hoursSinceClaimed) {
+  const claimedAt =
+    hoursSinceClaimed === null
+      ? null
+      : `datetime('now', '-${hoursSinceClaimed} hours')`;
+  await env.DB.prepare(
+    `INSERT INTO queue_items (id, user_id, url, status, claimed_at)
+     VALUES (?, ?, ?, ?, ${claimedAt === null ? "NULL" : claimedAt})`,
+  )
+    .bind(id, userId, `https://example.com/${id}`, status)
+    .run();
+}
+
+describe("handleCleanupQueueItems", () => {
+  it("deletes a captured item claimed more than 72 hours ago", async () => {
+    const userId = await seedUser();
+    await insertQueueItem("cleanup-old-captured", userId, "captured", 100);
+
+    const response = await handleCleanupQueueItems(
+      serviceRequest("/internal/queue-items/cleanup"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.deleted).toBeGreaterThanOrEqual(1);
+
+    const row = await env.DB.prepare("SELECT id FROM queue_items WHERE id = ?")
+      .bind("cleanup-old-captured")
+      .first();
+    expect(row).toBeNull();
+  });
+
+  it("does not delete a captured item claimed less than 72 hours ago", async () => {
+    const userId = await seedUser();
+    await insertQueueItem("cleanup-recent-captured", userId, "captured", 1);
+
+    await handleCleanupQueueItems(
+      serviceRequest("/internal/queue-items/cleanup"),
+      env,
+    );
+
+    const row = await env.DB.prepare("SELECT id FROM queue_items WHERE id = ?")
+      .bind("cleanup-recent-captured")
+      .first();
+    expect(row).not.toBeNull();
+  });
+
+  it("never deletes a failed item, no matter how old", async () => {
+    const userId = await seedUser();
+    await insertQueueItem("cleanup-old-failed", userId, "failed", 1000);
+
+    await handleCleanupQueueItems(
+      serviceRequest("/internal/queue-items/cleanup"),
+      env,
+    );
+
+    const row = await env.DB.prepare("SELECT id FROM queue_items WHERE id = ?")
+      .bind("cleanup-old-failed")
+      .first();
+    expect(row).not.toBeNull();
+  });
+
+  it("does not delete pending or claimed (non-terminal) items regardless of age", async () => {
+    const userId = await seedUser();
+    await insertQueueItem("cleanup-old-pending", userId, "pending", null);
+    await insertQueueItem("cleanup-old-claimed", userId, "claimed", 1000);
+
+    await handleCleanupQueueItems(
+      serviceRequest("/internal/queue-items/cleanup"),
+      env,
+    );
+
+    const pending = await env.DB.prepare(
+      "SELECT id FROM queue_items WHERE id = ?",
+    )
+      .bind("cleanup-old-pending")
+      .first();
+    const claimed = await env.DB.prepare(
+      "SELECT id FROM queue_items WHERE id = ?",
+    )
+      .bind("cleanup-old-claimed")
+      .first();
+    expect(pending).not.toBeNull();
+    expect(claimed).not.toBeNull();
+  });
+
+  it("sweeps across all users, not scoped to one (this is a maintenance job, not a device operation)", async () => {
+    const userA = await seedUser();
+    const userB = await seedUser();
+    await insertQueueItem("cleanup-multi-a", userA, "captured", 200);
+    await insertQueueItem("cleanup-multi-b", userB, "captured", 200);
+
+    const response = await handleCleanupQueueItems(
+      serviceRequest("/internal/queue-items/cleanup"),
+      env,
+    );
+    const body = await response.json();
+    expect(body.deleted).toBeGreaterThanOrEqual(2);
+
+    const rowA = await env.DB.prepare("SELECT id FROM queue_items WHERE id = ?")
+      .bind("cleanup-multi-a")
+      .first();
+    const rowB = await env.DB.prepare("SELECT id FROM queue_items WHERE id = ?")
+      .bind("cleanup-multi-b")
+      .first();
+    expect(rowA).toBeNull();
+    expect(rowB).toBeNull();
+  });
+
+  it("requires the service key", async () => {
+    const response = await handleCleanupQueueItems(
+      new Request("https://example.com/internal/queue-items/cleanup", {
+        method: "POST",
+      }),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects the wrong service key", async () => {
+    const response = await handleCleanupQueueItems(
+      new Request("https://example.com/internal/queue-items/cleanup", {
+        method: "POST",
+        headers: { "X-Service-Key": "wrong" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("reports zero deleted when nothing qualifies", async () => {
+    const response = await handleCleanupQueueItems(
+      serviceRequest("/internal/queue-items/cleanup"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.deleted).toBe(0);
   });
 });

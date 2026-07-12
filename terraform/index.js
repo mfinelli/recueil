@@ -139,6 +139,9 @@ export default {
     if (method === "DELETE" && tokenMatch) {
       return handleRevokeToken(request, env, tokenMatch[1]);
     }
+    if (method === "POST" && pathname === "/internal/queue-items/cleanup") {
+      return handleCleanupQueueItems(request, env);
+    }
 
     return new Response("Not Found", { status: 404 });
   },
@@ -502,4 +505,56 @@ export async function handleRevokeToken(request, env, tokenIdParam) {
     return new Response("Not Found", { status: 404 });
   }
   return new Response(null, { status: 204 });
+}
+
+// How long a successfully captured queue_items row is kept before cleanup
+// deletes it. Exists purely to support the claim endpoint's 410 semantics
+// and basic auditability for a while after the fact -- not a durable
+// record (that's Postgres's captures table).
+const CAPTURED_RETENTION_HOURS = 72;
+
+/**
+ * POST /internal/queue-items/cleanup: deletes 'captured' queue_items older
+ * than CAPTURED_RETENTION_HOURS, so the table doesn't grow unboundedly with
+ * terminal-state rows that exist only to support the claim endpoint's 410
+ * semantics. Called periodically by the backend's own schedule (once or
+ * twice a day is plenty) -- not a Cloudflare Cron Trigger, matching the
+ * same "keep the Worker dumb, let the backend own scheduling" reasoning
+ * already applied to the visibility-timeout reclaim (handled at
+ * query time, no sweep job either).
+ *
+ * Deliberately does NOT touch 'failed' items -- those are kept
+ * indefinitely for now. What to do about failed items long-term is an
+ * open question for later, not decided here.
+ *
+ * Uses claimed_at, not created_at, as the retention clock: an item can
+ * sit pending for a long time before being claimed, and it's time since
+ * actual completion that matters for retention, not time since the
+ * original enqueue. claimed_at is a reasonable proxy for completion time
+ * at this project's scale (the gap between claim and successful capture
+ * is seconds to minutes) until/unless a dedicated completion timestamp
+ * exists.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleCleanupQueueItems(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const result = await env.DB.prepare(
+    `DELETE FROM queue_items
+     WHERE status = 'captured'
+       AND claimed_at < datetime('now', ?)`,
+  )
+    .bind(`-${CAPTURED_RETENTION_HOURS} hours`)
+    .run();
+
+  return new Response(JSON.stringify({ deleted: result.meta.changes }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
