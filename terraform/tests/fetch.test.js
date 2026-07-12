@@ -34,4 +34,92 @@ describe("fetch (router)", () => {
     );
     expect(response.status).toBe(404);
   });
+
+  it("routes POST /pair to handlePair (400 on empty body confirms it was reached, not 404'd)", async () => {
+    const response = await SELF.fetch("https://example.com/pair", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 404 for GET /pair (wrong method for this route)", async () => {
+    const response = await SELF.fetch("https://example.com/pair", {
+      method: "GET",
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("routes POST /queue to handleEnqueue (401 with no auth confirms it was reached)", async () => {
+    const response = await SELF.fetch("https://example.com/queue", {
+      method: "POST",
+      body: JSON.stringify({ id: "x", url: "https://example.com" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("routes GET /queue to handleListQueue (401 with no auth confirms it was reached)", async () => {
+    const response = await SELF.fetch("https://example.com/queue", {
+      method: "GET",
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /queue/:id/claim, extracting the id from the path correctly", async () => {
+    // With no auth this 401s before ever reading itemId, so this alone
+    // doesn't prove extraction -- the real proof is in queue.test.js's
+    // claim tests, which pass a real bearer token and confirm the correct
+    // row gets updated. This just confirms the regex matches the shape at
+    // all (doesn't fall through to 404) for an id containing characters
+    // that could plausibly break a naive path match.
+    const response = await SELF.fetch(
+      "https://example.com/queue/some-uuid-like-id-123/claim",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("does not match /queue/claim (missing the id segment) as a claim route", async () => {
+    const response = await SELF.fetch("https://example.com/queue/claim", {
+      method: "POST",
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("does not match a claim path with an extra trailing segment", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/queue/some-id/claim/extra",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("routes GET /internal/tokens to handleListTokens (400 with no user_id confirms it was reached)", async () => {
+    const response = await SELF.fetch("https://example.com/internal/tokens", {
+      method: "GET",
+      headers: { "X-Service-Key": "test-service-secret" },
+    });
+    expect(response.status).toBe(400);
+  });
+
+  it("routes DELETE /internal/tokens/:id, extracting the id from the path correctly", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/tokens/123",
+      {
+        method: "DELETE",
+        headers: { "X-Service-Key": "test-service-secret" },
+      },
+    );
+    // No user_id query param -> 400, which still confirms routing (not
+    // 404) reached handleRevokeToken with tokenIdParam="123".
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 404 for DELETE /internal/tokens (missing the id segment)", async () => {
+    const response = await SELF.fetch("https://example.com/internal/tokens", {
+      method: "DELETE",
+      headers: { "X-Service-Key": "test-service-secret" },
+    });
+    expect(response.status).toBe(404);
+  });
 });

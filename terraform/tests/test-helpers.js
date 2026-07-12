@@ -16,11 +16,19 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
--- Bootstrap migration for the runner's own bookkeeping table. Written with
--- IF NOT EXISTS (unlike the other migrations) because the runner executes
--- this one unconditionally, before it's able to query schema_migrations to
--- find out what else is pending (see internal/d1migrate).
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  id TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-) STRICT, WITHOUT ROWID;
+// Test-only re-implementation of index.js's private sha256Hex, so test
+// files can independently compute the hash a raw token should produce
+// without needing index.js to export an unexported internal just for
+// tests to reach it.
+
+/**
+ * @param {string} raw
+ * @returns {Promise<string>}
+ */
+export async function sha256Hex(raw) {
+  const data = new TextEncoder().encode(raw);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(digest)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
