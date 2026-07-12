@@ -33,7 +33,10 @@ re-fetching a live page.
 
 Store exactly one artifact format per capture: a fully inlined single HTML file
 (SingleFile-style — CSS, images, fonts inlined as data URIs), plus a plain-text
-Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML.
+Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML. The
+HTML is the only artifact ever uploaded by a capturing client; the Readability
+extraction and the thumbnail are both produced later, offline, by the backend
+(see §6/§6a) — not synchronously at capture time.
 
 ---
 
@@ -75,8 +78,9 @@ Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML.
         │         Desktop Browser Extension          │
         │  - reads queue from D1 (via Worker)         │
         │  - user selects item → loads URL             │
-        │  - captures: HTML (via vendored SingleFile     │
-        │    library), Readability text                   │
+        │  - captures HTML only (via vendored              │
+        │    SingleFile library — no Readability            │
+        │    vendored here; see §3a/§6a)                      │
         │  - uploads to R2 via presigned URL              │
         │  (no longer captures a screenshot — see §6)      │
         └──────────────────────────────────────────┘
@@ -89,7 +93,9 @@ Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML.
         │  - pulls blobs from R2, then deletes from R2   │
         │  - zstd-compresses HTML, stores locally          │
         │  - enqueues async screenshot job (§6)             │
-        │  - runs optional AI enrichment (summary/tags)      │
+        │  - enqueues async readability extraction job (§6a) │
+        │  - runs optional AI enrichment (summary/tags),        │
+        │    once reader_text exists (§7)                        │
         │  - pushes bookmark-list mirror row to D1 ───────────┘
         │    (via Worker, after each capture is processed)
         │  - pushes pairing-token-hash mirror to D1 ───────────┘
@@ -103,11 +109,16 @@ Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML.
                     │                           │
                     ▼                           ▼
         ┌──────────────────────┐   ┌──────────────────────────┐
-        │  Screenshot service    │   │   Svelte Dashboard         │
-        │  (chromedp +            │   │  - library browsing, search  │
+        │  Headless-Chrome       │   │   Svelte Dashboard         │
+        │  sidecar (chromedp +    │   │  - library browsing, search  │
         │  headless-shell         │   │  - version history per page   │
         │  container, driven       │   │  - tags (manual + AI),          │
-        │  by the backend)          │   │    nested collections             │
+        │  by the backend) —        │   │    nested collections             │
+        │  produces both               │
+        │  thumbnails (§6) and           │
+        │  Readability extractions        │
+        │  (§6a) from already-captured      │
+        │  offline HTML                        │
         └──────────────────────┘   └──────────────────────────┘
 ```
 
@@ -145,27 +156,29 @@ specific networking solution.
    popup for on-demand polling.
 4. User selects a queued item (or a page they're currently on, for direct/
    unqueued capture) and triggers capture.
-5. Extension captures:
-   - Full inlined single-page HTML, via SingleFile's own capture code **vendored
-     directly into the extension as a library** (see §3a) — not by messaging a
-     separately installed SingleFile extension.
-   - Readability.js-extracted plain text (run **in the extension**, against the
-     live DOM, before any re-archival loses render-time state)
-6. Extension requests a presigned R2 upload URL from the Worker, uploads both
-   artifacts (HTML + reader text) directly to R2 (bypassing Worker body-size
-   limits; presigned R2 PUT supports objects far larger than any archived page
-   will ever be).
+5. Extension captures full inlined single-page HTML, via SingleFile's own
+   capture code **vendored directly into the extension as a library** (see §3a)
+   — not by messaging a separately installed SingleFile extension. The extension
+   does **not** run Readability extraction itself — see §3a and §6a for why that
+   moved to an async backend job.
+6. Extension requests a presigned R2 upload URL from the Worker, uploads the
+   HTML directly to R2 (bypassing Worker body-size limits; presigned R2 PUT
+   supports objects far larger than any archived page will ever be).
 7. Extension notifies the Worker that the upload is complete → Worker writes a
    `pending_captures` row to D1, using a **client-generated UUID** as the row's
    id (and marks the `queue_items` row, if any, as `captured`).
 8. Backend, on its own polling schedule, discovers the new `pending_captures`
-   row, pulls the blobs from R2, zstd-compresses the HTML, stores it on local
-   disk, computes content hashes (see §3b), deletes the R2 objects, writes rows
+   row, pulls the HTML blob from R2, zstd-compresses it, stores it on local
+   disk, computes the content hash (see §3b), deletes the R2 object, writes rows
    to Postgres (idempotently — see §3c), and finally pushes a lightweight mirror
    row back to D1 for the bookmark-list feature (see §8).
-9. Backend enqueues a **screenshot job** (async, decoupled — see §6).
-10. (Optional, async) Backend enqueues an AI job to summarize/tag the capture
-    using the Readability text (see §7).
+9. Backend enqueues a **screenshot job** (async, decoupled — see §6) and a
+   **Readability extraction job** (async, decoupled — see §6a) against the same
+   locally-stored HTML.
+10. (Optional, async) Once the Readability job has populated `reader_text` for
+    the capture, backend enqueues an AI job to summarize/tag it (see §7) — AI
+    enrichment has a real dependency on readability extraction having already
+    completed, unlike the screenshot job, which has no such dependency.
 11. Backup of the resulting Postgres data and local archive directory is the
     operator's own responsibility (see §14) — not part of this pipeline.
 
@@ -186,17 +199,44 @@ own extension," not "talk to a second installed extension" — it avoids any
 dependency on a stable cross-browser extension ID, `externally_connectable`
 support, or requiring the user to separately install SingleFile at all.
 
-The extension's own `package.json`/bundler setup (already needed to pull in
-Readability.js) is the natural place to also vendor SingleFile's capture code.
+The extension **does not vendor Readability.js**. An earlier revision of this
+design had the extension run Readability against the live, rendered DOM
+immediately at capture time, on the reasoning that this happens "before any
+re-archival loses render-time state." That reasoning no longer drives the
+architecture: §3d's manual-upload pathway forced the question of how to extract
+reader text from an already-captured HTML file with no live DOM available at
+all, and the answer — run Readability against the file offline, in a real
+(headless) browser — turned out to work just as well for every other capture
+path too, not just manual upload. Extraction was therefore deferred uniformly to
+a single async backend job (§6a), and the extension was simplified to produce
+and upload HTML only. The one honest tradeoff, stated plainly rather than
+glossed over: this bets on SingleFile's serialization being a faithful enough
+snapshot of the live page that nothing Readability actually needs gets lost
+between "live DOM" and "SingleFile's static output" — a reasonable bet given
+SingleFile's whole purpose is producing a faithful static snapshot, but a real
+relaxation of the original guarantee, not a free lunch.
+
+The extension's own `package.json`/bundler setup exists to vendor SingleFile's
+capture code and a WebExtension polyfill — no longer Readability.js, which was
+the original reason this setup existed at all. Whether the extension still needs
+a real bundler for just those two things, or whether that setup can be
+simplified now that Readability.js is out of the picture entirely, is worth
+revisiting once the extension is actually built.
 
 ### 3b. Content hashing
 
 Each capture stores **two** hashes:
 
 - `content_hash` — over the full inlined HTML. Useful for exact byte-for-byte
-  dedup detection.
+  dedup detection. Computed synchronously at ingestion (§3), since the HTML is
+  the one artifact available immediately.
 - `reader_text_hash` — over the Readability-extracted plain text. This is the
-  hash that drives the dashboard's "unchanged since last capture" flag.
+  hash that drives the dashboard's "unchanged since last capture" flag. Unlike
+  `content_hash`, this is populated asynchronously, once the Readability
+  extraction job (§6a) completes — `reader_text`/`reader_text_hash` are both
+  nullable on `captures` and simply absent (not zero, not empty-string) until
+  then. The "unchanged since last capture" feature has nothing to compare
+  against for a capture whose extraction hasn't run yet, or has failed.
 
 The full-HTML hash is a poor signal for "did the visible content change" — most
 real pages embed per-load-unique content (CSRF tokens, cache-busted asset URLs,
@@ -246,14 +286,24 @@ flow, not a variant of it:
   gated by the same `RequireSession` middleware as any other dashboard endpoint,
   scoped to the authenticated user the same way any other capture is
   (`pages.user_id`).
-- **Reader text is extracted client-side, in the dashboard's own browser,
-  before/during upload** — the dashboard runs Readability.js against the
-  uploaded HTML and sends the extracted text alongside the raw HTML, mirroring
-  exactly how the extension does it today (§3a: extraction happens in a real
-  browser, never server-side). This keeps the principle consistent across both
-  capture paths rather than introducing a Go-side Readability port for this one
-  pathway. The page title is read the same way, from the uploaded HTML's
-  `<title>` tag, rather than requiring a separate manual field.
+- **Reader text is no longer extracted client-side for this pathway either.** An
+  earlier revision of this design had the dashboard's own browser run
+  Readability.js against the uploaded HTML at upload time, specifically to keep
+  "extraction happens in a real browser, never server-side" consistent with how
+  the extension worked. That reasoning inverted once this very pathway exposed
+  the actual question underneath it: manual upload has no live DOM at all, only
+  an already-captured static file — and Readability runs against that file just
+  as validly whether it's a headless Chrome tab or the dashboard's own tab. Once
+  that was true for manual uploads, it was true for every capture path, so
+  extraction was unified into a single async backend job (§6a) that all captures
+  share, extension-sourced or manually uploaded alike. This pathway needs no
+  Readability-specific handling of its own anymore — a manually uploaded capture
+  simply gets a `readability_jobs` row created the same as any other new capture
+  (see §6a). The page title is read from the uploaded HTML's `<title>` tag at
+  ingestion time (a plain parse, not a Readability output — SingleFile's own
+  `getPageData()` already provided the title this way for extension-sourced
+  captures, per §3a, so this pathway needed its own equivalent regardless of the
+  Readability question).
 - **No idempotency-by-UUID machinery, unlike §3c.** §3c's `source_capture_id`
   scheme exists to protect an unattended, multi-step background process
   (extension → R2 → Worker → backend poll) against double-insertion on
@@ -263,14 +313,16 @@ flow, not a variant of it:
   deduplication against prior identical uploads. `captures.source_capture_id`
   stays `NULL` for these rows (already nullable, so no schema change was needed
   to allow this).
-- **Everything downstream of ingestion is unchanged**: content and reader-text
-  hashing (§3b), URL normalization (§9), grouping into `pages` by
-  `normalized_url` — a manual upload of an already-captured URL is just another
-  new version under the same page, identical in kind to any other re-archive
-  above. The async screenshot job (§6) and AI enrichment (§7) both apply
-  unmodified, since §6 already explicitly operates on "already-captured, fully
-  inlined SingleFile HTML" — which is exactly the shape of a manually uploaded
-  file.
+- **Everything downstream of ingestion is unchanged**: content hashing (§3b),
+  URL normalization (§9), grouping into `pages` by `normalized_url` — a manual
+  upload of an already-captured URL is just another new version under the same
+  page, identical in kind to any other re-archive above. The async screenshot
+  job (§6) and the async Readability extraction job (§6a) both apply unmodified,
+  since both already explicitly operate on "already-captured, fully inlined
+  SingleFile HTML on local disk" — which is exactly the shape of a manually
+  uploaded file once ingestion has stored it. AI enrichment (§7) applies
+  unmodified too, once (and only once) the Readability job has populated
+  `reader_text` for this capture, same as any other capture.
 - **One real, concrete conflict with existing infrastructure, worth flagging
   rather than discovering later**: SingleFile archives with inlined images/fonts
   routinely run tens of megabytes, while the global
@@ -660,9 +712,9 @@ the repo's security documentation rather than left implicit.
 ## 6. Screenshot / Thumbnail Generation
 
 **Moved from the extension to the backend.** The extension no longer captures a
-screenshot at all — it uploads only HTML and reader text (see §3). Thumbnail
-generation now happens as an async backend job, after a capture's HTML has
-already been pulled from R2 and stored locally.
+screenshot at all — it uploads only HTML (see §3). Thumbnail generation now
+happens as an async backend job, after a capture's HTML has already been pulled
+from R2 and stored locally.
 
 ### Why this is safe, unlike a general "fetch and archive" fallback
 
@@ -702,8 +754,9 @@ browser tab" capture path.
 Because the screenshot is no longer produced client-side and never touches R2:
 
 - `r2_key_thumbnail` is **removed** from the D1 `pending_captures` table.
-- The extension only needs to request presigned URLs for two objects (HTML,
-  reader text), not three.
+- The extension only needs to request a presigned URL for one object (HTML) —
+  see §6a for why `r2_key_readable` is removed too, for the same reason
+  reader-text extraction moved off the extension entirely.
 
 ### Tradeoff, stated explicitly
 
@@ -725,13 +778,93 @@ coverage don't apply here — Chrome/Chromium via chromedp is sufficient.
 
 ---
 
+## 6a. Readability Extraction
+
+**Moved from the extension (and, for manual uploads, the dashboard's browser) to
+the backend, sharing the same headless-Chrome sidecar as §6.** Neither the
+extension nor manual upload runs Readability.js anymore; every capture's reader
+text is produced by a single async backend job, after the HTML has already been
+pulled from R2 (or, for manual uploads, accepted directly) and stored locally.
+
+### Why this is safe, and the one real tradeoff
+
+The same reasoning as §6 applies for the same reason: rendering
+already-captured, fully inlined, script-stripped HTML offline is not the "fetch
+a live URL" operation §1 forbids. No network requests, no live authentication
+state, no CAPTCHA.
+
+The honest tradeoff, not glossed over: §3a's original design ran Readability
+against a **live, rendered DOM**, specifically "before any re-archival loses
+render-time state." Running it later against SingleFile's serialized output
+instead bets that SingleFile's snapshot is a faithful enough substitute for that
+live DOM that nothing Readability actually needs gets lost in between. This is a
+reasonable bet — producing a faithful static snapshot is SingleFile's entire
+purpose — but it is a real relaxation of the original guarantee, worth stating
+plainly rather than assuming away.
+
+### Design
+
+- Runs in the **same headless-Chrome sidecar** as §6 (`chromedp` +
+  `chromedp/headless-shell`), not a second browser instance — a single page load
+  of the already-captured HTML can plausibly serve both the screenshot and the
+  Readability extraction, though whether to actually combine them into one
+  job/one page-load or keep them as two independently-scheduled jobs sharing one
+  browser pool is an implementation-phase decision, not resolved here.
+- Readability.js itself is **vendored into the backend** (or wherever the
+  sidecar-driving code lives) and injected into the loaded page via
+  `chromedp.Evaluate`, then run as `new Readability(document).parse()` against
+  the real DOM that headless Chrome has rendered — this is the actual upstream
+  Readability.js library, run in a real DOM, just no longer in the _original_
+  capturing browser tab.
+- **Fully async and non-blocking**, matching the `ai_jobs`/§6 pattern: a capture
+  is fully valid, searchable (its `content_hash`-based dedup still works), and
+  browsable with `reader_text`/`reader_text_hash` both `NULL` until extraction
+  completes — or permanently, if it never succeeds. Bounded retry with backoff,
+  same shape as §7.
+- **Re-extraction, in place, no history kept.** If the vendored Readability.js
+  is upgraded later, re-running extraction against a capture's already-stored
+  HTML overwrites `reader_text`/`reader_text_hash`/`readability_version` on that
+  `captures` row directly — no prior extraction's output is retained.
+  `readability_version` records only which version most recently produced what's
+  currently stored, not a history of every version ever tried.
+
+### Consequence for the schema
+
+- `captures.reader_text` and `captures.reader_text_hash` become **nullable**
+  (§3b) — previously implicitly synchronous, now populated asynchronously or not
+  at all.
+- `captures.readability_version TEXT` (nullable) — new column, alongside
+  `reader_text`, recording which vendored Readability.js version produced it.
+  Lives on `captures` itself, **not** a separate job-owned copy, for a concrete
+  technical reason: `captures.reader_text_tsv` (§10) is a Postgres
+  `GENERATED ALWAYS AS` column, and generated columns can only reference other
+  columns in the _same row_ — so the underlying `reader_text` has to live on
+  `captures` directly for full-text search to work at all, unlike `ai_jobs`,
+  which keeps its own copy of `summary` fully decoupled from `captures`.
+- New `readability_jobs` table (§10), mirroring `ai_jobs`'s
+  `status`/`attempts`/`next_attempt_at`/`error`/`completed_at` retry-and-backoff
+  shape exactly, one row per capture — but holding **no** copy of the extracted
+  text itself (that lives on `captures`, per above). Reading a capture's full
+  readability state means joining `captures` and `readability_jobs`, not reading
+  either table alone.
+- `pending_captures.r2_key_readable` (D1) is **removed** entirely — no client
+  will ever populate it going forward, since no client extracts or uploads
+  reader text anymore.
+
+---
+
 ## 7. AI Enrichment (Optional)
 
 - Entirely optional and asynchronous — never blocks capture or ingestion. A
   capture is fully valid, searchable, and browsable with zero AI fields
   populated.
 - Runs against the Readability-extracted plain text, not the raw HTML — cheaper
-  and produces better summaries than trying to parse rendered HTML.
+  and produces better summaries than trying to parse rendered HTML. This
+  introduces a real **sequencing dependency** on §6a that didn't exist when
+  extraction was synchronous: the AI job for a capture should not run (or should
+  itself wait/reschedule) until that capture's `readability_jobs` row shows a
+  completed extraction with non-null `reader_text` — unlike the screenshot job
+  (§6), which has no such dependency on anything else async.
 - Supports **two backend types**, chosen by the user in configuration:
   Ollama-compatible (local) or OpenAI-compatible (hosted). A single small
   interface (`Summarize(text) (summary, tags, error)`) covers both.
@@ -1006,9 +1139,19 @@ CREATE TABLE captures (
   html_size_bytes INTEGER NOT NULL,
   thumbnail_path TEXT,               -- populated async by the screenshot
                                       -- service (§6); null until then
-  reader_text TEXT,                  -- Readability plain-text extraction
+  reader_text TEXT,                  -- Readability plain-text extraction;
+                                      -- populated asynchronously by the
+                                      -- readability job (§6a) -- NULL until
+                                      -- that job completes, or permanently
+                                      -- if it never succeeds
+  readability_version TEXT,          -- vendored Readability.js version that
+                                      -- produced reader_text; overwritten in
+                                      -- place on re-extraction, no history
+                                      -- kept (§6a)
   content_hash TEXT NOT NULL,        -- full-HTML hash (exact dedup)
-  reader_text_hash TEXT NOT NULL,    -- powers "unchanged since last capture"
+  reader_text_hash TEXT,             -- powers "unchanged since last capture";
+                                      -- nullable for the same reason as
+                                      -- reader_text above (§3b, §6a)
   captured_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1069,6 +1212,27 @@ CREATE TABLE ai_jobs (
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
   summary TEXT,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+
+-- Retry/backoff bookkeeping for the async Readability extraction job (§6a),
+-- one row per capture -- same shape as ai_jobs above, EXCEPT it holds no
+-- copy of the extracted text itself. reader_text/reader_text_hash/
+-- readability_version live on captures directly (see that table above),
+-- not here, because captures.reader_text_tsv is a Postgres
+-- GENERATED ALWAYS AS column and generated columns can only reference
+-- other columns in the same row -- unlike ai_jobs.summary, which has no
+-- such constraint and can stay fully decoupled. Reading a capture's full
+-- readability state means joining captures and readability_jobs, not
+-- reading either table alone.
+CREATE TABLE readability_jobs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   completed_at TIMESTAMPTZ
@@ -1154,14 +1318,16 @@ CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token
 -- Completed captures awaiting backend pickup from R2.
 -- Note: r2_key_thumbnail has been removed — screenshots are generated
 -- backend-side from the already-pulled HTML (see §6), never uploaded by
--- the extension.
+-- the extension. r2_key_readable has been removed for the same reason —
+-- Readability extraction also moved backend-side (see §6a), so no client
+-- ever uploads reader text anymore; a capture now has exactly one R2
+-- object (the HTML) to track here.
 CREATE TABLE pending_captures (
   id TEXT PRIMARY KEY,              -- client-generated UUID
   user_id INTEGER NOT NULL REFERENCES users(id),
   queue_item_id TEXT REFERENCES queue_items(id),  -- null for direct captures
   url TEXT NOT NULL,
   r2_key_html TEXT NOT NULL,
-  r2_key_readable TEXT,
   captured_at TIMESTAMP NOT NULL,
   fetched_by_backend BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1200,7 +1366,7 @@ writes to `schema_migrations`.
 
 | Component                 | Tech                                                                                                    | Reachability required                                              | Responsibility                                                                                                                                                 |
 | ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                               | Worker + R2 only                                                   | Poll queue, capture (HTML via vendored SingleFile, reader text), upload to R2                                                                                  |
+| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                               | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6a), upload to R2                                                                  |
 | Share-sheet PWA           | Static site, Cloudflare Pages                                                                           | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
 | iOS Shortcut              | Apple Shortcuts                                                                                         | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
 | CLI                       | Small script/binary                                                                                     | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
@@ -1208,7 +1374,7 @@ writes to `schema_migrations`.
 | D1                        | Cloudflare D1 (SQLite)                                                                                  | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
 | R2                        | Cloudflare R2                                                                                           | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
 | Backend                   | Go + Postgres, Docker Compose                                                                           | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
-| Screenshot service        | chromedp + `chromedp/headless-shell`, Docker                                                            | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline, produces thumbnails                                                                                             |
+| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                            | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6) and Readability extractions (§6a)                                                      |
 | Dashboard                 | Svelte                                                                                                  | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
 
 ---
@@ -1317,9 +1483,9 @@ recueil/
 │                                 # dev database below
 │
 ├── extension/                # WebExtension, own package.json (needs bundling
-│   ├── src/                    # to pull in Readability.js and vendored
-│   ├── manifest.json            # SingleFile capture code as dependencies)
-│   └── package.json
+│   ├── src/                    # to pull in vendored SingleFile capture code
+│   ├── manifest.json            # and a WebExtension polyfill — no longer
+│   └── package.json             # Readability.js; see §3a/§6a)
 │
 ├── terraform/                  # OpenTofu module
 │   ├── main.tf                   # includes random_password for the
@@ -1697,3 +1863,24 @@ What remains open is purely implementation-phase, not architectural:
   longer, or manually-triggered) expiry are all plausible and none has been
   decided. Blocked on the `complete`/`fail` endpoints existing at all, since
   there's no way to mark an item `failed` yet.
+- **Resolved this round: Readability extraction moved from the extension (and
+  the dashboard's browser, for manual uploads) to a single deferred, async
+  backend job, sharing the headless-Chrome sidecar with the screenshot job — see
+  §3a, §3d, §6a.** This was prompted by manual upload (§3d) forcing the question
+  of how to extract reader text with no live DOM available at all; the answer
+  generalized to every capture path, not just that one. Chosen explicitly over a
+  native-Go Readability port (e.g. `go-shiori/go-readability`) on the reasoning
+  that the headless-Chrome sidecar already exists for screenshots, so running
+  the actual upstream Readability.js inside it is less net-new machinery than it
+  would be without that sidecar already being built — this is the _same_
+  tradeoff reasoning as §6's own chromedp choice, just applied a second time now
+  that there are two things worth rendering a page for. Real, stated
+  consequences: `captures.reader_text`/`reader_text_hash` are now nullable
+  (previously implicitly synchronous), a new `readability_jobs` table exists
+  (§10), and `pending_captures.r2_key_readable` is removed from D1 entirely.
+  **Not yet reflected in the already-built Phase 3 Worker code**
+  (`handleGetUploadUrls`/`handleCompleteQueueItem`, and the `pending_captures`
+  migration) — that code still presigns and accepts a reader-text object per
+  this design's _previous_ shape, built before this round's decision. Revising
+  it to match (single-object upload only) is outstanding follow-up work, not yet
+  done.
