@@ -105,6 +105,17 @@ past the original "backend + Postgres + bootstrap admin" framing — cobra/viper
 chi, health checks, and Prometheus metrics were all added along the way, each
 recorded below and in the design doc (§13a).
 
+Device authentication is **not** based on mirroring any password-derived value
+into D1. Each account has a separate, single-purpose **pairing token**,
+generated automatically at account creation, that exists only to pair a device
+against the Worker in exchange for a bearer token — the dashboard password is
+never used for this, and D1 never stores anything password-derived. See
+DESIGN.md §5 for the full rationale (in short: a CPU-limited Cloudflare Worker
+cannot feasibly verify a slow hash like bcrypt, and mirroring a faster
+Worker-native hash of the password would still mean exposing password-derived
+material to D1 — a separate credential avoids the problem at the source rather
+than picking a faster algorithm to mirror).
+
 The design doc has been kept in sync throughout (five revision rounds so far)
 and is the authoritative reference for _why_ each decision below was made — this
 document is the "what exists, what to watch for" companion to it, matching the
@@ -122,18 +133,21 @@ recueil/
 │   │                             subcommands via cmd.Context()
 │   ├── server.go               # `recueil server` — actual startup: config,
 │   │                             both migration runs, bootstrap holder,
-│   │                             httpapi wiring, graceful shutdown
+│   │                             pairing-token key parsing, httpapi wiring,
+│   │                             graceful shutdown
 │   └── cli/                   # carried over unchanged; NOT reconfirmed
 │                                 compatible with the new structure yet
 ├── internal/
 │   ├── config/                 # viper: --config TOML file, env vars, defaults
 │   │                             in this package's own init()
-│   ├── auth/                    # password hashing, session tokens, bootstrap flow
+│   ├── auth/                    # password hashing, session tokens, bootstrap
+│   │                             flow, pairing-token generation + reversible
+│   │                             AES-256-GCM encrypt/decrypt
 │   ├── db/                      # sqlc-generated query code (renamed from `dbgen`)
 │   ├── pgmigrate/                # Postgres migrations via goose's Provider API
 │   ├── dbtest/                   # Postgres integration-test harness
 │   ├── d1migrate/                 # D1 migrations via direct Cloudflare API call
-│   ├── mirror/                    # pushes credential mirror to the Worker
+│   ├── mirror/                    # pushes the pairing-token-hash mirror to the Worker
 │   ├── metrics/                    # Prometheus registry + custom collectors
 │   └── httpapi/                    # chi router, handlers, health checks, middleware
 ├── migrations/                  # Postgres migrations — plain .sql, no embed.go
@@ -155,17 +169,17 @@ recueil/
 
 ### Packages and responsibilities
 
-| Package              | Responsibility                                                               | Notes                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `internal/config`    | Loads `Config` via viper                                                     | Defaults live in this package's own `init()`, not `cmd/root.go` — they must apply regardless of which binary/test calls `Load()`.     |
-| `internal/auth`      | `bcrypt` hashing, session tokens, bootstrap holder                           | Bootstrap token is in-memory, not persisted (see below).                                                                              |
-| `internal/db`        | sqlc-generated Postgres queries                                              | `timestamptz` columns map to `pgtype.Timestamptz`, not `time.Time` (sqlc's `pgx/v5` default — kept, not overridden).                  |
-| `internal/pgmigrate` | Applies `migrations/*.sql` against an already-open `*pgxpool.Pool`           | Uses goose's `Provider` API, not its package-level functions — see rough edges below.                                                 |
-| `internal/dbtest`    | Postgres integration-test harness                                            | `Setup()` fails hard (never skips) if the test DB is unreachable; `Reset()` truncates every table dynamically, not a hardcoded list.  |
-| `internal/d1migrate` | Applies D1 migrations via a direct Cloudflare API call                       | Takes an `fs.FS` parameter; `main.go` does the actual `go:embed`.                                                                     |
-| `internal/mirror`    | Pushes the credential mirror (`id`/`username`/`password_hash`) to the Worker | Hand-rolled `net/http` client — this is _our own_ Worker, not Cloudflare's control-plane API, so the official SDK doesn't apply here. |
-| `internal/metrics`   | Builds the Prometheus registry served at `/metrics`                          | Own `prometheus.NewRegistry()`, never the global `DefaultRegisterer`.                                                                 |
-| `internal/httpapi`   | Dashboard-facing HTTP API: chi router, handlers, health checks, middleware   | See below for the middleware stack specifically.                                                                                      |
+| Package              | Responsibility                                                                          | Notes                                                                                                                                                                               |
+| -------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `internal/config`    | Loads `Config` via viper                                                                | Defaults live in this package's own `init()`, not `cmd/root.go` — they must apply regardless of which binary/test calls `Load()`.                                                   |
+| `internal/auth`      | `bcrypt` hashing, session tokens, bootstrap holder, pairing-token generation/encryption | Bootstrap token is in-memory, not persisted (see below). Pairing token is AES-256-GCM encrypted for Postgres storage, reversibly — see below.                                       |
+| `internal/db`        | sqlc-generated Postgres queries                                                         | `timestamptz` columns map to `pgtype.Timestamptz`, not `time.Time` (sqlc's `pgx/v5` default — kept, not overridden).                                                                |
+| `internal/pgmigrate` | Applies `migrations/*.sql` against an already-open `*pgxpool.Pool`                      | Uses goose's `Provider` API, not its package-level functions — see rough edges below.                                                                                               |
+| `internal/dbtest`    | Postgres integration-test harness                                                       | `Setup()` fails hard (never skips) if the test DB is unreachable; `Reset()` truncates every table dynamically, not a hardcoded list.                                                |
+| `internal/d1migrate` | Applies D1 migrations via a direct Cloudflare API call                                  | Takes an `fs.FS` parameter; `main.go` does the actual `go:embed`.                                                                                                                   |
+| `internal/mirror`    | Pushes the pairing-token mirror (`id`/`pairing_token_hash`) to the Worker               | Hand-rolled `net/http` client — this is _our own_ Worker, not Cloudflare's control-plane API, so the official SDK doesn't apply here. Holds no password-derived value at any point. |
+| `internal/metrics`   | Builds the Prometheus registry served at `/metrics`                                     | Own `prometheus.NewRegistry()`, never the global `DefaultRegisterer`.                                                                                                               |
+| `internal/httpapi`   | Dashboard-facing HTTP API: chi router, handlers, health checks, middleware              | See below for the middleware stack specifically.                                                                                                                                    |
 
 ### Configuration & CLI
 
@@ -181,6 +195,12 @@ recueil/
   `httpServer.Shutdown()`.
 - Both Postgres and D1 migrations are applied by the binary itself at startup —
   no external migration CLI needed for either store.
+- A new required config value, `pairing_token_key` (`PAIRING_TOKEN_KEY` as an
+  env var) — a base64-encoded 32-byte AES-256 key, operator-generated (e.g.
+  `openssl rand -base64 32`), used to reversibly encrypt/decrypt each account's
+  pairing token for Postgres storage. Not Cloudflare/Terraform-managed, since it
+  never leaves the backend's own trust boundary. `config.Load()` fails fast if
+  it's missing, same as the other required secrets.
 
 ### Database
 
@@ -190,15 +210,21 @@ explicitly named (`users_pkey`, `users_role_check`, etc.) rather than left to
 Postgres's auto-generated names, so a later `DROP CONSTRAINT` migration can
 reference it directly. `sessions` is DB-backed (not stateless signed cookies) —
 hashed opaque tokens, same shape as D1's device tokens, 30-day absolute TTL, no
-idle-timeout expiry.
+idle-timeout expiry. `users` additionally holds `pairing_token_enc` (nullable
+`TEXT`) — the AES-256-GCM-encrypted pairing token, reversible so the dashboard
+can redisplay it on demand; `NULL` means no pairing token currently exists
+(post-revoke, pre-regenerate).
 
 **D1** — `schema_migrations` (bookkeeping for the backend's own migration
-runner) and `users` (the credential mirror) exist, both `STRICT`;
-`schema_migrations` is additionally `WITHOUT ROWID`. Named deliberately _not_
-`d1_migrations` (wrangler's own convention) — wrangler is absent from this
-project's toolchain entirely; the Worker deploys via Terraform's Cloudflare
-provider directly, and D1 migrations run via a direct backend → Cloudflare API
-call, never `wrangler d1 migrations apply`.
+runner) and `users` exist, both `STRICT`; `schema_migrations` is additionally
+`WITHOUT ROWID`. D1's `users` table holds only `id` and `pairing_token_hash`
+(nullable, `SHA-256` of the pairing token) — no `username`, since pairing is
+single-credential (a device submits only the token, never a username), and no
+password-derived value of any kind. Named deliberately _not_ `d1_migrations`
+(wrangler's own convention) — wrangler is absent from this project's toolchain
+entirely; the Worker deploys via Terraform's Cloudflare provider directly, and
+D1 migrations run via a direct backend → Cloudflare API call, never
+`wrangler d1 migrations apply`.
 
 **Migrations, both stores** — embedded into the binary (`main.go` does the
 `go:embed`, since `cmd/server.go` is one directory below both `migrations/` and
@@ -213,8 +239,14 @@ racing to migrate the same database serialize rather than interleave.
 **Routing** — `chi`, replacing the original stdlib `net/http` pattern routing
 once route grouping and middleware composition became real friction. Confirmed
 zero transitive dependencies. Routes are nested under an `/api` sub-router
-(`r.Route("/api", ...)`), with the session-protected `/api/auth/me` further
-nested inside that under a `RequireSession` group.
+(`r.Route("/api", ...)`), with a session-protected group nested inside that
+under `RequireSession`: `/api/auth/me`, and pairing-token management
+(`GET`/`POST /regenerate`/`DELETE` on `/api/pairing-token`) — view, regenerate,
+and revoke, each of which round-trips through `internal/mirror` to keep D1 in
+sync. The dashboard UI for these doesn't exist yet (that's a much later phase),
+but the endpoints were built now, alongside the rest of this phase's auth work,
+rather than requiring a second pass through `internal/auth`/`internal/httpapi`
+later solely for the dashboard's sake.
 
 **Middleware stack** (in order): `httplog.RequestLogger` (structured logging —
 already wraps chi's own `RequestID` and `Recoverer` internally, confirmed via
@@ -241,7 +273,23 @@ runs _before_ bootstrap-token validation, so once any admin exists, every
 further `/api/setup` call gets `409` regardless of token validity — this is
 deliberate (never confirms/denies a submitted token's validity once setup is
 done), not a bug, but worth knowing since it means the token-reuse-specific
-`401` path is unreachable via a real sequential flow once an admin exists.
+`401` path is unreachable via a real sequential flow once an admin exists. The
+first-admin account created here gets a pairing token generated and mirrored the
+same way any other account does (see below) — nothing about the bootstrap path
+is a special case for pairing-token purposes.
+
+**Pairing-token lifecycle** — generated automatically whenever an account is
+created (bootstrap `/api/setup` and open registration `/api/auth/register` both
+go through the same path): a 32-byte CSPRNG value (`GeneratePairingToken`),
+AES-256-GCM-encrypted for the Postgres row (`EncryptPairingToken`), and its
+`SHA-256` hash pushed to the D1 mirror via `internal/mirror.PushUser`.
+`GET /api/pairing-token` decrypts and returns the current value (redisplay, not
+show-once, since losing this credential shouldn't force a regenerate the way
+losing a session token would). `POST /api/pairing-token/regenerate` issues a new
+one, overwriting both copies. `DELETE /api/pairing-token` clears the Postgres
+value to `NULL` and pushes a JSON `null` to the mirror endpoint, which the
+Worker treats as "clear the mirrored hash" — blocking further pairing until a
+regenerate, without affecting any bearer tokens a device already obtained.
 
 ### Testing
 
@@ -258,6 +306,11 @@ done), not a bug, but worth knowing since it means the token-reuse-specific
   since they need real access to unexported internals (`cookieName`,
   `userContextKey`, the bootstrap holder's private fields) to prove the mutex
   and consume-only-on-success logic actually hold.
+- `internal/httpapi`'s pairing-token tests register a real account through the
+  actual HTTP flow (rather than `dbtest.CreateUser`'s placeholder fixture) and
+  verify that the token the dashboard decrypts actually hashes to what was
+  pushed to a mock Worker — end-to-end consistency between the Postgres and D1
+  copies, not just that each side independently does something plausible.
 - `testcontainers-go` was evaluated for the Postgres test harness and
   **rejected** — its dependency tree (full Docker API client, containerd,
   OpenTelemetry, `gopsutil`) is heavier than anything else in this project,
@@ -270,6 +323,12 @@ done), not a bug, but worth knowing since it means the token-reuse-specific
   left the _previous_ token silently valid). Assumes exactly one backend process
   — already implicit elsewhere (§5a's service-secret rotation reasoning), but
   this makes it a hard constraint for this specific flow.
+- **Pairing-token encryption key rotation is a real operational hazard, not just
+  a config value to set once.** Rotating `PAIRING_TOKEN_KEY` makes every
+  already-encrypted `pairing_token_enc` value permanently undecryptable —
+  equivalent to simultaneously revoking every account's pairing token. Not
+  currently guarded against in code; worth a startup sanity check or at least
+  loud documentation before this bites someone.
 - **`internal/dbtest`'s migration path is anchored via `runtime.Caller(0)`**,
   not a caller-relative path like `"../../migrations"` — confirmed correct from
   a test package three directories deeper than any real caller. Anything that
@@ -315,3 +374,11 @@ done), not a bug, but worth knowing since it means the token-reuse-specific
   directly, no visible redirect, same method). Resolved by dropping
   `RedirectSlashes` entirely rather than keeping inert middleware around — a
   silent internal normalization is the safer behavior for a JSON API regardless.
+- **An earlier iteration of device authentication mirrored the account's bcrypt
+  password hash into D1** for the Worker to verify at pairing time. Abandoned
+  before it saw any real traffic: bcrypt costs 100-300ms even natively,
+  Cloudflare Workers cap free-tier CPU time at 10ms per request, and there's no
+  native bcrypt in the `workerd` runtime regardless. Replaced with the per-user
+  pairing token described throughout this document — see DESIGN.md §5 for the
+  full comparison against the Worker-native-fast-hash alternative that was also
+  considered and rejected.
