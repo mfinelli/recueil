@@ -382,3 +382,146 @@ regenerate, without affecting any bearer tokens a device already obtained.
   pairing token described throughout this document — see DESIGN.md §5 for the
   full comparison against the Worker-native-fast-hash alternative that was also
   considered and rejected.
+
+## Phase 2 (Worker Device Auth + Queue)
+
+### What exists now
+
+The Worker (`terraform/index.js`) now has a real, tested endpoint surface beyond
+the Phase 1 credential mirror: device pairing, the enqueue/read/claim queue
+endpoints, device-token management, and a queue-item cleanup sweep. All of it
+operates purely between a device (or the backend, for the service-secret-gated
+endpoints) and D1 — **the backend still never touches `queue_items` directly**,
+consistent with DESIGN.md §2's "capture path never touches the backend"
+property. This is worth stating plainly since it's an easy thing to assume
+backwards: it's the _desktop extension_ (or whatever device polls) that claims
+queue items using its own bearer token, not the backend using the service
+secret.
+
+| Endpoint                               | Auth                         | Notes                                                                                           |
+| -------------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `POST /pair`                           | none (pairing token in body) | Exchanges a pairing token for a device bearer token. Single-credential — no username submitted. |
+| `POST /queue`                          | device bearer token          | Enqueue. `id` is client-generated; idempotent retry via `ON CONFLICT(id) DO NOTHING`.           |
+| `GET /queue`                           | device bearer token          | Lists this user's pending + stale-claimed items. Never claims.                                  |
+| `POST /queue/:id/claim`                | device bearer token          | Atomic conditional `UPDATE ... RETURNING`. Where the actual claim race is resolved.             |
+| `GET /internal/tokens?user_id=`        | service secret               | List a user's paired devices.                                                                   |
+| `DELETE /internal/tokens/:id?user_id=` | service secret               | Revoke one device. Scoped by `user_id` as well as `id` — see below.                             |
+| `POST /internal/queue-items/cleanup`   | service secret               | Deletes old `captured` queue items. Not scoped to a user (maintenance sweep).                   |
+
+### Claim failure semantics
+
+A failed claim (`POST /queue/:id/claim` matching zero rows) distinguishes three
+cases rather than a uniform `409`, decided during this phase:
+
+- **`404`** — wrong id, or the item belongs to a different user (collapsed
+  together deliberately, so a claim attempt never leaks cross-user existence).
+- **`410`** — the item is `captured` or `failed`: a terminal state, permanently
+  no longer claimable. More precise than a bare 404 for "this happened, and it's
+  over."
+- **`409`** — actively claimed by another device, claim not yet stale: a
+  genuine, temporary conflict worth retrying.
+
+Distinguishing these costs one extra `SELECT`, but only on the failure path — a
+successful claim is still a single round trip.
+
+### Queue item cleanup
+
+Nothing in the original design removed a terminal-state `queue_items` row —
+surfaced only once real implementation made it obvious the table would otherwise
+grow unboundedly. `POST /internal/queue-items/cleanup`:
+
+- Deletes only `captured` rows, older than a 72-hour retention window.
+- Never touches `failed` rows, at any age — kept indefinitely for now. What to
+  do about them long-term (surface to the user, retry, a separate/longer expiry)
+  is an open question, tracked in DESIGN.md §15, not decided here.
+- Uses `claimed_at`, not `created_at`, as the retention clock — a pragmatic
+  proxy for "when did this actually finish," since there's no dedicated
+  completion timestamp on `queue_items` yet. Good enough at this project's scale
+  (claim-to-capture is seconds to minutes); a one-line filter change if a future
+  phase adds a real `completed_at`.
+- Called on the backend's own schedule (once or twice a day), not a Cloudflare
+  Cron Trigger — same "keep the Worker dumb, let the backend own scheduling"
+  reasoning as the visibility-timeout reclaim (§8).
+
+### D1 schema additions this phase
+
+```sql
+-- terraform/migrations/0002_create_tokens.sql
+CREATE TABLE tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  device_name TEXT NOT NULL,
+  device_type TEXT NOT NULL,        -- 'extension' | 'pwa' | 'cli'
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at TEXT
+) STRICT;
+CREATE INDEX idx_tokens_user_id ON tokens(user_id);
+
+-- terraform/migrations/0003_create_queue_items.sql
+CREATE TABLE queue_items (
+  id TEXT PRIMARY KEY,              -- client-generated UUID
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  url TEXT NOT NULL,
+  added_by_token_id INTEGER REFERENCES tokens(id),
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
+  claimed_by_token_id INTEGER REFERENCES tokens(id),
+  claimed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT, WITHOUT ROWID;
+CREATE INDEX idx_queue_items_user_status ON queue_items(user_id, status);
+CREATE INDEX idx_queue_items_added_by_token_id ON queue_items(added_by_token_id);
+CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token_id);
+```
+
+`STRICT`/`WITHOUT ROWID`/index conventions match Phase 1's tables, applied here
+as the doc's own stated intent ("the rest of this section's tables will pick up
+the same convention as they're implemented").
+
+### Testing
+
+- `@cloudflare/vitest-pool-workers` against real Miniflare D1 throughout, same
+  as Phase 1's Worker tests — no mocks. New files: `handlePair.test.js`,
+  `queue.test.js` (enqueue/list/claim/cleanup — one file, since they share the
+  same table and seed helpers), `internal-tokens.test.js`, plus a shared
+  `test-helpers.js` (a test-only `sha256Hex`, since `index.js`'s own version is
+  unexported and there's no reason to export an internal just for tests to reach
+  it).
+- `fetch.test.js` gained routing-level tests through the real dispatcher
+  (`SELF.fetch`), not just direct handler calls — the unit tests call handlers
+  directly and bypass the regex-based path matching entirely, so the actual
+  `:id` extraction in `/queue/:id/claim` and `/internal/tokens/:id` needed its
+  own coverage (malformed paths, missing segments, extra trailing segments).
+- **Confirmed empirically, not assumed**: D1 supports `RETURNING` on both
+  `INSERT` (`POST /pair`'s token creation) and `UPDATE` (the claim endpoint) —
+  this wasn't certain going in and is now verified against real Miniflare D1,
+  not just Cloudflare's docs. Also confirmed for real: the actual claim race
+  (two tokens racing for the same item — first wins, second gets `409`), the
+  stale-claim reclaim, and that a wrong-user claim attempt genuinely never
+  touches the other user's row (not just that it returns the right status code).
+
+### Decisions worth remembering for later phases
+
+- **The backend never touches `queue_items`.** Worth restating since it's easy
+  to assume otherwise: enqueue/read/claim are entirely device ↔ Worker, using
+  the device's own bearer token. The backend's only queue-adjacent
+  responsibility is the service-secret-gated cleanup sweep, which doesn't read
+  or claim anything — it only deletes terminal rows past their retention window.
+- **`DELETE /internal/tokens/:id` requires `user_id` as a safety net, beyond
+  what the original design called for.** The Worker still doesn't know about
+  roles (the backend enforces admin-vs-self scoping before ever calling this
+  endpoint), but requiring `user_id` to match the token's actual owner means a
+  backend-side bug that passes the wrong id/user_id pair deletes nothing rather
+  than someone else's device.
+- **`complete`/`fail` are deliberately not built yet.** The brief for this phase
+  was device auth + queue read/write; the endpoints that would actually
+  transition a claimed item to `captured`/`failed` and write a
+  `pending_captures` row are entangled with the capture-upload pipeline's shape
+  (presigned R2 URLs, the upload-complete notification) rather than the
+  queue/auth mechanics this phase covered — deferred to the phase that builds
+  that pipeline.
+- **What to do with `failed` queue items long-term is unresolved.** The cleanup
+  endpoint only ever sweeps `captured` rows; `failed` rows accumulate
+  indefinitely until some future decision (surface to the user? retry? a
+  separate, longer expiry?) — tracked as open in DESIGN.md §15, not decided
+  here.
