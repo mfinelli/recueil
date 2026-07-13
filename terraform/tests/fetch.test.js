@@ -162,4 +162,29 @@ describe("fetch (router)", () => {
     });
     expect(response.status).toBe(404);
   });
+
+  it("routes GET /internal/pending-captures to handleListPendingCaptures", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/pending-captures",
+    );
+    // No service key -> 401, which still confirms routing (not 404) reached
+    // handleListPendingCaptures.
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /internal/pending-captures/:id/fetched, extracting the id from the path correctly", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/pending-captures/some-id/fetched",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("does not match /internal/pending-captures/fetched (missing the id segment) as a fetched route", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/pending-captures/fetched",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(404);
+  });
 });

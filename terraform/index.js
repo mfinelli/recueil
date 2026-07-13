@@ -30,6 +30,9 @@
 // - POST /captures/upload-urls, POST /queue/:id/complete,
 //   POST /queue/:id/fail: presigned R2 upload issuance and the
 //   claimed-item-to-captured/failed transition
+// - GET /internal/pending-captures, POST
+//   /internal/pending-captures/:id/fetched: service-secret-gated backend
+//   ingestion polling (list unfetched captures; mark one as pulled)
 
 /**
  * @typedef {Object} Env
@@ -406,6 +409,15 @@ export default {
     }
     if (method === "POST" && pathname === "/internal/queue-items/cleanup") {
       return handleCleanupQueueItems(request, env);
+    }
+    if (method === "GET" && pathname === "/internal/pending-captures") {
+      return handleListPendingCaptures(request, env);
+    }
+    const fetchedMatch = pathname.match(
+      /^\/internal\/pending-captures\/([^/]+)\/fetched$/,
+    );
+    if (method === "POST" && fetchedMatch) {
+      return handleMarkPendingCaptureFetched(request, env, fetchedMatch[1]);
     }
     if (method === "POST" && pathname === "/captures/upload-urls") {
       return handleGetUploadUrls(request, env, ctx);
@@ -835,6 +847,100 @@ export async function handleCleanupQueueItems(request, env) {
   });
 }
 
+// Bounds how many rows a single poll can return -- an unbounded SELECT
+// against a table that only grows between polls would be a bad default,
+// even at this project's modest personal/family scale. The backend can
+// always poll again immediately if there's more to fetch; there's no
+// on-demand path here, so this only needs to be "reasonable," not tuned.
+const DEFAULT_PENDING_CAPTURES_LIMIT = 50;
+const MAX_PENDING_CAPTURES_LIMIT = 200;
+
+/**
+ * GET /internal/pending-captures?limit=: lists captures the backend hasn't
+ * yet pulled from R2 (fetched_by_backend = 0), oldest first. Service-secret
+ * gated, cross-user -- this is the backend's own ingestion sweep across the
+ * whole deployment, not a per-device or per-user operation, so it takes
+ * no user_id the way the device-facing queue endpoints do (same shape as
+ * handleCleanupQueueItems above).
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleListPendingCaptures(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const limitParam = url.searchParams.get("limit");
+  let limit = DEFAULT_PENDING_CAPTURES_LIMIT;
+  if (limitParam !== null) {
+    const parsed = Number(limitParam);
+    if (
+      !Number.isInteger(parsed) ||
+      parsed < 1 ||
+      parsed > MAX_PENDING_CAPTURES_LIMIT
+    ) {
+      return new Response("Invalid limit", { status: 400 });
+    }
+    limit = parsed;
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, user_id, queue_item_id, url, r2_key_html, captured_at, created_at
+     FROM pending_captures
+     WHERE fetched_by_backend = 0
+     ORDER BY created_at ASC
+     LIMIT ?`,
+  )
+    .bind(limit)
+    .all();
+
+  return new Response(JSON.stringify({ pending_captures: results }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * POST /internal/pending-captures/:id/fetched: marks a pending_captures row
+ * as pulled and ingested. Called only after the backend has durably written
+ * the capture to Postgres and deleted the R2 objects -- per the
+ * crash-recovery ordering (disk write, then DB commit, then R2 delete, then
+ * this D1 flag update), a crash before this call simply means the row shows
+ * up in the next poll again, which is safe: ingestion itself is idempotent
+ * via source_capture_id, so re-processing an already-ingested row is a no-op
+ * on the Postgres side.
+ *
+ * Deliberately not scoped to a queue item or a user -- this is the
+ * backend's own bookkeeping on a row it already knows about; the device
+ * that originally created the row is not involved in this call at all.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {string} captureId
+ * @returns {Promise<Response>}
+ */
+export async function handleMarkPendingCaptureFetched(request, env, captureId) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const result = await env.DB.prepare(
+    "UPDATE pending_captures SET fetched_by_backend = 1 WHERE id = ?",
+  )
+    .bind(captureId)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return new Response("Not Found", { status: 404 });
+  }
+  return new Response(null, { status: 204 });
+}
+
 // How long a presigned upload URL remains valid. Comfortably more than
 // enough time for a device to PUT a large inlined-HTML capture over a slow
 // connection, without leaving signed URLs usable indefinitely.
@@ -842,8 +948,8 @@ const UPLOAD_URL_EXPIRY_SECONDS = 900;
 
 // A lowercase 64-character hex string -- what crypto.subtle.digest("SHA-256",
 // ...) produces once hex-encoded, and the format this codebase already uses
-// elsewhere (sha256Hex above). Required shape for content_sha256_html /
-// content_sha256_reader in handleGetUploadUrls's request body.
+// elsewhere (sha256Hex above). Required shape for content_sha256_html in
+// handleGetUploadUrls's request body.
 const HEX_SHA256_PATTERN = /^[0-9a-f]{64}$/;
 
 /**

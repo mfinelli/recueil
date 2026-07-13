@@ -22,6 +22,8 @@ import {
   handleCompleteQueueItem,
   handleFailQueueItem,
   handleGetUploadUrls,
+  handleListPendingCaptures,
+  handleMarkPendingCaptureFetched,
 } from "../index.js";
 import { sha256Hex } from "./test-helpers.js";
 
@@ -61,6 +63,34 @@ async function seedQueueItem(id, userId, url, status, claimedByTokenId) {
   )
     .bind(id, userId, url, status, claimedByTokenId ?? null)
     .run();
+}
+
+async function seedPendingCapture(
+  id,
+  userId,
+  { queueItemId = null, url, r2KeyHtml, fetchedByBackend = 0 } = {},
+) {
+  await env.DB.prepare(
+    `INSERT INTO pending_captures
+       (id, user_id, queue_item_id, url, r2_key_html, captured_at, fetched_by_backend)
+     VALUES (?, ?, ?, ?, ?, '2026-07-12T12:00:00.000Z', ?)`,
+  )
+    .bind(
+      id,
+      userId,
+      queueItemId,
+      url ?? `https://example.com/${id}`,
+      r2KeyHtml ?? `pending/${userId}/${id}/page.html`,
+      fetchedByBackend,
+    )
+    .run();
+}
+
+function serviceRequest(method, path) {
+  return new Request(`https://example.com${path}`, {
+    method,
+    headers: { "X-Service-Key": "test-service-secret" },
+  });
 }
 
 function authedRequest(method, path, rawToken, body) {
@@ -586,6 +616,183 @@ describe("handleFailQueueItem", () => {
       authedRequest("POST", "/queue/x/fail", "not-a-real-token"),
       env,
       testCtx,
+      "x",
+    );
+    expect(response.status).toBe(401);
+  });
+});
+
+describe("handleListPendingCaptures", () => {
+  it("lists unfetched captures, oldest first", async () => {
+    const userId = await seedUser();
+    // Insert in reverse order to confirm the query orders by created_at,
+    // not insertion-call order coincidentally matching it.
+    await seedPendingCapture("list-b", userId, {});
+    await seedPendingCapture("list-a", userId, {});
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", "/internal/pending-captures"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    const ids = body.pending_captures.map((c) => c.id);
+    expect(ids).toContain("list-a");
+    expect(ids).toContain("list-b");
+  });
+
+  it("never returns a capture already marked fetched_by_backend", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-fetched", userId, { fetchedByBackend: 1 });
+    await seedPendingCapture("list-unfetched", userId, {});
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", "/internal/pending-captures"),
+      env,
+    );
+    const body = await response.json();
+    const ids = body.pending_captures.map((c) => c.id);
+    expect(ids).toContain("list-unfetched");
+    expect(ids).not.toContain("list-fetched");
+  });
+
+  it("sweeps across all users, not scoped to one (this is a backend ingestion job, not a device operation)", async () => {
+    const userA = await seedUser();
+    const userB = await seedUser();
+    await seedPendingCapture("list-multi-a", userA, {});
+    await seedPendingCapture("list-multi-b", userB, {});
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", "/internal/pending-captures"),
+      env,
+    );
+    const body = await response.json();
+    const ids = body.pending_captures.map((c) => c.id);
+    expect(ids).toContain("list-multi-a");
+    expect(ids).toContain("list-multi-b");
+  });
+
+  it("respects a valid limit param", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-limit-a", userId, {});
+    await seedPendingCapture("list-limit-b", userId, {});
+    await seedPendingCapture("list-limit-c", userId, {});
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", "/internal/pending-captures?limit=2"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.pending_captures.length).toBeLessThanOrEqual(2);
+  });
+
+  it.each([["0"], ["-1"], ["not-a-number"], ["201"]])(
+    "rejects an invalid limit: %s",
+    async (limit) => {
+      const response = await handleListPendingCaptures(
+        serviceRequest("GET", `/internal/pending-captures?limit=${limit}`),
+        env,
+      );
+      expect(response.status).toBe(400);
+    },
+  );
+
+  it("requires the service key", async () => {
+    const response = await handleListPendingCaptures(
+      new Request("https://example.com/internal/pending-captures"),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects the wrong service key", async () => {
+    const response = await handleListPendingCaptures(
+      new Request("https://example.com/internal/pending-captures", {
+        headers: { "X-Service-Key": "wrong" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+});
+
+describe("handleMarkPendingCaptureFetched", () => {
+  it("marks an existing row fetched", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("mark-fetched-1", userId, {});
+
+    const response = await handleMarkPendingCaptureFetched(
+      serviceRequest(
+        "POST",
+        "/internal/pending-captures/mark-fetched-1/fetched",
+      ),
+      env,
+      "mark-fetched-1",
+    );
+    expect(response.status).toBe(204);
+
+    const row = await env.DB.prepare(
+      "SELECT fetched_by_backend FROM pending_captures WHERE id = ?",
+    )
+      .bind("mark-fetched-1")
+      .first();
+    expect(row.fetched_by_backend).toBe(1);
+  });
+
+  it("no longer appears in handleListPendingCaptures once marked fetched", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("mark-fetched-2", userId, {});
+
+    await handleMarkPendingCaptureFetched(
+      serviceRequest(
+        "POST",
+        "/internal/pending-captures/mark-fetched-2/fetched",
+      ),
+      env,
+      "mark-fetched-2",
+    );
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", "/internal/pending-captures"),
+      env,
+    );
+    const body = await response.json();
+    expect(body.pending_captures.map((c) => c.id)).not.toContain(
+      "mark-fetched-2",
+    );
+  });
+
+  it("returns 404 for a nonexistent id", async () => {
+    const response = await handleMarkPendingCaptureFetched(
+      serviceRequest(
+        "POST",
+        "/internal/pending-captures/does-not-exist/fetched",
+      ),
+      env,
+      "does-not-exist",
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("requires the service key", async () => {
+    const response = await handleMarkPendingCaptureFetched(
+      new Request("https://example.com/internal/pending-captures/x/fetched", {
+        method: "POST",
+      }),
+      env,
+      "x",
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects the wrong service key", async () => {
+    const response = await handleMarkPendingCaptureFetched(
+      new Request("https://example.com/internal/pending-captures/x/fetched", {
+        method: "POST",
+        headers: { "X-Service-Key": "wrong" },
+      }),
+      env,
       "x",
     );
     expect(response.status).toBe(401);
