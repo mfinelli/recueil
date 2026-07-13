@@ -34,6 +34,11 @@ func allRequiredSet() {
 	viper.Set("cloudflare_account_id", "acct")
 	viper.Set("cloudflare_d1_database_id", "db")
 	viper.Set("cloudflare_api_token", "token")
+	viper.Set("archive_dir", "/var/lib/recueil/archive")
+	viper.Set("r2_account_id", "r2acct")
+	viper.Set("r2_bucket_name", "recueil-captures")
+	viper.Set("r2_access_key_id", "r2key")
+	viper.Set("r2_access_key_secret", "r2secret")
 }
 
 func TestLoad(t *testing.T) {
@@ -57,6 +62,11 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, "acct", cfg.CloudflareAccountID)
 				assert.Equal(t, "db", cfg.CloudflareD1DatabaseID)
 				assert.Equal(t, "token", cfg.CloudflareAPIToken)
+				assert.Equal(t, "/var/lib/recueil/archive", cfg.ArchiveDir)
+				assert.Equal(t, "r2acct", cfg.R2AccountID)
+				assert.Equal(t, "recueil-captures", cfg.R2BucketName)
+				assert.Equal(t, "r2key", cfg.R2AccessKeyID)
+				assert.Equal(t, "r2secret", cfg.R2AccessKeySecret)
 			},
 		},
 		{
@@ -85,7 +95,7 @@ func TestLoad(t *testing.T) {
 			name:        "missing all required fields lists every one",
 			setup:       func() {},
 			wantErr:     true,
-			errContains: "database_url worker_url worker_service_secret pairing_token_key cloudflare_account_id cloudflare_d1_database_id cloudflare_api_token",
+			errContains: "database_url worker_url worker_service_secret pairing_token_key cloudflare_account_id cloudflare_d1_database_id cloudflare_api_token archive_dir r2_account_id r2_bucket_name r2_access_key_id r2_access_key_secret",
 		},
 		{
 			name: "missing a single required field is still caught",
@@ -104,6 +114,24 @@ func TestLoad(t *testing.T) {
 			},
 			wantErr:     true,
 			errContains: "pairing_token_key",
+		},
+		{
+			name: "missing archive_dir is caught too",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("archive_dir", "")
+			},
+			wantErr:     true,
+			errContains: "archive_dir",
+		},
+		{
+			name: "missing an r2 credential is caught too",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("r2_access_key_secret", "")
+			},
+			wantErr:     true,
+			errContains: "r2_access_key_secret",
 		},
 	}
 

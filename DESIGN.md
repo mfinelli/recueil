@@ -248,20 +248,104 @@ content) signal for that specific UI feature.
 ### 3c. Capture idempotency (crash recovery)
 
 The `pending_captures.id` (a client-generated UUID, already required for
-retry-safety on the upload-complete notification — see §8) doubles as an
-idempotency key for backend ingestion:
+retry-safety on the upload-complete notification — see §8) doubles as a
+transient idempotency key for backend ingestion:
 
 ```sql
 ALTER TABLE captures ADD COLUMN source_capture_id TEXT UNIQUE;
 ```
 
-Ingestion becomes: write the blob to disk, then
-`INSERT ... ON CONFLICT (source_capture_id) DO NOTHING` into `captures`. If the
-row already exists (a retry after a crash), skip straight to R2 cleanup and the
-D1 `fetched_by_backend` flag update. Ordering the steps this way — disk write,
-then DB commit, then R2 delete, then D1 flag — means a crash at any point either
-leaves the R2 object in place for a safe retry, or leaves only harmless orphaned
-cleanup state; nothing can double-insert a capture.
+**`source_capture_id` is nullable, and is cleared back to `NULL` once ingestion
+of that capture is fully done** — corrected twice over from earlier revisions of
+this document (which first left it `NULL` only for manual uploads, then briefly
+made it `NOT NULL` for every capture, before landing here). Its only job is
+letting a retry recognize an already-committed capture without redoing the whole
+pipeline, and that job has a natural end: once the R2 object is deleted **and**
+D1's `fetched_by_backend` flag is confirmed set, there is no further retry
+window left to protect, and nothing else ever reads this column. Clearing it
+isn't just tidiness — it's what keeps a permanent, forever-growing table from
+carrying a column whose entire purpose is transient, and it's what lets the
+`UNIQUE` constraint mean something meaningful (many "done" rows can all hold
+`NULL` simultaneously without conflict, since Postgres never treats two `NULL`s
+as equal).
+
+Every capture gets a real, unique value while it's actually in flight,
+regardless of source: **client-generated** for the extension/queue flow (the
+device already generates this UUID before ever talking to the Worker, for the
+upload-complete notification's own retry-safety), or **backend-generated** for
+manual uploads (§3d), which have no client in the loop to generate one.
+
+**Two separate problems, both real, both need solving — this section used to
+only solve one of them:**
+
+1. **A retry must not fail forever trying to re-fetch an R2 object that a prior
+   attempt already deleted.** If the backend crashes between deleting the R2
+   object and confirming the D1 flag, the next poll cycle sees the same
+   `pending_captures.id` again — and naively re-running the whole pipeline would
+   try to pull an object that's already gone.
+2. **A conflict on `source_capture_id` must not be assumed to mean "this is a
+   retry."** It could instead be a genuine collision — two different captures
+   that happen to share an ID (astronomically unlikely for a random UUID, but
+   not impossible, and not something to just hope never happens). Treating any
+   conflict as "already handled, return the existing row" would silently discard
+   the second capture's real data in that case, with no error and no visible
+   sign anything was lost.
+
+**The resolution to both, together:** ingestion always attempts the full
+pipeline first — pull from R2, hash, compress to local disk (keyed by
+`content_hash`, not `source_capture_id`; see the note on this below), then a
+single Postgres transaction that upserts the page and inserts the capture. That
+insert uses `content_hash` to tell the two problems above apart:
+`INSERT ... ON CONFLICT (source_capture_id) DO UPDATE ... RETURNING`, then
+compare the returned row's `content_hash` against the one just computed. A match
+means a legitimate retry of the identical upload — safe no-op, return the
+existing row. A mismatch means a genuine collision between two different
+captures — generate a fresh UUID for _this_ capture and retry the insert (a
+small bounded loop), never silently dropping the new capture's data.
+
+**Only if that whole first attempt fails** does ingestion fall back to checking
+Postgres for an already-committed row matching the original `source_capture_id`
+(problem 1's actual fix): if found, whatever just failed — almost always the R2
+fetch, because a prior attempt's delete already succeeded — is safe to treat as
+"already done," and processing jumps straight to R2/D1 cleanup. If nothing is
+found, the failure is real and gets surfaced normally (logged, retried on the
+next poll). This fallback deliberately never runs _instead of_ the first
+attempt, only _after_ it fails — gating it upfront (checking Postgres before
+ever touching R2) was tried and rejected during implementation, specifically
+because it would skip the content_hash comparison above entirely and reintroduce
+problem 2 in a different place. R2's own `DeleteObject` (and R2's S3-compatible
+equivalent) is documented to be idempotent — deleting an already-gone key
+returns success, not an error — so the cleanup steps themselves need no special
+"tolerate already deleted" handling either way.
+
+Ordering the steps this way — disk write, then DB commit, then R2 delete, then
+D1 flag, then (only once both cleanup calls have actually succeeded) clearing
+`source_capture_id` — means a crash at any point either leaves the R2 object in
+place for a safe retry (nothing durable happened yet), or leaves only harmless
+orphaned cleanup state (the durable parts already succeeded; a failure to clear
+`source_capture_id` specifically is harmless on its own, since D1 will never
+resurface that capture's id once `fetched_by_backend` is set, so nothing will
+ever look the stale value up again regardless).
+
+This whole scheme is uniform across capture sources, not split into two code
+paths as an earlier revision of this document assumed: manual upload (§3d) just
+starts the process with a backend-generated UUID as its first candidate
+`source_capture_id` instead of a client-supplied one, since it has no client to
+supply one. Everything downstream — the content_hash-based conflict
+disambiguation, the collision retry loop, the try-first/fallback-on-failure
+pattern — is identical either way.
+
+**Local disk storage is keyed by `content_hash`, not `source_capture_id`, for a
+closely related reason** (see §4/`internal/archive`'s own docs for the full
+reasoning): two captures whose `source_capture_id`s collide would also collide
+on a `source_capture_id`-keyed disk path, and the atomic-rename write this
+project uses silently overwrites whatever's already at the destination. That's a
+worse outcome than the Postgres-side collision above, since it would corrupt an
+unrelated, already-successfully-stored capture's file rather than just failing
+to store the new one. `content_hash` doesn't have this failure mode: two
+genuinely different captures colliding would require an actual SHA-256
+collision, and two captures that happen to share byte-identical content
+overwriting each other with identical bytes is a harmless no-op, not data loss.
 
 ### Re-archiving the same URL
 
@@ -300,19 +384,20 @@ flow, not a variant of it:
   Readability-specific handling of its own anymore — a manually uploaded capture
   simply gets a `readability_jobs` row created the same as any other new capture
   (see §6a). The page title is read from the uploaded HTML's `<title>` tag at
-  ingestion time (a plain parse, not a Readability output — SingleFile's own
-  `getPageData()` already provided the title this way for extension-sourced
-  captures, per §3a, so this pathway needed its own equivalent regardless of the
-  Readability question).
-- **No idempotency-by-UUID machinery, unlike §3c.** §3c's `source_capture_id`
-  scheme exists to protect an unattended, multi-step background process
-  (extension → R2 → Worker → backend poll) against double-insertion on
-  crash-recovery retry. A manual upload is a single synchronous, foreground,
-  user-initiated request with no equivalent multi-step window to protect — so
-  every submission is simply treated as a new intentional capture, no
-  deduplication against prior identical uploads. `captures.source_capture_id`
-  stays `NULL` for these rows (already nullable, so no schema change was needed
-  to allow this).
+  ingestion time, uniformly for every capture regardless of source (not a
+  Readability output) — this pathway needs no special handling for title either;
+  see §10's `captures` schema for why this ended up being the one real source of
+  title for extension-sourced captures too, not just this pathway.
+- **A backend-generated UUID as the starting `source_capture_id`, transient and
+  eventually cleared to `NULL`** — this pathway's own account of §3c has gone
+  through a couple of revisions: first `NULL` for manual uploads specifically,
+  then briefly `NOT NULL` for every capture, before landing on what §3c now
+  describes in full: nullable, real while a capture is actually in flight,
+  cleared once ingestion is fully done. Manual upload doesn't need its own
+  insert logic to fit this — it uses the exact same content_hash-based conflict
+  handling and try-first/fallback-on-failure pattern as the extension/queue flow
+  (§3c), just starting with a backend-generated candidate ID instead of a
+  client-supplied one, since there's no client in the loop to supply one.
 - **Everything downstream of ingestion is unchanged**: content hashing (§3b),
   URL normalization (§9), grouping into `pages` by `normalized_url` — a manual
   upload of an already-captured URL is just another new version under the same
@@ -1241,6 +1326,7 @@ CREATE TABLE pages (
   normalized_url TEXT NOT NULL,
   title TEXT,                        -- denormalized from latest capture
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
 );
 
@@ -1248,17 +1334,26 @@ CREATE TABLE pages (
 CREATE TABLE captures (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  source_capture_id TEXT UNIQUE,     -- pending_captures.id (D1), for
-                                      -- ingestion idempotency (see §3c);
-                                      -- NULL for manual uploads (§3d), which
-                                      -- have no equivalent crash-recovery
-                                      -- window to protect
+  source_capture_id TEXT UNIQUE,     -- transient ingestion-idempotency key
+                                      -- (§3c); client-generated for the
+                                      -- extension/queue flow, backend-
+                                      -- generated for manual uploads (§3d);
+                                      -- cleared back to NULL once ingestion
+                                      -- of this capture is fully done --
+                                      -- nothing reads it after that
   source TEXT NOT NULL DEFAULT 'extension',  -- 'extension' | 'manual_upload'
                                       -- (§3d) — mirrors page_tags.source
   raw_url TEXT NOT NULL,
   title TEXT,
-  html_path TEXT NOT NULL,           -- local disk path, zstd-compressed
-  html_size_bytes INTEGER NOT NULL,
+  html_path TEXT NOT NULL,           -- path relative to the backend's
+                                      -- configured archive-directory root,
+                                      -- zstd-compressed (see §14 for why
+                                      -- relative rather than absolute)
+  html_compressed_size_bytes INTEGER NOT NULL,
+  html_uncompressed_size_bytes INTEGER NOT NULL,  -- both stored, not just
+                                      -- the compressed size actually on
+                                      -- disk, so the dashboard can surface
+                                      -- real compression-ratio numbers
   thumbnail_path TEXT,               -- populated async by the screenshot
                                       -- service (§6); null until then
   reader_text TEXT,                  -- Readability plain-text extraction;
@@ -1275,7 +1370,8 @@ CREATE TABLE captures (
                                       -- nullable for the same reason as
                                       -- reader_text above (§3b, §6a)
   captured_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_captures_page_id ON captures(page_id);
 
@@ -1927,9 +2023,21 @@ should be backed up in the same job/window.
 
 ### Restore
 
-- The archive directory must be restored to the **same mount path** it was
-  originally running at — `captures.html_path` values are not stored relative to
-  a configurable root, so a different path layout on restore will break lookups.
+- **`captures.html_path` is stored relative to the backend's configured
+  archive-directory root**, not as an absolute path — a reversal from an earlier
+  revision of this document, which specified absolute paths on the reasoning
+  that a restore then had to land at the exact same mount path or lookups would
+  break. That's backwards: a relative path is strictly more flexible with no
+  real cost — the operator can restore to any location and simply point the
+  (already-required) archive-directory config value at it, move the archive
+  directory later without a database migration, and the database itself doesn't
+  bake in one host's specific filesystem layout. The one real constraint this
+  leaves is unchanged in spirit, just relocated: whatever archive-directory path
+  the backend is configured with at restore time must actually contain the
+  restored files at the expected relative layout (see §4/§6a's
+  `internal/urlnorm`-adjacent ingestion package for the actual on-disk layout,
+  e.g. hex-prefix sharding by capture ID) — the config value can point anywhere,
+  but it does have to point somewhere real.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/
