@@ -1,0 +1,3 @@
+[submodule "internal/urlnorm/clearurls-rules"]
+	path = internal/urlnorm/clearurls-rules
+	url = https://github.com/ClearURLs/Rules.git
