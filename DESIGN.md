@@ -1369,6 +1369,9 @@ CREATE TABLE captures (
   reader_text_hash TEXT,             -- powers "unchanged since last capture";
                                       -- nullable for the same reason as
                                       -- reader_text above (§3b, §6a)
+  language REGCONFIG NOT NULL DEFAULT 'simple',  -- see below for why
+                                      -- REGCONFIG, not TEXT, and why
+                                      -- 'simple' as the fallback
   captured_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1376,9 +1379,51 @@ CREATE TABLE captures (
 CREATE INDEX idx_captures_page_id ON captures(page_id);
 
 ALTER TABLE captures ADD COLUMN reader_text_tsv tsvector
-  GENERATED ALWAYS AS (to_tsvector('english', coalesce(reader_text, ''))) STORED;
+  GENERATED ALWAYS AS (to_tsvector(language, coalesce(reader_text, ''))) STORED;
 CREATE INDEX idx_captures_fts ON captures USING GIN (reader_text_tsv);
+```
 
+**Full-text search is per-capture-language, not hardcoded to English** —
+corrected from an earlier revision of this document, which assumed all captured
+content would be English. That assumption actively makes search _worse_, not
+just unhelpful, for any other language: applying English stemming rules to
+French or German text produces garbage tokens, since stemming is
+language-specific by nature.
+
+- **`language` is typed `REGCONFIG`, not `TEXT`.** Casting a language name to
+  `regconfig` (`'french'::regconfig`) is a catalog lookup, which Postgres
+  classifies as `STABLE`, not `IMMUTABLE` — and generated columns require an
+  `IMMUTABLE` expression. Storing the already-resolved `regconfig` value
+  directly means the generated `reader_text_tsv` expression
+  (`to_tsvector(language, ...)`) is a plain column reference with no cast
+  anywhere in it, satisfying the immutability requirement. The cast from a
+  language name to `regconfig` still happens, just once, at INSERT/UPDATE time —
+  an ordinary, unrestricted operation, not inside a generated expression.
+- **Detection happens at ingestion**, parsing the captured HTML's own
+  `<html lang="...">` attribute (the standard HTML5 way a page declares its
+  content language) — not a Readability output, and not guaranteed to be present
+  or accurate, but a reasonable, zero-cost signal already sitting in every
+  capture.
+- **The detected tag is validated against this specific Postgres instance's live
+  `pg_ts_config` catalog, not a hardcoded Go-side list of "languages Postgres
+  supports."** Which configs are actually available genuinely depends on the
+  running Postgres version; asking the live catalog is the only source that's
+  authoritative for that.
+- **Falls back to `'simple'`** — no language-specific stemming, but never
+  actively wrong for any language, unlike guessing — whenever there's no `lang`
+  attribute, the detected tag has no known mapping (e.g. Chinese, Japanese,
+  Korean: languages Postgres has no snowball stemmer for at all, since they need
+  segmentation rather than stemming), or the mapped candidate doesn't actually
+  exist on this Postgres instance.
+- **The dashboard (not yet built) can let a user correct a capture's detected
+  language after the fact**, choosing from whatever configs this Postgres
+  instance actually has, or "other" (mapping to `simple`) — a plain
+  `UPDATE captures SET language = ...`, which Postgres automatically recomputes
+  `reader_text_tsv` (and its GIN index) for as part of that same statement, the
+  same way it already does whenever `reader_text` itself changes (e.g.
+  re-extraction, §6a). No manual reindex, no extra synchronization code needed.
+
+```sql
 CREATE TABLE tags (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),

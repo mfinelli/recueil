@@ -231,6 +231,11 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 
 	title := extractTitle(data)
 
+	language, err := ing.resolveLanguageConfig(ctx, extractLanguage(data))
+	if err != nil {
+		return 0, fmt.Errorf("resolving language: %w", err)
+	}
+
 	normalizedURL, err := ing.pipeline.Normalize(ctx, pc.URL)
 	if err != nil {
 		return 0, fmt.Errorf("normalizing url %q: %w", pc.URL, err)
@@ -244,6 +249,7 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 		htmlUncompressedBytes: int32(uncompressedSize),
 		contentHash:           contentHash,
 		capturedAt:            capturedAt,
+		language:              language,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("writing to postgres: %w", err)
@@ -264,6 +270,7 @@ type writeInput struct {
 	htmlUncompressedBytes int32
 	contentHash           string
 	capturedAt            time.Time
+	language              string
 }
 
 // writeToPostgres performs the page upsert, idempotent capture insert, and
@@ -300,6 +307,7 @@ func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in
 		HtmlUncompressedSizeBytes: in.htmlUncompressedBytes,
 		ContentHash:               in.contentHash,
 		CapturedAt:                pgtype.Timestamptz{Time: in.capturedAt, Valid: true},
+		Language:                  in.language,
 	}
 	capture, err := ing.insertCaptureWithCollisionHandling(ctx, qtx, &captureParams)
 	if err != nil {

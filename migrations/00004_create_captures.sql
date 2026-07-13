@@ -31,6 +31,7 @@ CREATE TABLE captures (
   readability_version TEXT,
   content_hash TEXT NOT NULL,
   reader_text_hash TEXT,
+  language REGCONFIG NOT NULL DEFAULT 'simple',
   captured_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -43,12 +44,14 @@ CREATE TABLE captures (
 
 CREATE INDEX idx_captures_page_id ON captures(page_id);
 
--- Full-text search over reader_text. coalesce(reader_text, '')
--- means this generated column -- and therefore the FTS index -- tolerates
--- reader_text being NULL (extraction pending or failed) from the start,
--- rather than needing special-casing.
+-- Full-text search over reader_text, using each capture's own detected
+-- language (see internal/ingest's language detection) rather than a
+-- single hardcoded configuration. coalesce(reader_text, '') means this
+-- generated column -- and therefore the FTS index -- tolerates reader_text
+-- being NULL (extraction pending or failed) from the start, rather than
+-- needing special-casing.
 ALTER TABLE captures ADD COLUMN reader_text_tsv tsvector
-  GENERATED ALWAYS AS (to_tsvector('english', coalesce(reader_text, ''))) STORED;
+  GENERATED ALWAYS AS (to_tsvector(language, coalesce(reader_text, ''))) STORED;
 
 CREATE INDEX idx_captures_fts ON captures USING GIN (reader_text_tsv);
 

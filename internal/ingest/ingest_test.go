@@ -338,6 +338,76 @@ func TestIngester_RunOnce_OneFailureDoesNotBlockTheRestOfTheBatch(t *testing.T) 
 	assert.Equal(t, []string{"capture-ok"}, worker.fetched, "only the successful capture should be marked fetched")
 }
 
+func TestIngester_RunOnce_LanguageDetection(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	queries := db.New(pool)
+
+	user := dbtest.CreateUser(t, pool, "member")
+
+	tests := []struct {
+		name         string
+		html         string
+		wantLanguage string
+	}{
+		{
+			name:         "a recognized, available language tag resolves to its postgres config",
+			html:         `<html lang="fr"><head><title>Bonjour</title></head></html>`,
+			wantLanguage: "french",
+		},
+		{
+			name:         "a region subtag is stripped before mapping",
+			html:         `<html lang="en-US"><head><title>Hello</title></head></html>`,
+			wantLanguage: "english",
+		},
+		{
+			name:         "no lang attribute at all falls back to simple",
+			html:         `<html><head><title>No Language Tag</title></head></html>`,
+			wantLanguage: "simple",
+		},
+		{
+			name:         "a language with no postgres stemmer falls back to simple",
+			html:         `<html lang="zh"><head><title>No Stemmer</title></head></html>`,
+			wantLanguage: "simple",
+		},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r2Key := fmt.Sprintf("pending/1/lang-test-%d/page.html", i)
+			r2 := newFakeR2()
+			r2.objects[r2Key] = []byte(tt.html)
+			worker := &fakeWorker{
+				pending: []ingest.PendingCapture{
+					{
+						ID:         fmt.Sprintf("lang-test-%d", i),
+						UserID:     user.ID,
+						URL:        fmt.Sprintf("https://example.com/lang-test-%d", i),
+						R2KeyHTML:  r2Key,
+						CapturedAt: "2026-07-12T12:00:00Z",
+						CreatedAt:  "2026-07-12T12:00:00Z",
+					},
+				},
+			}
+			store := archive.New(t.TempDir())
+			ing := ingest.New(ingest.Params{
+				Pool: pool, Queries: queries, Worker: worker, R2: r2, Store: store,
+				Pipeline: newTestPipeline(t),
+			})
+
+			require.NoError(t, ing.RunOnce(ctx))
+
+			var language string
+			require.NoError(t, pool.QueryRow(ctx,
+				"SELECT language FROM captures WHERE raw_url = $1",
+				fmt.Sprintf("https://example.com/lang-test-%d", i),
+			).Scan(&language))
+			assert.Equal(t, tt.wantLanguage, language)
+		})
+	}
+}
+
 func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.Setup(t)
@@ -384,6 +454,7 @@ func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 		HtmlUncompressedSizeBytes: 456,
 		ContentHash:               existingContentHash,
 		CapturedAt:                pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		Language:                  "simple",
 	})
 	require.NoError(t, err)
 	require.True(t, existingCapture.Inserted)

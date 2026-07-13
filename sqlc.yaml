@@ -10,5 +10,8 @@ sql:
         out: internal/db
         package: db
         sql_package: pgx/v5
+        overrides:
+          - db_type: "regconfig"
+            go_type: "string"
     queries: queries
     schema: migrations
