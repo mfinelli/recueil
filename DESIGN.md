@@ -747,7 +747,19 @@ browser tab" capture path.
 - **Fully async and non-blocking**, matching the `ai_jobs` pattern (see §7): a
   capture is fully valid and browsable with no thumbnail, and a failed/slow
   screenshot never invalidates the capture. `captures.thumbnail_path` remains
-  nullable. Bounded retry with backoff, same shape as §7.
+  nullable. Bounded retry with backoff, same shape as §7, tracked in its own
+  `screenshot_jobs` table (§10) — decoupled from `readability_jobs` (§6a)
+  despite both running through the same headless-Chrome sidecar and often the
+  same page load. This is deliberate, not an oversight: a screenshot can time
+  out while extraction succeeds (or the reverse), and re-extraction after a
+  Readability.js upgrade (§6a) has no reason to also redo a perfectly good
+  screenshot. One combined table would need per-artifact status/attempts columns
+  anyway to represent that independence, which is just two tables' worth of
+  columns forced into one row — no real benefit over keeping them separate. The
+  "same page load can serve both" idea is a scheduling optimization for
+  whichever code ends up driving the sidecar (notice two pending jobs
+  referencing the same capture, do one page load, write two separate
+  completions), not a reason to merge the schema.
 
 ### Consequence for the schema
 
@@ -757,6 +769,11 @@ Because the screenshot is no longer produced client-side and never touches R2:
 - The extension only needs to request a presigned URL for one object (HTML) —
   see §6a for why `r2_key_readable` is removed too, for the same reason
   reader-text extraction moved off the extension entirely.
+- New `screenshot_jobs` table (§10), mirroring `ai_jobs`'s
+  `status`/`attempts`/`next_attempt_at`/`error`/`completed_at` shape exactly,
+  one row per capture — this was referenced by name ("same shape as §7") in an
+  earlier revision but never actually given a schema entry; that gap is closed
+  here.
 
 ### Tradeoff, stated explicitly
 
@@ -1228,6 +1245,23 @@ CREATE TABLE ai_jobs (
 -- readability state means joining captures and readability_jobs, not
 -- reading either table alone.
 CREATE TABLE readability_jobs (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+
+-- Retry/backoff bookkeeping for the async screenshot job (§6), one row per
+-- capture -- same shape as readability_jobs above, and deliberately its own
+-- table rather than merged with it, even though both run through the same
+-- headless-Chrome sidecar and often the same page load (see §6's "Design"
+-- subsection for why: independent failure modes, and re-extraction after a
+-- Readability.js upgrade has no reason to redo a perfectly good screenshot).
+CREATE TABLE screenshot_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
@@ -1877,10 +1911,18 @@ What remains open is purely implementation-phase, not architectural:
   that there are two things worth rendering a page for. Real, stated
   consequences: `captures.reader_text`/`reader_text_hash` are now nullable
   (previously implicitly synchronous), a new `readability_jobs` table exists
-  (§10), and `pending_captures.r2_key_readable` is removed from D1 entirely.
-  **Not yet reflected in the already-built Phase 3 Worker code**
-  (`handleGetUploadUrls`/`handleCompleteQueueItem`, and the `pending_captures`
-  migration) — that code still presigns and accepts a reader-text object per
-  this design's _previous_ shape, built before this round's decision. Revising
-  it to match (single-object upload only) is outstanding follow-up work, not yet
-  done.
+  (§10), and `pending_captures.r2_key_readable` is removed from D1 entirely. The
+  already-built Phase 3 Worker code (`handleGetUploadUrls`/
+  `handleCompleteQueueItem`, and the `pending_captures` migration), which had
+  been built against this design's _previous_ (two-object-upload) shape, has
+  since been revised to match — single-object (HTML-only) upload throughout.
+- **New this round: `screenshot_jobs` given an actual schema entry (§10),
+  closing a gap in the previous revision.** §6 already said the screenshot job
+  needed "bounded retry with backoff, same shape as §7," but no table was ever
+  defined for it — only `ai_jobs` and, later, `readability_jobs` were. Also
+  decided explicitly this round: `screenshot_jobs` and `readability_jobs` stay
+  as two separate tables despite both running through the same headless-Chrome
+  sidecar and often the same page load, rather than merging them into one — see
+  §6's "Design" subsection for the reasoning (independent failure modes;
+  re-extraction after a Readability.js upgrade shouldn't force a redundant
+  re-screenshot).
