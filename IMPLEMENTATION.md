@@ -687,11 +687,29 @@ the final shape isn't obvious from a first read of the code:
   built. This is what actually proves the R2/D1/Postgres pipeline end-to-end
   against a real deployed Worker; nothing has exercised it for real yet, only
   via tests against fakes/`dbtest`.
-- **What triggers `Ingester.RunOnce`** — explicitly deferred, not decided. A
-  ticker inside `recueil server`, a cron'd subcommand, or something else;
-  `RunOnce` itself is fully built and tested, just uncalled in production.
-- **`archived_pages` D1 bookmark-list mirror** (DESIGN.md §8) — explicitly
-  deferred as its own follow-up; unrelated to the core archive loop working.
+- **`docker-compose.yml` doesn't exist yet** — `recueil agent` (below) is built
+  and ready to be one more service block in it (same image as `server`,
+  different command), but the compose file itself hasn't been created for any
+  service yet, `server` included.
 - **Full ClearURLs ruleset update/versioning workflow** — the submodule is
   pinned to a specific commit; the "advance the pin, cut a release" process
   described in DESIGN.md §9 hasn't actually been exercised yet.
+
+### `recueil agent` — the trigger mechanism, resolved
+
+What triggers `Ingester.RunOnce`/`Syncer.SyncOnce` was the one genuinely open
+design question left over from the ingestion and mirror-sync work above — see
+DESIGN.md §3e for the full reasoning (a dedicated process over a goroutine or
+cron, Postgres over RabbitMQ/Redis as the coordination layer). Landed as
+`cmd/agent.go`: a new `recueil agent` subcommand, ticker-driven
+(`agent_poll_interval_seconds`, default 120), running both `RunOnce` and
+`SyncOnce` sequentially each tick, deployed as a separate process/container from
+`server` sharing the same image and config.
+
+Also fixed while wiring this up, unrelated to the agent itself but a real gap:
+several config keys added earlier this phase (`pairing_token_key`,
+`archive_dir`, all four `r2_*` keys) were never added to `cmd/root.go`'s
+`bindEnvOrPanic` list. `internal/config`'s own tests never would have caught
+this — they exercise `Load()` via `viper.Set()` directly, which works regardless
+of binding, so the gap was invisible to every test that existed until something
+needed to actually read these from a real environment variable in production.

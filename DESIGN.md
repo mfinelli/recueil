@@ -422,6 +422,106 @@ flow, not a variant of it:
 
 ---
 
+### 3e. The agent process (background job triggering)
+
+Both backend ingestion (§3c's `Ingester.RunOnce`) and the D1 bookmark-list
+mirror sync (§8's `Syncer.SyncOnce`) were built as fully self-contained, fully
+tested callable units with nothing actually invoking them — deliberate, not an
+oversight, since the trigger mechanism was a genuinely separate decision worth
+settling on its own.
+
+**`recueil agent`: a dedicated subcommand/process, not a goroutine inside
+`recueil server`.** Both share the same binary/image, deployed as separate
+services in the same compose file with different commands. Two other shapes were
+seriously considered and rejected:
+
+- **A goroutine inside `server`** — the obvious lightest-weight option, and
+  rejected specifically over shutdown coordination: cleanly stopping two
+  different kinds of concurrent work (serving in-flight HTTP requests vs.
+  finishing or abandoning a background job) inside one process, on one
+  `SIGTERM`, is real complexity a separate process sidesteps entirely — each
+  process only ever has to coordinate shutdown for its own single kind of work.
+- **Cron** — ruled out early. The primary deploy target (Docker Compose) has no
+  cron mechanism of its own; the host scheduling `docker exec`/ `docker run`
+  invocations against a running compose stack isn't ergonomic; and a "poor man's
+  cron" (a tick embedded in some other process) just reintroduces the same
+  shutdown-coordination problem the goroutine option already lost on, while
+  adding scheduling complexity on top.
+
+A dedicated process also gets independent failure and resource isolation for
+free, as a consequence of the deployment shape rather than anything special
+built for it: a runaway or hung job (a headless-Chrome screenshot job spiking
+memory, say — not built yet, but the same reasoning applies in advance) is
+contained to the agent container and can't degrade HTTP request latency, and
+Docker's own per-service restart policy handles recovering it without touching
+the web process at all.
+
+**Coordination layer: Postgres, not a message broker.** RabbitMQ and a
+Redis-backed queue (`asynq`, the Go equivalent of Sidekiq — Redis itself isn't
+Ruby-specific even though Sidekiq is) were both seriously considered, on the
+reasoning that there's real job-ordering to coordinate: AI enrichment (§7) can
+only run after readability extraction (§6a) succeeds. Neither was adopted,
+because that ordering doesn't actually need a message-broker-level
+dependency/DAG feature at all — it's expressed simply as _when a job row gets
+created_: an `ai_jobs` row doesn't exist until whatever marks the corresponding
+`readability_jobs` row `done` creates it, in the same transaction. The queue
+itself never needs to understand the dependency; it only ever needs to answer
+"give me pending rows," which Postgres already does. What a real message broker
+actually buys over this — routing topologies, fan-out, many concurrent
+independent consumers, back-pressure across separate services — isn't something
+a single agent process at personal-archive scale ever exercises, and either
+option would be a second stateful service (deploy it, back it up, keep it
+patched) purely to gain capability this project doesn't need, when Postgres is
+already a hard dependency regardless. The claim pattern this needs
+(`UPDATE ... SET status = 'processing' WHERE status = 'pending' RETURNING *`) is
+exactly what `queue_items.claim` (§2) already does in the Worker — not a new
+pattern, the same one reused a layer down.
+
+`screenshot_jobs`/`readability_jobs` (§6, §6a) already have the shape this
+implies (`status`, `attempts`, `next_attempt_at`, `error`, `completed_at`) — not
+incidentally job-queue-shaped, built that way on purpose.
+
+**Postgres `LISTEN`/`NOTIFY`** (near-instant job pickup, layered on top of the
+poll loop as a pure latency optimization — the poll loop stays the actual
+correctness guarantee regardless, since `NOTIFY` isn't durable and a missed
+notification with no fallback poll would just silently never process that job)
+was discussed and deliberately deferred, not rejected. Plain polling is entirely
+sufficient at this project's scale for now; worth reconsidering only if
+poll-interval latency ever actually becomes a real complaint.
+
+**Startup and migrations**: `agent` does **not** run migrations itself, unlike
+`server`. Postgres migrations are safe to run from multiple processes
+concurrently (goose's own session-level advisory lock, via `internal/pgmigrate`,
+serializes that) — but D1 migrations have no equivalent locking, and
+`server`/`agent` starting together in Compose gives no ordering guarantee
+between them. Rather than have `agent` run Postgres migrations but not D1 (an
+asymmetry that would need its own explanation every time someone reads the
+code), it runs neither: `server` owns migrations exclusively, and `agent`
+assumes they're already applied. If `agent` happens to start first, its earliest
+cycle(s) simply fail against a not-yet-ready schema, get logged, and self-heal
+on the next tick once `server` catches up — the same graceful-degradation shape
+`RunOnce`/`SyncOnce` already have for a single failed item, just one level up,
+at the whole-cycle granularity.
+
+**One shared ticker, both jobs run sequentially per tick** — `Ingester.RunOnce`
+then `Syncer.SyncOnce`, both on the same interval
+(`agent_poll_interval_seconds`, default 120), not two independently-scheduled
+loops. The simplest thing that works; splitting them onto separate cadences is a
+natural, easy follow-up if one ever genuinely needs to run more or less often
+than the other, not a constraint this design paints itself into. A cycle runs
+synchronously within the same `select` loop iteration that reads the ticker
+channel, deliberately not spawned into its own goroutine per tick —
+`time.Ticker`'s channel buffers exactly one pending tick, so a cycle that runs
+longer than the interval simply means some ticks are silently dropped rather
+than a backlog of queued cycles building up; the next cycle starts as soon as
+the current one finishes and at least one tick has fired since, not once per
+missed interval. Either job failing is logged, not propagated as the agent
+process's own failure — the same "log and continue" philosophy
+`RunOnce`/`SyncOnce` already apply at their own per-item/per-batch level, one
+layer further up.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
@@ -1106,11 +1206,10 @@ not anticipated in the original design:
   same fragility already avoided elsewhere in this project (why `updated_at`
   itself isn't left to individual queries to set by hand). A schedule doesn't
   care how or where Postgres changed; it just asks "what's different now" on its
-  own cadence. What actually triggers the sync job to run is deferred, same open
-  question as backend ingestion (§3c) — both are callable units
-  (`internal/ingest.Ingester.RunOnce`, `internal/mirror.Syncer.SyncOnce`) with
-  no scheduler wired up yet, sharing whatever trigger mechanism eventually gets
-  built.
+  own cadence. What actually triggers the sync job to run is `recueil agent`
+  (§3e) — the same shared trigger as backend ingestion (§3c): both are callable
+  units (`internal/ingest.Ingester.RunOnce`, `internal/mirror.Syncer.SyncOnce`)
+  invoked from one ticker loop.
 - **The sync checkpoint is read directly from D1's own data — `MAX(updated_at)`
   across `archived_pages` — not a separately-tracked watermark value stored
   anywhere on the backend.** Considered and rejected: a Postgres-side "last

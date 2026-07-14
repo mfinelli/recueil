@@ -62,11 +62,21 @@ type Config struct {
 	R2BucketName      string `mapstructure:"r2_bucket_name"`
 	R2AccessKeyID     string `mapstructure:"r2_access_key_id"`
 	R2AccessKeySecret string `mapstructure:"r2_access_key_secret"`
+
+	// AgentPollIntervalSeconds is how often `recueil agent` runs one
+	// ingestion + mirror-sync cycle. A plain int (seconds), not a
+	// time.Duration string like "2m": viper/mapstructure's default
+	// Unmarshal may or may not include the string-to-duration decode
+	// hook depending on version, and this project has no way to verify
+	// that locally -- an int sidesteps the question entirely rather than
+	// depending on unverified behavior.
+	AgentPollIntervalSeconds int `mapstructure:"agent_poll_interval_seconds"`
 }
 
 func init() {
 	viper.SetDefault("listen_addr", ":8080")
 	viper.SetDefault("session_cookie_secure", true)
+	viper.SetDefault("agent_poll_interval_seconds", 120)
 }
 
 func Load() (Config, error) {

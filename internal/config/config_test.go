@@ -77,6 +77,7 @@ func TestLoad(t *testing.T) {
 			check: func(t *testing.T, cfg Config) {
 				assert.Equal(t, ":8080", cfg.ListenAddr)
 				assert.True(t, cfg.SessionCookieSecure)
+				assert.Equal(t, 120, cfg.AgentPollIntervalSeconds)
 			},
 		},
 		{
@@ -85,10 +86,12 @@ func TestLoad(t *testing.T) {
 				allRequiredSet()
 				viper.Set("listen_addr", ":9090")
 				viper.Set("session_cookie_secure", false)
+				viper.Set("agent_poll_interval_seconds", 30)
 			},
 			check: func(t *testing.T, cfg Config) {
 				assert.Equal(t, ":9090", cfg.ListenAddr)
 				assert.False(t, cfg.SessionCookieSecure)
+				assert.Equal(t, 30, cfg.AgentPollIntervalSeconds)
 			},
 		},
 		{
@@ -144,6 +147,7 @@ func TestLoad(t *testing.T) {
 			viper.Reset()
 			viper.SetDefault("listen_addr", ":8080")
 			viper.SetDefault("session_cookie_secure", true)
+			viper.SetDefault("agent_poll_interval_seconds", 120)
 			tt.setup()
 
 			cfg, err := Load()
