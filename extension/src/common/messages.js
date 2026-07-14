@@ -36,6 +36,22 @@
 // through the background context is to not be.
 export const RELAY_FETCH = "recueil:relay-fetch";
 
+// Sent by the popup (once it exists) to exchange a pairing token for a
+// device bearer token -- see background/auth.js. The popup, not the
+// background script, is responsible for calling browser.permissions
+// .request() for the target origin *before* sending this message: that
+// call needs to happen inside the same user-gesture-driven event handler
+// as the pairing form's submit, not after crossing a runtime.sendMessage
+// boundary into the background context, where the "was this triggered by
+// a real user action" transient-activation state may not carry over
+// reliably across browsers. See auth.js's own doc comment.
+export const PAIR_DEVICE = "recueil:pair-device";
+
+// Sent by the popup to read current pairing state (paired or not, and
+// which instance/device if so) without needing to know storage.js's
+// internal key shape itself.
+export const GET_AUTH_STATE = "recueil:get-auth-state";
+
 export function isRecueilMessage(message) {
   return typeof message === "object" && message !== null && "type" in message;
 }

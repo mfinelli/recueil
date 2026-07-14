@@ -31,6 +31,7 @@ export default [
     files: [
       "extension/src/capture-inject/**/*.js",
       "extension/src/popup/**/*.js",
+      "extension/src/common/**/*.js",
     ],
     languageOptions: {
       ecmaVersion: "latest",

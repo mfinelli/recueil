@@ -32,8 +32,32 @@
 
 import browser from "webextension-polyfill";
 import { registerFetchRelay } from "./fetch-relay.js";
+import { pair, getAuthState, unpair } from "./auth.js";
+import { PAIR_DEVICE, GET_AUTH_STATE } from "../common/messages.js";
 
 registerFetchRelay();
+
+browser.runtime.onMessage.addListener((message) => {
+  if (!message || typeof message.type !== "string") {
+    return undefined;
+  }
+  switch (message.type) {
+    case PAIR_DEVICE:
+      return pair(message.payload);
+    case GET_AUTH_STATE:
+      return getAuthState();
+    default:
+      return undefined;
+  }
+});
+
+// Temporary manual-testing entry points: run these from the background
+// service worker's own devtools console (chrome://extensions in Chrome,
+// about:debugging in Firefox -> "Inspect") -- no popup UI exists yet to
+// drive any of this.
+globalThis.__recueilPair = pair;
+globalThis.__recueilUnpair = unpair;
+globalThis.__recueilAuthState = getAuthState;
 
 // Temporary manual-testing entry point: run this from the background
 // service worker's own devtools console (chrome://extensions in Chrome,
