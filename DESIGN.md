@@ -522,6 +522,94 @@ layer further up.
 
 ---
 
+### 3f. The CLI (`recueil auth` / `recueil enqueue`)
+
+The CLI's own two commands, and specifically why their configuration handling
+deliberately diverges from `server`/`agent`'s:
+
+- **Two different config postures for two different audiences.**
+  `server`/`agent` require an explicit `--config` file or environment variables
+  — no automatic search of `$HOME` or the working directory (§13a) — a
+  deliberate choice for production processes, where implicit config-discovery
+  could silently pick up an unintended file. `auth`/`enqueue` are the opposite
+  kind of thing: an end user's personal tool, where automatic discovery is the
+  expected, idiomatic UX (the same shape `git`, `ssh`, and most CLI tools
+  already have people trained on). This isn't a reversal of the earlier
+  decision, it's a second, narrower one for a genuinely different audience —
+  `server`/`agent`'s existing explicit-only behavior is completely unchanged.
+- **No shared/nested `config.toml` at all, in the end** — considered (a
+  `[server]` section vs. flat top-level keys) and set aside, for a sharper
+  reason than "the CLI has nothing to configure yet": once the pairing token
+  needed its own dedicated file anyway (below), and `worker_url` turned out to
+  belong with that token rather than as an independent setting, there was
+  nothing left for the CLI to read from `config.toml` at all. `enqueue`/`auth`
+  don't touch Viper or `internal/config` in any way; every server-only key stays
+  exactly as it is.
+- **Pairing token input: masked prompt if a TTY, stdin otherwise — deliberately
+  never a `--token` flag.** A flag would be visible in shell history and
+  system-wide `ps` output for the process's whole lifetime — a real exposure for
+  a bearer credential, not a theoretical one. `mattn/go-isatty` (already a
+  dependency) decides which path to take; `golang.org/x/term.ReadPassword` (new,
+  small, official) does the actual no-echo read. This gets scriptability for
+  free without ever needing the flag: `echo "$TOKEN" | recueil auth --url ...`
+  reads from stdin directly since stdin isn't a terminal in that case.
+- **`internal/clicreds`: a dedicated file, not a field in `config.toml`.**
+  `$XDG_CONFIG_HOME/recueil/credentials.json` (falling back to
+  `$HOME/.config/recueil/`, the Base Directory spec's own documented default),
+  `0600`, written via temp-file-then-atomic-rename (the same pattern
+  `internal/archive` already uses, for the same reason: a crash or error partway
+  through a write must never leave a half-written file at the real path). Two
+  reasons this isn't just a `config.toml` field: `auth` rewriting part of a file
+  a user might also hand-edit risks clobbering their formatting (nothing this
+  project uses for TOML writing round-trips cleanly), and a bearer credential
+  arguably deserves its own tighter-scoped file rather than sharing a general
+  settings file's permissions regardless. `XDG_CONFIG_HOME` specifically, not
+  `XDG_STATE_HOME` or `XDG_DATA_HOME` -- the Base Directory spec doesn't
+  perfectly disambiguate this by its own letter (a token isn't quite
+  "configuration," but it's even less "state"/session data or generated "data"
+  either), so this follows the ecosystem's own precedent instead of relitigating
+  the spec: `gh` (GitHub CLI) stores its own auth under `XDG_CONFIG_HOME` too.
+- **`worker_url` is stored alongside the token, not as an independent setting.**
+  A token is only ever meaningful for the specific Worker that issued it, so the
+  two are one unit that's always captured, stored, and read together — not two
+  related-but-separate values. Concretely:
+  `recueil auth --url <worker-url> [--name <name>]` requires `--url` (there's no
+  default to fall back to, and no config file to read one from either);
+  `recueil enqueue` then reads both back from the one stored file, with no
+  `--url` override flag on `enqueue` itself. A per-call override, or real
+  multi-server profile support, was considered and deliberately deferred:
+  there's no supporting machinery on the `auth` side yet (nothing to switch
+  between), so adding the flag now would just be confusing rather than actually
+  useful — an honest 401 if you ever do point a stored token at the wrong Worker
+  is a fine failure mode until multi-profile support is worth building for real.
+- **`internal/deviceapi`: `Pair` and `Client` are deliberately separate, not one
+  unified type.** `POST /pair` is unauthenticated by nature — it's how a device
+  obtains a bearer token in the first place, so it can't require one — while
+  `Client.Enqueue` (`POST /queue`) requires a token already in hand. Forcing
+  both into one type would mean either a `Client` that's usable before it has
+  real credentials, or a separate construction path for pairing anyway — no
+  simpler than just keeping them apart. Neither authenticates as the backend
+  itself (unlike `internal/mirror` and `internal/ingest.WorkerClient`, both
+  service-secret-gated); this package is specifically what a paired _device_
+  does against the Worker's public, device-facing endpoints.
+- **`recueil enqueue <url> [<url>...]`** accepts multiple URLs in one invocation
+  (`POST /queue` has no batch form, so this is a client-side loop, one call per
+  URL) and continues past an individual failure rather than stopping the whole
+  batch — the same "one bad item shouldn't block the rest" philosophy already
+  applied to `Ingester.RunOnce`/`Syncer.SyncOnce` (§3c, §8), reported as a
+  summary and a non-zero exit if anything failed, rather than aborting partway
+  through. Each URL gets its own freshly-generated `google/uuid` (already a
+  dependency) as `POST /queue`'s client-generated `id` — the same
+  idempotency-key pattern already established for that endpoint (a retried call
+  with the same `id` is a safe no-op, not a duplicate enqueue).
+- Schema-wise, there was nothing to add: `tokens.device_name` and `device_type`
+  (already including `'cli'` in its allowed set) were already in place from
+  Phase 2, and `POST /pair` already required and stored `device_name` in its
+  request body. `recueil auth`'s only actual job here is supplying a sensible
+  one — `os.Hostname()` by default, `--name` to override.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
@@ -1887,11 +1975,30 @@ recueil/
 │   │                            # the embedded FS's from main.go), the
 │   │                            # bootstrap holder, httpapi wiring, graceful
 │   │                            # shutdown on cmd.Context().Done()
-│   └── cli/                 # recueil-cli, shares the same go.mod
+│   ├── agent.go              # `recueil agent` — the background job runner
+│   │                            # (ticker-driven Ingester.RunOnce +
+│   │                            # Syncer.SyncOnce; see §3e)
+│   ├── auth.go               # `recueil auth` — pairs this device, stores
+│   │                            # the result via internal/clicreds
+│   └── enqueue.go            # `recueil enqueue` — submits URLs to the
+│                                 # Worker's queue, via internal/deviceapi
 ├── internal/
 │   ├── config/               # viper-based config: --config TOML file, env
 │   │                            # vars, defaults set in this package's own
 │   │                            # init() (§13a)
+│   ├── clicreds/              # where `recueil auth`/`enqueue` store/read
+│   │                             # this device's pairing result (§3f) --
+│   │                             # deliberately separate from
+│   │                             # internal/config, not one more thing
+│   │                             # that package's server-oriented Load()
+│   │                             # has to stay agnostic about
+│   ├── deviceapi/              # the CLI's own client for the Worker's
+│   │                             # public, device-facing endpoints
+│   │                             # (POST /pair, POST /queue) -- distinct
+│   │                             # from internal/mirror and
+│   │                             # internal/ingest.WorkerClient, both of
+│   │                             # which authenticate as the backend
+│   │                             # itself, never as a device (§3f)
 │   ├── auth/                  # password hashing, session tokens, bootstrap flow
 │   ├── db/                     # sqlc-generated query code (renamed from
 │   │                             # an earlier `dbgen` during Phase 1)
@@ -1985,10 +2092,11 @@ recueil/
 Note: this tree reflects the Go package layout, Worker tooling, and the Postgres
 testing/migration setup as actually implemented, plus the root-level
 `vitest.config.js`/`eslint.config.js` placement agreed on during that work
-(§13a). The `cmd/cli/` entry is carried over unchanged from the previous
-revision and hasn't been revisited since the `main.go`/`cobra` restructure —
-worth confirming it still shares `go.mod` cleanly once the CLI is actually
-built.
+(§13a). The CLI's own commands (`auth.go`, `enqueue.go`) landed as flat files
+directly in `cmd/`, confirming they share `go.mod`/the single binary cleanly —
+not a separate `cmd/cli/` subdirectory as an earlier revision of this tree
+assumed, before the `main.go`/`cobra` restructure had actually produced
+`server.go`/`agent.go` as the pattern to follow.
 
 ### Notes on specific decisions
 

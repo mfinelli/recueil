@@ -682,15 +682,14 @@ the final shape isn't obvious from a first read of the code:
 
 ### Open items (why this phase isn't closed out yet)
 
-- **CLI** (enqueue-only) — not built.
 - **Fake extension script** (pair → claim → presigned upload → complete) — not
   built. This is what actually proves the R2/D1/Postgres pipeline end-to-end
   against a real deployed Worker; nothing has exercised it for real yet, only
   via tests against fakes/`dbtest`.
-- **`docker-compose.yml` doesn't exist yet** — `recueil agent` (below) is built
-  and ready to be one more service block in it (same image as `server`,
-  different command), but the compose file itself hasn't been created for any
-  service yet, `server` included.
+- **`docker-compose.yml` doesn't exist yet** — `recueil agent` is built and
+  ready to be one more service block in it (same image as `server`, different
+  command), but the compose file itself hasn't been created for any service yet,
+  `server` included.
 - **Full ClearURLs ruleset update/versioning workflow** — the submodule is
   pinned to a specific commit; the "advance the pin, cut a release" process
   described in DESIGN.md §9 hasn't actually been exercised yet.
@@ -713,3 +712,26 @@ several config keys added earlier this phase (`pairing_token_key`,
 this — they exercise `Load()` via `viper.Set()` directly, which works regardless
 of binding, so the gap was invisible to every test that existed until something
 needed to actually read these from a real environment variable in production.
+
+### `recueil auth` / `recueil enqueue` — the CLI, resolved
+
+See DESIGN.md §3f for the full design reasoning. Landed as flat files in `cmd/`
+(`auth.go`, `enqueue.go`), matching `server.go`/`agent.go`'s existing convention
+rather than the stale `cmd/cli/` subdirectory an earlier revision of DESIGN.md's
+repo tree assumed.
+
+Two new packages: `internal/clicreds` (XDG-located credentials file,
+atomic-write, storing `worker_url` alongside the token as one unit since a token
+is only ever meaningful for the Worker that issued it) and `internal/deviceapi`
+(`Pair` as a standalone unauthenticated function, `Client.Enqueue` as the
+authenticated counterpart — kept separate rather than one unified type, since
+pairing is how a device obtains the credential `Client` needs in the first
+place). Nothing needed adding to the Worker/D1 schema at all:
+`tokens.device_name`/`device_type` (already including `'cli'`) and
+`POST /pair`'s handling of both already existed from Phase 2 — this phase's
+actual gap was entirely CLI-side.
+
+`server`/`agent`'s existing config behavior (explicit `--config`/env only, no
+automatic discovery) is completely untouched — `auth`/`enqueue` don't use
+`internal/config`/Viper at all, reading everything from the `internal/clicreds`
+file instead.
