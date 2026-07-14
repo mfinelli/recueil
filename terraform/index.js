@@ -908,7 +908,7 @@ export async function handleListPendingCaptures(request, env) {
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT id, user_id, queue_item_id, url, r2_key_html, captured_at, created_at
+    `SELECT id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at, created_at
      FROM pending_captures
      WHERE fetched_by_backend = 0
      ORDER BY created_at ASC
@@ -1007,9 +1007,37 @@ function captureObjectKey(userId, captureId) {
   return `pending/${userId}/${captureId}/page.html`;
 }
 
+// The only favicon formats the extension is expected to ever hand us:
+// link-level selection (svg > png > ico, preferring whatever the page itself
+// declares, falling back to the conventional /favicon.{svg,png,ico} root
+// paths) rather than parsing any particular file's contents. Validated here
+// so a malformed/unexpected extension fails loudly at presign time rather
+// than producing a pending_captures row the backend can't make sense of later.
+const FAVICON_EXTENSIONS = new Set(["svg", "png", "ico"]);
+
+/**
+ * Builds the deterministic R2 object key for a capture's favicon, mirroring
+ * captureObjectKey above -- same reasoning, plus the extension itself
+ * becomes part of the key (".../favicon.svg" vs ".../favicon.png") since,
+ * unlike the HTML object, a favicon's format isn't fixed. This lets the
+ * backend recover the real extension by reading the key back
+ * (path/filepath.Ext in internal/ingest) instead of needing a separate
+ * mime/type column anywhere.
+ *
+ * @param {number} userId
+ * @param {string} captureId
+ * @param {string} ext - one of FAVICON_EXTENSIONS; not validated here,
+ *   callers must validate before calling (see handleGetUploadUrls)
+ * @returns {string}
+ */
+function faviconObjectKey(userId, captureId, ext) {
+  return `pending/${userId}/${captureId}/favicon.${ext}`;
+}
+
 /**
  * POST /captures/upload-urls: issues a presigned R2 PUT URL for a capture's
- * one artifact Purely stateless signing, no D1 read or write -- capture_id is
+ * HTML, and, when the extension found one, a second presigned URL for its
+ * favicon. Purely stateless signing, no D1 read or write -- capture_id is
  * client-generated (the same client-generated-UUID idempotency pattern as
  * queue_items.id and pending_captures.id) so nothing needs to be reserved
  * server-side before a device starts uploading.
@@ -1023,10 +1051,15 @@ function captureObjectKey(userId, captureId) {
  * swapped body, not just authenticating that some device was allowed to
  * write to this key.
  *
+ * favicon_ext and content_sha256_favicon are both optional, but only
+ * together: a capture without a discoverable favicon simply omits both,
+ * and no favicon upload URL is issued at all.
+ *
  * Deliberately not scoped to a queue item: pending_captures.queue_item_id
- * is nullable to support direct captures, so upload-URL issuance shouldn't require
- * one either. Phase 3's fake extension always supplies one via the queue, but a
- * future direct-capture path can call this same endpoint unchanged.
+ * is nullable to support direct captures, so upload-URL issuance shouldn't
+ * require one either. Phase 3's fake extension always supplies one via the
+ * queue, but a future direct-capture path can call this same endpoint
+ * unchanged.
  *
  * @param {Request} request
  * @param {Env} env
@@ -1060,8 +1093,12 @@ export async function handleGetUploadUrls(request, env, ctx) {
   if (typeof body !== "object" || body === null) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
-  const { capture_id, content_sha256_html } =
-    /** @type {Record<string, unknown>} */ (body);
+  const {
+    capture_id,
+    content_sha256_html,
+    favicon_ext,
+    content_sha256_favicon,
+  } = /** @type {Record<string, unknown>} */ (body);
   if (
     typeof capture_id !== "string" ||
     capture_id === "" ||
@@ -1069,6 +1106,24 @@ export async function handleGetUploadUrls(request, env, ctx) {
     !HEX_SHA256_PATTERN.test(content_sha256_html)
   ) {
     return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  // favicon_ext and content_sha256_favicon are a pair -- both present or
+  // both absent. One without the other is a malformed request, not a
+  // "favicon optional, treat as absent" case: a caller that supplies an
+  // extension but no checksum (or vice versa) almost certainly has a bug
+  // worth surfacing rather than silently dropping.
+  const faviconRequested =
+    favicon_ext !== undefined || content_sha256_favicon !== undefined;
+  if (faviconRequested) {
+    if (
+      typeof favicon_ext !== "string" ||
+      !FAVICON_EXTENSIONS.has(favicon_ext) ||
+      typeof content_sha256_favicon !== "string" ||
+      !HEX_SHA256_PATTERN.test(content_sha256_favicon)
+    ) {
+      return new Response("Missing or invalid fields", { status: 400 });
+    }
   }
 
   const key = captureObjectKey(auth.userId, capture_id);
@@ -1085,19 +1140,48 @@ export async function handleGetUploadUrls(request, env, ctx) {
     checksumSha256Base64: checksumHtmlBase64,
   });
 
-  return new Response(
-    JSON.stringify({
+  /** @type {Record<string, unknown>} */
+  const responseBody = {
+    capture_id,
+    upload_url_html: uploadUrlHtml,
+    r2_key_html: key,
+    expires_in_seconds: UPLOAD_URL_EXPIRY_SECONDS,
+    // The caller's real PUT MUST include this exact header (name and
+    // value) or R2 will reject the request: it's bound into the
+    // signature, and R2 separately verifies the uploaded bytes against it.
+    required_headers_html: { "x-amz-checksum-sha256": checksumHtmlBase64 },
+  };
+
+  if (faviconRequested) {
+    const faviconKey = faviconObjectKey(
+      auth.userId,
       capture_id,
-      upload_url_html: uploadUrlHtml,
-      r2_key_html: key,
-      expires_in_seconds: UPLOAD_URL_EXPIRY_SECONDS,
-      // The caller's real PUT MUST include this exact header (name and
-      // value) or R2 will reject the request: it's bound into the
-      // signature, and R2 separately verifies the uploaded bytes against it.
-      required_headers_html: { "x-amz-checksum-sha256": checksumHtmlBase64 },
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
-  );
+      /** @type {string} */ (favicon_ext),
+    );
+    const checksumFaviconBase64 = hexToBase64(
+      /** @type {string} */ (content_sha256_favicon),
+    );
+
+    responseBody.upload_url_favicon = await presignR2Url({
+      accountId: env.R2_ACCOUNT_ID,
+      bucketName: env.R2_BUCKET_NAME,
+      accessKeyId: env.R2_ACCESS_KEY_ID,
+      secretAccessKey: env.R2_ACCESS_KEY_SECRET,
+      method: /** @type {"PUT"} */ ("PUT"),
+      expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
+      key: faviconKey,
+      checksumSha256Base64: checksumFaviconBase64,
+    });
+    responseBody.r2_key_favicon = faviconKey;
+    responseBody.required_headers_favicon = {
+      "x-amz-checksum-sha256": checksumFaviconBase64,
+    };
+  }
+
+  return new Response(JSON.stringify(responseBody), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /**
@@ -1118,6 +1202,9 @@ export async function handleGetUploadUrls(request, env, ctx) {
  * scheme handleGetUploadUrls used to issue the presigned URL. This means a
  * device can't claim an arbitrary R2 key belongs to this capture; it can
  * only ever reference the key it was actually presigned to upload to.
+ * favicon_ext (optional) gets the same treatment via faviconObjectKey --
+ * the caller declares *whether* it uploaded a favicon and in what format,
+ * but never the key itself.
  *
  * @param {Request} request
  * @param {Env} env
@@ -1139,14 +1226,19 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
   if (typeof body !== "object" || body === null) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
-  const { capture_id, captured_at } = /** @type {Record<string, unknown>} */ (
-    body
-  );
+  const { capture_id, captured_at, favicon_ext } =
+    /** @type {Record<string, unknown>} */ (body);
   if (
     typeof capture_id !== "string" ||
     capture_id === "" ||
     typeof captured_at !== "string" ||
     captured_at === ""
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  if (
+    favicon_ext !== undefined &&
+    (typeof favicon_ext !== "string" || !FAVICON_EXTENSIONS.has(favicon_ext))
   ) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
@@ -1188,19 +1280,24 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
   }
 
   const r2KeyHtml = captureObjectKey(auth.userId, capture_id);
+  const r2KeyFavicon =
+    typeof favicon_ext === "string"
+      ? faviconObjectKey(auth.userId, capture_id, favicon_ext)
+      : null;
 
   try {
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO pending_captures
-           (id, user_id, queue_item_id, url, r2_key_html, captured_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+           (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         capture_id,
         auth.userId,
         itemId,
         queueItem.url,
         r2KeyHtml,
+        r2KeyFavicon,
         captured_at,
       ),
       env.DB.prepare(
@@ -1213,7 +1310,11 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
   }
 
   return new Response(
-    JSON.stringify({ id: capture_id, r2_key_html: r2KeyHtml }),
+    JSON.stringify({
+      id: capture_id,
+      r2_key_html: r2KeyHtml,
+      r2_key_favicon: r2KeyFavicon,
+    }),
     { status: 201, headers: { "Content-Type": "application/json" } },
   );
 }

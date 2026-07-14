@@ -797,3 +797,94 @@ it.
 **Phase 3 closed here.** The real browser extension — proving this phase's
 pipeline against an actual deployed Worker for the first time — is its own next
 phase, not a continuation of this one.
+
+## Phase 3½ (Favicons)
+
+Backend/Worker-side groundwork for favicon capture, built and tested the same
+way the rest of Phase 3 was — against real Postgres (`dbtest`) and real
+Miniflare D1, with fakes standing in for R2/the extension, since the real
+extension still doesn't exist yet (that's next). See DESIGN.md §3g for the full
+design writeup; this is the "what actually landed" companion to it.
+
+### `internal/archive`: restructured around per-capture directories
+
+`Store.Write` (one method, HTML-only, keyed by `content_hash`) split into two:
+
+- `WriteHTML(htmlHash, data)` — same content-hash keying as before, but the
+  sharded directory (`CaptureDir(htmlHash)`, now exported) holds a fixed
+  filename (`page.html.zst`) rather than baking the hash into the filename
+  itself, since the directory already encodes it.
+- `WriteAsset(htmlHash, assetHash, ext, data, compress)` — everything else
+  belonging to a capture (favicon today, a screenshot later) lives in that same
+  directory, but named by _its own_ content hash, not `htmlHash`. This is
+  load-bearing, not a style choice: two captures can share byte-identical HTML
+  while carrying different favicons (a static page recaptured after the site's
+  icon changed), so keying a secondary asset by the html hash would silently
+  reintroduce the exact same-key-different-content overwrite bug
+  `content_hash`-keying exists to avoid in the first place — just one level
+  removed. `compress` is per-call: SVG gets zstd'd, PNG/ICO (already compressed
+  binary formats) are stored raw.
+- `Open` now infers compression from a `.zst` path suffix instead of always
+  assuming it, since not everything in the store is compressed anymore.
+
+### Schema
+
+- Postgres: `captures.favicon_path TEXT` (nullable) — populated _synchronously_
+  at ingestion (unlike `thumbnail_path`, which is async), and never cleaned up
+  or mutated afterward, since captures are immutable history.
+  `pages.favicon_path TEXT` (nullable) — denormalized from the latest capture
+  exactly the way `pages.title` already is, including overwriting back to `NULL`
+  if the latest capture didn't find one. `UpsertPage` and
+  `InsertCaptureIdempotent` both updated accordingly; both existing migrations
+  (`00003`, `00004`) modified in place, same as the mirror-exclusion change
+  above — nothing's shipped yet.
+- D1: `pending_captures.r2_key_favicon TEXT` (nullable), existing migration
+  (`0004_create_pending_captures.sql`) modified in place. The real file
+  extension lives in the key itself (`.../favicon.svg` vs `.../favicon.png`)
+  rather than a separate mime/type column — the backend recovers it by reading
+  the key back (`filepath.Ext`) at ingestion, the same way `page.html`'s
+  extension was always implicit.
+
+### Worker (`terraform/index.js`)
+
+- `POST /captures/upload-urls` accepts an optional
+  `(favicon_ext, content_sha256_favicon)` pair — both present or both absent, a
+  half-specified request is rejected outright, not silently treated as "no
+  favicon." When present, issues a second presigned PUT at a deterministic key
+  (`faviconObjectKey`, mirroring `captureObjectKey`) and returns
+  `upload_url_favicon`/`r2_key_favicon`/`required_headers_favicon` alongside the
+  existing HTML fields. `favicon_ext` is validated against a fixed set
+  (`svg | png | ico`, `FAVICON_EXTENSIONS`) matching DESIGN.md §3g's selection
+  scheme.
+- `POST /queue/:id/complete` accepts an optional `favicon_ext`; the Worker
+  recomputes the deterministic favicon key itself (never trusts a
+  client-supplied key, same posture `r2_key_html` already has) and writes it
+  into the new `pending_captures` column.
+- `GET /internal/pending-captures` includes `r2_key_favicon` in its `SELECT` —
+  no other change needed, it was already a raw passthrough of the row.
+
+### `internal/ingest`
+
+- `PendingCapture.R2KeyFavicon *string` — nil whenever the extension didn't
+  upload one.
+- New `Ingester.captureFavicon`: pulls the favicon object from R2 (if any),
+  hashes it, derives its extension from the R2 key, and writes it via
+  `Store.WriteAsset` alongside the HTML in the same capture directory.
+  **Deliberately never returns an error** — a fetch, read, or disk-write failure
+  here is logged and the capture proceeds with `favicon_path` left empty, since
+  a favicon is cosmetic and an unreachable/malformed one is never a reason to
+  lose an otherwise-good HTML capture.
+- `processOne`'s R2 cleanup pass deletes the favicon object alongside the HTML
+  one when present, best-effort (a delete failure there is logged, not
+  propagated — the object is already durably stored locally or wasn't, either
+  way R2's copy was never canonical).
+- `favicon_path` threaded through `writeInput` into both `UpsertPage` and
+  `InsertCaptureIdempotent` via the same `textOrNull` helper `title` already
+  uses (empty string → `NULL`).
+
+### What's still not built
+
+The real browser extension itself — everything above is plumbing it can be built
+against, proven the same way Phase 3's pipeline was (real Postgres/D1, faked
+R2/device), but nothing has exercised it against an actual capture yet. That's
+the next real piece of work.

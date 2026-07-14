@@ -27,6 +27,7 @@ CREATE TABLE captures (
   html_compressed_size_bytes INTEGER NOT NULL,
   html_uncompressed_size_bytes INTEGER NOT NULL,
   thumbnail_path TEXT,
+  favicon_path TEXT,
   reader_text TEXT,
   readability_version TEXT,
   content_hash TEXT NOT NULL,

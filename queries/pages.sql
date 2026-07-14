@@ -21,16 +21,21 @@
 -- the latest capture's title on every call -- pages.title is documented
 -- as denormalized from the latest capture, so a plain INSERT ... ON CONFLICT
 -- DO NOTHING would leave a stale title after a re-archive under a page whose
--- title has since changed. latest_capture_at uses GREATEST rather than a
--- blind overwrite: ingestion order isn't strictly guaranteed to match
--- capture order (a delayed queue item could be ingested after a later
--- one), so this tolerates an out-of-order arrival without regressing the
--- column to an earlier timestamp.
-INSERT INTO pages (user_id, normalized_url, title, latest_capture_at)
-VALUES ($1, $2, $3, $4)
+-- title has since changed. favicon_path is denormalized the exact same
+-- way -- always overwritten to the latest capture's value, including back
+-- to NULL if that capture didn't have one, since favicon is per-capture
+-- state, not something worth preserving across a capture that genuinely no
+-- longer has one. latest_capture_at uses GREATEST rather than a blind
+-- overwrite: ingestion order isn't strictly guaranteed to match capture order
+-- (a delayed queue item could be ingested after a later one), so this
+-- tolerates an out-of-order arrival without regressing the column to an
+-- earlier timestamp.
+INSERT INTO pages (user_id, normalized_url, title, latest_capture_at, favicon_path)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (user_id, normalized_url) DO UPDATE
 SET title = $3, updated_at = NOW(),
-    latest_capture_at = GREATEST(pages.latest_capture_at, $4)
+    latest_capture_at = GREATEST(pages.latest_capture_at, $4),
+    favicon_path = $5
 RETURNING *;
 
 -- name: GetPageByID :one

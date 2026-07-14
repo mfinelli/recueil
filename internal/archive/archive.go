@@ -16,27 +16,39 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Package archive is the local, canonical, zstd-compressed disk store for
-// capture HTML (DESIGN.md §4). Paths are returned relative to the Store's
+// Package archive is the local, canonical disk store for everything
+// belonging to a capture: the HTML itself, and now optionally a favicon,
+// eventually a screenshot. Paths are returned relative to the Store's
 // configured root.
 //
-// Files are sharded into subdirectories by the first four hex-ish
-// characters of the storage key (git's own object-store scheme, applied
-// here for the same reason: a flat directory with hundreds of thousands or
-// millions of entries degrades badly for `ls`, backup tools, and anything
-// else that walks it).
+// Every asset for one capture lives together under a single directory,
+// sharded by the first four hex characters of the capture's own html
+// content_hash (git's own object-store scheme, applied here for the same
+// reason: a flat directory with hundreds of thousands or millions of
+// entries degrades badly for `ls`, backup tools, and anything else that
+// walks it) -- see CaptureDir.
 //
-// Write is keyed by content_hash (the SHA-256 of the exact bytes being
-// stored), not capture_id: two captures whose client-generated capture_ids
-// happened to collide would also collide on a capture_id-keyed disk path,
-// and Write's atomic rename (below) silently overwrites whatever's already at
-// the destination. Keying by content_hash instead means a "collision" can
-// only happen for genuinely byte-identical content, in which case overwriting
-// with identical bytes is a harmless no-op rather than data loss for an
-// unrelated, already-successfully-stored capture. See internal/ingest for
-// where this content_hash is actually computed and where the same
-// reasoning is applied a second time, for the Postgres side of the same
-// underlying problem.
+// The HTML file's own identity is fully determined by CaptureDir(htmlHash)
+// alone -- its filename inside that directory is fixed (see WriteHTML) --
+// because the directory itself is already keyed by that exact content's
+// hash, so any write into it is, by construction, a write of identical
+// bytes. This is the same content_hash-not-capture_id reasoning
+// internal/ingest already applies for Postgres's source_capture_id
+// handling: keying by capture_id instead would let two different captures'
+// client-generated IDs collide onto the same disk path, and the atomic
+// rename below would silently overwrite one capture's data with another's.
+//
+// Every *other* asset (WriteAsset -- favicon today, a screenshot later) is
+// instead keyed by *its own* content hash, not the html's. This matters:
+// two captures can have byte-for-byte identical HTML (a static page with no
+// embedded timestamps/tokens, recaptured after the site's favicon changed)
+// while carrying genuinely different secondary assets. Naming a secondary
+// asset by the html hash would silently reintroduce the exact
+// same-key-different-content overwrite bug this package exists to avoid --
+// just one level removed. Naming it by the asset's own hash instead
+// preserves the same guarantee WriteHTML gets from its directory: identical
+// key implies identical bytes, so a "collision" can only ever be a
+// harmless no-op overwrite, never data loss for an unrelated asset.
 package archive
 
 import (
@@ -44,6 +56,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -56,10 +69,61 @@ func New(root string) *Store {
 	return &Store{root: root}
 }
 
-// Write zstd-compresses data and writes it to a sharded path derived from
-// key, returning the path relative to the Store's root (suitable for
-// captures.html_path) and the compressed size in bytes (for
-// captures.html_compressed_size_bytes).
+// CaptureDir returns the sharded relative directory for a capture, derived
+// from the capture's own html content_hash -- {hash[0:2]}/{hash[2:4]}/{hash}/.
+// Every asset belonging to that capture (WriteHTML, WriteAsset) lives
+// inside it. Exported since callers outside this package (e.g. a future
+// dashboard handler serving "everything for this capture") may need to
+// derive the same directory without going through a Write call.
+//
+// Falls back to no sharding for a hash shorter than 4 characters --
+// shouldn't happen for a real SHA-256 hex digest (always exactly 64
+// characters), but a short/malformed hash is a bad reason to panic rather
+// than just place the directory directly under the root.
+func CaptureDir(htmlHash string) string {
+	if len(htmlHash) < 4 {
+		return htmlHash
+	}
+	return filepath.Join(htmlHash[0:2], htmlHash[2:4], htmlHash)
+}
+
+// WriteHTML zstd-compresses data and writes it to the fixed HTML filename
+// inside CaptureDir(htmlHash), returning the path relative to the Store's
+// root (suitable for captures.html_path) and the compressed size in bytes
+// (for captures.html_compressed_size_bytes). See the package doc for why
+// the filename itself doesn't need to also encode the hash: the directory
+// already does.
+func (s *Store) WriteHTML(htmlHash string, data []byte) (relPath string, compressedSize int64, err error) {
+	relPath = filepath.Join(CaptureDir(htmlHash), "page.html.zst")
+	size, err := s.writeAtomic(relPath, data, true)
+	return relPath, size, err
+}
+
+// WriteAsset writes a secondary asset belonging to the capture identified
+// by htmlHash (a favicon today, a screenshot later) into that same
+// capture directory, named by the asset's *own* content hash (assetHash)
+// plus a real file extension (e.g. "svg", "png", "ico") -- not htmlHash.
+// See the package doc for why that distinction matters.
+//
+// compress selects whether this particular asset gets zstd'd:
+// already-compressed binary formats (png, ico, jpeg) gain essentially
+// nothing from it and would just pay a decompress cost on every future
+// read for free, while text-based formats (svg) compress well. When
+// compress is true, ".zst" is appended to the stored filename (matching
+// WriteHTML's own convention) so Open knows to decompress on the way back
+// out purely from the path, with no separate bookkeeping.
+func (s *Store) WriteAsset(htmlHash, assetHash, ext string, data []byte, compress bool) (relPath string, err error) {
+	filename := assetHash + "." + ext
+	if compress {
+		filename += ".zst"
+	}
+	relPath = filepath.Join(CaptureDir(htmlHash), filename)
+	_, err = s.writeAtomic(relPath, data, compress)
+	return relPath, err
+}
+
+// writeAtomic writes data (optionally zstd-compressed) to relPath under the
+// Store's root and returns the number of bytes actually written to disk.
 //
 // Writes go through a temp file in the same target directory, then an
 // atomic rename into place -- same-directory os.Rename is atomic on a
@@ -71,44 +135,48 @@ func New(root string) *Store {
 // whatever (possibly nothing, possibly a leftover temp file that was already
 // cleaned up) is there, not risk leaving a half-written file that looks
 // superficially present but isn't actually valid.
-func (s *Store) Write(key string, data []byte) (relPath string, compressedSize int64, err error) {
-	relPath = shardedPath(key)
+func (s *Store) writeAtomic(relPath string, data []byte, compress bool) (writtenSize int64, err error) {
 	absPath := filepath.Join(s.root, relPath)
 	dir := filepath.Dir(absPath)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, fmt.Errorf("archive: creating directory %q: %w", dir, err)
+		return 0, fmt.Errorf("archive: creating directory %q: %w", dir, err)
 	}
 
 	tmpFile, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
-		return "", 0, fmt.Errorf("archive: creating temp file in %q: %w", dir, err)
+		return 0, fmt.Errorf("archive: creating temp file in %q: %w", dir, err)
 	}
 	tmpPath := tmpFile.Name()
 	// A no-op once the rename below succeeds (nothing left at tmpPath to
 	// remove); cleans up the temp file on any earlier error return.
 	defer func() { _ = os.Remove(tmpPath) }()
 
-	if err := writeCompressed(tmpFile, data); err != nil {
+	if compress {
+		if err := writeCompressed(tmpFile, data); err != nil {
+			_ = tmpFile.Close()
+			return 0, err
+		}
+	} else if _, err := tmpFile.Write(data); err != nil {
 		_ = tmpFile.Close()
-		return "", 0, err
+		return 0, fmt.Errorf("archive: writing: %w", err)
 	}
 
 	info, err := tmpFile.Stat()
 	if err != nil {
 		_ = tmpFile.Close()
-		return "", 0, fmt.Errorf("archive: stat on temp file: %w", err)
+		return 0, fmt.Errorf("archive: stat on temp file: %w", err)
 	}
-	compressedSize = info.Size()
+	writtenSize = info.Size()
 
 	if err := tmpFile.Close(); err != nil {
-		return "", 0, fmt.Errorf("archive: closing temp file: %w", err)
+		return 0, fmt.Errorf("archive: closing temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, absPath); err != nil {
-		return "", 0, fmt.Errorf("archive: renaming into place: %w", err)
+		return 0, fmt.Errorf("archive: renaming into place: %w", err)
 	}
 
-	return relPath, compressedSize, nil
+	return writtenSize, nil
 }
 
 func writeCompressed(w io.Writer, data []byte) error {
@@ -126,15 +194,24 @@ func writeCompressed(w io.Writer, data []byte) error {
 	return nil
 }
 
-// Open returns a decompressing reader for a path previously returned by
-// Write (or any path relative to the Store's root laid out the same way).
-// The caller must Close the returned ReadCloser.
+// Open returns a reader for a path previously returned by WriteHTML or
+// WriteAsset (or any path relative to the Store's root laid out the same
+// way). Transparently decompresses when relPath ends in ".zst" and returns
+// the raw file otherwise -- the path itself is the only source of truth
+// for whether the content is compressed, matching how WriteAsset decides
+// the filename in the first place, so there's no separate "was this
+// compressed" bookkeeping to keep in sync. The caller must Close the
+// returned ReadCloser.
 func (s *Store) Open(relPath string) (io.ReadCloser, error) {
 	absPath := filepath.Join(s.root, relPath)
 
 	f, err := os.Open(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("archive: opening %q: %w", relPath, err)
+	}
+
+	if !strings.HasSuffix(relPath, ".zst") {
+		return f, nil
 	}
 
 	dec, err := zstd.NewReader(f)
@@ -161,17 +238,4 @@ func (d *decodingReadCloser) Read(p []byte) (int, error) {
 func (d *decodingReadCloser) Close() error {
 	d.dec.Close()
 	return d.f.Close()
-}
-
-// shardedPath computes the sharded relative path for a storage key:
-// {key[0:2]}/{key[2:4]}/{key}.html.zst. Falls back to no sharding for a
-// key shorter than 4 characters -- shouldn't happen for a real SHA-256
-// hex digest (always exactly 64 characters), but a short/malformed key is
-// a bad reason for Write to panic rather than just place the file
-// directly under the root.
-func shardedPath(key string) string {
-	if len(key) < 4 {
-		return key + ".html.zst"
-	}
-	return filepath.Join(key[0:2], key[2:4], key+".html.zst")
 }

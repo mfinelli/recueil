@@ -68,12 +68,18 @@ async function seedQueueItem(id, userId, url, status, claimedByTokenId) {
 async function seedPendingCapture(
   id,
   userId,
-  { queueItemId = null, url, r2KeyHtml, fetchedByBackend = 0 } = {},
+  {
+    queueItemId = null,
+    url,
+    r2KeyHtml,
+    r2KeyFavicon = null,
+    fetchedByBackend = 0,
+  } = {},
 ) {
   await env.DB.prepare(
     `INSERT INTO pending_captures
-       (id, user_id, queue_item_id, url, r2_key_html, captured_at, fetched_by_backend)
-     VALUES (?, ?, ?, ?, ?, '2026-07-12T12:00:00.000Z', ?)`,
+       (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at, fetched_by_backend)
+     VALUES (?, ?, ?, ?, ?, ?, '2026-07-12T12:00:00.000Z', ?)`,
   )
     .bind(
       id,
@@ -81,6 +87,7 @@ async function seedPendingCapture(
       queueItemId,
       url ?? `https://example.com/${id}`,
       r2KeyHtml ?? `pending/${userId}/${id}/page.html`,
+      r2KeyFavicon,
       fetchedByBackend,
     )
     .run();
@@ -107,6 +114,7 @@ function authedRequest(method, path, rawToken, body) {
 const testCtx = { waitUntil: () => {} };
 
 const FAKE_HTML_SHA256 = "a".repeat(64); // well-formed lowercase hex, not a real digest of anything
+const FAKE_FAVICON_SHA256 = "b".repeat(64); // same idea, deliberately distinct from the html one
 
 // Mirrors index.js's own hexToBase64 (kept private there) rather than
 // relying on Node's Buffer, which isn't a declared global in this
@@ -287,6 +295,84 @@ describe("handleGetUploadUrls", () => {
     await seedUserAndToken(rawToken);
     const response = await handleGetUploadUrls(
       authedRequest("POST", "/captures/upload-urls", rawToken, body),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it.each(["svg", "png", "ico"])(
+    "issues a second presigned URL and a deterministic favicon key when a %s favicon is declared",
+    async (ext) => {
+      const rawToken = `rcl_live_upload-urls-favicon-${ext}`;
+      const { userId } = await seedUserAndToken(rawToken);
+
+      const response = await handleGetUploadUrls(
+        authedRequest("POST", "/captures/upload-urls", rawToken, {
+          capture_id: "capture-with-favicon",
+          content_sha256_html: FAKE_HTML_SHA256,
+          favicon_ext: ext,
+          content_sha256_favicon: FAKE_FAVICON_SHA256,
+        }),
+        env,
+        testCtx,
+      );
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.r2_key_favicon).toBe(
+        `pending/${userId}/capture-with-favicon/favicon.${ext}`,
+      );
+      expect(body.upload_url_favicon).toMatch(/^https:\/\//);
+      expect(new URL(body.upload_url_favicon).pathname).toBe(
+        `/test-bucket/${body.r2_key_favicon}`,
+      );
+      expect(body.required_headers_favicon).toEqual({
+        "x-amz-checksum-sha256": hexToBase64(FAKE_FAVICON_SHA256),
+      });
+    },
+  );
+
+  it("omits every favicon field entirely when no favicon is declared", async () => {
+    const rawToken = "rcl_live_upload-urls-no-favicon";
+    await seedUserAndToken(rawToken);
+
+    const response = await handleGetUploadUrls(
+      authedRequest("POST", "/captures/upload-urls", rawToken, {
+        capture_id: "capture-no-favicon",
+        content_sha256_html: FAKE_HTML_SHA256,
+      }),
+      env,
+      testCtx,
+    );
+    const body = await response.json();
+    expect(body.r2_key_favicon).toBeUndefined();
+    expect(body.upload_url_favicon).toBeUndefined();
+    expect(body.required_headers_favicon).toBeUndefined();
+  });
+
+  it.each([
+    ["favicon_ext without content_sha256_favicon", { favicon_ext: "png" }],
+    [
+      "content_sha256_favicon without favicon_ext",
+      { content_sha256_favicon: FAKE_FAVICON_SHA256 },
+    ],
+    [
+      "unrecognized favicon_ext",
+      { favicon_ext: "webp", content_sha256_favicon: FAKE_FAVICON_SHA256 },
+    ],
+    [
+      "malformed content_sha256_favicon",
+      { favicon_ext: "png", content_sha256_favicon: "not-hex" },
+    ],
+  ])("rejects a half-specified or invalid favicon: %s", async (name, extra) => {
+    const rawToken = `rcl_live_upload-urls-badfav-${name.replace(/\s+/g, "-")}`;
+    await seedUserAndToken(rawToken);
+    const response = await handleGetUploadUrls(
+      authedRequest("POST", "/captures/upload-urls", rawToken, {
+        capture_id: "x",
+        content_sha256_html: FAKE_HTML_SHA256,
+        ...extra,
+      }),
       env,
       testCtx,
     );
@@ -522,6 +608,117 @@ describe("handleCompleteQueueItem", () => {
     );
     expect(response.status).toBe(400);
   });
+
+  it("records a deterministic r2_key_favicon when favicon_ext is declared", async () => {
+    const { userId, tokenId } = await seedUserAndToken(
+      "rcl_live_complete-favicon",
+    );
+    await seedQueueItem(
+      "complete-item-favicon",
+      userId,
+      "https://example.com/complete-favicon",
+      "claimed",
+      tokenId,
+    );
+
+    const response = await handleCompleteQueueItem(
+      authedRequest(
+        "POST",
+        "/queue/complete-item-favicon/complete",
+        "rcl_live_complete-favicon",
+        {
+          capture_id: "capture-favicon-1",
+          captured_at: "2026-07-12T12:00:00.000Z",
+          favicon_ext: "svg",
+        },
+      ),
+      env,
+      testCtx,
+      "complete-item-favicon",
+    );
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.r2_key_favicon).toBe(
+      `pending/${userId}/capture-favicon-1/favicon.svg`,
+    );
+
+    const row = await env.DB.prepare(
+      "SELECT r2_key_favicon FROM pending_captures WHERE id = ?",
+    )
+      .bind("capture-favicon-1")
+      .first();
+    expect(row.r2_key_favicon).toBe(
+      `pending/${userId}/capture-favicon-1/favicon.svg`,
+    );
+  });
+
+  it("leaves r2_key_favicon NULL when no favicon was uploaded", async () => {
+    const { userId, tokenId } = await seedUserAndToken(
+      "rcl_live_complete-no-favicon",
+    );
+    await seedQueueItem(
+      "complete-item-no-favicon",
+      userId,
+      "https://example.com/complete-no-favicon",
+      "claimed",
+      tokenId,
+    );
+
+    const response = await handleCompleteQueueItem(
+      authedRequest(
+        "POST",
+        "/queue/complete-item-no-favicon/complete",
+        "rcl_live_complete-no-favicon",
+        {
+          capture_id: "capture-no-favicon-1",
+          captured_at: "2026-07-12T12:00:00.000Z",
+        },
+      ),
+      env,
+      testCtx,
+      "complete-item-no-favicon",
+    );
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.r2_key_favicon).toBeNull();
+
+    const row = await env.DB.prepare(
+      "SELECT r2_key_favicon FROM pending_captures WHERE id = ?",
+    )
+      .bind("capture-no-favicon-1")
+      .first();
+    expect(row.r2_key_favicon).toBeNull();
+  });
+
+  it("rejects an unrecognized favicon_ext", async () => {
+    const { userId, tokenId } = await seedUserAndToken(
+      "rcl_live_complete-badfavicon",
+    );
+    await seedQueueItem(
+      "complete-item-badfavicon",
+      userId,
+      "https://example.com/complete-badfavicon",
+      "claimed",
+      tokenId,
+    );
+
+    const response = await handleCompleteQueueItem(
+      authedRequest(
+        "POST",
+        "/queue/complete-item-badfavicon/complete",
+        "rcl_live_complete-badfavicon",
+        {
+          capture_id: "capture-badfavicon-1",
+          captured_at: "2026-07-12T12:00:00.000Z",
+          favicon_ext: "webp",
+        },
+      ),
+      env,
+      testCtx,
+      "complete-item-badfavicon",
+    );
+    expect(response.status).toBe(400);
+  });
 });
 
 describe("handleFailQueueItem", () => {
@@ -623,6 +820,27 @@ describe("handleFailQueueItem", () => {
 });
 
 describe("handleListPendingCaptures", () => {
+  it("includes r2_key_favicon (null when absent, the real key when present)", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-favicon-none", userId, {});
+    await seedPendingCapture("list-favicon-some", userId, {
+      r2KeyFavicon: `pending/${userId}/list-favicon-some/favicon.png`,
+    });
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", "/internal/pending-captures"),
+      env,
+    );
+    const body = await response.json();
+    const byId = Object.fromEntries(
+      body.pending_captures.map((c) => [c.id, c]),
+    );
+    expect(byId["list-favicon-none"].r2_key_favicon).toBeNull();
+    expect(byId["list-favicon-some"].r2_key_favicon).toBe(
+      `pending/${userId}/list-favicon-some/favicon.png`,
+    );
+  });
+
   it("lists unfetched captures, oldest first", async () => {
     const userId = await seedUser();
     // Insert in reverse order to confirm the query orders by created_at,
