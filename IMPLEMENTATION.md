@@ -526,16 +526,20 @@ the same convention as they're implemented").
   separate, longer expiry?) — tracked as open in DESIGN.md §15, not decided
   here.
 
-## Phase 3 (Capture Upload Pipeline + Backend Ingestion — IN PROGRESS)
+## Phase 3 (Capture Upload Pipeline + Backend Ingestion)
 
 Phase 3's original brief was three pieces: a CLI (enqueue-only), a throwaway
 fake-extension script proving the R2/D1/Postgres pipeline end-to-end, and
-whatever Worker/backend plumbing those two needed to actually work against.
-What's landed so far is essentially all of that plumbing — the presigned upload
-endpoints, and a real, tested backend ingestion pipeline — but **not** the CLI
-or the fake extension script themselves, and not the mechanism that would
-actually trigger ingestion to run. This section documents what exists now; a
-follow-up update will close out this phase once those remaining pieces land.
+whatever Worker/backend plumbing those two needed to actually work against. The
+fake extension was explicitly carved back out during closeout, not just deferred
+as leftover phase work — with everything else in this phase actually built and
+tested, a throwaway script whose only job is proving already-tested plumbing
+works felt like lower value than moving on, and it's genuinely its own scope
+(the real extension is a substantial piece of work in its own right, per
+DESIGN.md's original phased plan). It becomes its own dedicated future phase
+instead. Everything else landed: the presigned upload endpoints, a real tested
+backend ingestion pipeline, the D1 bookmark-list mirror, the `recueil agent`
+trigger mechanism, and the CLI (`auth`/`enqueue`).
 
 ### What exists now
 
@@ -680,19 +684,48 @@ the final shape isn't obvious from a first read of the code:
   validation is therefore a small hand-written query against the raw pool, not a
   generated one.
 
-### Open items (why this phase isn't closed out yet)
+### Closeout dispositions
 
-- **Fake extension script** (pair → claim → presigned upload → complete) — not
-  built. This is what actually proves the R2/D1/Postgres pipeline end-to-end
-  against a real deployed Worker; nothing has exercised it for real yet, only
-  via tests against fakes/`dbtest`.
-- **`docker-compose.yml` doesn't exist yet** — `recueil agent` is built and
-  ready to be one more service block in it (same image as `server`, different
-  command), but the compose file itself hasn't been created for any service yet,
-  `server` included.
-- **Full ClearURLs ruleset update/versioning workflow** — the submodule is
-  pinned to a specific commit; the "advance the pin, cut a release" process
-  described in DESIGN.md §9 hasn't actually been exercised yet.
+Phase 3 is closed with the items below explicitly triaged, not left as an
+undifferentiated pile of "todo" — each has a real disposition, decided
+deliberately rather than by default.
+
+**Carved out into its own future phase, not deferred as Phase 3 leftover:**
+
+- **The fake extension script** (pair → claim → presigned upload → complete) —
+  see the closure note above. Nothing has exercised the R2/D1/Postgres pipeline
+  end-to-end against a real deployed Worker yet; everything that exists today is
+  proven via tests against fakes/`dbtest` only. The real browser extension is a
+  substantial piece of work in its own right and deserves a dedicated phase, not
+  a rushed throwaway script squeezed into this one's closeout.
+
+**Explicitly deferred — will resolve or revisit in a later phase:**
+
+- **`docker-compose.yml` still doesn't exist** for any service. Deliberately not
+  built yet: local development currently uses a personal `compose.yaml` and the
+  binary run directly, and the real, end-user-facing compose file will get built
+  alongside end-user documentation, so the two stay consistent with each other
+  rather than needing to be reconciled later.
+- **`failed` queue items' long-term retention** — unresolved since Phase 2; the
+  cleanup endpoint only ever sweeps `captured` rows. Still open, not forgotten.
+- **Fragment-aware URL canonicalization for known SPAs** —
+  `urlnorm.Canonicalize` drops every URL fragment unconditionally; the "unless
+  it's a known SPA with meaningful route state" exception from DESIGN.md §9 has
+  no implementation and no site list to check against yet.
+
+**Explicitly won't-do — reconsider only if it becomes a real, felt problem:**
+
+- **A `--url` override flag on `recueil enqueue`.** There's no supporting
+  machinery on the `auth` side (no multi-profile concept, nothing to override
+  _to_), so the flag would just be confusing rather than useful — see DESIGN.md
+  §3f. If real multi-server support is ever wanted, it's a clean, additive
+  change later (rename the credentials file, add a `--profile` flag), not
+  something worth a half-measure now.
+- **Postgres `LISTEN`/`NOTIFY`** for faster job pickup, layered on top of
+  `recueil agent`'s poll loop. Discussed during the agent's design (DESIGN.md
+  §3e) and explicitly set aside: plain polling is entirely sufficient at this
+  project's personal-archive scale, and there's no felt latency problem this
+  would actually be solving right now.
 
 ### `recueil agent` — the trigger mechanism, resolved
 
@@ -735,3 +768,9 @@ actual gap was entirely CLI-side.
 automatic discovery) is completely untouched — `auth`/`enqueue` don't use
 `internal/config`/Viper at all, reading everything from the `internal/clicreds`
 file instead.
+
+---
+
+**Phase 3 closed here.** The real browser extension — proving this phase's
+pipeline against an actual deployed Worker for the first time — is its own next
+phase, not a continuation of this one.
