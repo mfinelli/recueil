@@ -23,6 +23,7 @@ CREATE TABLE pages (
   title TEXT,
   latest_capture_at TIMESTAMPTZ NOT NULL,
   excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE,
+  favicon_path TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT pages_pkey PRIMARY KEY (id),

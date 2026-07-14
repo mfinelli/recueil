@@ -610,6 +610,92 @@ deliberately diverges from `server`/`agent`'s:
 
 ---
 
+### 3g. Favicon capture
+
+Captured client-side, the same way HTML is — not fetched by the backend. This is
+a deliberate extension of §1's core principle, not an exception to it: a favicon
+fetch is still a live request against a URL the extension already has an
+authenticated browser context for (most favicons don't need that, but some do —
+an intranet tool or private wiki is a real if narrow case), so the backend never
+touches the live web at all, full stop, with no carve-out to reason about later.
+
+**Selection — link-level, not pixel-level.** The extension resolves a candidate
+URL by checking, in order: any `<link rel="icon">` /
+`<link rel="apple-touch-icon">` tags declared on the page (preferring
+`type="image/svg+xml"` over a raster candidate, and the largest declared `sizes`
+among raster candidates), then falling back to the conventional root-relative
+`/favicon.svg`, `/favicon.png`, `/favicon.ico`, tried in that order. If none of
+that resolves to anything, `favicon_path` simply stays `NULL` for that capture —
+not every site has one, and not finding one is never an error.
+
+**No image processing, deliberately.** Whatever bytes come back — including a
+legacy multi-resolution `.ico` container — are stored exactly as received. Every
+modern browser renders `.ico` directly in an `<img>` tag, so there's no real
+need to decode "the largest embedded image" out of one; that's a "revisit if it
+becomes a felt problem" item, not a day-one requirement.
+
+**Favicon is per-capture state, not page state**, the same way the HTML itself
+is: `captures.favicon_path` (§10) is written once per capture and never mutated
+or cleaned up afterward, so there's no dangling-reference risk across a page's
+capture history (an old capture's favicon, if any, stays exactly as it was
+captured). `pages.favicon_path` is denormalized from the _latest_ capture the
+same way `pages.title` already is — including being overwritten back to `NULL`
+if the latest capture genuinely didn't find one, not preserved from an earlier
+capture that did.
+
+**Disk layout — shares the capture's directory, keyed by its own hash.**
+`internal/archive`'s `Store` was restructured around this: every asset belonging
+to one capture (the HTML, now a favicon, later a screenshot) lives together
+under a single directory, sharded by the capture's own `content_hash`
+(`CaptureDir`). The HTML itself keeps a fixed filename inside that directory,
+since the directory already encodes its identity — but a secondary asset like
+the favicon is named by _its own_ content hash plus a real extension
+(`WriteAsset`), never the html's. This matters concretely: two captures can have
+byte-identical HTML while carrying genuinely different favicons (a static page
+recaptured after the site's icon changed), so keying a favicon by the html's
+hash would silently overwrite one capture's favicon with another's — precisely
+the bug this package already exists to avoid, one level removed. Compression is
+per-asset-type, not a blanket zstd: SVG (plain XML) compresses well and gets it;
+PNG/ICO are already-compressed binary formats and are stored raw.
+
+**R2 key convention mirrors the HTML object's.** `POST /captures/upload-urls`
+accepts an optional `(favicon_ext, content_sha256_favicon)` pair — both present
+or both absent, no half-specified request — and, when present, issues a second
+presigned PUT alongside the HTML one, at a deterministic key
+`pending/{userId}/{captureId}/favicon.{ext}` (`ext` ∈ `svg | png | ico`). The
+extension itself is baked into the key (unlike `page.html`'s implicit,
+always-the-same suffix) specifically so the backend can recover the real format
+by reading the key back at ingestion (`filepath.Ext`), rather than needing a
+separate mime/type column anywhere in Postgres or D1. `POST /queue/:id/complete`
+takes the same treatment: the caller declares _whether_ it uploaded a favicon
+and in what format (`favicon_ext`), and the Worker recomputes the deterministic
+key itself — the same never-trust-a-client-supplied-key posture `r2_key_html`
+already has.
+
+**Ingestion is best-effort, and never fails the capture.** A favicon fetch or
+disk write failing at ingestion time is logged and otherwise ignored — an
+unreachable or malformed favicon object is a cosmetic loss, never a reason to
+lose an otherwise-good HTML capture. The favicon's R2 object gets cleaned up
+alongside the HTML object's the same way, best-effort on that side too (a
+leftover favicon object in R2's temporary buffer is harmless).
+
+**The extension's own bookmark-list menu (§8) does not carry a stored favicon at
+all — it live-fetches the site's current favicon at render time**, the same way
+a browser's native bookmarks UI would. This was a deliberate choice among three
+options considered: storing favicon bytes inline as a D1 `BLOB` on
+`archived_pages` (favicons are small enough that this would've worked, and
+remains the natural next step if live-fetching proves unsatisfying), a durable
+copy in R2 (rejected outright — R2 is documented as a temporary buffer only, §4,
+and every other object in it is deleted right after the backend pulls it;
+keeping favicons there permanently would be a new, different lifecycle with no
+other precedent in this design), or live-fetching with no sync/storage at all
+(what's actually built). Live-fetching also sidesteps a real semantic question
+the other two don't: whether the menu should show the favicon _as archived_ or
+_as it is right now_ — for a live bookmark list, current is arguably the more
+correct answer anyway.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
@@ -618,8 +704,10 @@ deliberately diverges from `server`/`agent`'s:
   pulled and locally stored a capture's blobs, they are deleted from R2.
 - **Local disk is canonical.** The backend stores the zstd-compressed HTML (HTML
   compresses extremely well with zstd, commonly 80-90% size reduction) on local
-  disk, referenced by path from the `captures` table. Thumbnails (see §6) are
-  also stored on local disk, never in R2.
+  disk, referenced by path from the `captures` table. Thumbnails (see §6) and
+  favicons (§3g) are also stored on local disk, never in R2 — every asset for
+  one capture lives together under a single directory (`internal/archive`'s
+  `CaptureDir`), sharded by the capture's own `content_hash`.
 - **Backup is entirely the operator's responsibility** — see §14. The
   application itself performs no automated backup.
 - **Database choice: Postgres, not SQLite**, despite this being a personal
@@ -1612,6 +1700,11 @@ CREATE TABLE pages (
                                       -- the D1 bookmark-list mirror (§8);
                                       -- purely a Postgres-side push filter,
                                       -- no corresponding D1 column exists
+  favicon_path TEXT,                 -- denormalized from the latest
+                                      -- capture's own favicon_path (§3g),
+                                      -- the same way title is -- including
+                                      -- back to NULL if the latest capture
+                                      -- genuinely didn't find one
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
@@ -1643,6 +1736,13 @@ CREATE TABLE captures (
                                       -- real compression-ratio numbers
   thumbnail_path TEXT,               -- populated async by the screenshot
                                       -- service (§6); null until then
+  favicon_path TEXT,                 -- captured client-side alongside the
+                                      -- HTML itself (§3g), so -- unlike
+                                      -- thumbnail_path -- populated
+                                      -- synchronously at ingestion, not by
+                                      -- a later async job; NULL whenever no
+                                      -- favicon was found, which is a
+                                      -- normal, non-error outcome
   reader_text TEXT,                  -- Readability plain-text extraction;
                                       -- populated asynchronously by the
                                       -- readability job (§6a) -- NULL until
@@ -1887,14 +1987,20 @@ CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token
 -- backend-side from the already-pulled HTML (see §6), never uploaded by
 -- the extension. r2_key_readable has been removed for the same reason —
 -- Readability extraction also moved backend-side (see §6a), so no client
--- ever uploads reader text anymore; a capture now has exactly one R2
--- object (the HTML) to track here.
+-- ever uploads reader text anymore. r2_key_favicon (§3g) is the one
+-- exception to "the extension only ever uploads HTML": a favicon is a
+-- genuinely separate resource that has to be fetched, not derived from the
+-- already-captured HTML, so it stays a client-upload concern -- nullable,
+-- since not every capture has one.
 CREATE TABLE pending_captures (
   id TEXT PRIMARY KEY,              -- client-generated UUID
   user_id INTEGER NOT NULL REFERENCES users(id),
   queue_item_id TEXT REFERENCES queue_items(id),  -- null for direct captures
   url TEXT NOT NULL,
   r2_key_html TEXT NOT NULL,
+  r2_key_favicon TEXT,               -- e.g. ".../favicon.svg" -- the real
+                                      -- extension lives in the key itself
+                                      -- (§3g), not a separate mime column
   captured_at TIMESTAMP NOT NULL,
   fetched_by_backend BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP

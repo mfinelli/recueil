@@ -53,14 +53,18 @@ func NewWorkerClient(baseURL, serviceSecret string) *WorkerClient {
 // PendingCapture mirrors the shape returned by
 // GET /internal/pending-captures -- see terraform/index.js's
 // handleListPendingCaptures. QueueItemID is nil for a direct capture.
+// R2KeyFavicon is nil whenever the extension didn't find (or upload) a
+// favicon for this capture -- always optional, never a reason ingestion
+// itself fails (see Ingester.captureFavicon).
 type PendingCapture struct {
-	ID          string  `json:"id"`
-	UserID      int64   `json:"user_id"`
-	QueueItemID *string `json:"queue_item_id"`
-	URL         string  `json:"url"`
-	R2KeyHTML   string  `json:"r2_key_html"`
-	CapturedAt  string  `json:"captured_at"`
-	CreatedAt   string  `json:"created_at"`
+	ID           string  `json:"id"`
+	UserID       int64   `json:"user_id"`
+	QueueItemID  *string `json:"queue_item_id"`
+	URL          string  `json:"url"`
+	R2KeyHTML    string  `json:"r2_key_html"`
+	R2KeyFavicon *string `json:"r2_key_favicon"`
+	CapturedAt   string  `json:"captured_at"`
+	CreatedAt    string  `json:"created_at"`
 }
 
 type listPendingCapturesResponse struct {

@@ -23,6 +23,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +113,11 @@ func newTestPipeline(t *testing.T) *urlnorm.Pipeline {
 	require.NoError(t, err)
 	return urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 }
+
+// strPtr is a small helper for PendingCapture.R2KeyFavicon, a *string
+// field (nil meaning "no favicon uploaded") -- Go has no address-of
+// operator for a string literal directly.
+func strPtr(s string) *string { return &s }
 
 func TestIngester_RunOnce_Success(t *testing.T) {
 	ctx := context.Background()
@@ -216,6 +223,140 @@ func TestIngester_RunOnce_Success(t *testing.T) {
 	_, stillPresent := r2.objects[r2Key]
 	assert.False(t, stillPresent, "R2 object should have been deleted after ingestion")
 	assert.Equal(t, []string{"capture-1"}, worker.fetched)
+}
+
+func TestIngester_RunOnce_Favicon(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	queries := db.New(pool)
+
+	user := dbtest.CreateUser(t, pool, "member")
+
+	const htmlKey = "pending/1/capture-favicon/page.html"
+	const faviconKey = "pending/1/capture-favicon/favicon.svg"
+	html := []byte(`<html><title>Has A Favicon</title></html>`)
+	favicon := []byte(`<svg><!-- fake favicon --></svg>`)
+
+	r2 := newFakeR2()
+	r2.objects[htmlKey] = html
+	r2.objects[faviconKey] = favicon
+
+	worker := &fakeWorker{
+		pending: []ingest.PendingCapture{
+			{
+				ID:           "capture-favicon",
+				UserID:       user.ID,
+				URL:          "https://example.com/has-favicon",
+				R2KeyHTML:    htmlKey,
+				R2KeyFavicon: strPtr(faviconKey),
+				CapturedAt:   "2026-07-12T12:00:00.000Z",
+				CreatedAt:    "2026-07-12T12:00:05.000Z",
+			},
+		},
+	}
+
+	store := archive.New(t.TempDir())
+	ing := ingest.New(ingest.Params{
+		Pool:     pool,
+		Queries:  queries,
+		Worker:   worker,
+		R2:       r2,
+		Store:    store,
+		Pipeline: newTestPipeline(t),
+	})
+
+	require.NoError(t, ing.RunOnce(ctx))
+
+	var (
+		htmlPath           string
+		captureFaviconPath pgtype.Text
+		pageFaviconPath    pgtype.Text
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT c.html_path, c.favicon_path, p.favicon_path
+		FROM captures c JOIN pages p ON p.id = c.page_id
+		WHERE c.raw_url = $1`, "https://example.com/has-favicon").Scan(
+		&htmlPath, &captureFaviconPath, &pageFaviconPath)
+	require.NoError(t, err)
+
+	require.True(t, captureFaviconPath.Valid)
+	assert.Equal(t, captureFaviconPath.String, pageFaviconPath.String,
+		"pages.favicon_path should be denormalized from this (the latest) capture, same as title")
+
+	// Lives alongside the HTML in the same capture directory (see
+	// internal/archive's CaptureDir), not scattered into its own.
+	assert.Equal(t, filepath.Dir(htmlPath), filepath.Dir(captureFaviconPath.String))
+
+	// svg is the one format that gets zstd'd (see internal/archive's
+	// WriteAsset doc) -- and it's readable back byte-for-byte.
+	assert.True(t, strings.HasSuffix(captureFaviconPath.String, ".svg.zst"))
+	reader, err := store.Open(captureFaviconPath.String)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+	roundTripped, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, favicon, roundTripped)
+
+	// Cleaned up from R2 alongside the HTML object, same crash-recovery
+	// ordering (disk write and Postgres commit both already durable by
+	// the time either gets deleted).
+	_, stillPresent := r2.objects[faviconKey]
+	assert.False(t, stillPresent, "favicon R2 object should have been deleted after ingestion")
+}
+
+func TestIngester_RunOnce_MissingFaviconObjectDoesNotFailTheCapture(t *testing.T) {
+	// A favicon is best-effort: R2KeyFavicon being set but the object
+	// itself being unreachable (upload failed, R2 hiccup, whatever)
+	// must never take down an otherwise-good HTML capture with it.
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	queries := db.New(pool)
+
+	user := dbtest.CreateUser(t, pool, "member")
+
+	const htmlKey = "pending/1/capture-badfavicon/page.html"
+	html := []byte(`<html><title>Favicon Missing</title></html>`)
+
+	r2 := newFakeR2()
+	r2.objects[htmlKey] = html
+	// Deliberately no object at the favicon key.
+
+	worker := &fakeWorker{
+		pending: []ingest.PendingCapture{
+			{
+				ID:           "capture-badfavicon",
+				UserID:       user.ID,
+				URL:          "https://example.com/favicon-missing",
+				R2KeyHTML:    htmlKey,
+				R2KeyFavicon: strPtr("pending/1/capture-badfavicon/favicon.png"),
+				CapturedAt:   "2026-07-12T12:00:00.000Z",
+				CreatedAt:    "2026-07-12T12:00:05.000Z",
+			},
+		},
+	}
+
+	store := archive.New(t.TempDir())
+	ing := ingest.New(ingest.Params{
+		Pool:     pool,
+		Queries:  queries,
+		Worker:   worker,
+		R2:       r2,
+		Store:    store,
+		Pipeline: newTestPipeline(t),
+	})
+
+	require.NoError(t, ing.RunOnce(ctx), "a missing favicon object must not fail the whole capture")
+
+	var faviconPath pgtype.Text
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT favicon_path FROM captures WHERE raw_url = $1`,
+		"https://example.com/favicon-missing").Scan(&faviconPath))
+	assert.False(t, faviconPath.Valid, "favicon_path should stay NULL, not error the capture out")
+
+	// The capture itself still fully succeeded and was cleaned up normally.
+	assert.Equal(t, []string{"capture-badfavicon"}, worker.fetched)
 }
 
 func TestIngester_RunOnce_IdempotentRetry(t *testing.T) {
@@ -433,7 +574,7 @@ func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 	// Deliberately not what the new, colliding capture's content will
 	// hash to -- this is what makes it a genuine collision, not a retry.
 	existingContentHash := "0000000000000000000000000000000000000000000000000000000000aa"
-	existingHTMLPath, _, err := store.Write(existingContentHash, existingContent)
+	existingHTMLPath, _, err := store.WriteHTML(existingContentHash, existingContent)
 	require.NoError(t, err)
 
 	existingPage, err := queries.UpsertPage(ctx, db.UpsertPageParams{

@@ -32,6 +32,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -168,6 +169,17 @@ func (ing *Ingester) processOne(ctx context.Context, pc *PendingCapture) error {
 	if err := ing.r2.Delete(ctx, pc.R2KeyHTML); err != nil {
 		return fmt.Errorf("deleting R2 object: %w", err)
 	}
+	if pc.R2KeyFavicon != nil && *pc.R2KeyFavicon != "" {
+		// Best-effort, same as capturing it was: a favicon object that
+		// fails to delete here just sits in R2's temporary buffer
+		// harmlessly (it was never the canonical copy -- captureFavicon
+		// already stored that locally, or logged why it couldn't) and
+		// isn't worth failing this whole cleanup pass over.
+		if err := ing.r2.Delete(ctx, *pc.R2KeyFavicon); err != nil {
+			ing.logger.WarnContext(ctx, "ingest: failed to delete favicon R2 object (harmless)",
+				"capture_id", pc.ID, "r2_key_favicon", *pc.R2KeyFavicon, "error", err)
+		}
+	}
 	if err := ing.worker.MarkFetched(ctx, pc.ID); err != nil {
 		return fmt.Errorf("marking capture fetched: %w", err)
 	}
@@ -213,7 +225,7 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 	sum := sha256.Sum256(data)
 	contentHash := hex.EncodeToString(sum[:])
 
-	relPath, compressedSize, err := ing.store.Write(contentHash, data)
+	relPath, compressedSize, err := ing.store.WriteHTML(contentHash, data)
 	if err != nil {
 		return 0, fmt.Errorf("writing to local archive: %w", err)
 	}
@@ -241,6 +253,15 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 		return 0, fmt.Errorf("normalizing url %q: %w", pc.URL, err)
 	}
 
+	// Favicon is best-effort: a fetch/store failure here is logged and
+	// otherwise ignored, never treated as a reason to fail the whole
+	// capture -- an unreachable or malformed favicon object is a cosmetic
+	// loss, not a reason to lose an otherwise-good HTML capture.
+	var faviconPath string
+	if pc.R2KeyFavicon != nil && *pc.R2KeyFavicon != "" {
+		faviconPath = ing.captureFavicon(ctx, pc, contentHash)
+	}
+
 	captureID, inserted, err := ing.writeToPostgres(ctx, pc, &writeInput{
 		normalizedURL:         normalizedURL,
 		title:                 title,
@@ -250,6 +271,7 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 		contentHash:           contentHash,
 		capturedAt:            capturedAt,
 		language:              language,
+		faviconPath:           faviconPath,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("writing to postgres: %w", err)
@@ -262,6 +284,59 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 	return captureID, nil
 }
 
+// captureFavicon pulls the favicon object from R2 (if the extension
+// actually uploaded one), stores it alongside the HTML in the same capture
+// directory (see internal/archive's package doc for why it's keyed by its
+// own content hash, not htmlHash), and returns the resulting relative path
+// -- or "" if anything goes wrong, having already logged why. Never
+// returns an error: a favicon is cosmetic, and a broken/unreachable one is
+// not a reason to fail an otherwise-good capture.
+func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htmlHash string) string {
+	key := *pc.R2KeyFavicon
+
+	body, err := ing.r2.Get(ctx, key)
+	if err != nil {
+		ing.logger.WarnContext(ctx, "ingest: failed to pull favicon from R2, continuing without one",
+			"capture_id", pc.ID, "r2_key_favicon", key, "error", err)
+		return ""
+	}
+	data, err := io.ReadAll(body)
+	_ = body.Close()
+	if err != nil {
+		ing.logger.WarnContext(ctx, "ingest: failed to read favicon blob, continuing without one",
+			"capture_id", pc.ID, "r2_key_favicon", key, "error", err)
+		return ""
+	}
+
+	// The favicon's extension is carried in the R2 key itself
+	// (pending/{userId}/{captureId}/favicon.{ext} -- see
+	// terraform/index.js's faviconObjectKey), the same way the HTML
+	// object's ".html" suffix is implicit rather than a separate field.
+	ext := strings.TrimPrefix(filepath.Ext(key), ".")
+	if ext == "" {
+		ing.logger.WarnContext(ctx, "ingest: favicon r2 key has no extension, continuing without one",
+			"capture_id", pc.ID, "r2_key_favicon", key)
+		return ""
+	}
+
+	sum := sha256.Sum256(data)
+	faviconHash := hex.EncodeToString(sum[:])
+
+	// Only SVG (text-based) gets zstd'd -- see internal/archive's
+	// WriteAsset doc for why already-compressed binary formats (png, ico)
+	// aren't worth it.
+	compress := ext == "svg"
+
+	faviconPath, err := ing.store.WriteAsset(htmlHash, faviconHash, ext, data, compress)
+	if err != nil {
+		ing.logger.WarnContext(ctx, "ingest: failed to write favicon to local archive, continuing without one",
+			"capture_id", pc.ID, "error", err)
+		return ""
+	}
+
+	return faviconPath
+}
+
 type writeInput struct {
 	normalizedURL         string
 	title                 string
@@ -271,6 +346,7 @@ type writeInput struct {
 	contentHash           string
 	capturedAt            time.Time
 	language              string
+	faviconPath           string
 }
 
 // writeToPostgres performs the page upsert, idempotent capture insert, and
@@ -292,6 +368,7 @@ func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in
 		NormalizedUrl:   in.normalizedURL,
 		Title:           textOrNull(in.title),
 		LatestCaptureAt: pgtype.Timestamptz{Time: in.capturedAt, Valid: true},
+		FaviconPath:     textOrNull(in.faviconPath),
 	})
 	if err != nil {
 		return 0, false, fmt.Errorf("upserting page: %w", err)
@@ -309,6 +386,7 @@ func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in
 		ContentHash:               in.contentHash,
 		CapturedAt:                pgtype.Timestamptz{Time: in.capturedAt, Valid: true},
 		Language:                  in.language,
+		FaviconPath:               textOrNull(in.faviconPath),
 	}
 	capture, err := ing.insertCaptureWithCollisionHandling(ctx, qtx, &captureParams)
 	if err != nil {
