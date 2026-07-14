@@ -441,7 +441,7 @@ func parseFragmentParams(fragment string) map[string]string {
 	if fragment == "" {
 		return params
 	}
-	for _, pair := range strings.Split(fragment, "&") {
+	for pair := range strings.SplitSeq(fragment, "&") {
 		if pair == "" {
 			continue
 		}

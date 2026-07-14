@@ -23,7 +23,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sort"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -98,7 +98,7 @@ func (f *fakeWorkerMirror) server() *httptest.Server {
 		for id := range f.pages {
 			ids = append(ids, id)
 		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		slices.Sort(ids)
 		_ = json.NewEncoder(w).Encode(map[string]any{"page_ids": ids})
 	})
 

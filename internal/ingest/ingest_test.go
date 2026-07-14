@@ -114,11 +114,6 @@ func newTestPipeline(t *testing.T) *urlnorm.Pipeline {
 	return urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 }
 
-// strPtr is a small helper for PendingCapture.R2KeyFavicon, a *string
-// field (nil meaning "no favicon uploaded") -- Go has no address-of
-// operator for a string literal directly.
-func strPtr(s string) *string { return &s }
-
 func TestIngester_RunOnce_Success(t *testing.T) {
 	ctx := context.Background()
 	pool := dbtest.Setup(t)
@@ -249,7 +244,7 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 				UserID:       user.ID,
 				URL:          "https://example.com/has-favicon",
 				R2KeyHTML:    htmlKey,
-				R2KeyFavicon: strPtr(faviconKey),
+				R2KeyFavicon: new(faviconKey),
 				CapturedAt:   "2026-07-12T12:00:00.000Z",
 				CreatedAt:    "2026-07-12T12:00:05.000Z",
 			},
@@ -330,7 +325,7 @@ func TestIngester_RunOnce_MissingFaviconObjectDoesNotFailTheCapture(t *testing.T
 				UserID:       user.ID,
 				URL:          "https://example.com/favicon-missing",
 				R2KeyHTML:    htmlKey,
-				R2KeyFavicon: strPtr("pending/1/capture-badfavicon/favicon.png"),
+				R2KeyFavicon: new("pending/1/capture-badfavicon/favicon.png"),
 				CapturedAt:   "2026-07-12T12:00:00.000Z",
 				CreatedAt:    "2026-07-12T12:00:05.000Z",
 			},

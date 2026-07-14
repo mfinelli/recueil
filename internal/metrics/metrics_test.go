@@ -39,7 +39,7 @@ func TestNewRegistry(t *testing.T) {
 	q := db.New(pool)
 
 	const wantUsers = 3
-	for i := 0; i < wantUsers; i++ {
+	for range wantUsers {
 		dbtest.CreateUser(t, pool, "member") // registers its own cleanup
 	}
 

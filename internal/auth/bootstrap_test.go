@@ -140,7 +140,7 @@ func TestUse(t *testing.T) {
 		var successes int64
 		var wg sync.WaitGroup
 		wg.Add(goroutines)
-		for i := 0; i < goroutines; i++ {
+		for range goroutines {
 			go func() {
 				defer wg.Done()
 				_ = holder.Use(raw, func() error {
