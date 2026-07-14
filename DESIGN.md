@@ -1322,6 +1322,29 @@ not anticipated in the original design:
      set, diffs them locally, and deletes from D1 whatever's no longer in
      Postgres. Deletion itself isn't built yet; this pass runs correctly
      regardless, simply finding nothing to remove until it exists.
+- **Per-page mirror exclusion** —
+  `pages.excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE` (§10). No D1
+  schema change needed at all: exclusion is purely a Postgres-side filter on
+  what the backend chooses to push, not a concept D1 needs to know about. Both
+  passes above already have everything needed for this to fall out for free,
+  without any special-casing:
+  - **Incremental upsert** simply never selects excluded pages
+    (`GetPagesUpdatedSince` adds `AND NOT excluded_from_mirror`), so a newly-
+    excluded page is never (re-)pushed.
+  - **Deletion reconciliation**'s Postgres-side set is redefined from "every
+    page_id that exists" to "every page_id that belongs in the mirror"
+    (`GetMirrorEligiblePageIDs`, same `WHERE NOT excluded_from_mirror`). A page
+    that gets excluded _after_ already being synced looks identical to this pass
+    as a page that was deleted outright — both are simply "in D1 but no longer
+    in the desired set" — so the exact same diff-and-delete logic removes it,
+    with zero new code in `internal/mirror` itself.
+  - Un-excluding a page works the same way any other edit does: the toggle bumps
+    `updated_at` like any `pages` mutation must (§8's own checkpoint design
+    already depends on this), so the page simply reappears in the next cycle's
+    incremental upsert once the flag flips back.
+  - No dashboard toggle for this yet — the column and query-level filtering
+    exist now, but the actual UI to set it is built alongside the dashboard
+    itself (Phase 5), same as every other dashboard-only feature.
 - **The incremental push's atomicity is what makes the checkpoint safe without
   any extra ordering logic on the backend.** The push endpoint applies its whole
   batch via the Worker's own `env.DB.batch()`, which is transactional: either
@@ -1585,6 +1608,10 @@ CREATE TABLE pages (
                                       -- out-of-order ingestion) -- feeds
                                       -- the D1 bookmark-list mirror's own
                                       -- latest_capture_at column directly
+  excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE,  -- opt a page out of
+                                      -- the D1 bookmark-list mirror (§8);
+                                      -- purely a Postgres-side push filter,
+                                      -- no corresponding D1 column exists
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)

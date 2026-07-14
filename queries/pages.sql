@@ -43,13 +43,21 @@ SELECT * FROM pages WHERE id = $1;
 -- separately here -- see internal/mirror's own docs for why). A NULL
 -- since means "nothing has ever been synced," matching what the Worker's
 -- GET /internal/archived-pages/last-sync returns for an empty mirror.
+-- excluded_from_mirror pages are never included -- if one was already
+-- synced before being excluded, GetMirrorEligiblePageIDs's deletion
+-- reconciliation pass is what removes it from D1, not this query.
 SELECT * FROM pages
-WHERE sqlc.narg('since')::timestamptz IS NULL OR updated_at > sqlc.narg('since')
+WHERE (sqlc.narg('since')::timestamptz IS NULL OR updated_at > sqlc.narg('since'))
+  AND NOT excluded_from_mirror
 ORDER BY updated_at ASC;
 
--- name: GetAllPageIDs :many
+-- name: GetMirrorEligiblePageIDs :many
 -- The other half of mirror sync's deletion reconciliation: every page_id
--- Postgres currently knows about, diffed against D1's own current set
--- (GET /internal/archived-pages/page-ids) to find what's been deleted
--- from Postgres and needs removing from the D1 mirror too.
-SELECT id FROM pages;
+-- Postgres currently thinks belongs in the D1 mirror (i.e. not
+-- excluded_from_mirror), diffed against D1's own current set
+-- (GET /internal/archived-pages/page-ids) to find what needs removing
+-- from the D1 mirror -- whether because the page was deleted from
+-- Postgres entirely, or because it was newly marked excluded_from_mirror.
+-- Both look identical from this query's perspective: "no longer belongs
+-- in the desired set" -- no special-casing needed for the exclusion case.
+SELECT id FROM pages WHERE NOT excluded_from_mirror;

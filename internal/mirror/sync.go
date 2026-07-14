@@ -128,9 +128,9 @@ func (s *Syncer) reconcileDeletions(ctx context.Context) error {
 		return nil
 	}
 
-	pgIDs, err := s.queries.GetAllPageIDs(ctx)
+	pgIDs, err := s.queries.GetMirrorEligiblePageIDs(ctx)
 	if err != nil {
-		return fmt.Errorf("querying all postgres page ids: %w", err)
+		return fmt.Errorf("querying mirror-eligible postgres page ids: %w", err)
 	}
 
 	toDelete := idsNotIn(d1IDs, pgIDs)

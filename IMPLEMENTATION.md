@@ -769,6 +769,29 @@ automatic discovery) is completely untouched — `auth`/`enqueue` don't use
 `internal/config`/Viper at all, reading everything from the `internal/clicreds`
 file instead.
 
+### Post-closeout addition: per-page mirror exclusion
+
+Landed after Phase 3's initial closeout, ahead of Phase 3½'s favicon work
+proper. `pages.excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE` — lets a
+page be opted out of the D1 bookmark-list mirror (§8). The existing migration
+(`00003_create_pages.sql`) was modified in place rather than adding a new one,
+since nothing has shipped yet.
+
+No D1 schema change and no changes to `internal/mirror/sync.go`'s actual logic
+were needed — exclusion falls out entirely from two query-level filters:
+`GetPagesUpdatedSince` (incremental upsert) now excludes these pages outright,
+and the renamed `GetMirrorEligiblePageIDs` (formerly `GetAllPageIDs`; the old
+name would have been misleading once it stopped returning literally all page
+IDs) redefines deletion reconciliation's Postgres-side "desired set" to also
+exclude them — so a page excluded after already being synced is
+indistinguishable, from that pass's point of view, from one that was deleted
+outright. Both are just "no longer in the desired set," handled by the same
+existing diff-and-delete code.
+
+No toggle endpoint yet — the column and query-level filtering exist now, but
+setting the flag has no caller until the dashboard (Phase 5) exists to expose
+it.
+
 ---
 
 **Phase 3 closed here.** The real browser extension — proving this phase's
