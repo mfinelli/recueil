@@ -43,83 +43,83 @@ extraction and the thumbnail are both produced later, offline, by the backend
 ## 2. High-Level Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  iOS Shortcut    │     │  Share-sheet PWA │     │       CLI       │
-│  (enqueue only)  │     │  (Cloudflare      │     │  (enqueue only) │
-│                  │     │   Pages, public)  │     │                 │
-└────────┬─────────┘     └────────┬──────────┘     └────────┬────────┘
+┌──────────────────┐     ┌───────────────────┐     ┌──────────────────┐
+│  iOS Shortcut    │     │  Share-sheet PWA  │     │       CLI        │
+│  (enqueue only)  │     │  (Cloudflare      │     │  (enqueue only)  │
+│                  │     │   Pages, public)  │     │                  │
+└────────┬─────────┘     └────────┬──────────┘     └─────────┬────────┘
          │                        │                          │
          └────────────────────────┼──────────────────────────┘
                                   ▼
-                        ┌───────────────────┐
-                        │  Cloudflare Worker │  (dumb relay + auth)
-                        │  - device auth       │
+                        ┌───────────────────────┐
+                        │  Cloudflare Worker    │  (dumb relay + auth)
+                        │  - device auth        │
                         │  - enqueue URL        │
                         │  - presigned R2 URLs  │
                         │  - D1 read/write      │
-                        │  - service-secret-     │
-                        │    gated backend API   │
-                        └─────────┬─────────┘
+                        │  - service-secret-    │
+                        │    gated backend API  │
+                        └─────────┬─────────────┘
                                   │
                     ┌─────────────┼─────────────┐
                     ▼                           ▼
              ┌─────────────┐             ┌─────────────┐
              │     D1      │             │     R2      │
              │ (queue,     │             │ (temp blob  │
-             │  device      │◄────┐       │  storage)   │
-             │  tokens,     │     │       │             │
-             │  bookmark    │     │       │             │
-             │  mirror)     │     │       │             │
+             │  device     │◄────┐       │  storage)   │
+             │  tokens,    │     │       │             │
+             │  bookmark   │     │       │             │
+             │  mirror)    │     │       │             │
              └──────┬──────┘     │       └──────┬──────┘
                     │            │              │
                     │  poll      │              │  pull
                     ▼            │              ▼
-        ┌──────────────────────────────────────────┐
-        │         Desktop Browser Extension          │
-        │  - reads queue from D1 (via Worker)         │
+        ┌──────────────────────────────────────────────┐
+        │         Desktop Browser Extension            │
+        │  - reads queue from D1 (via Worker)          │
         │  - user selects item → loads URL             │
-        │  - captures HTML only (via vendored              │
-        │    SingleFile library — no Readability            │
-        │    vendored here; see §3a/§6a)                      │
-        │  - uploads to R2 via presigned URL              │
-        │  (no longer captures a screenshot — see §6)      │
-        └──────────────────────────────────────────┘
+        │  - captures HTML only (via vendored          │
+        │    SingleFile library — no Readability       │
+        │    vendored here; see §3a/§6a)               │
+        │  - uploads to R2 via presigned URL           │
+        │  (no longer captures a screenshot — see §6)  │
+        └──────────────────────────────────────────────┘
                     │
                     │ (async, outbound-only polling)
                     ▼
-        ┌──────────────────────────────────────────┐
-        │      Backend (Go + Postgres, Docker)       │
-        │  - polls Worker/D1 for pending captures      │
-        │  - pulls blobs from R2, then deletes from R2   │
-        │  - zstd-compresses HTML, stores locally          │
-        │  - enqueues async screenshot job (§6)             │
-        │  - enqueues async readability extraction job (§6a) │
-        │  - runs optional AI enrichment (summary/tags),        │
-        │    once reader_text exists (§7)                        │
-        │  - pushes bookmark-list mirror row to D1 ───────────┘
-        │    (via Worker, after each capture is processed)
-        │  - pushes pairing-token-hash mirror to D1 ───────────┘
-        │    (via Worker, on account creation/regeneration/revocation)
-        │  - authenticates the dashboard directly (session      │
-        │    auth against its own Postgres `users` table —       │
-        │    no token/D1 involvement)                              │
-        │  - serves dashboard API (reachable on LAN/VPN/etc.,      │
-        │    reachability is the operator's responsibility)         │
-        └──────────────────────────────────────────┘
-                    │                           │
-                    ▼                           ▼
-        ┌──────────────────────┐   ┌──────────────────────────┐
-        │  Headless-Chrome       │   │   Svelte Dashboard         │
-        │  sidecar (chromedp +    │   │  - library browsing, search  │
-        │  headless-shell         │   │  - version history per page   │
-        │  container, driven       │   │  - tags (manual + AI),          │
-        │  by the backend) —        │   │    nested collections             │
-        │  produces both               │
-        │  thumbnails (§6) and           │
-        │  Readability extractions        │
-        │  (§6a) from already-captured      │
-        │  offline HTML                        │
-        └──────────────────────┘   └──────────────────────────┘
+        ┌───────────────────────────────────────────────────────────────┐
+        │      Backend (Go + Postgres, Docker)                          │
+        │  - polls Worker/D1 for pending captures                       │
+        │  - pulls blobs from R2, then deletes from R2                  │
+        │  - zstd-compresses HTML, stores locally                       │
+        │  - enqueues async screenshot job (§6)                         │
+        │  - enqueues async readability extraction job (§6a)            │
+        │  - runs optional AI enrichment (summary/tags),                │
+        │    once reader_text exists (§7)                               │
+        │  - pushes bookmark-list mirror row to D1                      │
+        │    (via Worker, after each capture is processed)              │
+        │  - pushes pairing-token-hash mirror to D1                     │
+        │    (via Worker, on account creation/regeneration/revocation)  │
+        │  - authenticates the dashboard directly (session              │
+        │    auth against its own Postgres `users` table —              │
+        │    no token/D1 involvement)                                   │
+        │  - serves dashboard API (reachable on LAN/VPN/etc.,           │
+        │    reachability is the operator's responsibility)             │
+        └───────────────────────────────────────────────────────────────┘
+                    │                               │
+                    ▼                               ▼
+        ┌──────────────────────────────┐   ┌──────────────────────────────┐
+        │  Headless-Chrome             │   │   Svelte Dashboard           │
+        │  sidecar (chromedp +         │   │  - library browsing, search  │
+        │  headless-shell              │   │  - version history per page  │
+        │  container, driven           │   │  - tags (manual + AI),       │
+        │  by the backend) —           │   │    nested collections        │
+        │  produces both               │   │                              │
+        │  thumbnails (§6) and         │   │                              │
+        │  Readability extractions     │   │                              │
+        │  (§6a) from already-captured │   │                              │
+        │  offline HTML                │   │                              │
+        └──────────────────────────────┘   └──────────────────────────────┘
 ```
 
 ### Key architectural property: capture path never touches the backend
