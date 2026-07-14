@@ -20,6 +20,37 @@ export default [
     },
   },
   {
-    ignores: ["internal/urlnorm/clearurls-rules/**/*"],
+    files: ["extension/src/background/**/*.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.serviceworker, ...globals.browser },
+    },
+  },
+  {
+    files: [
+      "extension/src/capture-inject/**/*.js",
+      "extension/src/popup/**/*.js",
+    ],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.browser },
+    },
+  },
+  {
+    files: ["extension/build.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.node },
+    },
+  },
+  {
+    ignores: [
+      "internal/urlnorm/clearurls-rules/**/*",
+      "extension/dist/**/*",
+      "extension/node_modules/**/*",
+    ],
   },
 ];

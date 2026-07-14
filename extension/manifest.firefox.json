@@ -1,0 +1,11 @@
+{
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "recueil@recueil.app",
+      "strict_min_version": "109.0"
+    }
+  }
+}

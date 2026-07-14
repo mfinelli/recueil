@@ -1,3 +1,5 @@
+/extension/dist/*
+/extension/node_modules/*
 /internal/db/*
 /node_modules/*
 /recueil
