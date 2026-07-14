@@ -1093,29 +1093,97 @@ not anticipated in the original design:
 - Separately from the queue, the extension can act as a lightweight bookmark
   list of everything already archived — similar to a browser's native bookmarks
   UI: just title + URL, no thumbnails.
-- This is a **one-way, backend → D1 push**: after the backend finishes
-  processing a capture, it upserts a row into a D1 `archived_pages` table — the
-  mirror-image of the credential mirror (backend → D1, rather than D1 →
-  backend), keeping the same principle: the extension only ever needs to talk to
-  the Worker/D1, never the backend.
-- The extension does **not** live-sync this list. It caches the list locally and
-  refreshes on a coarse schedule (see §7 polling cadence below) or on explicit
-  user request, using an incremental "give me changes since X" query against
-  `archived_pages.updated_at`.
+- This is a **one-way, backend → D1 push** — the mirror-image of the credential
+  mirror (backend → D1, rather than D1 → backend), keeping the same principle:
+  the extension only ever needs to talk to the Worker/D1, never the backend.
+- **Schedule-based, not triggered on individual mutations** — reconsidered from
+  an earlier revision of this document, which had the backend push a row
+  immediately after processing each capture. That doesn't handle deletion (a
+  deleted page was never "updated," it's just gone — an event-triggered push on
+  capture-processing would never notice), and more importantly it requires every
+  future code path that ever touches `pages` (a deletion endpoint, a re-tagging
+  endpoint, whatever else) to remember to also push a D1 update — exactly the
+  same fragility already avoided elsewhere in this project (why `updated_at`
+  itself isn't left to individual queries to set by hand). A schedule doesn't
+  care how or where Postgres changed; it just asks "what's different now" on its
+  own cadence. What actually triggers the sync job to run is deferred, same open
+  question as backend ingestion (§3c) — both are callable units
+  (`internal/ingest.Ingester.RunOnce`, `internal/mirror.Syncer.SyncOnce`) with
+  no scheduler wired up yet, sharing whatever trigger mechanism eventually gets
+  built.
+- **The sync checkpoint is read directly from D1's own data — `MAX(updated_at)`
+  across `archived_pages` — not a separately-tracked watermark value stored
+  anywhere on the backend.** Considered and rejected: a Postgres-side "last
+  synced at" row, which has to be kept correct by hand and can drift from what
+  D1 actually contains if a push silently fails partway. Deriving the checkpoint
+  from D1's own state makes that whole class of drift structurally impossible —
+  the checkpoint and the data are the same read, by construction. The one real
+  cost is a small Worker read endpoint whose only job is exposing that value;
+  judged worth it and in keeping with what this Worker already does elsewhere
+  (`GET /internal/pending-captures` already answers a factual question about
+  D1's own data the same way).
+- **Two passes each sync cycle:**
+  1. **Incremental upsert** — `pages WHERE updated_at > $checkpoint` (all of it,
+     unpaginated — no `LIMIT`/cursor: at this project's scale a full delta in
+     one call is fine, and pagination would reintroduce a subtler version of the
+     same equal-timestamp boundary problem the checkpoint design otherwise
+     avoids), pushed to D1 in one request.
+  2. **Deletion reconciliation** — the only way a schedule-based sync can ever
+     notice a deletion at all, since a deleted row was never "updated." The
+     backend fetches D1's full current `page_id` set (a raw list, no comparison
+     logic in the Worker — see below) and its own current Postgres `page_id`
+     set, diffs them locally, and deletes from D1 whatever's no longer in
+     Postgres. Deletion itself isn't built yet; this pass runs correctly
+     regardless, simply finding nothing to remove until it exists.
+- **The incremental push's atomicity is what makes the checkpoint safe without
+  any extra ordering logic on the backend.** The push endpoint applies its whole
+  batch via the Worker's own `env.DB.batch()`, which is transactional: either
+  every row in the batch lands, or none do. So there's no scenario where a
+  partial failure leaves D1's `MAX(updated_at)` ahead of some unpushed row —
+  either the full delta lands and the new max correctly reflects all of it, or
+  nothing lands and the next cycle's `WHERE updated_at > $checkpoint` naturally
+  retries the identical, unchanged set. (An earlier line of reasoning about this
+  design assumed a separately-tracked, non-atomic push would need the backend to
+  push rows in strict ascending `updated_at` order and stop at the first
+  failure, to avoid exactly this gap — that concern doesn't apply once the
+  checkpoint comes from D1's own atomically-updated state instead.)
+- **Every Worker endpoint involved stays deliberately dumb**, consistent with
+  this Worker's stated design: it reads or writes exactly what it's told, and
+  never computes a diff or a decision itself. `GET .../last-sync` answers a
+  factual question; `POST .../mirror` upserts whatever batch it's given;
+  `GET .../page-ids` returns a raw list; `POST .../delete` deletes exactly the
+  ids it's given. All the actual logic — what changed, what to delete — lives on
+  the backend.
+- The extension does **not** live-sync this list either. It caches the list
+  locally and refreshes on a coarse schedule (see §7 polling cadence below) or
+  on explicit user request, using its own incremental "give me changes since X"
+  query against `archived_pages.updated_at` — a separate concern from the
+  backend's own sync job above, just reusing the same column for the same
+  reason.
 - Because this list is just title + URL, no thumbnail storage is needed in R2 or
   D1 for this feature.
 
 ```sql
 -- D1
 CREATE TABLE archived_pages (
-  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id
+  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id; never
+                                     -- D1-generated, always supplied
+                                     -- explicitly by the backend
   user_id INTEGER NOT NULL REFERENCES users(id),
   raw_url TEXT NOT NULL,
   title TEXT,
-  latest_capture_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  latest_capture_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL           -- directly mirrors Postgres
+                                     -- pages.updated_at -- not "when this
+                                     -- D1 row was last written." The
+                                     -- backend always sets this explicitly
+                                     -- to the source value on every push,
+                                     -- never lets D1 stamp its own clock --
+                                     -- this is what makes MAX(updated_at)
+                                     -- a meaningful sync checkpoint at all
 );
-CREATE INDEX idx_archived_pages_user ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
 ```
 
 ### Polling cadence
@@ -1325,6 +1393,11 @@ CREATE TABLE pages (
   user_id BIGINT NOT NULL REFERENCES users(id),
   normalized_url TEXT NOT NULL,
   title TEXT,                        -- denormalized from latest capture
+  latest_capture_at TIMESTAMPTZ NOT NULL,  -- also denormalized from latest
+                                      -- capture (via GREATEST, tolerating
+                                      -- out-of-order ingestion) -- feeds
+                                      -- the D1 bookmark-list mirror's own
+                                      -- latest_capture_at column directly
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
@@ -1613,17 +1686,23 @@ CREATE TABLE pending_captures (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Bookmark-list mirror, pushed by the backend after each capture is
--- processed. Pulled by the extension on its own coarse/on-demand schedule.
+-- Bookmark-list mirror, kept in sync by the backend's own scheduled sync
+-- job (internal/mirror.Syncer -- see §8 for the full design), not pushed
+-- on individual mutations. Pulled by the extension on its own coarse/
+-- on-demand schedule.
 CREATE TABLE archived_pages (
-  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id
+  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id; never
+                                     -- D1-generated
   user_id INTEGER NOT NULL REFERENCES users(id),
   raw_url TEXT NOT NULL,
   title TEXT,
-  latest_capture_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  latest_capture_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL          -- mirrors Postgres pages.updated_at
+                                     -- verbatim -- the sync checkpoint
+                                     -- itself (§8), not D1's own clock
 );
-CREATE INDEX idx_archived_pages_user ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
 ```
 
 `pending_captures.queue_item_id` is nullable specifically to support **direct

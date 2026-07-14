@@ -525,3 +525,173 @@ the same convention as they're implemented").
   indefinitely until some future decision (surface to the user? retry? a
   separate, longer expiry?) — tracked as open in DESIGN.md §15, not decided
   here.
+
+## Phase 3 (Capture Upload Pipeline + Backend Ingestion — IN PROGRESS)
+
+Phase 3's original brief was three pieces: a CLI (enqueue-only), a throwaway
+fake-extension script proving the R2/D1/Postgres pipeline end-to-end, and
+whatever Worker/backend plumbing those two needed to actually work against.
+What's landed so far is essentially all of that plumbing — the presigned upload
+endpoints, and a real, tested backend ingestion pipeline — but **not** the CLI
+or the fake extension script themselves, and not the mechanism that would
+actually trigger ingestion to run. This section documents what exists now; a
+follow-up update will close out this phase once those remaining pieces land.
+
+### What exists now
+
+**Worker (`terraform/index.js`)**, beyond Phase 2's queue/device-auth surface:
+
+| Endpoint                                      | Auth                | Notes                                                                                                       |
+| --------------------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `POST /captures/upload-urls`                  | device bearer token | Presigned R2 PUT URL for a capture's single HTML object, keyed by `pending/{userId}/{captureId}/page.html`. |
+| `POST /queue/:id/complete`                    | device bearer token | Writes the `pending_captures` row, marks the queue item `captured`. Content-hash-checksum-bound (below).    |
+| `POST /queue/:id/fail`                        | device bearer token | Marks a claimed queue item `failed`. Same 404/410/409 semantics as claim.                                   |
+| `GET /internal/pending-captures?limit=`       | service secret      | Backend's ingestion poll: unfetched captures, oldest first, bounded (default 50, max 200).                  |
+| `POST /internal/pending-captures/:id/fetched` | service secret      | Marks a `pending_captures` row as pulled/ingested.                                                          |
+
+Presigned uploads use hand-rolled SigV4 (`crypto.subtle`, zero dependencies —
+the Worker's own no-build-step/no-dependency constraint still applies) living
+**inline in `index.js`, not a separate module**: `cloudflare_workers_script`
+turned out to have no multi-module upload support at all, so a separate
+`r2-presign.js` file would simply never have been deployed. Verified against
+AWS's own published SigV4 test vector, and separately cross-validated against
+the official `@smithy/signature-v4` signer (a real, pinned devDependency, never
+shipped) for the actual R2-shaped request — both checks are permanent parts of
+the test suite now, not one-off scratch verification.
+
+Every upload is also bound to a `x-amz-checksum-sha256` value (R2's "Flexible
+Checksums" feature) computed from the exact bytes about to be uploaded — every
+capture path always has the content in hand before requesting a presigned URL,
+so there's no legitimate case for skipping this. Worth being precise about which
+SigV4 mechanism does what: `x-amz-content-sha256` (the payload-hash _signing_
+input) stays the literal `UNSIGNED-PAYLOAD`, matching R2's own documented
+convention — it was never the right lever for content integrity.
+`x-amz-checksum-sha256` is the actual, separate mechanism R2 verifies the real
+uploaded bytes against.
+
+**`internal/urlnorm`** — a `Pipeline` of composable `Step`s (string in, string
+out), not a single hardcoded function, since ClearURLs is meant to be the first
+entry, not the only one:
+
+- `ClearURLs` — a Go port of the real ClearURLs extension's own algorithm
+  (`pureCleaning`/`_cleaning`/`removeFieldsFormURL`), verified line-by-line
+  against the actual upstream JS source, not inferred from the ruleset's own
+  documentation. Uses `github.com/dlclark/regexp2` (stdlib RE2 can't compile
+  some patterns the real ruleset relies on). The ruleset (`data.min.json`) is
+  vendored as a git submodule at `internal/urlnorm/clearurls-rules` — inside the
+  package that uses it, embedded directly as `[]byte` via `go:embed`
+  (`//go:embed clearurls-rules/data.min.json`), not threaded through
+  `main.go`/`cmd` the way the Postgres/D1 migration directories are, since
+  nothing outside this package ever needs it. `completeProvider` and
+  `forceRedirection` are deliberately not ported at all — see DESIGN.md §9 for
+  why neither applies to normalizing an already-known URL string.
+- `Canonicalize` — host/scheme lowercasing, default-port stripping (including
+  correct IPv6 bracket handling), fragment dropping, query-param sorting,
+  trailing-slash stripping.
+
+**`internal/r2`** — the backend's own R2 client (distinct from the Worker's
+presign-only access): `aws-sdk-go-v2`'s real S3 client, `UsePathStyle: true` set
+explicitly rather than trusting the SDK's virtual-host-by-default resolution
+(R2's actual addressing puts the bucket in the path, confirmed while building
+the Worker's own presigner). Reuses the same manually- provisioned R2 API token
+as the Worker — not a second credential.
+
+**`internal/archive`** — the local, canonical, zstd-compressed disk store.
+Sharded paths (`{key[0:2]}/{key[2:4]}/{key}.html.zst`, git's own object-store
+scheme), atomic temp-file-then-rename writes. **Keyed by `content_hash`, not
+capture ID** — a real bug caught mid-session: two captures colliding on a
+capture ID would also collide on an ID-keyed disk path, and the atomic rename
+silently overwrites whatever's already there, which would have corrupted an
+unrelated, already-successfully-stored capture's file. Keying by content hash
+means a "collision" can only happen for genuinely byte-identical content, where
+overwriting with identical bytes is a harmless no-op.
+
+**`internal/ingest`** — the actual orchestration:
+
+- `WorkerClient` — the two service-secret-gated polling endpoints above.
+- `Ingester.RunOnce(ctx) error` — processes one bounded batch. **No scheduler
+  wired up yet** — deliberately deferred (see Open items below); this is a fully
+  callable, tested unit with nothing calling it in production yet.
+- Per-capture flow: pull from R2 → hash → zstd-compress to local disk → detect
+  language → normalize URL (via `internal/urlnorm`) → one Postgres transaction
+  (upsert page, insert capture, enqueue `screenshot_jobs`/ `readability_jobs`
+  rows if genuinely new) → delete the R2 object → mark fetched in D1 → clear the
+  transient `source_capture_id`.
+- Language detection: parses the captured HTML's own `<html lang="...">`
+  attribute, maps the primary subtag (ISO 639-1) to a candidate Postgres text
+  search config name via a small hardcoded table, then validates that candidate
+  against **this specific instance's live `pg_ts_config` catalog** rather than
+  trusting the Go-side table as authoritative (which configs exist depends on
+  the running Postgres version). Falls back to `simple` whenever there's no tag,
+  no mapping, or the candidate doesn't actually exist.
+- Title: parsed server-side from the raw HTML's `<title>` tag, uniformly for
+  every capture. Worth noting plainly — this is a real gap between an earlier
+  design assumption and what actually got built: SingleFile's own
+  `getPageData()` return includes a title (DESIGN.md §3a), but nothing in the
+  built `POST /queue/:id/complete` request body ever carries it through to the
+  Worker/D1. Parsing it at ingestion is the one real source of truth today, not
+  a fallback.
+
+**New Postgres migrations** (`00003`–`00006`): `pages`, `captures`,
+`screenshot_jobs`, `readability_jobs` — see DESIGN.md §10 for the schema itself;
+nothing here that isn't already documented there.
+
+### `source_capture_id`: three revisions before landing correctly
+
+Worth its own writeup since it went through real back-and-forth this session and
+the final shape isn't obvious from a first read of the code:
+
+1. **First cut**: `NULL` for manual uploads (no client ID to use), a real value
+   otherwise, `UNIQUE` but nullable.
+2. **Second cut**: made `NOT NULL` — reasoning at the time was "every capture
+   should have a real, uniform identity." This briefly shipped and was wrong: it
+   didn't account for what a _conflict_ on that column actually means.
+3. **Final, current shape**: nullable again, but now genuinely _transient_ —
+   populated while a capture is actively in flight, **cleared back to `NULL`
+   once ingestion is fully done** (R2 object deleted _and_ D1's
+   `fetched_by_backend` flag confirmed set). Two problems, previously conflated,
+   are now handled explicitly and separately:
+   - **A retry must not fail forever re-fetching an already-deleted R2 object.**
+     Fixed by a fallback check (query Postgres for an already-committed row)
+     that runs — critically — only _after_ the full pipeline attempt fails,
+     never as an upfront gate. An upfront pre-check-before-R2-Get was tried
+     first and rejected: it bypasses the content-hash comparison below entirely,
+     silently discarding a genuine collision's data instead of catching it. This
+     was self-caught by tracing the collision test against the new code before
+     it was ever presented, not caught externally.
+   - **A conflict on insert must not be assumed to mean "retry."** It could be a
+     genuine collision — two different captures sharing an ID (astronomically
+     unlikely for a random UUID, not impossible). Resolved via `content_hash`
+     comparison: matching hash means legitimate retry (no-op); mismatched hash
+     means real collision, and a fresh UUID is generated and the insert retried
+     (bounded, `github.com/google/uuid`).
+   - Manual upload (not yet built) needs no separate insert logic to fit this —
+     same content-hash-based handling, just starting with a backend-generated
+     candidate ID instead of a client-supplied one.
+
+### Testing
+
+- `sqlc.yaml` needed an explicit type override (`db_type: "regconfig"` →
+  `go_type: "string"`) — without it, sqlc falls back to `interface{}` for a
+  Postgres type it has no built-in mapping for.
+- `sqlc`'s own schema analysis only understands tables defined in our
+  migrations, not Postgres system catalogs — a query against `pg_ts_config` was
+  flatly rejected ("relation does not exist"). The live language-config
+  validation is therefore a small hand-written query against the raw pool, not a
+  generated one.
+
+### Open items (why this phase isn't closed out yet)
+
+- **CLI** (enqueue-only) — not built.
+- **Fake extension script** (pair → claim → presigned upload → complete) — not
+  built. This is what actually proves the R2/D1/Postgres pipeline end-to-end
+  against a real deployed Worker; nothing has exercised it for real yet, only
+  via tests against fakes/`dbtest`.
+- **What triggers `Ingester.RunOnce`** — explicitly deferred, not decided. A
+  ticker inside `recueil server`, a cron'd subcommand, or something else;
+  `RunOnce` itself is fully built and tested, just uncalled in production.
+- **`archived_pages` D1 bookmark-list mirror** (DESIGN.md §8) — explicitly
+  deferred as its own follow-up; unrelated to the core archive loop working.
+- **Full ClearURLs ruleset update/versioning workflow** — the submodule is
+  pinned to a specific commit; the "advance the pin, cut a release" process
+  described in DESIGN.md §9 hasn't actually been exercised yet.
