@@ -33,6 +33,13 @@
 // - GET /internal/pending-captures, POST
 //   /internal/pending-captures/:id/fetched: service-secret-gated backend
 //   ingestion polling (list unfetched captures; mark one as pulled)
+// - GET /internal/archived-pages/last-sync, POST
+//   /internal/archived-pages/mirror, GET /internal/archived-pages/page-ids,
+//   POST /internal/archived-pages/delete: service-secret-gated bookmark-list
+//   mirror sync (checkpoint read, incremental upsert, full ID list for
+//   deletion reconciliation, batch delete) -- all four deliberately dumb:
+//   the backend computes what changed and what to delete, the Worker only
+//   ever executes exactly what it's told
 
 /**
  * @typedef {Object} Env
@@ -429,6 +436,18 @@ export default {
     const failMatch = pathname.match(/^\/queue\/([^/]+)\/fail$/);
     if (method === "POST" && failMatch) {
       return handleFailQueueItem(request, env, ctx, failMatch[1]);
+    }
+    if (method === "GET" && pathname === "/internal/archived-pages/last-sync") {
+      return handleGetArchivedPagesLastSync(request, env);
+    }
+    if (method === "POST" && pathname === "/internal/archived-pages/mirror") {
+      return handleMirrorArchivedPages(request, env);
+    }
+    if (method === "GET" && pathname === "/internal/archived-pages/page-ids") {
+      return handleListArchivedPageIDs(request, env);
+    }
+    if (method === "POST" && pathname === "/internal/archived-pages/delete") {
+      return handleDeleteArchivedPages(request, env);
     }
 
     return new Response("Not Found", { status: 404 });
@@ -1247,4 +1266,218 @@ export async function handleFailQueueItem(request, env, ctx, itemId) {
     .run();
 
   return new Response(null, { status: 204 });
+}
+
+/**
+ * GET /internal/archived-pages/last-sync: returns the sync checkpoint for
+ * the bookmark-list mirror -- the max updated_at currently in
+ * archived_pages, or null if nothing has ever been pushed. Deliberately
+ * derived directly from D1's own data rather than a separately-tracked
+ * watermark value anywhere: there's nothing that can drift from what D1
+ * actually contains, since the "checkpoint" and "the data" are the same
+ * read. The backend uses this to compute
+ * `WHERE pages.updated_at > last_sync` on its own Postgres side; a null
+ * response means "sync everything."
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleGetArchivedPagesLastSync(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const row = /** @type {{ max_updated_at: string | null } | null} */ (
+    await env.DB.prepare(
+      "SELECT MAX(updated_at) AS max_updated_at FROM archived_pages",
+    ).first()
+  );
+
+  return new Response(
+    JSON.stringify({ last_sync: row?.max_updated_at ?? null }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * @typedef {Object} ArchivedPageMirrorEntry
+ * @property {number} page_id
+ * @property {number} user_id
+ * @property {string} raw_url
+ * @property {string | null} [title]
+ * @property {string} latest_capture_at
+ * @property {string} updated_at
+ */
+
+/**
+ * POST /internal/archived-pages/mirror: batch upsert into archived_pages.
+ * Deliberately dumb -- the backend decides which pages changed and in
+ * what order to send them (ascending updated_at, per DESIGN.md's own
+ * reasoning about not letting a partial-batch failure leave a gap below
+ * the new observed max); this endpoint just executes the upsert for
+ * whatever it's given, in the order given, via a single env.DB.batch()
+ * call so the whole batch commits atomically or not at all.
+ *
+ * updated_at is always taken verbatim from the request body -- never
+ * D1's own CURRENT_TIMESTAMP -- since it needs to directly mirror
+ * Postgres's pages.updated_at for the last-sync checkpoint above to mean
+ * anything.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleMirrorArchivedPages(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null || !("pages" in body)) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { pages } = /** @type {{ pages: unknown }} */ (body);
+  if (!Array.isArray(pages)) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  /** @type {ArchivedPageMirrorEntry[]} */
+  const entries = [];
+  for (const page of pages) {
+    if (
+      typeof page !== "object" ||
+      page === null ||
+      typeof (/** @type {Record<string, unknown>} */ (page).page_id) !==
+        "number" ||
+      typeof (/** @type {Record<string, unknown>} */ (page).user_id) !==
+        "number" ||
+      typeof (/** @type {Record<string, unknown>} */ (page).raw_url) !==
+        "string" ||
+      typeof (
+        /** @type {Record<string, unknown>} */ (page).latest_capture_at
+      ) !== "string" ||
+      typeof (/** @type {Record<string, unknown>} */ (page).updated_at) !==
+        "string"
+    ) {
+      return new Response("Missing or invalid fields", { status: 400 });
+    }
+    entries.push(/** @type {ArchivedPageMirrorEntry} */ (page));
+  }
+
+  const statements = entries.map((page) =>
+    env.DB.prepare(
+      `INSERT INTO archived_pages
+         (page_id, user_id, raw_url, title, latest_capture_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(page_id) DO UPDATE SET
+         user_id = excluded.user_id,
+         raw_url = excluded.raw_url,
+         title = excluded.title,
+         latest_capture_at = excluded.latest_capture_at,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      page.page_id,
+      page.user_id,
+      page.raw_url,
+      page.title ?? null,
+      page.latest_capture_at,
+      page.updated_at,
+    ),
+  );
+
+  if (statements.length > 0) {
+    await env.DB.batch(statements);
+  }
+
+  return new Response(JSON.stringify({ upserted: entries.length }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * GET /internal/archived-pages/page-ids: lists every page_id currently in
+ * the D1 mirror. Deliberately dumb -- computing which of these no longer
+ * exist in Postgres (and therefore need deleting) is the backend's own
+ * job, using this raw list plus its own current pages table; the Worker
+ * never compares anything itself.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleListArchivedPageIDs(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const { results } = await env.DB.prepare(
+    "SELECT page_id FROM archived_pages",
+  ).all();
+
+  return new Response(
+    JSON.stringify({
+      page_ids: results.map(
+        (row) => /** @type {{ page_id: number }} */ (row).page_id,
+      ),
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /internal/archived-pages/delete: batch delete from archived_pages
+ * by page_id -- the other half of deletion reconciliation, executing
+ * exactly the ids the backend already determined no longer exist in
+ * Postgres.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleDeleteArchivedPages(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null || !("page_ids" in body)) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { page_ids } = /** @type {{ page_ids: unknown }} */ (body);
+  if (
+    !Array.isArray(page_ids) ||
+    !page_ids.every((id) => typeof id === "number")
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  if (page_ids.length > 0) {
+    const statements = page_ids.map((id) =>
+      env.DB.prepare("DELETE FROM archived_pages WHERE page_id = ?").bind(id),
+    );
+    await env.DB.batch(statements);
+  }
+
+  return new Response(JSON.stringify({ deleted: page_ids.length }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }

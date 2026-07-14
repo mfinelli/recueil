@@ -43,83 +43,83 @@ extraction and the thumbnail are both produced later, offline, by the backend
 ## 2. High-Level Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  iOS Shortcut    │     │  Share-sheet PWA │     │       CLI       │
-│  (enqueue only)  │     │  (Cloudflare      │     │  (enqueue only) │
-│                  │     │   Pages, public)  │     │                 │
-└────────┬─────────┘     └────────┬──────────┘     └────────┬────────┘
+┌──────────────────┐     ┌───────────────────┐     ┌──────────────────┐
+│  iOS Shortcut    │     │  Share-sheet PWA  │     │       CLI        │
+│  (enqueue only)  │     │  (Cloudflare      │     │  (enqueue only)  │
+│                  │     │   Pages, public)  │     │                  │
+└────────┬─────────┘     └────────┬──────────┘     └─────────┬────────┘
          │                        │                          │
          └────────────────────────┼──────────────────────────┘
                                   ▼
-                        ┌───────────────────┐
-                        │  Cloudflare Worker │  (dumb relay + auth)
-                        │  - device auth       │
+                        ┌───────────────────────┐
+                        │  Cloudflare Worker    │  (dumb relay + auth)
+                        │  - device auth        │
                         │  - enqueue URL        │
                         │  - presigned R2 URLs  │
                         │  - D1 read/write      │
-                        │  - service-secret-     │
-                        │    gated backend API   │
-                        └─────────┬─────────┘
+                        │  - service-secret-    │
+                        │    gated backend API  │
+                        └─────────┬─────────────┘
                                   │
                     ┌─────────────┼─────────────┐
                     ▼                           ▼
              ┌─────────────┐             ┌─────────────┐
              │     D1      │             │     R2      │
              │ (queue,     │             │ (temp blob  │
-             │  device      │◄────┐       │  storage)   │
-             │  tokens,     │     │       │             │
-             │  bookmark    │     │       │             │
-             │  mirror)     │     │       │             │
+             │  device     │◄────┐       │  storage)   │
+             │  tokens,    │     │       │             │
+             │  bookmark   │     │       │             │
+             │  mirror)    │     │       │             │
              └──────┬──────┘     │       └──────┬──────┘
                     │            │              │
                     │  poll      │              │  pull
                     ▼            │              ▼
-        ┌──────────────────────────────────────────┐
-        │         Desktop Browser Extension          │
-        │  - reads queue from D1 (via Worker)         │
+        ┌──────────────────────────────────────────────┐
+        │         Desktop Browser Extension            │
+        │  - reads queue from D1 (via Worker)          │
         │  - user selects item → loads URL             │
-        │  - captures HTML only (via vendored              │
-        │    SingleFile library — no Readability            │
-        │    vendored here; see §3a/§6a)                      │
-        │  - uploads to R2 via presigned URL              │
-        │  (no longer captures a screenshot — see §6)      │
-        └──────────────────────────────────────────┘
+        │  - captures HTML only (via vendored          │
+        │    SingleFile library — no Readability       │
+        │    vendored here; see §3a/§6a)               │
+        │  - uploads to R2 via presigned URL           │
+        │  (no longer captures a screenshot — see §6)  │
+        └──────────────────────────────────────────────┘
                     │
                     │ (async, outbound-only polling)
                     ▼
-        ┌──────────────────────────────────────────┐
-        │      Backend (Go + Postgres, Docker)       │
-        │  - polls Worker/D1 for pending captures      │
-        │  - pulls blobs from R2, then deletes from R2   │
-        │  - zstd-compresses HTML, stores locally          │
-        │  - enqueues async screenshot job (§6)             │
-        │  - enqueues async readability extraction job (§6a) │
-        │  - runs optional AI enrichment (summary/tags),        │
-        │    once reader_text exists (§7)                        │
-        │  - pushes bookmark-list mirror row to D1 ───────────┘
-        │    (via Worker, after each capture is processed)
-        │  - pushes pairing-token-hash mirror to D1 ───────────┘
-        │    (via Worker, on account creation/regeneration/revocation)
-        │  - authenticates the dashboard directly (session      │
-        │    auth against its own Postgres `users` table —       │
-        │    no token/D1 involvement)                              │
-        │  - serves dashboard API (reachable on LAN/VPN/etc.,      │
-        │    reachability is the operator's responsibility)         │
-        └──────────────────────────────────────────┘
-                    │                           │
-                    ▼                           ▼
-        ┌──────────────────────┐   ┌──────────────────────────┐
-        │  Headless-Chrome       │   │   Svelte Dashboard         │
-        │  sidecar (chromedp +    │   │  - library browsing, search  │
-        │  headless-shell         │   │  - version history per page   │
-        │  container, driven       │   │  - tags (manual + AI),          │
-        │  by the backend) —        │   │    nested collections             │
-        │  produces both               │
-        │  thumbnails (§6) and           │
-        │  Readability extractions        │
-        │  (§6a) from already-captured      │
-        │  offline HTML                        │
-        └──────────────────────┘   └──────────────────────────┘
+        ┌───────────────────────────────────────────────────────────────┐
+        │      Backend (Go + Postgres, Docker)                          │
+        │  - polls Worker/D1 for pending captures                       │
+        │  - pulls blobs from R2, then deletes from R2                  │
+        │  - zstd-compresses HTML, stores locally                       │
+        │  - enqueues async screenshot job (§6)                         │
+        │  - enqueues async readability extraction job (§6a)            │
+        │  - runs optional AI enrichment (summary/tags),                │
+        │    once reader_text exists (§7)                               │
+        │  - pushes bookmark-list mirror row to D1                      │
+        │    (via Worker, after each capture is processed)              │
+        │  - pushes pairing-token-hash mirror to D1                     │
+        │    (via Worker, on account creation/regeneration/revocation)  │
+        │  - authenticates the dashboard directly (session              │
+        │    auth against its own Postgres `users` table —              │
+        │    no token/D1 involvement)                                   │
+        │  - serves dashboard API (reachable on LAN/VPN/etc.,           │
+        │    reachability is the operator's responsibility)             │
+        └───────────────────────────────────────────────────────────────┘
+                    │                               │
+                    ▼                               ▼
+        ┌──────────────────────────────┐   ┌──────────────────────────────┐
+        │  Headless-Chrome             │   │   Svelte Dashboard           │
+        │  sidecar (chromedp +         │   │  - library browsing, search  │
+        │  headless-shell              │   │  - version history per page  │
+        │  container, driven           │   │  - tags (manual + AI),       │
+        │  by the backend) —           │   │    nested collections        │
+        │  produces both               │   │                              │
+        │  thumbnails (§6) and         │   │                              │
+        │  Readability extractions     │   │                              │
+        │  (§6a) from already-captured │   │                              │
+        │  offline HTML                │   │                              │
+        └──────────────────────────────┘   └──────────────────────────────┘
 ```
 
 ### Key architectural property: capture path never touches the backend
@@ -248,20 +248,104 @@ content) signal for that specific UI feature.
 ### 3c. Capture idempotency (crash recovery)
 
 The `pending_captures.id` (a client-generated UUID, already required for
-retry-safety on the upload-complete notification — see §8) doubles as an
-idempotency key for backend ingestion:
+retry-safety on the upload-complete notification — see §8) doubles as a
+transient idempotency key for backend ingestion:
 
 ```sql
 ALTER TABLE captures ADD COLUMN source_capture_id TEXT UNIQUE;
 ```
 
-Ingestion becomes: write the blob to disk, then
-`INSERT ... ON CONFLICT (source_capture_id) DO NOTHING` into `captures`. If the
-row already exists (a retry after a crash), skip straight to R2 cleanup and the
-D1 `fetched_by_backend` flag update. Ordering the steps this way — disk write,
-then DB commit, then R2 delete, then D1 flag — means a crash at any point either
-leaves the R2 object in place for a safe retry, or leaves only harmless orphaned
-cleanup state; nothing can double-insert a capture.
+**`source_capture_id` is nullable, and is cleared back to `NULL` once ingestion
+of that capture is fully done** — corrected twice over from earlier revisions of
+this document (which first left it `NULL` only for manual uploads, then briefly
+made it `NOT NULL` for every capture, before landing here). Its only job is
+letting a retry recognize an already-committed capture without redoing the whole
+pipeline, and that job has a natural end: once the R2 object is deleted **and**
+D1's `fetched_by_backend` flag is confirmed set, there is no further retry
+window left to protect, and nothing else ever reads this column. Clearing it
+isn't just tidiness — it's what keeps a permanent, forever-growing table from
+carrying a column whose entire purpose is transient, and it's what lets the
+`UNIQUE` constraint mean something meaningful (many "done" rows can all hold
+`NULL` simultaneously without conflict, since Postgres never treats two `NULL`s
+as equal).
+
+Every capture gets a real, unique value while it's actually in flight,
+regardless of source: **client-generated** for the extension/queue flow (the
+device already generates this UUID before ever talking to the Worker, for the
+upload-complete notification's own retry-safety), or **backend-generated** for
+manual uploads (§3d), which have no client in the loop to generate one.
+
+**Two separate problems, both real, both need solving — this section used to
+only solve one of them:**
+
+1. **A retry must not fail forever trying to re-fetch an R2 object that a prior
+   attempt already deleted.** If the backend crashes between deleting the R2
+   object and confirming the D1 flag, the next poll cycle sees the same
+   `pending_captures.id` again — and naively re-running the whole pipeline would
+   try to pull an object that's already gone.
+2. **A conflict on `source_capture_id` must not be assumed to mean "this is a
+   retry."** It could instead be a genuine collision — two different captures
+   that happen to share an ID (astronomically unlikely for a random UUID, but
+   not impossible, and not something to just hope never happens). Treating any
+   conflict as "already handled, return the existing row" would silently discard
+   the second capture's real data in that case, with no error and no visible
+   sign anything was lost.
+
+**The resolution to both, together:** ingestion always attempts the full
+pipeline first — pull from R2, hash, compress to local disk (keyed by
+`content_hash`, not `source_capture_id`; see the note on this below), then a
+single Postgres transaction that upserts the page and inserts the capture. That
+insert uses `content_hash` to tell the two problems above apart:
+`INSERT ... ON CONFLICT (source_capture_id) DO UPDATE ... RETURNING`, then
+compare the returned row's `content_hash` against the one just computed. A match
+means a legitimate retry of the identical upload — safe no-op, return the
+existing row. A mismatch means a genuine collision between two different
+captures — generate a fresh UUID for _this_ capture and retry the insert (a
+small bounded loop), never silently dropping the new capture's data.
+
+**Only if that whole first attempt fails** does ingestion fall back to checking
+Postgres for an already-committed row matching the original `source_capture_id`
+(problem 1's actual fix): if found, whatever just failed — almost always the R2
+fetch, because a prior attempt's delete already succeeded — is safe to treat as
+"already done," and processing jumps straight to R2/D1 cleanup. If nothing is
+found, the failure is real and gets surfaced normally (logged, retried on the
+next poll). This fallback deliberately never runs _instead of_ the first
+attempt, only _after_ it fails — gating it upfront (checking Postgres before
+ever touching R2) was tried and rejected during implementation, specifically
+because it would skip the content_hash comparison above entirely and reintroduce
+problem 2 in a different place. R2's own `DeleteObject` (and R2's S3-compatible
+equivalent) is documented to be idempotent — deleting an already-gone key
+returns success, not an error — so the cleanup steps themselves need no special
+"tolerate already deleted" handling either way.
+
+Ordering the steps this way — disk write, then DB commit, then R2 delete, then
+D1 flag, then (only once both cleanup calls have actually succeeded) clearing
+`source_capture_id` — means a crash at any point either leaves the R2 object in
+place for a safe retry (nothing durable happened yet), or leaves only harmless
+orphaned cleanup state (the durable parts already succeeded; a failure to clear
+`source_capture_id` specifically is harmless on its own, since D1 will never
+resurface that capture's id once `fetched_by_backend` is set, so nothing will
+ever look the stale value up again regardless).
+
+This whole scheme is uniform across capture sources, not split into two code
+paths as an earlier revision of this document assumed: manual upload (§3d) just
+starts the process with a backend-generated UUID as its first candidate
+`source_capture_id` instead of a client-supplied one, since it has no client to
+supply one. Everything downstream — the content_hash-based conflict
+disambiguation, the collision retry loop, the try-first/fallback-on-failure
+pattern — is identical either way.
+
+**Local disk storage is keyed by `content_hash`, not `source_capture_id`, for a
+closely related reason** (see §4/`internal/archive`'s own docs for the full
+reasoning): two captures whose `source_capture_id`s collide would also collide
+on a `source_capture_id`-keyed disk path, and the atomic-rename write this
+project uses silently overwrites whatever's already at the destination. That's a
+worse outcome than the Postgres-side collision above, since it would corrupt an
+unrelated, already-successfully-stored capture's file rather than just failing
+to store the new one. `content_hash` doesn't have this failure mode: two
+genuinely different captures colliding would require an actual SHA-256
+collision, and two captures that happen to share byte-identical content
+overwriting each other with identical bytes is a harmless no-op, not data loss.
 
 ### Re-archiving the same URL
 
@@ -300,19 +384,20 @@ flow, not a variant of it:
   Readability-specific handling of its own anymore — a manually uploaded capture
   simply gets a `readability_jobs` row created the same as any other new capture
   (see §6a). The page title is read from the uploaded HTML's `<title>` tag at
-  ingestion time (a plain parse, not a Readability output — SingleFile's own
-  `getPageData()` already provided the title this way for extension-sourced
-  captures, per §3a, so this pathway needed its own equivalent regardless of the
-  Readability question).
-- **No idempotency-by-UUID machinery, unlike §3c.** §3c's `source_capture_id`
-  scheme exists to protect an unattended, multi-step background process
-  (extension → R2 → Worker → backend poll) against double-insertion on
-  crash-recovery retry. A manual upload is a single synchronous, foreground,
-  user-initiated request with no equivalent multi-step window to protect — so
-  every submission is simply treated as a new intentional capture, no
-  deduplication against prior identical uploads. `captures.source_capture_id`
-  stays `NULL` for these rows (already nullable, so no schema change was needed
-  to allow this).
+  ingestion time, uniformly for every capture regardless of source (not a
+  Readability output) — this pathway needs no special handling for title either;
+  see §10's `captures` schema for why this ended up being the one real source of
+  title for extension-sourced captures too, not just this pathway.
+- **A backend-generated UUID as the starting `source_capture_id`, transient and
+  eventually cleared to `NULL`** — this pathway's own account of §3c has gone
+  through a couple of revisions: first `NULL` for manual uploads specifically,
+  then briefly `NOT NULL` for every capture, before landing on what §3c now
+  describes in full: nullable, real while a capture is actually in flight,
+  cleared once ingestion is fully done. Manual upload doesn't need its own
+  insert logic to fit this — it uses the exact same content_hash-based conflict
+  handling and try-first/fallback-on-failure pattern as the extension/queue flow
+  (§3c), just starting with a backend-generated candidate ID instead of a
+  client-supplied one, since there's no client in the loop to supply one.
 - **Everything downstream of ingestion is unchanged**: content hashing (§3b),
   URL normalization (§9), grouping into `pages` by `normalized_url` — a manual
   upload of an already-captured URL is just another new version under the same
@@ -334,6 +419,194 @@ flow, not a variant of it:
   `'manual_upload'`), mirroring the existing `page_tags.source` (`'manual'` |
   `'ai'`) pattern — lets the dashboard show capture origin directly rather than
   inferring it from whether `source_capture_id` happens to be `NULL`. See §10.
+
+---
+
+### 3e. The agent process (background job triggering)
+
+Both backend ingestion (§3c's `Ingester.RunOnce`) and the D1 bookmark-list
+mirror sync (§8's `Syncer.SyncOnce`) were built as fully self-contained, fully
+tested callable units with nothing actually invoking them — deliberate, not an
+oversight, since the trigger mechanism was a genuinely separate decision worth
+settling on its own.
+
+**`recueil agent`: a dedicated subcommand/process, not a goroutine inside
+`recueil server`.** Both share the same binary/image, deployed as separate
+services in the same compose file with different commands. Two other shapes were
+seriously considered and rejected:
+
+- **A goroutine inside `server`** — the obvious lightest-weight option, and
+  rejected specifically over shutdown coordination: cleanly stopping two
+  different kinds of concurrent work (serving in-flight HTTP requests vs.
+  finishing or abandoning a background job) inside one process, on one
+  `SIGTERM`, is real complexity a separate process sidesteps entirely — each
+  process only ever has to coordinate shutdown for its own single kind of work.
+- **Cron** — ruled out early. The primary deploy target (Docker Compose) has no
+  cron mechanism of its own; the host scheduling `docker exec`/ `docker run`
+  invocations against a running compose stack isn't ergonomic; and a "poor man's
+  cron" (a tick embedded in some other process) just reintroduces the same
+  shutdown-coordination problem the goroutine option already lost on, while
+  adding scheduling complexity on top.
+
+A dedicated process also gets independent failure and resource isolation for
+free, as a consequence of the deployment shape rather than anything special
+built for it: a runaway or hung job (a headless-Chrome screenshot job spiking
+memory, say — not built yet, but the same reasoning applies in advance) is
+contained to the agent container and can't degrade HTTP request latency, and
+Docker's own per-service restart policy handles recovering it without touching
+the web process at all.
+
+**Coordination layer: Postgres, not a message broker.** RabbitMQ and a
+Redis-backed queue (`asynq`, the Go equivalent of Sidekiq — Redis itself isn't
+Ruby-specific even though Sidekiq is) were both seriously considered, on the
+reasoning that there's real job-ordering to coordinate: AI enrichment (§7) can
+only run after readability extraction (§6a) succeeds. Neither was adopted,
+because that ordering doesn't actually need a message-broker-level
+dependency/DAG feature at all — it's expressed simply as _when a job row gets
+created_: an `ai_jobs` row doesn't exist until whatever marks the corresponding
+`readability_jobs` row `done` creates it, in the same transaction. The queue
+itself never needs to understand the dependency; it only ever needs to answer
+"give me pending rows," which Postgres already does. What a real message broker
+actually buys over this — routing topologies, fan-out, many concurrent
+independent consumers, back-pressure across separate services — isn't something
+a single agent process at personal-archive scale ever exercises, and either
+option would be a second stateful service (deploy it, back it up, keep it
+patched) purely to gain capability this project doesn't need, when Postgres is
+already a hard dependency regardless. The claim pattern this needs
+(`UPDATE ... SET status = 'processing' WHERE status = 'pending' RETURNING *`) is
+exactly what `queue_items.claim` (§2) already does in the Worker — not a new
+pattern, the same one reused a layer down.
+
+`screenshot_jobs`/`readability_jobs` (§6, §6a) already have the shape this
+implies (`status`, `attempts`, `next_attempt_at`, `error`, `completed_at`) — not
+incidentally job-queue-shaped, built that way on purpose.
+
+**Postgres `LISTEN`/`NOTIFY`** (near-instant job pickup, layered on top of the
+poll loop as a pure latency optimization — the poll loop stays the actual
+correctness guarantee regardless, since `NOTIFY` isn't durable and a missed
+notification with no fallback poll would just silently never process that job)
+was discussed and deliberately deferred, not rejected. Plain polling is entirely
+sufficient at this project's scale for now; worth reconsidering only if
+poll-interval latency ever actually becomes a real complaint.
+
+**Startup and migrations**: `agent` does **not** run migrations itself, unlike
+`server`. Postgres migrations are safe to run from multiple processes
+concurrently (goose's own session-level advisory lock, via `internal/pgmigrate`,
+serializes that) — but D1 migrations have no equivalent locking, and
+`server`/`agent` starting together in Compose gives no ordering guarantee
+between them. Rather than have `agent` run Postgres migrations but not D1 (an
+asymmetry that would need its own explanation every time someone reads the
+code), it runs neither: `server` owns migrations exclusively, and `agent`
+assumes they're already applied. If `agent` happens to start first, its earliest
+cycle(s) simply fail against a not-yet-ready schema, get logged, and self-heal
+on the next tick once `server` catches up — the same graceful-degradation shape
+`RunOnce`/`SyncOnce` already have for a single failed item, just one level up,
+at the whole-cycle granularity.
+
+**One shared ticker, both jobs run sequentially per tick** — `Ingester.RunOnce`
+then `Syncer.SyncOnce`, both on the same interval
+(`agent_poll_interval_seconds`, default 120), not two independently-scheduled
+loops. The simplest thing that works; splitting them onto separate cadences is a
+natural, easy follow-up if one ever genuinely needs to run more or less often
+than the other, not a constraint this design paints itself into. A cycle runs
+synchronously within the same `select` loop iteration that reads the ticker
+channel, deliberately not spawned into its own goroutine per tick —
+`time.Ticker`'s channel buffers exactly one pending tick, so a cycle that runs
+longer than the interval simply means some ticks are silently dropped rather
+than a backlog of queued cycles building up; the next cycle starts as soon as
+the current one finishes and at least one tick has fired since, not once per
+missed interval. Either job failing is logged, not propagated as the agent
+process's own failure — the same "log and continue" philosophy
+`RunOnce`/`SyncOnce` already apply at their own per-item/per-batch level, one
+layer further up.
+
+---
+
+### 3f. The CLI (`recueil auth` / `recueil enqueue`)
+
+The CLI's own two commands, and specifically why their configuration handling
+deliberately diverges from `server`/`agent`'s:
+
+- **Two different config postures for two different audiences.**
+  `server`/`agent` require an explicit `--config` file or environment variables
+  — no automatic search of `$HOME` or the working directory (§13a) — a
+  deliberate choice for production processes, where implicit config-discovery
+  could silently pick up an unintended file. `auth`/`enqueue` are the opposite
+  kind of thing: an end user's personal tool, where automatic discovery is the
+  expected, idiomatic UX (the same shape `git`, `ssh`, and most CLI tools
+  already have people trained on). This isn't a reversal of the earlier
+  decision, it's a second, narrower one for a genuinely different audience —
+  `server`/`agent`'s existing explicit-only behavior is completely unchanged.
+- **No shared/nested `config.toml` at all, in the end** — considered (a
+  `[server]` section vs. flat top-level keys) and set aside, for a sharper
+  reason than "the CLI has nothing to configure yet": once the pairing token
+  needed its own dedicated file anyway (below), and `worker_url` turned out to
+  belong with that token rather than as an independent setting, there was
+  nothing left for the CLI to read from `config.toml` at all. `enqueue`/`auth`
+  don't touch Viper or `internal/config` in any way; every server-only key stays
+  exactly as it is.
+- **Pairing token input: masked prompt if a TTY, stdin otherwise — deliberately
+  never a `--token` flag.** A flag would be visible in shell history and
+  system-wide `ps` output for the process's whole lifetime — a real exposure for
+  a bearer credential, not a theoretical one. `mattn/go-isatty` (already a
+  dependency) decides which path to take; `golang.org/x/term.ReadPassword` (new,
+  small, official) does the actual no-echo read. This gets scriptability for
+  free without ever needing the flag: `echo "$TOKEN" | recueil auth --url ...`
+  reads from stdin directly since stdin isn't a terminal in that case.
+- **`internal/clicreds`: a dedicated file, not a field in `config.toml`.**
+  `$XDG_CONFIG_HOME/recueil/credentials.json` (falling back to
+  `$HOME/.config/recueil/`, the Base Directory spec's own documented default),
+  `0600`, written via temp-file-then-atomic-rename (the same pattern
+  `internal/archive` already uses, for the same reason: a crash or error partway
+  through a write must never leave a half-written file at the real path). Two
+  reasons this isn't just a `config.toml` field: `auth` rewriting part of a file
+  a user might also hand-edit risks clobbering their formatting (nothing this
+  project uses for TOML writing round-trips cleanly), and a bearer credential
+  arguably deserves its own tighter-scoped file rather than sharing a general
+  settings file's permissions regardless. `XDG_CONFIG_HOME` specifically, not
+  `XDG_STATE_HOME` or `XDG_DATA_HOME` -- the Base Directory spec doesn't
+  perfectly disambiguate this by its own letter (a token isn't quite
+  "configuration," but it's even less "state"/session data or generated "data"
+  either), so this follows the ecosystem's own precedent instead of relitigating
+  the spec: `gh` (GitHub CLI) stores its own auth under `XDG_CONFIG_HOME` too.
+- **`worker_url` is stored alongside the token, not as an independent setting.**
+  A token is only ever meaningful for the specific Worker that issued it, so the
+  two are one unit that's always captured, stored, and read together — not two
+  related-but-separate values. Concretely:
+  `recueil auth --url <worker-url> [--name <name>]` requires `--url` (there's no
+  default to fall back to, and no config file to read one from either);
+  `recueil enqueue` then reads both back from the one stored file, with no
+  `--url` override flag on `enqueue` itself. A per-call override, or real
+  multi-server profile support, was considered and deliberately deferred:
+  there's no supporting machinery on the `auth` side yet (nothing to switch
+  between), so adding the flag now would just be confusing rather than actually
+  useful — an honest 401 if you ever do point a stored token at the wrong Worker
+  is a fine failure mode until multi-profile support is worth building for real.
+- **`internal/deviceapi`: `Pair` and `Client` are deliberately separate, not one
+  unified type.** `POST /pair` is unauthenticated by nature — it's how a device
+  obtains a bearer token in the first place, so it can't require one — while
+  `Client.Enqueue` (`POST /queue`) requires a token already in hand. Forcing
+  both into one type would mean either a `Client` that's usable before it has
+  real credentials, or a separate construction path for pairing anyway — no
+  simpler than just keeping them apart. Neither authenticates as the backend
+  itself (unlike `internal/mirror` and `internal/ingest.WorkerClient`, both
+  service-secret-gated); this package is specifically what a paired _device_
+  does against the Worker's public, device-facing endpoints.
+- **`recueil enqueue <url> [<url>...]`** accepts multiple URLs in one invocation
+  (`POST /queue` has no batch form, so this is a client-side loop, one call per
+  URL) and continues past an individual failure rather than stopping the whole
+  batch — the same "one bad item shouldn't block the rest" philosophy already
+  applied to `Ingester.RunOnce`/`Syncer.SyncOnce` (§3c, §8), reported as a
+  summary and a non-zero exit if anything failed, rather than aborting partway
+  through. Each URL gets its own freshly-generated `google/uuid` (already a
+  dependency) as `POST /queue`'s client-generated `id` — the same
+  idempotency-key pattern already established for that endpoint (a retried call
+  with the same `id` is a safe no-op, not a duplicate enqueue).
+- Schema-wise, there was nothing to add: `tokens.device_name` and `device_type`
+  (already including `'cli'` in its allowed set) were already in place from
+  Phase 2, and `POST /pair` already required and stored `device_name` in its
+  request body. `recueil auth`'s only actual job here is supplying a sensible
+  one — `os.Hostname()` by default, `--name` to override.
 
 ---
 
@@ -1008,29 +1281,96 @@ not anticipated in the original design:
 - Separately from the queue, the extension can act as a lightweight bookmark
   list of everything already archived — similar to a browser's native bookmarks
   UI: just title + URL, no thumbnails.
-- This is a **one-way, backend → D1 push**: after the backend finishes
-  processing a capture, it upserts a row into a D1 `archived_pages` table — the
-  mirror-image of the credential mirror (backend → D1, rather than D1 →
-  backend), keeping the same principle: the extension only ever needs to talk to
-  the Worker/D1, never the backend.
-- The extension does **not** live-sync this list. It caches the list locally and
-  refreshes on a coarse schedule (see §7 polling cadence below) or on explicit
-  user request, using an incremental "give me changes since X" query against
-  `archived_pages.updated_at`.
+- This is a **one-way, backend → D1 push** — the mirror-image of the credential
+  mirror (backend → D1, rather than D1 → backend), keeping the same principle:
+  the extension only ever needs to talk to the Worker/D1, never the backend.
+- **Schedule-based, not triggered on individual mutations** — reconsidered from
+  an earlier revision of this document, which had the backend push a row
+  immediately after processing each capture. That doesn't handle deletion (a
+  deleted page was never "updated," it's just gone — an event-triggered push on
+  capture-processing would never notice), and more importantly it requires every
+  future code path that ever touches `pages` (a deletion endpoint, a re-tagging
+  endpoint, whatever else) to remember to also push a D1 update — exactly the
+  same fragility already avoided elsewhere in this project (why `updated_at`
+  itself isn't left to individual queries to set by hand). A schedule doesn't
+  care how or where Postgres changed; it just asks "what's different now" on its
+  own cadence. What actually triggers the sync job to run is `recueil agent`
+  (§3e) — the same shared trigger as backend ingestion (§3c): both are callable
+  units (`internal/ingest.Ingester.RunOnce`, `internal/mirror.Syncer.SyncOnce`)
+  invoked from one ticker loop.
+- **The sync checkpoint is read directly from D1's own data — `MAX(updated_at)`
+  across `archived_pages` — not a separately-tracked watermark value stored
+  anywhere on the backend.** Considered and rejected: a Postgres-side "last
+  synced at" row, which has to be kept correct by hand and can drift from what
+  D1 actually contains if a push silently fails partway. Deriving the checkpoint
+  from D1's own state makes that whole class of drift structurally impossible —
+  the checkpoint and the data are the same read, by construction. The one real
+  cost is a small Worker read endpoint whose only job is exposing that value;
+  judged worth it and in keeping with what this Worker already does elsewhere
+  (`GET /internal/pending-captures` already answers a factual question about
+  D1's own data the same way).
+- **Two passes each sync cycle:**
+  1. **Incremental upsert** — `pages WHERE updated_at > $checkpoint` (all of it,
+     unpaginated — no `LIMIT`/cursor: at this project's scale a full delta in
+     one call is fine, and pagination would reintroduce a subtler version of the
+     same equal-timestamp boundary problem the checkpoint design otherwise
+     avoids), pushed to D1 in one request.
+  2. **Deletion reconciliation** — the only way a schedule-based sync can ever
+     notice a deletion at all, since a deleted row was never "updated." The
+     backend fetches D1's full current `page_id` set (a raw list, no comparison
+     logic in the Worker — see below) and its own current Postgres `page_id`
+     set, diffs them locally, and deletes from D1 whatever's no longer in
+     Postgres. Deletion itself isn't built yet; this pass runs correctly
+     regardless, simply finding nothing to remove until it exists.
+- **The incremental push's atomicity is what makes the checkpoint safe without
+  any extra ordering logic on the backend.** The push endpoint applies its whole
+  batch via the Worker's own `env.DB.batch()`, which is transactional: either
+  every row in the batch lands, or none do. So there's no scenario where a
+  partial failure leaves D1's `MAX(updated_at)` ahead of some unpushed row —
+  either the full delta lands and the new max correctly reflects all of it, or
+  nothing lands and the next cycle's `WHERE updated_at > $checkpoint` naturally
+  retries the identical, unchanged set. (An earlier line of reasoning about this
+  design assumed a separately-tracked, non-atomic push would need the backend to
+  push rows in strict ascending `updated_at` order and stop at the first
+  failure, to avoid exactly this gap — that concern doesn't apply once the
+  checkpoint comes from D1's own atomically-updated state instead.)
+- **Every Worker endpoint involved stays deliberately dumb**, consistent with
+  this Worker's stated design: it reads or writes exactly what it's told, and
+  never computes a diff or a decision itself. `GET .../last-sync` answers a
+  factual question; `POST .../mirror` upserts whatever batch it's given;
+  `GET .../page-ids` returns a raw list; `POST .../delete` deletes exactly the
+  ids it's given. All the actual logic — what changed, what to delete — lives on
+  the backend.
+- The extension does **not** live-sync this list either. It caches the list
+  locally and refreshes on a coarse schedule (see §7 polling cadence below) or
+  on explicit user request, using its own incremental "give me changes since X"
+  query against `archived_pages.updated_at` — a separate concern from the
+  backend's own sync job above, just reusing the same column for the same
+  reason.
 - Because this list is just title + URL, no thumbnail storage is needed in R2 or
   D1 for this feature.
 
 ```sql
 -- D1
 CREATE TABLE archived_pages (
-  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id
+  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id; never
+                                     -- D1-generated, always supplied
+                                     -- explicitly by the backend
   user_id INTEGER NOT NULL REFERENCES users(id),
   raw_url TEXT NOT NULL,
   title TEXT,
-  latest_capture_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  latest_capture_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL           -- directly mirrors Postgres
+                                     -- pages.updated_at -- not "when this
+                                     -- D1 row was last written." The
+                                     -- backend always sets this explicitly
+                                     -- to the source value on every push,
+                                     -- never lets D1 stamp its own clock --
+                                     -- this is what makes MAX(updated_at)
+                                     -- a meaningful sync checkpoint at all
 );
-CREATE INDEX idx_archived_pages_user ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
 ```
 
 ### Polling cadence
@@ -1060,20 +1400,125 @@ Two URL fields are stored for every capture, never conflated:
 - **`normalized_url`** — a computed, canonical form used purely as the
   dedup/grouping key that determines which `pages` row a capture belongs to.
 
-Normalization strategy:
+### Runs in the backend, not the Worker
 
-- Adopt the **ClearURLs** community-maintained ruleset (regex-based rules per
-  site/provider, actively maintained, MIT licensed) to strip known tracking
-  parameters (`utm_*`, `fbclid`, `gclid`, `igshid`, etc.) without touching
-  functionally meaningful query parameters. Do not hand-roll a tracking
-  parameter list.
-- Additional canonicalization beyond tracking-param stripping:
-  - Lowercase the host.
-  - Strip default ports (`:443`, `:80`).
-  - Drop the URL fragment, unless the site is a known SPA that encodes
-    meaningful route state in the fragment.
-  - Sort remaining query parameters alphabetically for a stable key.
-  - Strip trailing slash.
+Normalization happens entirely backend-side (Go), at ingestion time — not in the
+Cloudflare Worker. Two independent reasons converge on the same answer:
+
+- **Manual upload (§3d) has no Worker involved at all** — it's a direct
+  dashboard→backend upload, bypassing R2/D1/the Worker entirely. A Worker-side
+  normalization step would simply never run for that capture path, and a user
+  manually uploading a file has no reason to have already normalized the URL
+  themselves.
+- **The Worker's "plain JS, no build step, no dependencies" constraint (§11,
+  §13a) rules it out anyway.** ClearURLs' ruleset (below) has no existing Go
+  _or_ dependency-free-JS implementation to embed; whichever side implements it
+  needs a real regex/JSON-parsing dependency, and only the backend is free to
+  take on dependencies at all.
+
+### Pipeline architecture
+
+Normalization is a **pipeline of independent steps**, not a single hardcoded
+function — deliberately, since ClearURLs is expected to be the first entry, not
+the only one. A future step might be a different third-party library, or a
+hand-rolled Recueil-specific ruleset; the pipeline shape means adding one never
+requires touching an existing step, and steps can be freely reordered.
+Implemented as `internal/urlnorm`: a `Step` interface
+(`Normalize(ctx, rawURL string) (string, error)`, string in/string out —
+deliberately not a shared parsed-URL representation, so an external library with
+its own string-based API is trivial to slot in as a step) and a `Pipeline` that
+runs a sequence of `Step`s, each fed the previous one's output. Today's pipeline
+is exactly two steps, run in this order:
+
+1. **ClearURLs** — strips known tracking parameters and unwraps redirect-wrapper
+   URLs (below).
+2. **Recueil's own additional canonicalization** — host/scheme casing, default
+   ports, fragment, query-param ordering, trailing slash (below) — also just a
+   `Step`, not a hardcoded tail bolted onto step 1.
+
+### ClearURLs: a Go port, vendored as a git submodule
+
+Adopt the **ClearURLs** community-maintained ruleset (regex-based rules per
+site/provider, actively maintained, LGPL-3.0 licensed — corrected from an
+earlier revision of this document, which stated MIT) to strip known tracking
+parameters (`utm_*`, `fbclid`, `gclid`, etc.) and unwrap tracking-redirect
+wrapper URLs, without touching functionally meaningful query parameters. Do not
+hand-roll a tracking-parameter list.
+
+- **The ruleset (`data.min.json`) is vendored as a git submodule** at
+  `internal/urlnorm/clearurls-rules` — inside the package that actually uses it,
+  not at the repo root — pinned to a specific commit and embedded directly as
+  `[]byte` via `go:embed` (`//go:embed clearurls-rules/data.min.json`, entirely
+  local to `internal/urlnorm`). This is a deliberate departure from how the
+  Postgres/D1 migration directories are embedded (those live at the repo root
+  and get embedded in `main.go`, then threaded down through `cmd` — see §13a):
+  that indirection exists there because `cmd/server.go` itself needs to read
+  those directories directly. Nothing outside `internal/urlnorm` ever needs the
+  ClearURLs ruleset, so embedding it locally, as a single file rather than a
+  directory `embed.FS` needing an `fs.Sub`/`fs.ReadFile` step to extract the one
+  file back out of it, avoids indirection this package has no use for. The
+  vendoring-as-a-submodule reasoning itself is unrelated to where the embed
+  directive lives: it's a deliberate consequence of the upstream project not
+  publishing to any package registry (npm, a Go module proxy, or otherwise) that
+  could be depended on directly with a version constraint the normal way; a
+  submodule pinned to a commit is the closest equivalent, giving reproducible
+  builds the same way a registry version pin would. Updating to a newer ruleset
+  snapshot is a deliberate, manual operation — advance the submodule's pinned
+  commit, commit that pointer change on its own, and cut a new Recueil release —
+  never automatic.
+- **`internal/urlnorm`'s `ClearURLs` type is a Go port of the real extension's
+  own algorithm** (`pureCleaning`/`_cleaning`/ `removeFieldsFormURL` in
+  ClearURLs/Addon's `core_js`), not an inference from the ruleset format's own
+  documentation — the documentation describes the data shape but not every
+  matching/precedence detail (anchoring, case-sensitivity, iteration order, the
+  redirection short-circuit). Every behavior was checked against the actual
+  upstream JS source directly. Notably: providers are matched in the ruleset's
+  own file order (not alphabetical, not a Go map's randomized order — order
+  matters because a matched redirection immediately short-circuits the rest of
+  that pass); a full cleaning pass repeats until it produces no further change
+  (handles a redirect-wrapper unwrapping to reveal a URL a _different_ provider
+  now matches); and each `rules`/`referralMarketing` entry is matched as a full,
+  case-insensitive, anchored match against the parameter name (`^rule$`), not a
+  substring/prefix match.
+- **Uses `github.com/dlclark/regexp2`, not stdlib `regexp`.** Go's stdlib
+  `regexp` (RE2) can't compile some patterns the real ruleset relies on
+  (lookaround and similar PCRE-ish constructs); `regexp2` is a real, PCRE-like
+  engine that can. This is a real dependency addition, acceptable because it's
+  backend-only — the Worker's dependency-free constraint doesn't apply here.
+- **Two upstream behaviors are deliberately not ported at all** — not bugs, not
+  future work, structurally excluded from `internal/urlnorm`'s own data model:
+  - `completeProvider` ("block this request outright") is a live-browsing
+    concept — dropping a tracking-pixel request before it's ever made. It
+    doesn't apply to a URL a user already chose to archive: a bookmark is
+    definitionally not a stray tracking request, so this essentially never
+    legitimately fires against real Recueil input regardless.
+  - `forceRedirection` is a live-tab browser-navigation technique (directly
+    rewriting a browser's own `main_frame` object when a site defeats normal
+    redirect interception). It has no meaning once you're transforming an
+    already-known URL string rather than intercepting a real navigation event —
+    which Recueil never does. `redirections` itself (the actual URL-string
+    transformation: unwrap a tracking-gateway URL to its real destination) _is_
+    ported; `forceRedirection` is a separate, unrelated flag about _how_ a live
+    browser would perform that same unwrap during real navigation.
+
+### Recueil's own additional canonicalization
+
+Runs as the pipeline's second `Step` (`urlnorm.Canonicalize`), after ClearURLs
+has already had a chance to strip tracking parameters and unwrap redirects:
+
+- Lowercase the host, and the scheme (the latter not originally listed here,
+  added because Go's own `net/url.Parse` doesn't lowercase the scheme itself,
+  which is both a correctness requirement for the default-port comparison below
+  and a reasonable canonicalization in its own right per RFC 3986).
+- Strip default ports (`:443` for `https`, `:80` for `http`).
+- Drop the URL fragment, unless the site is a known SPA that encodes meaningful
+  route state in the fragment. **Not implemented yet** — no such site list
+  exists, so the fragment is dropped unconditionally for now; this is a known,
+  stated gap, not a silent one.
+- Sort remaining query parameters alphabetically for a stable key.
+- Strip trailing slash (including a bare root `/`, so `example.com` and
+  `example.com/` normalize identically — a deliberate consequence of applying
+  this unconditionally, not an overlooked edge case).
 
 ---
 
@@ -1135,7 +1580,13 @@ CREATE TABLE pages (
   user_id BIGINT NOT NULL REFERENCES users(id),
   normalized_url TEXT NOT NULL,
   title TEXT,                        -- denormalized from latest capture
+  latest_capture_at TIMESTAMPTZ NOT NULL,  -- also denormalized from latest
+                                      -- capture (via GREATEST, tolerating
+                                      -- out-of-order ingestion) -- feeds
+                                      -- the D1 bookmark-list mirror's own
+                                      -- latest_capture_at column directly
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
 );
 
@@ -1143,17 +1594,26 @@ CREATE TABLE pages (
 CREATE TABLE captures (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  source_capture_id TEXT UNIQUE,     -- pending_captures.id (D1), for
-                                      -- ingestion idempotency (see §3c);
-                                      -- NULL for manual uploads (§3d), which
-                                      -- have no equivalent crash-recovery
-                                      -- window to protect
+  source_capture_id TEXT UNIQUE,     -- transient ingestion-idempotency key
+                                      -- (§3c); client-generated for the
+                                      -- extension/queue flow, backend-
+                                      -- generated for manual uploads (§3d);
+                                      -- cleared back to NULL once ingestion
+                                      -- of this capture is fully done --
+                                      -- nothing reads it after that
   source TEXT NOT NULL DEFAULT 'extension',  -- 'extension' | 'manual_upload'
                                       -- (§3d) — mirrors page_tags.source
   raw_url TEXT NOT NULL,
   title TEXT,
-  html_path TEXT NOT NULL,           -- local disk path, zstd-compressed
-  html_size_bytes INTEGER NOT NULL,
+  html_path TEXT NOT NULL,           -- path relative to the backend's
+                                      -- configured archive-directory root,
+                                      -- zstd-compressed (see §14 for why
+                                      -- relative rather than absolute)
+  html_compressed_size_bytes INTEGER NOT NULL,
+  html_uncompressed_size_bytes INTEGER NOT NULL,  -- both stored, not just
+                                      -- the compressed size actually on
+                                      -- disk, so the dashboard can surface
+                                      -- real compression-ratio numbers
   thumbnail_path TEXT,               -- populated async by the screenshot
                                       -- service (§6); null until then
   reader_text TEXT,                  -- Readability plain-text extraction;
@@ -1169,15 +1629,61 @@ CREATE TABLE captures (
   reader_text_hash TEXT,             -- powers "unchanged since last capture";
                                       -- nullable for the same reason as
                                       -- reader_text above (§3b, §6a)
+  language REGCONFIG NOT NULL DEFAULT 'simple',  -- see below for why
+                                      -- REGCONFIG, not TEXT, and why
+                                      -- 'simple' as the fallback
   captured_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_captures_page_id ON captures(page_id);
 
 ALTER TABLE captures ADD COLUMN reader_text_tsv tsvector
-  GENERATED ALWAYS AS (to_tsvector('english', coalesce(reader_text, ''))) STORED;
+  GENERATED ALWAYS AS (to_tsvector(language, coalesce(reader_text, ''))) STORED;
 CREATE INDEX idx_captures_fts ON captures USING GIN (reader_text_tsv);
+```
 
+**Full-text search is per-capture-language, not hardcoded to English** —
+corrected from an earlier revision of this document, which assumed all captured
+content would be English. That assumption actively makes search _worse_, not
+just unhelpful, for any other language: applying English stemming rules to
+French or German text produces garbage tokens, since stemming is
+language-specific by nature.
+
+- **`language` is typed `REGCONFIG`, not `TEXT`.** Casting a language name to
+  `regconfig` (`'french'::regconfig`) is a catalog lookup, which Postgres
+  classifies as `STABLE`, not `IMMUTABLE` — and generated columns require an
+  `IMMUTABLE` expression. Storing the already-resolved `regconfig` value
+  directly means the generated `reader_text_tsv` expression
+  (`to_tsvector(language, ...)`) is a plain column reference with no cast
+  anywhere in it, satisfying the immutability requirement. The cast from a
+  language name to `regconfig` still happens, just once, at INSERT/UPDATE time —
+  an ordinary, unrestricted operation, not inside a generated expression.
+- **Detection happens at ingestion**, parsing the captured HTML's own
+  `<html lang="...">` attribute (the standard HTML5 way a page declares its
+  content language) — not a Readability output, and not guaranteed to be present
+  or accurate, but a reasonable, zero-cost signal already sitting in every
+  capture.
+- **The detected tag is validated against this specific Postgres instance's live
+  `pg_ts_config` catalog, not a hardcoded Go-side list of "languages Postgres
+  supports."** Which configs are actually available genuinely depends on the
+  running Postgres version; asking the live catalog is the only source that's
+  authoritative for that.
+- **Falls back to `'simple'`** — no language-specific stemming, but never
+  actively wrong for any language, unlike guessing — whenever there's no `lang`
+  attribute, the detected tag has no known mapping (e.g. Chinese, Japanese,
+  Korean: languages Postgres has no snowball stemmer for at all, since they need
+  segmentation rather than stemming), or the mapped candidate doesn't actually
+  exist on this Postgres instance.
+- **The dashboard (not yet built) can let a user correct a capture's detected
+  language after the fact**, choosing from whatever configs this Postgres
+  instance actually has, or "other" (mapping to `simple`) — a plain
+  `UPDATE captures SET language = ...`, which Postgres automatically recomputes
+  `reader_text_tsv` (and its GIN index) for as part of that same statement, the
+  same way it already does whenever `reader_text` itself changes (e.g.
+  re-extraction, §6a). No manual reindex, no extra synchronization code needed.
+
+```sql
 CREATE TABLE tags (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
@@ -1367,17 +1873,23 @@ CREATE TABLE pending_captures (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Bookmark-list mirror, pushed by the backend after each capture is
--- processed. Pulled by the extension on its own coarse/on-demand schedule.
+-- Bookmark-list mirror, kept in sync by the backend's own scheduled sync
+-- job (internal/mirror.Syncer -- see §8 for the full design), not pushed
+-- on individual mutations. Pulled by the extension on its own coarse/
+-- on-demand schedule.
 CREATE TABLE archived_pages (
-  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id
+  page_id INTEGER PRIMARY KEY,      -- matches Postgres pages.id; never
+                                     -- D1-generated
   user_id INTEGER NOT NULL REFERENCES users(id),
   raw_url TEXT NOT NULL,
   title TEXT,
-  latest_capture_at TIMESTAMP NOT NULL,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  latest_capture_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL          -- mirrors Postgres pages.updated_at
+                                     -- verbatim -- the sync checkpoint
+                                     -- itself (§8), not D1's own clock
 );
-CREATE INDEX idx_archived_pages_user ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
+CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
 ```
 
 `pending_captures.queue_item_id` is nullable specifically to support **direct
@@ -1463,11 +1975,30 @@ recueil/
 │   │                            # the embedded FS's from main.go), the
 │   │                            # bootstrap holder, httpapi wiring, graceful
 │   │                            # shutdown on cmd.Context().Done()
-│   └── cli/                 # recueil-cli, shares the same go.mod
+│   ├── agent.go              # `recueil agent` — the background job runner
+│   │                            # (ticker-driven Ingester.RunOnce +
+│   │                            # Syncer.SyncOnce; see §3e)
+│   ├── auth.go               # `recueil auth` — pairs this device, stores
+│   │                            # the result via internal/clicreds
+│   └── enqueue.go            # `recueil enqueue` — submits URLs to the
+│                                 # Worker's queue, via internal/deviceapi
 ├── internal/
 │   ├── config/               # viper-based config: --config TOML file, env
 │   │                            # vars, defaults set in this package's own
 │   │                            # init() (§13a)
+│   ├── clicreds/              # where `recueil auth`/`enqueue` store/read
+│   │                             # this device's pairing result (§3f) --
+│   │                             # deliberately separate from
+│   │                             # internal/config, not one more thing
+│   │                             # that package's server-oriented Load()
+│   │                             # has to stay agnostic about
+│   ├── deviceapi/              # the CLI's own client for the Worker's
+│   │                             # public, device-facing endpoints
+│   │                             # (POST /pair, POST /queue) -- distinct
+│   │                             # from internal/mirror and
+│   │                             # internal/ingest.WorkerClient, both of
+│   │                             # which authenticate as the backend
+│   │                             # itself, never as a device (§3f)
 │   ├── auth/                  # password hashing, session tokens, bootstrap flow
 │   ├── db/                     # sqlc-generated query code (renamed from
 │   │                             # an earlier `dbgen` during Phase 1)
@@ -1561,10 +2092,11 @@ recueil/
 Note: this tree reflects the Go package layout, Worker tooling, and the Postgres
 testing/migration setup as actually implemented, plus the root-level
 `vitest.config.js`/`eslint.config.js` placement agreed on during that work
-(§13a). The `cmd/cli/` entry is carried over unchanged from the previous
-revision and hasn't been revisited since the `main.go`/`cobra` restructure —
-worth confirming it still shares `go.mod` cleanly once the CLI is actually
-built.
+(§13a). The CLI's own commands (`auth.go`, `enqueue.go`) landed as flat files
+directly in `cmd/`, confirming they share `go.mod`/the single binary cleanly —
+not a separate `cmd/cli/` subdirectory as an earlier revision of this tree
+assumed, before the `main.go`/`cobra` restructure had actually produced
+`server.go`/`agent.go` as the pattern to follow.
 
 ### Notes on specific decisions
 
@@ -1822,9 +2354,21 @@ should be backed up in the same job/window.
 
 ### Restore
 
-- The archive directory must be restored to the **same mount path** it was
-  originally running at — `captures.html_path` values are not stored relative to
-  a configurable root, so a different path layout on restore will break lookups.
+- **`captures.html_path` is stored relative to the backend's configured
+  archive-directory root**, not as an absolute path — a reversal from an earlier
+  revision of this document, which specified absolute paths on the reasoning
+  that a restore then had to land at the exact same mount path or lookups would
+  break. That's backwards: a relative path is strictly more flexible with no
+  real cost — the operator can restore to any location and simply point the
+  (already-required) archive-directory config value at it, move the archive
+  directory later without a database migration, and the database itself doesn't
+  bake in one host's specific filesystem layout. The one real constraint this
+  leaves is unchanged in spirit, just relocated: whatever archive-directory path
+  the backend is configured with at restore time must actually contain the
+  restored files at the expected relative layout (see §4/§6a's
+  `internal/urlnorm`-adjacent ingestion package for the actual on-disk layout,
+  e.g. hex-prefix sharding by capture ID) — the config value can point anywhere,
+  but it does have to point somewhere real.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/

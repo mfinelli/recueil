@@ -27,7 +27,9 @@ jobs:
         ports:
           - "5432:5432"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
       - uses: actions/setup-go@v6
         with:
           cache: true
@@ -55,7 +57,7 @@ jobs:
       - run: go mod download
       - run: "[[ -z $(go fmt ./...) ]]"
       - run: make
-      - run: go test -race -v ./...
+      - run: go test -race -p 1 -v ./...
       - run: go vet ./...
       - run: pnpm run test
       - run: ./scripts/versions.bash
@@ -72,6 +74,8 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+        with:
+          submodules: true
       - run: echo "gitsha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
         id: gitsha
       - uses: docker/setup-qemu-action@v4

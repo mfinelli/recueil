@@ -19,4 +19,7 @@ export default [
       globals: { ...globals.serviceworker, ...globals.vitest },
     },
   },
+  {
+    ignores: ["internal/urlnorm/clearurls-rules/**/*"],
+  },
 ];

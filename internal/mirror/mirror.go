@@ -17,9 +17,13 @@
  */
 
 // Package mirror pushes backend-owned data outward to D1 via the Worker's
-// service-secret-gated endpoints. Everything in this package is a one-way
-// write in the same direction: the backend is the source of truth, D1 gets a
-// copy, and nothing here ever reads Worker/D1-owned state back.
+// service-secret-gated endpoints.
+//
+// PushUser is a pure one-way write: the backend is the source of truth, D1
+// gets a copy, nothing here ever reads it back. The archived-pages
+// bookmark-list mirror is NOT pure one-way, syncing a mirror correctly
+// requires reading D1's own state back (the sync checkpoint, and the
+// current page_id set for deletion reconciliation), not just writing to it.
 package mirror
 
 import (

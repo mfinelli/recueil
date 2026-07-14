@@ -49,11 +49,34 @@ type Config struct {
 	CloudflareAccountID    string `mapstructure:"cloudflare_account_id"`
 	CloudflareD1DatabaseID string `mapstructure:"cloudflare_d1_database_id"`
 	CloudflareAPIToken     string `mapstructure:"cloudflare_api_token"`
+
+	// ArchiveDir is the root directory captures.html_path is stored
+	// relative to.
+	ArchiveDir string `mapstructure:"archive_dir"`
+
+	// R2 credentials for the backend's own GET/DELETE access to capture
+	// blobs; the same manually-provisioned R2 API token already used by
+	// the Worker for presigned uploads (terraform/README.md), reused here
+	// rather than requiring the operator to provision a second one.
+	R2AccountID       string `mapstructure:"r2_account_id"`
+	R2BucketName      string `mapstructure:"r2_bucket_name"`
+	R2AccessKeyID     string `mapstructure:"r2_access_key_id"`
+	R2AccessKeySecret string `mapstructure:"r2_access_key_secret"`
+
+	// AgentPollIntervalSeconds is how often `recueil agent` runs one
+	// ingestion + mirror-sync cycle. A plain int (seconds), not a
+	// time.Duration string like "2m": viper/mapstructure's default
+	// Unmarshal may or may not include the string-to-duration decode
+	// hook depending on version, and this project has no way to verify
+	// that locally -- an int sidesteps the question entirely rather than
+	// depending on unverified behavior.
+	AgentPollIntervalSeconds int `mapstructure:"agent_poll_interval_seconds"`
 }
 
 func init() {
 	viper.SetDefault("listen_addr", ":8080")
 	viper.SetDefault("session_cookie_secure", true)
+	viper.SetDefault("agent_poll_interval_seconds", 120)
 }
 
 func Load() (Config, error) {
@@ -83,6 +106,21 @@ func Load() (Config, error) {
 	}
 	if cfg.CloudflareAPIToken == "" {
 		missing = append(missing, "cloudflare_api_token")
+	}
+	if cfg.ArchiveDir == "" {
+		missing = append(missing, "archive_dir")
+	}
+	if cfg.R2AccountID == "" {
+		missing = append(missing, "r2_account_id")
+	}
+	if cfg.R2BucketName == "" {
+		missing = append(missing, "r2_bucket_name")
+	}
+	if cfg.R2AccessKeyID == "" {
+		missing = append(missing, "r2_access_key_id")
+	}
+	if cfg.R2AccessKeySecret == "" {
+		missing = append(missing, "r2_access_key_secret")
 	}
 	if len(missing) > 0 {
 		return cfg, fmt.Errorf("missing required config values: %v",

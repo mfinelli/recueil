@@ -40,5 +40,5 @@ serve:
   ./recueil server --config local.toml
 
 test:
-  go test ./...
+  go test -p 1 ./...
   pnpm run test
