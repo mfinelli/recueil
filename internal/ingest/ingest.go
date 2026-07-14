@@ -288,9 +288,10 @@ func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in
 	qtx := ing.queries.WithTx(tx)
 
 	page, err := qtx.UpsertPage(ctx, db.UpsertPageParams{
-		UserID:        pc.UserID,
-		NormalizedUrl: in.normalizedURL,
-		Title:         textOrNull(in.title),
+		UserID:          pc.UserID,
+		NormalizedUrl:   in.normalizedURL,
+		Title:           textOrNull(in.title),
+		LatestCaptureAt: pgtype.Timestamptz{Time: in.capturedAt, Valid: true},
 	})
 	if err != nil {
 		return 0, false, fmt.Errorf("upserting page: %w", err)

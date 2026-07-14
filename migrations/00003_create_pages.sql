@@ -21,6 +21,7 @@ CREATE TABLE pages (
   user_id BIGINT NOT NULL,
   normalized_url TEXT NOT NULL,
   title TEXT,
+  latest_capture_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT pages_pkey PRIMARY KEY (id),

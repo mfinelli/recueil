@@ -187,4 +187,34 @@ describe("fetch (router)", () => {
     );
     expect(response.status).toBe(404);
   });
+
+  it("routes GET /internal/archived-pages/last-sync to handleGetArchivedPagesLastSync", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/archived-pages/last-sync",
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /internal/archived-pages/mirror to handleMirrorArchivedPages", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/archived-pages/mirror",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("routes GET /internal/archived-pages/page-ids to handleListArchivedPageIDs", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/archived-pages/page-ids",
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /internal/archived-pages/delete to handleDeleteArchivedPages", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/archived-pages/delete",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
 });

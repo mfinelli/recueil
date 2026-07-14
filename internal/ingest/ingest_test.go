@@ -437,9 +437,10 @@ func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 	require.NoError(t, err)
 
 	existingPage, err := queries.UpsertPage(ctx, db.UpsertPageParams{
-		UserID:        user.ID,
-		NormalizedUrl: "https://unrelated-earlier-capture.example/page",
-		Title:         pgtype.Text{String: "Earlier Capture", Valid: true},
+		UserID:          user.ID,
+		NormalizedUrl:   "https://unrelated-earlier-capture.example/page",
+		Title:           pgtype.Text{String: "Earlier Capture", Valid: true},
+		LatestCaptureAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
 	})
 	require.NoError(t, err)
 
