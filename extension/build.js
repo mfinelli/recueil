@@ -36,7 +36,7 @@
 // parses on every service-worker wake, for no benefit.
 
 import { build, context } from "esbuild";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, copyFile } from "node:fs/promises";
 
 const BROWSERS = ["chrome", "firefox"];
 const watch = process.argv.includes("--watch");
@@ -87,6 +87,13 @@ async function buildBundle(browser, { entry, outfile }) {
   return build(options);
 }
 
+async function copyStatic(browser, filename) {
+  await copyFile(
+    new URL(`./src/popup/${filename}`, import.meta.url),
+    new URL(`./dist/${browser}/${filename}`, import.meta.url),
+  );
+}
+
 async function buildAll() {
   for (const browser of BROWSERS) {
     await buildManifest(browser);
@@ -98,6 +105,15 @@ async function buildAll() {
       entry: "./src/capture-inject/bundle-entry.js",
       outfile: "capture-inject.js",
     });
+    await buildBundle(browser, {
+      entry: "./src/popup/popup.js",
+      outfile: "popup.js",
+    });
+    // popup.html/popup.css are plain static files -- no bundling needed,
+    // just copied alongside the JS bundle popup.html's <script>/<link>
+    // tags reference by the same relative filename.
+    await copyStatic(browser, "popup.html");
+    await copyStatic(browser, "popup.css");
     console.log(`built extension/dist/${browser}`);
   }
 }

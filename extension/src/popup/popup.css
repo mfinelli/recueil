@@ -1,0 +1,96 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/* Functional only -- no design system, no real visual identity. See
+   popup.html's comment. */
+
+body {
+  width: 320px;
+  margin: 0;
+  padding: 12px;
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+}
+
+h1 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+
+label {
+  display: block;
+  margin-top: 8px;
+  font-weight: bold;
+}
+
+input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 2px;
+  padding: 4px;
+}
+
+button {
+  margin-top: 12px;
+  padding: 6px 10px;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+.status {
+  margin-top: 10px;
+  padding: 6px;
+  border-radius: 4px;
+}
+
+.status--error {
+  background: #fdd;
+  color: #900;
+}
+
+.status--success {
+  background: #dfd;
+  color: #060;
+}
+
+.status--pending {
+  background: #eee;
+  color: #333;
+}
+
+.paired-info {
+  margin-bottom: 12px;
+}
+
+.paired-info dt {
+  font-weight: bold;
+}
+
+.paired-info dd {
+  margin: 0 0 6px;
+  word-break: break-all;
+}
+
+.unpair-link {
+  display: inline-block;
+  margin-top: 10px;
+  font-size: 12px;
+}

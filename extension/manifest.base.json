@@ -5,5 +5,7 @@
   "version": "0.1.0",
   "permissions": ["storage", "alarms", "activeTab", "scripting", "tabs"],
   "optional_host_permissions": ["<all_urls>"],
-  "action": {}
+  "action": {
+    "default_popup": "popup.html"
+  }
 }

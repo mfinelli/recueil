@@ -56,6 +56,10 @@ export const GET_AUTH_STATE = "recueil:get-auth-state";
 // whatever tab is currently active -- see background/capture.js.
 export const CAPTURE_ACTIVE_TAB = "recueil:capture-active-tab";
 
+// Sent by the popup to forget this device's locally-stored credential --
+// see auth.js's unpair() doc comment for why this is local-only for now.
+export const UNPAIR_DEVICE = "recueil:unpair-device";
+
 export function isRecueilMessage(message) {
   return typeof message === "object" && message !== null && "type" in message;
 }

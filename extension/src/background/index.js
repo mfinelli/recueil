@@ -42,6 +42,7 @@ import {
   PAIR_DEVICE,
   GET_AUTH_STATE,
   CAPTURE_ACTIVE_TAB,
+  UNPAIR_DEVICE,
 } from "../common/messages.js";
 
 registerFetchRelay();
@@ -57,6 +58,8 @@ browser.runtime.onMessage.addListener((message) => {
       return getAuthState();
     case CAPTURE_ACTIVE_TAB:
       return captureActiveTab();
+    case UNPAIR_DEVICE:
+      return unpair();
     default:
       return undefined;
   }
