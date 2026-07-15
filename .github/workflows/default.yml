@@ -134,12 +134,11 @@ jobs:
       - run: pnpm ci
       - run: zola build --minify
         working-directory: www
-      - run: pnpm exec wrangler pages deploy public --project-name recueil
+      - run: pnpm exec wrangler pages deploy www/public --project-name recueil
         if: github.event_name != 'pull_request'
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        working-directory: www
       - uses: mfinelli/cloudflare-pages-cleanup@v1
         if: github.event_name != 'pull_request'
         with:
