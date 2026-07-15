@@ -16,24 +16,33 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Background entry point. Deliberately minimal so far -- this is scaffolding
-// to prove the capture-inject bundle + fetch relay actually work end to end
-// (triggerCapture below, invokable from the extension's own service-worker
-// console for now, since there's no popup UI yet), not the real orchestration
-// layer. Auth/pairing, queue polling (queue.js), and upload (capture.js's
-// real home once it exists) all land here as separate modules once this
-// core piece is proven -- see DESIGN.md §3g/§8 and IMPLEMENTATION.md for
-// what's still ahead.
+// Background entry point. Wires together the pieces that actually do
+// things (fetch-relay.js, auth.js, capture.js) behind a single
+// runtime.onMessage listener -- the popup (not built yet) will be the
+// real caller of all of this; until then, the __recueil* globals at the
+// bottom are how this gets exercised at all.
+//
+// Still ahead: queue.js (alarm-driven polling + the open-tab/wait/close
+// lifecycle a queue-driven capture needs, distinct from capture.js's
+// direct-capture path -- see capture.js's own doc comment) and mirror.js
+// (pulling the D1 bookmark-list mirror for popup display).
 //
 // MV3 service workers are non-persistent: nothing in module scope here
-// survives an idle-timeout unload. registerFetchRelay() re-registering its
-// listener on every wake is the correct behavior, not a leak -- there's no
-// state to lose because none is kept.
+// survives an idle-timeout unload. registerFetchRelay() and
+// runtime.onMessage.addListener() re-registering on every wake is the
+// correct behavior, not a leak -- there's no state to lose because none is
+// kept; getConfig() (see storage.js) re-reads from storage.local fresh
+// every time it's needed instead.
 
 import browser from "webextension-polyfill";
 import { registerFetchRelay } from "./fetch-relay.js";
 import { pair, getAuthState, unpair } from "./auth.js";
-import { PAIR_DEVICE, GET_AUTH_STATE } from "../common/messages.js";
+import { captureActiveTab } from "./capture.js";
+import {
+  PAIR_DEVICE,
+  GET_AUTH_STATE,
+  CAPTURE_ACTIVE_TAB,
+} from "../common/messages.js";
 
 registerFetchRelay();
 
@@ -46,6 +55,8 @@ browser.runtime.onMessage.addListener((message) => {
       return pair(message.payload);
     case GET_AUTH_STATE:
       return getAuthState();
+    case CAPTURE_ACTIVE_TAB:
+      return captureActiveTab();
     default:
       return undefined;
   }
@@ -58,14 +69,13 @@ browser.runtime.onMessage.addListener((message) => {
 globalThis.__recueilPair = pair;
 globalThis.__recueilUnpair = unpair;
 globalThis.__recueilAuthState = getAuthState;
+globalThis.__recueilCapture = captureActiveTab;
 
-// Temporary manual-testing entry point: run this from the background
-// service worker's own devtools console (chrome://extensions in Chrome,
-// about:debugging in Firefox -> "Inspect") against whatever tab is
-// currently active, to confirm the capture-inject bundle loads and
-// single-file-core actually produces output before any real UI exists to
-// trigger it.
-globalThis.__recueilTestCapture = async function () {
+// Narrower than __recueilCapture above: runs only the capture-inject step
+// (no auth, no upload) against whatever tab is active, for isolating a
+// single-file-core/favicon-selection problem from an upload/auth one while
+// debugging.
+globalThis.__recueilTestCaptureOnly = async function () {
   const [tab] = await browser.tabs.query({
     active: true,
     currentWindow: true,

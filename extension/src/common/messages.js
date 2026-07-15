@@ -52,6 +52,10 @@ export const PAIR_DEVICE = "recueil:pair-device";
 // internal key shape itself.
 export const GET_AUTH_STATE = "recueil:get-auth-state";
 
+// Sent by the popup's "save this page" button to capture and upload
+// whatever tab is currently active -- see background/capture.js.
+export const CAPTURE_ACTIVE_TAB = "recueil:capture-active-tab";
+
 export function isRecueilMessage(message) {
   return typeof message === "object" && message !== null && "type" in message;
 }
