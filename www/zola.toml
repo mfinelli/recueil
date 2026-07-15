@@ -1,16 +1,11 @@
-# The URL the site will be built for
 base_url = "https://recueil.app"
+title = "Recueil"
+description = "Recueil is a self-hosted personal web archive. Coming soon."
 
-# Whether to automatically compile all Sass files in the sass directory
 compile_sass = true
-
-# Whether to build a search index to be used later on by a JavaScript library
-build_search_index = true
-
-[markdown]
-
-[markdown.highlighting]
-theme = "catppuccin-mocha"
+build_search_index = false
+generate_feeds = false
+minify_html = true
 
 [extra]
-# Put all your custom variables here
+github_url = "https://github.com/mfinelli/recueil"
