@@ -667,10 +667,13 @@ extension itself is baked into the key (unlike `page.html`'s implicit,
 always-the-same suffix) specifically so the backend can recover the real format
 by reading the key back at ingestion (`filepath.Ext`), rather than needing a
 separate mime/type column anywhere in Postgres or D1. `POST /queue/:id/complete`
-takes the same treatment: the caller declares _whether_ it uploaded a favicon
-and in what format (`favicon_ext`), and the Worker recomputes the deterministic
-key itself — the same never-trust-a-client-supplied-key posture `r2_key_html`
-already has.
+and its direct-capture counterpart `POST /captures/complete` (added once actual
+extension work reached this point — completing a capture that was never enqueued
+in the first place, e.g. archiving a page the user is already on; see
+`pending_captures.queue_item_id`'s own nullability) both take the same
+treatment: the caller declares _whether_ it uploaded a favicon and in what
+format (`favicon_ext`), and the Worker recomputes the deterministic key itself —
+the same never-trust-a-client-supplied-key posture `r2_key_html` already has.
 
 **Ingestion is best-effort, and never fails the capture.** A favicon fetch or
 disk write failing at ingestion time is logged and otherwise ignored — an

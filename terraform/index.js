@@ -429,6 +429,9 @@ export default {
     if (method === "POST" && pathname === "/captures/upload-urls") {
       return handleGetUploadUrls(request, env, ctx);
     }
+    if (method === "POST" && pathname === "/captures/complete") {
+      return handleCompleteDirectCapture(request, env, ctx);
+    }
     const completeMatch = pathname.match(/^\/queue\/([^/]+)\/complete$/);
     if (method === "POST" && completeMatch) {
       return handleCompleteQueueItem(request, env, ctx, completeMatch[1]);
@@ -1304,6 +1307,98 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
         "UPDATE queue_items SET status = 'captured' WHERE id = ?",
       ).bind(itemId),
     ]);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(`D1 error: ${message}`, { status: 500 });
+  }
+
+  return new Response(
+    JSON.stringify({
+      id: capture_id,
+      r2_key_html: r2KeyHtml,
+      r2_key_favicon: r2KeyFavicon,
+    }),
+    { status: 201, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /captures/complete: the direct-capture counterpart to
+ * handleCompleteQueueItem -- for archiving a page the user is already on,
+ * never enqueued in the first place (pending_captures.queue_item_id is
+ * nullable specifically for this case, per its own migration comment).
+ * Otherwise identical in shape and idempotency behavior: capture_id is
+ * still the client-generated pending_captures primary key, a retry with
+ * the same id is still a safe no-op, and r2_key_html/r2_key_favicon are
+ * still recomputed server-side rather than trusted from the request body.
+ *
+ * The one real difference from handleCompleteQueueItem: there's no
+ * queue_items row to pull url from (nothing was ever enqueued), so the
+ * caller supplies it directly -- and there's no queue item status to
+ * transition either, since none exists.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleCompleteDirectCapture(request, env, ctx) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { capture_id, url, captured_at, favicon_ext } =
+    /** @type {Record<string, unknown>} */ (body);
+  if (
+    typeof capture_id !== "string" ||
+    capture_id === "" ||
+    typeof url !== "string" ||
+    url === "" ||
+    typeof captured_at !== "string" ||
+    captured_at === ""
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  if (
+    favicon_ext !== undefined &&
+    (typeof favicon_ext !== "string" || !FAVICON_EXTENSIONS.has(favicon_ext))
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  const existing = await env.DB.prepare(
+    "SELECT id FROM pending_captures WHERE id = ?",
+  )
+    .bind(capture_id)
+    .first();
+  if (existing) {
+    // Already recorded by an earlier attempt -- nothing left to do.
+    return new Response(null, { status: 204 });
+  }
+
+  const r2KeyHtml = captureObjectKey(auth.userId, capture_id);
+  const r2KeyFavicon =
+    typeof favicon_ext === "string"
+      ? faviconObjectKey(auth.userId, capture_id, favicon_ext)
+      : null;
+
+  try {
+    await env.DB.prepare(
+      `INSERT INTO pending_captures
+         (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at)
+       VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+    )
+      .bind(capture_id, auth.userId, url, r2KeyHtml, r2KeyFavicon, captured_at)
+      .run();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return new Response(`D1 error: ${message}`, { status: 500 });
