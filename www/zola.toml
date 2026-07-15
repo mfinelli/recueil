@@ -1,0 +1,11 @@
+base_url = "https://recueil.app"
+title = "Recueil"
+description = "Recueil is a self-hosted personal web archive. Coming soon."
+
+compile_sass = true
+build_search_index = false
+generate_feeds = false
+minify_html = true
+
+[extra]
+github_url = "https://github.com/mfinelli/recueil"

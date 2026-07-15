@@ -36,7 +36,7 @@ jobs:
           go-version-file: go.mod
       - uses: pnpm/action-setup@v6
         with:
-          version: "11.11.0" # TODO: https://github.com/pnpm/action-setup/issues/276
+          version: latest
       - uses: actions/setup-node@v6
         with:
           cache: pnpm
@@ -114,3 +114,36 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
           repository: mfinelli/recueil
           short-description: ${{ github.event.repository.description }}
+
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: latest
+      - uses: actions/setup-node@v6
+        with:
+          cache: pnpm
+          node-version: lts/*
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: zola@0.22.1
+      - run: pnpm ci
+      - run: zola build --minify
+        working-directory: www
+      - run: pnpm exec wrangler pages deploy public --project-name recueil
+        if: github.event_name != 'pull_request'
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        working-directory: www
+      - uses: mfinelli/cloudflare-pages-cleanup@v1
+        if: github.event_name != 'pull_request'
+        with:
+          cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          project: recueil
+          min-to-keep: 3
+          max-to-keep: 3
