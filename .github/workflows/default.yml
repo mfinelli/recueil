@@ -118,6 +118,7 @@ jobs:
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    needs: [main, docker]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
