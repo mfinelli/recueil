@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io/fs"
 	"log"
@@ -183,7 +184,7 @@ func readNewPassword() (string, error) {
 		return "", err
 	}
 
-	if string(first) != string(second) {
+	if !bytes.Equal(first, second) {
 		return "", fmt.Errorf("passwords did not match")
 	}
 	if len(first) == 0 {
