@@ -61,10 +61,25 @@ var userCreateCmd = &cobra.Command{
 	RunE:  runUserCreate,
 }
 
+// userResetPasswordCmd is the same kind of direct-to-Postgres operator tool
+// as userCreateCmd, for the case where you already have an account but lost
+// (or just want to rotate) its dashboard password. Existing sessions are
+// invalidated as part of the reset -- a stale cookie from before the reset
+// staying valid would defeat the point of resetting a password you no
+// longer trust. The pairing token is untouched: it's a separate credential
+// and a password reset is no signal that it's compromised.
+var userResetPasswordCmd = &cobra.Command{
+	Use:   "reset-password <username>",
+	Short: "Reset a user's dashboard password directly in Postgres",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runUserResetPassword,
+}
+
 func init() {
 	userCreateCmd.Flags().StringVar(&userCreateRole, "role", "member", `account role: "admin" or "member"`)
 
 	userCmd.AddCommand(userCreateCmd)
+	userCmd.AddCommand(userResetPasswordCmd)
 	rootCmd.AddCommand(userCmd)
 }
 
@@ -150,12 +165,65 @@ func runUserCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runUserResetPassword(cmd *cobra.Command, args []string) error {
+	username := args[0]
+
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	ctx := cmd.Context()
+
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connecting to postgres: %w", err)
+	}
+	defer pool.Close()
+
+	queries := db.New(pool)
+
+	user, err := queries.GetUserByUsername(ctx, username)
+	if err != nil {
+		return fmt.Errorf("looking up user %q: %w", username, err)
+	}
+
+	password, err := readNewPassword()
+	if err != nil {
+		return fmt.Errorf("reading password: %w", err)
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+
+	if err := queries.UpdateUserPassword(ctx, db.UpdateUserPasswordParams{
+		ID:           user.ID,
+		PasswordHash: hash,
+	}); err != nil {
+		return fmt.Errorf("updating password: %w", err)
+	}
+
+	if err := queries.DeleteSessionsForUser(ctx, user.ID); err != nil {
+		// The password is already changed at this point -- surface it as a
+		// warning rather than an error, since re-running the whole command
+		// would prompt for (and set) a new password all over again just to
+		// retry a session cleanup that has its own low-stakes fallback
+		// anyway (sessions expire on their own).
+		log.Printf("warning: password updated, but failed to invalidate existing sessions for user %d: %v", user.ID, err)
+	}
+
+	fmt.Printf("Password reset for %q (id %d).\n", user.Username, user.ID)
+	return nil
+}
+
 // readNewPassword prompts twice with no echo and requires the two entries
 // to match when stdin is a real terminal -- unlike a bootstrap-token retry,
 // a typo here has no recovery path short of running UpdateUserPassword by
 // hand, so it's worth catching at entry time. Falls back to a single
 // unconfirmed line from stdin when not a terminal, so this still works
-// piped/scripted (e.g. `echo "$PASSWORD" | recueil user create --username ...`).
+// piped/scripted (e.g. `echo "$PASSWORD" | recueil user create someuser`).
 func readNewPassword() (string, error) {
 	if !isatty.IsTerminal(os.Stdin.Fd()) {
 		reader := bufio.NewReader(os.Stdin)
