@@ -882,6 +882,31 @@ design writeup; this is the "what actually landed" companion to it.
   `InsertCaptureIdempotent` via the same `textOrNull` helper `title` already
   uses (empty string → `NULL`).
 
+### `recueil user` — operator account management (post-closeout addition)
+
+- New `cmd/user.go`: `recueil user create <username> [--role admin|member]` and
+  `recueil user reset-password <username>`, both direct-to-Postgres CLI commands
+  for operators — motivated by needing a way to create a real test account for
+  the extension work before there's a dashboard to do it through. See DESIGN.md
+  §5 "Account creation and roles" for the full rationale.
+- Both reuse existing pieces rather than duplicating handler logic:
+  `config.Load()` for the same config `recueil server` reads, `pgmigrate.Run`
+  (idempotent, so the command works even before `server` has ever started
+  against a fresh database), and the same `auth`/`db`/`mirror` calls
+  `Setup`/`Register`/`RegeneratePairingToken` already use.
+- `user create` pushes the pairing token to D1 via `mirror.PushUser` so it's
+  immediately usable for device pairing, not just dashboard login — a push
+  failure is logged as a warning, not a hard error, matching the existing
+  posture in `RegeneratePairingToken`.
+- `user reset-password` calls `DeleteSessionsForUser` after updating the
+  password hash — the first real caller of that query, which existed in
+  `queries/sessions.sql` unused until now.
+- Password entry (`readNewPassword`, shared by both commands): masked, confirmed
+  twice on a real TTY; falls back to a single unconfirmed line from stdin
+  otherwise, so both commands stay scriptable.
+- Username is a positional arg (not a flag) on both commands; `--role` remains a
+  flag on `create`, defaulting to `member`.
+
 ### What's still not built
 
 The real browser extension itself — everything above is plumbing it can be built

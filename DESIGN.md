@@ -1034,6 +1034,27 @@ operator friction than holding one additional narrowly-scoped credential.
   concern and is **not** included in the D1 mirror — D1 only needs enough to
   authenticate a device and identify its owning `user_id`, never authorization
   decisions.
+- **Operator account management via CLI, bypassing both the dashboard and the
+  bootstrap token.** `recueil user create <username> [--role admin|member]` and
+  `recueil user reset-password <username>` sit alongside the bootstrap-token
+  flow above, not in place of it — they're for an operator who already has shell
+  access to the box the backend runs on, useful anywhere the dashboard isn't
+  available yet (e.g. before Phase 4 ships) or where curling the HTTP API by
+  hand would be unpleasant. Both connect straight to Postgres using the same
+  config `recueil server` reads (`config.Load()`), apply migrations the same way
+  `server` does, and call the same `auth` package functions (`HashPassword`,
+  `GeneratePairingToken`, `EncryptPairingToken`) and `sqlc` queries the HTTP
+  handlers already use — there's no separate code path to keep in sync, just a
+  different transport (direct DB access instead of HTTP). `user create` also
+  pushes the new pairing token's hash to D1 via `internal/mirror`, exactly as
+  `POST /api/setup`/`POST /api/auth/register` do, since a token that only exists
+  in Postgres can't actually pair a device. `user reset-password` additionally
+  calls `DeleteSessionsForUser`, invalidating any existing dashboard sessions —
+  a pre-reset cookie staying valid would undercut the point of resetting a
+  password. Neither command touches the bootstrap token itself; they're a
+  straight-line administrative path that deliberately requires server-level
+  access (the same trust boundary `server`/`agent`'s config already assumes),
+  not a second way to satisfy the first-admin flow's own token requirement.
 
 ### Security note: D1 as a mirror target
 
