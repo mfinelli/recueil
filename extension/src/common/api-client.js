@@ -30,6 +30,7 @@
 // same reasoning.
 
 export class ApiAuthError extends Error {
+  /** @param {string} message */
   constructor(message) {
     super(message);
     this.name = "ApiAuthError";
@@ -37,6 +38,10 @@ export class ApiAuthError extends Error {
 }
 
 export class ApiError extends Error {
+  /**
+   * @param {string} message
+   * @param {number} status
+   */
   constructor(message, status) {
     super(message);
     this.name = "ApiError";

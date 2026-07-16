@@ -54,12 +54,18 @@ importers:
         specifier: ^0.12.0
         version: 0.12.0
     devDependencies:
+      '@types/webextension-polyfill':
+        specifier: ^0.12.3
+        version: 0.12.5
       crx3:
         specifier: ^2.0.0
         version: 2.0.0
       esbuild:
         specifier: ^0.28.1
         version: 0.28.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
       web-ext:
         specifier: ^10.4.0
         version: 10.4.0
@@ -780,6 +786,9 @@ packages:
 
   '@types/node@26.1.1':
     resolution: {integrity: sha512-nxAkRSVkN1Y0JC1W8ky/fTfkGsMmcrRsbx+3XoZE+rMOX71kLYTV7fLXpqud1GpbpP5TuffXFqfX7fH2GgZREw==}
+
+  '@types/webextension-polyfill@0.12.5':
+    resolution: {integrity: sha512-uKSAv6LgcVdINmxXMKBuVIcg/2m5JZugoZO8x20g7j2bXJkPIl/lVGQcDlbV+aXAiTyXT2RA5U5mI4IGCDMQeg==}
 
   '@vitest/expect@4.1.10':
     resolution: {integrity: sha512-YsCn+qAk1GWjQOWFEsEcL2gNQ0zmVmQu3T03qP6UyjhtmdtwtbuI+DASn/7iQB3HGTXkdBwGddzxPlmiql5vlA==}
@@ -2832,6 +2841,8 @@ snapshots:
   '@types/node@26.1.1':
     dependencies:
       undici-types: 8.3.0
+
+  '@types/webextension-polyfill@0.12.5': {}
 
   '@vitest/expect@4.1.10':
     dependencies:

@@ -28,20 +28,55 @@ import browser from "webextension-polyfill";
 import { RELAY_FETCH } from "../common/messages.js";
 
 /**
+ * The shape background/fetch-relay.js's handleRelayFetch actually returns
+ * -- webextension-polyfill's own types have no way to know this (
+ * runtime.sendMessage's return type is necessarily generic, since it has
+ * no idea what a particular listener replies with), so this is the single
+ * place that connects the two sides' shapes for the type checker.
+ * @typedef {Object} RelayFetchResponse
+ * @property {boolean} ok
+ * @property {string} [error]
+ * @property {number} [status]
+ * @property {string} [statusText]
+ * @property {string} [url]
+ * @property {Record<string, string>} [headers]
+ * @property {ArrayBuffer} [body]
+ */
+
+/**
+ * relayFetch's own return shape -- exported so other modules that accept
+ * "a fetch-like function" as a parameter (favicon.js, bundle-entry.js) can
+ * reference the same type rather than each redeclaring an equivalent
+ * shape that could quietly drift out of sync with this one.
+ * @typedef {Object} FetchLikeResponse
+ * @property {number} status
+ * @property {string} statusText
+ * @property {string} url
+ * @property {{get(name: string): string|null}} headers
+ * @property {() => Promise<ArrayBuffer>} arrayBuffer
+ */
+
+/**
+ * @typedef {(url: string, init?: {method?: string, headers?: HeadersInit, referrer?: string}) => Promise<FetchLikeResponse>} FetchLike
+ */
+
+/**
  * @param {string} url
  * @param {{method?: string, headers?: HeadersInit, referrer?: string}} [init]
- * @returns {Promise<{status: number, statusText: string, url: string, headers: {get(name: string): string|null}, arrayBuffer(): Promise<ArrayBuffer>}>}
+ * @returns {Promise<FetchLikeResponse>}
  */
 export async function relayFetch(url, init = {}) {
-  const response = await browser.runtime.sendMessage({
-    type: RELAY_FETCH,
-    url,
-    init: {
-      method: init.method,
-      headers: normalizeHeaders(init.headers),
-      referrer: init.referrer,
-    },
-  });
+  const response = /** @type {RelayFetchResponse} */ (
+    await browser.runtime.sendMessage({
+      type: RELAY_FETCH,
+      url,
+      init: {
+        method: init.method,
+        headers: normalizeHeaders(init.headers),
+        referrer: init.referrer,
+      },
+    })
+  );
 
   if (!response || !response.ok) {
     throw new Error(
@@ -50,16 +85,17 @@ export async function relayFetch(url, init = {}) {
   }
 
   return {
-    status: response.status,
-    statusText: response.statusText,
-    url: response.url,
+    status: /** @type {number} */ (response.status),
+    statusText: /** @type {string} */ (response.statusText),
+    url: /** @type {string} */ (response.url),
     headers: {
+      /** @param {string} name */
       get(name) {
-        return response.headers[String(name).toLowerCase()] ?? null;
+        return response.headers?.[name.toLowerCase()] ?? null;
       },
     },
     async arrayBuffer() {
-      return response.body;
+      return /** @type {ArrayBuffer} */ (response.body);
     },
   };
 }
@@ -70,12 +106,19 @@ export async function relayFetch(url, init = {}) {
 // a real Headers instance instead, which wouldn't survive
 // runtime.sendMessage's structured clone with its case-insensitive
 // get/set semantics intact.
+/**
+ * @param {HeadersInit} [headers]
+ * @returns {Record<string, string>|undefined}
+ */
 function normalizeHeaders(headers) {
   if (!headers) {
     return undefined;
   }
   if (headers instanceof Headers) {
     return Object.fromEntries(headers.entries());
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
   }
   return headers;
 }

@@ -46,7 +46,11 @@ import browser from "webextension-polyfill";
 import { RELAY_FETCH } from "../common/messages.js";
 
 export function registerFetchRelay() {
-  browser.runtime.onMessage.addListener((message) => {
+  // message is genuinely untyped at this boundary -- anything any script
+  // in the extension sends via runtime.sendMessage arrives here, not just
+  // RELAY_FETCH messages (see the type-narrowing check right below), so
+  // `any` here is the honest type, not a shortcut around one.
+  browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
     if (!message || message.type !== RELAY_FETCH) {
       // Not ours -- returning undefined (rather than a promise) tells the
       // WebExtension messaging system this listener isn't handling it, so

@@ -52,7 +52,7 @@ export async function captureActiveTab() {
     active: true,
     currentWindow: true,
   });
-  if (!tab || tab.id === undefined) {
+  if (!tab || tab.id === undefined || tab.url === undefined) {
     throw new Error("recueil: no active tab found");
   }
   return captureTab(tab.id, tab.url);
@@ -75,8 +75,11 @@ export async function captureTab(tabId, url) {
   const htmlBytes = new TextEncoder().encode(captured.html);
   const contentSha256Html = await sha256Hex(htmlBytes);
 
+  /** @type {Uint8Array<ArrayBuffer>|null} */
   let faviconBytes = null;
+  /** @type {string|null} */
   let faviconExt = null;
+  /** @type {string|null} */
   let contentSha256Favicon = null;
   if (captured.favicon) {
     faviconBytes = new Uint8Array(captured.favicon.bytes);
@@ -131,6 +134,10 @@ export async function captureTab(tabId, url) {
 // call -- see capture-inject/bundle-entry.js's own doc comment for why a
 // func-injected function can't itself import the bundle, only reference a
 // global it already defined.
+/**
+ * @param {number} tabId
+ * @returns {Promise<import("../capture-inject/bundle-entry.js").CapturedPage>}
+ */
 async function runCaptureInject(tabId) {
   await browser.scripting.executeScript({
     target: { tabId },
@@ -140,11 +147,18 @@ async function runCaptureInject(tabId) {
     target: { tabId },
     func: () => globalThis.__recueilSingleFile.captureFrame(),
   });
-  return result;
+  return /** @type {import("../capture-inject/bundle-entry.js").CapturedPage} */ (
+    result
+  );
 }
 
 // R2's presigned PUT, not a Worker call -- see file doc comment for why
 // this is a plain fetch() rather than going through apiRequest.
+/**
+ * @param {string} url
+ * @param {Record<string, string>} headers
+ * @param {BufferSource} body
+ */
 async function putToPresignedUrl(url, headers, body) {
   const response = await fetch(url, { method: "PUT", headers, body });
   if (!response.ok) {

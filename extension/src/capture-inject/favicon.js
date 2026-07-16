@@ -38,7 +38,7 @@ const ICON_LINK_SELECTOR =
 const FALLBACK_PATHS = ["/favicon.svg", "/favicon.png", "/favicon.ico"];
 
 /**
- * @param {(url: string, init?: object) => Promise<{status: number, url: string, headers: {get(name: string): string|null}, arrayBuffer(): Promise<ArrayBuffer>}>} fetchFn
+ * @param {import("./relay-fetch.js").FetchLike} fetchFn
  * @returns {Promise<{url: string, bytes: ArrayBuffer, ext: string}|null>}
  */
 export async function selectFavicon(fetchFn) {
@@ -72,6 +72,7 @@ function selectFromLinkTags() {
     return resolveHref(svgLink);
   }
 
+  /** @type {Element|null} */
   let best = null;
   let bestArea = -1;
   for (const link of links) {
@@ -84,6 +85,7 @@ function selectFromLinkTags() {
   return resolveHref(best ?? links[0]);
 }
 
+/** @param {Element} link */
 function isSVGCandidate(link) {
   const type = (link.getAttribute("type") || "").toLowerCase();
   if (type === "image/svg+xml") {
@@ -96,6 +98,7 @@ function isSVGCandidate(link) {
 // "any" (a valid value per the HTML spec, meaning "scales to any size,
 // typically SVG") sorts above every raster candidate; a missing/malformed
 // `sizes` attribute sorts as the smallest, since it tells us nothing.
+/** @param {Element} link */
 function declaredArea(link) {
   const sizes = (link.getAttribute("sizes") || "").trim().toLowerCase();
   if (sizes === "any") {
@@ -109,6 +112,7 @@ function declaredArea(link) {
   return Number(match[1]) * Number(match[2]);
 }
 
+/** @param {Element} link */
 function resolveHref(link) {
   const href = link.getAttribute("href");
   if (!href) {
@@ -117,6 +121,10 @@ function resolveHref(link) {
   return new URL(href, document.baseURI).href;
 }
 
+/**
+ * @param {import("./relay-fetch.js").FetchLike} fetchFn
+ * @param {string} url
+ */
 async function fetchFavicon(fetchFn, url) {
   try {
     const response = await fetchFn(url);
@@ -137,6 +145,10 @@ async function fetchFavicon(fetchFn, url) {
   }
 }
 
+/**
+ * @param {import("./relay-fetch.js").FetchLikeResponse} response
+ * @param {string} url
+ */
 function extensionFor(response, url) {
   const contentType = (response.headers.get("content-type") || "")
     .split(";")[0]
@@ -159,6 +171,6 @@ function extensionFor(response, url) {
   // particular) -- still one of the three formats §3g scopes this to; if
   // it isn't, the whole result is discarded upstream by the Worker's own
   // FAVICON_EXTENSIONS validation rather than trusted blindly here.
-  const pathExt = url.toLowerCase().split("?")[0].split(".").pop();
+  const pathExt = url.toLowerCase().split("?")[0].split(".").pop() ?? "";
   return ["svg", "png", "ico"].includes(pathExt) ? pathExt : "ico";
 }

@@ -47,7 +47,9 @@ import {
 
 registerFetchRelay();
 
-browser.runtime.onMessage.addListener((message) => {
+// message is genuinely untyped at this boundary -- see fetch-relay.js's
+// own listener for the same reasoning.
+browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
   if (!message || typeof message.type !== "string") {
     return undefined;
   }
@@ -83,17 +85,18 @@ globalThis.__recueilTestCaptureOnly = async function () {
     active: true,
     currentWindow: true,
   });
-  if (!tab) {
+  if (!tab || tab.id === undefined) {
     throw new Error("no active tab found");
   }
+  const tabId = tab.id;
 
   await browser.scripting.executeScript({
-    target: { tabId: tab.id },
+    target: { tabId },
     files: ["capture-inject.js"],
   });
 
   const [{ result }] = await browser.scripting.executeScript({
-    target: { tabId: tab.id },
+    target: { tabId },
     func: () => globalThis.__recueilSingleFile.captureFrame(),
   });
 

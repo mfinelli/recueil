@@ -60,6 +60,20 @@ const CAPTURE_OPTIONS = {
   removeAlternativeImages: true,
 };
 
+/**
+ * What captureFrame returns -- crosses back to background/capture.js as
+ * the result of a scripting.executeScript({func}) call, not a real import
+ * (these are two independently-bundled files, see file doc comment above),
+ * so this typedef exists purely for capture.js to reference via
+ * `import("...")` JSDoc syntax without an actual runtime dependency
+ * between the two bundles.
+ * @typedef {Object} CapturedPage
+ * @property {string} html
+ * @property {string} title
+ * @property {{bytes: number[], ext: string}|null} favicon
+ */
+
+/** @returns {Promise<CapturedPage>} */
 async function captureFrame() {
   singlefile.init({
     // frameFetch intentionally omitted: single-file-core's own default is

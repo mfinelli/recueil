@@ -38,12 +38,23 @@ import {
   UNPAIR_DEVICE,
 } from "../common/messages.js";
 
-const app = document.getElementById("app");
+/**
+ * The shape background/auth.js's getAuthState() actually returns --
+ * runtime.sendMessage's return type is necessarily generic (see
+ * relay-fetch.js's own RelayFetchResponse typedef for the same reasoning),
+ * so this connects the two sides for the type checker.
+ * @typedef {{paired: false}|{paired: true, workerBaseURL: string, deviceName: string}} AuthState
+ */
+
+// popup.html always has this div -- a genuine invariant we control (see
+// popup.html), not an assumption worth a runtime null-check every call
+// site below would otherwise need.
+const app = /** @type {HTMLElement} */ (document.getElementById("app"));
 
 async function main() {
-  const authState = await browser.runtime.sendMessage({
-    type: GET_AUTH_STATE,
-  });
+  const authState = /** @type {AuthState} */ (
+    await browser.runtime.sendMessage({ type: GET_AUTH_STATE })
+  );
   if (authState.paired) {
     renderPairedView(authState);
   } else {
@@ -51,6 +62,7 @@ async function main() {
   }
 }
 
+/** @param {string} [errorMessage] */
 function renderPairingForm(errorMessage) {
   app.replaceChildren();
 
@@ -90,18 +102,32 @@ function renderPairingForm(errorMessage) {
   app.append(form);
 }
 
+/**
+ * The three fields in the pairing form are all elements we created
+ * ourselves via fieldLabel() just above -- asserting non-null and casting
+ * to HTMLInputElement here reflects a real invariant (we control the
+ * markup), the same reasoning as the top-level `app` assertion.
+ * @param {string} id
+ * @returns {string}
+ */
+function getInputValue(id) {
+  const input = /** @type {HTMLInputElement} */ (document.getElementById(id));
+  return input.value.trim();
+}
+
+/**
+ * @param {SubmitEvent} event
+ * @param {HTMLButtonElement} submitButton
+ */
 async function handlePairSubmit(event, submitButton) {
   // Everything up to and including permissions.request() below must stay
   // synchronous-enough to still count as "within" this submit handler --
   // see file doc comment.
   event.preventDefault();
 
-  const workerBaseURL = document
-    .getElementById("worker-url")
-    .value.trim()
-    .replace(/\/+$/, "");
-  const pairingToken = document.getElementById("pairing-token").value.trim();
-  const deviceName = document.getElementById("device-name").value.trim();
+  const workerBaseURL = getInputValue("worker-url").replace(/\/+$/, "");
+  const pairingToken = getInputValue("pairing-token");
+  const deviceName = getInputValue("device-name");
 
   if (!workerBaseURL || !pairingToken || !deviceName) {
     renderPairingForm("Every field is required.");
@@ -130,12 +156,13 @@ async function handlePairSubmit(event, submitButton) {
       return;
     }
 
-    const config = await browser.runtime.sendMessage({
-      type: PAIR_DEVICE,
-      payload: { workerBaseURL, pairingToken, deviceName },
-    });
+    const config = /** @type {import("../common/storage.js").RecueilConfig} */ (
+      await browser.runtime.sendMessage({
+        type: PAIR_DEVICE,
+        payload: { workerBaseURL, pairingToken, deviceName },
+      })
+    );
     renderPairedView({
-      paired: true,
       workerBaseURL: config.workerBaseURL,
       deviceName: config.deviceName,
     });
@@ -144,6 +171,7 @@ async function handlePairSubmit(event, submitButton) {
   }
 }
 
+/** @param {{workerBaseURL: string, deviceName: string}} config */
 function renderPairedView({ workerBaseURL, deviceName }) {
   app.replaceChildren();
 
@@ -180,8 +208,14 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   app.append(unpairLink);
 }
 
+/** @param {HTMLButtonElement} captureButton */
 async function handleCaptureClick(captureButton) {
-  const status = document.getElementById("capture-status");
+  // Created by renderPairedView just above, in the same view this button
+  // only ever exists within -- a real invariant, same reasoning as the
+  // top-level `app` assertion.
+  const status = /** @type {HTMLElement} */ (
+    document.getElementById("capture-status")
+  );
   captureButton.disabled = true;
   status.className = "status status--pending";
   status.textContent = "Capturing…";
@@ -198,6 +232,12 @@ async function handleCaptureClick(captureButton) {
   }
 }
 
+/**
+ * @param {string} id
+ * @param {string} labelText
+ * @param {string} type
+ * @param {string} placeholder
+ */
 function fieldLabel(id, labelText, type, placeholder) {
   const label = document.createElement("label");
   label.htmlFor = id;
@@ -213,6 +253,10 @@ function fieldLabel(id, labelText, type, placeholder) {
   return label;
 }
 
+/**
+ * @param {string} term
+ * @param {string} description
+ */
 function dtdd(term, description) {
   const dt = document.createElement("dt");
   dt.textContent = term;

@@ -68,6 +68,7 @@ jobs:
           go-critic check -checkGenerated=false -checkTests=true -enableAll
           ./...
       - run: errcheck -ignoregenerated ./...
+      - run: pnpm run --filter=@recueil/extension types
       - run: pnpm run package
         working-directory: extension
       - uses: actions/upload-artifact@v7

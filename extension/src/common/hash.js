@@ -26,7 +26,7 @@
 // places, deliberately not duplicated.
 
 /**
- * @param {ArrayBuffer|Uint8Array} data
+ * @param {BufferSource} data
  * @returns {Promise<string>} lowercase hex-encoded SHA-256 digest
  */
 export async function sha256Hex(data) {

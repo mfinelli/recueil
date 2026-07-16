@@ -46,7 +46,7 @@ const STORAGE_KEY = "recueil:config";
 /** @returns {Promise<RecueilConfig|null>} */
 export async function getConfig() {
   const stored = await browser.storage.local.get(STORAGE_KEY);
-  return stored[STORAGE_KEY] ?? null;
+  return /** @type {RecueilConfig|null} */ (stored[STORAGE_KEY] ?? null);
 }
 
 /** @param {RecueilConfig} config */
