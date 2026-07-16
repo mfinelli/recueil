@@ -40,7 +40,7 @@ export default [
     },
   },
   {
-    files: ["extension/build.js"],
+    files: ["extension/build.js", "extension/package.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
