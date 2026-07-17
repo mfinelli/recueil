@@ -23,6 +23,11 @@ module "recueil" {
   r2_access_key_id     = var.recueil_r2_access_key_id
   r2_secret_access_key = var.recueil_r2_secret_access_key
 }
+
+output "service_secret" {
+  value     = module.recueil.service_secret
+  sensitive = true
+}
 ```
 
 ## Requirements

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "recueil",
+  "description": "Capture and archive pages to your self-hosted recueil instance",
+  "version": "1.0.0",
+  "permissions": ["storage", "alarms", "activeTab", "scripting", "tabs"],
+  "optional_host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

@@ -34,6 +34,8 @@ function myversion() {
   cmdroot="$(grep -m1 Version: cmd/root.go | awk -F\" '{print $2}')"
   dockerlabel=org.opencontainers.image.version
   dockerfile="$(grep $dockerlabel Dockerfile | awk -F= '{print $2}')"
+  extpackagejson="$(jq -r .version extension/package.json)"
+  extmanifestjson="$(jq -r .version extension/manifest.base.json)"
 
   if [[ $packagejson != "$cmdroot" ]]; then
     echo >&2 "error: cmd/root.go version mismatch"
@@ -42,6 +44,16 @@ function myversion() {
 
   if [[ v$packagejson != "$dockerfile" ]]; then
     echo >&2 "error: Dockerfile version mismatch"
+    exit 1
+  fi
+
+  if [[ $packagejson != "$extpackagejson" ]]; then
+    echo >&2 "error: extension/package.json version mismatch"
+    exit 1
+  fi
+
+  if [[ $packagejson != "$extmanifestjson" ]]; then
+    echo >&2 "error: extension/manifest.base.json version mismatch"
     exit 1
   fi
 

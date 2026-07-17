@@ -19,6 +19,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
+  handleCompleteDirectCapture,
   handleCompleteQueueItem,
   handleFailQueueItem,
   handleGetUploadUrls,
@@ -716,6 +717,155 @@ describe("handleCompleteQueueItem", () => {
       env,
       testCtx,
       "complete-item-badfavicon",
+    );
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("handleCompleteDirectCapture", () => {
+  it("writes a pending_captures row with queue_item_id NULL", async () => {
+    const { userId } = await seedUserAndToken("rcl_live_direct-1");
+
+    const response = await handleCompleteDirectCapture(
+      authedRequest("POST", "/captures/complete", "rcl_live_direct-1", {
+        capture_id: "direct-capture-1",
+        url: "https://example.com/direct1",
+        captured_at: "2026-07-12T12:00:00.000Z",
+      }),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.id).toBe("direct-capture-1");
+    expect(body.r2_key_html).toBe(
+      `pending/${userId}/direct-capture-1/page.html`,
+    );
+    expect(body.r2_key_favicon).toBeNull();
+
+    const capture = await env.DB.prepare(
+      "SELECT user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at, fetched_by_backend FROM pending_captures WHERE id = ?",
+    )
+      .bind("direct-capture-1")
+      .first();
+    expect(capture).toEqual({
+      user_id: userId,
+      queue_item_id: null,
+      url: "https://example.com/direct1",
+      r2_key_html: `pending/${userId}/direct-capture-1/page.html`,
+      r2_key_favicon: null,
+      captured_at: "2026-07-12T12:00:00.000Z",
+      fetched_by_backend: 0,
+    });
+  });
+
+  it("a retried complete with the same capture_id is idempotent", async () => {
+    await seedUserAndToken("rcl_live_direct-retry");
+    const body = {
+      capture_id: "direct-capture-retry",
+      url: "https://example.com/direct-retry",
+      captured_at: "2026-07-12T12:00:00.000Z",
+    };
+
+    const r1 = await handleCompleteDirectCapture(
+      authedRequest(
+        "POST",
+        "/captures/complete",
+        "rcl_live_direct-retry",
+        body,
+      ),
+      env,
+      testCtx,
+    );
+    const r2 = await handleCompleteDirectCapture(
+      authedRequest(
+        "POST",
+        "/captures/complete",
+        "rcl_live_direct-retry",
+        body,
+      ),
+      env,
+      testCtx,
+    );
+    expect(r1.status).toBe(201);
+    expect(r2.status).toBe(204);
+
+    const count = await env.DB.prepare(
+      "SELECT count(*) as n FROM pending_captures WHERE id = ?",
+    )
+      .bind("direct-capture-retry")
+      .first();
+    expect(count).toEqual({ n: 1 });
+  });
+
+  it("records a deterministic r2_key_favicon when favicon_ext is declared", async () => {
+    const { userId } = await seedUserAndToken("rcl_live_direct-favicon");
+
+    const response = await handleCompleteDirectCapture(
+      authedRequest("POST", "/captures/complete", "rcl_live_direct-favicon", {
+        capture_id: "direct-favicon-1",
+        url: "https://example.com/direct-favicon",
+        captured_at: "2026-07-12T12:00:00.000Z",
+        favicon_ext: "png",
+      }),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.r2_key_favicon).toBe(
+      `pending/${userId}/direct-favicon-1/favicon.png`,
+    );
+  });
+
+  it("rejects an unrecognized favicon_ext", async () => {
+    await seedUserAndToken("rcl_live_direct-badfavicon");
+
+    const response = await handleCompleteDirectCapture(
+      authedRequest(
+        "POST",
+        "/captures/complete",
+        "rcl_live_direct-badfavicon",
+        {
+          capture_id: "direct-badfavicon-1",
+          url: "https://example.com/direct-badfavicon",
+          captured_at: "2026-07-12T12:00:00.000Z",
+          favicon_ext: "webp",
+        },
+      ),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("rejects an unknown bearer token", async () => {
+    const response = await handleCompleteDirectCapture(
+      authedRequest("POST", "/captures/complete", "not-a-real-token", {
+        capture_id: "x",
+        url: "https://example.com/x",
+        captured_at: "2026-07-12T12:00:00Z",
+      }),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it.each([
+    [
+      "missing capture_id",
+      { url: "https://example.com/x", captured_at: "2026-07-12T12:00:00Z" },
+    ],
+    ["missing url", { capture_id: "x", captured_at: "2026-07-12T12:00:00Z" }],
+    ["missing captured_at", { capture_id: "x", url: "https://example.com/x" }],
+  ])("rejects: %s", async (name, body) => {
+    const rawToken = `rcl_live_direct-invalid-${name.replace(/\s+/g, "-")}`;
+    await seedUserAndToken(rawToken);
+    const response = await handleCompleteDirectCapture(
+      authedRequest("POST", "/captures/complete", rawToken, body),
+      env,
+      testCtx,
     );
     expect(response.status).toBe(400);
   });

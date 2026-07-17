@@ -34,6 +34,8 @@ lint:
   go-critic check -checkGenerated=false -checkTests=true -enableAll ./...
   staticcheck ./...
   pnpm run lint
+  pnpm run types
+  pnpm run --filter=@recueil/extension types
 
 serve:
   make all

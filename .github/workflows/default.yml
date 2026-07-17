@@ -68,6 +68,14 @@ jobs:
           go-critic check -checkGenerated=false -checkTests=true -enableAll
           ./...
       - run: errcheck -ignoregenerated ./...
+      - run: pnpm run --filter=@recueil/extension types
+      - run: pnpm run package
+        working-directory: extension
+      - uses: actions/upload-artifact@v7
+        with:
+          name: extension
+          path: extension/dist/packages/*
+          retention-days: 2
 
   docker:
     runs-on: ubuntu-latest

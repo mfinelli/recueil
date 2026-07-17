@@ -131,6 +131,14 @@ describe("fetch (router)", () => {
     expect(response.status).toBe(401);
   });
 
+  it("routes POST /captures/complete to handleCompleteDirectCapture (401 with no auth confirms it was reached)", async () => {
+    const response = await SELF.fetch("https://example.com/captures/complete", {
+      method: "POST",
+      body: JSON.stringify({ capture_id: "x" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
   it("routes POST /queue/:id/complete, extracting the id from the path correctly", async () => {
     const response = await SELF.fetch(
       "https://example.com/queue/some-id/complete",
