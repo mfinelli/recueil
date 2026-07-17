@@ -794,43 +794,7 @@ it.
 
 ---
 
-## Phase 5 (the real extension) — in progress
-
-Extension work itself (scaffolding, capture core, auth) lives in `extension/`
-and isn't narrated blow-by-blow here the way backend phases have been — this
-section tracks backend/Worker-side additions made _because of_ that work, the
-same way Phase 3½'s favicon addendum did.
-
-### `POST /captures/complete`: direct-capture completion
-
-`pending_captures.queue_item_id` was made nullable back in Phase 3 "to support
-direct captures... not used by anything built so far" (its own migration
-comment). That gap got hit for real once extension work reached the actual
-upload flow: `POST /queue/:id/complete` requires an existing queue item, which a
-direct capture (archiving a page the user is already on, never enqueued) doesn't
-have.
-
-`handleCompleteDirectCapture` mirrors `handleCompleteQueueItem` closely — same
-client-generated-`capture_id` idempotency, same server-recomputed
-`r2_key_html`/`r2_key_favicon` (never trusting a client-supplied key), same
-`favicon_ext` validation against `FAVICON_EXTENSIONS`. The real differences
-follow directly from there being no queue item: the caller supplies `url`
-directly instead of it being read off a `queue_items` row, and there's no queue
-item status to transition since none exists. `POST /captures/upload-urls` needed
-no changes at all — its own doc comment already noted it was "deliberately not
-scoped to a queue item."
-
-Full test coverage added (`captures.test.js`, plus a routing test in
-`fetch.test.js`), run against real Miniflare D1 the same way the rest of this
-suite is — all 177 tests across the Worker suite pass.
-
----
-
-**Phase 3 closed here.** The real browser extension — proving this phase's
-pipeline against an actual deployed Worker for the first time — is its own next
-phase, not a continuation of this one.
-
-## Phase 3½ (Favicons)
+## Phase 3½
 
 Backend/Worker-side groundwork for favicon capture, built and tested the same
 way the rest of Phase 3 was — against real Postgres (`dbtest`) and real
@@ -939,9 +903,34 @@ design writeup; this is the "what actually landed" companion to it.
 - Username is a positional arg (not a flag) on both commands; `--role` remains a
   flag on `create`, defaulting to `member`.
 
-### What's still not built
+---
 
-The real browser extension itself — everything above is plumbing it can be built
-against, proven the same way Phase 3's pipeline was (real Postgres/D1, faked
-R2/device), but nothing has exercised it against an actual capture yet. That's
-the next real piece of work.
+## Phase 5 (the real extension) — in progress
+
+Extension work itself (scaffolding, capture core, auth) lives in `extension/`
+and isn't narrated blow-by-blow here the way backend phases have been — this
+section tracks backend/Worker-side additions made _because of_ that work, the
+same way Phase 3½'s favicon addendum did.
+
+### `POST /captures/complete`: direct-capture completion
+
+`pending_captures.queue_item_id` was made nullable back in Phase 3 "to support
+direct captures... not used by anything built so far" (its own migration
+comment). That gap got hit for real once extension work reached the actual
+upload flow: `POST /queue/:id/complete` requires an existing queue item, which a
+direct capture (archiving a page the user is already on, never enqueued) doesn't
+have.
+
+`handleCompleteDirectCapture` mirrors `handleCompleteQueueItem` closely — same
+client-generated-`capture_id` idempotency, same server-recomputed
+`r2_key_html`/`r2_key_favicon` (never trusting a client-supplied key), same
+`favicon_ext` validation against `FAVICON_EXTENSIONS`. The real differences
+follow directly from there being no queue item: the caller supplies `url`
+directly instead of it being read off a `queue_items` row, and there's no queue
+item status to transition since none exists. `POST /captures/upload-urls` needed
+no changes at all — its own doc comment already noted it was "deliberately not
+scoped to a queue item."
+
+Full test coverage added (`captures.test.js`, plus a routing test in
+`fetch.test.js`), run against real Miniflare D1 the same way the rest of this
+suite is — all 177 tests across the Worker suite pass.
