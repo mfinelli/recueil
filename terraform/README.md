@@ -28,6 +28,10 @@ output "service_secret" {
   value     = module.recueil.service_secret
   sensitive = true
 }
+
+output "d1_database_id" {
+  value = module.recueil.d1_database_id
+}
 ```
 
 ## Requirements
