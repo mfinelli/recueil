@@ -25,15 +25,15 @@
 // IMPORTANT PRECONDITION this module does *not* enforce itself: the
 // caller must already hold a granted host_permission for workerBaseURL
 // (via browser.permissions.request({origins: [...]})) before calling
-// pair() below. That call deliberately doesn't happen in here, because
+// pair() below. That call doesn't happen in here, because
 // permissions.request() needs to run inside the same user-gesture-driven
 // call stack as the pairing form's submit handler -- once this crosses a
 // runtime.sendMessage boundary from the popup into this background
 // context, whether the browser still considers it "triggered by a real
 // user action" (transient activation) isn't something to rely on across
-// Chrome and Firefox without having actually tested it. So: the popup
-// requests the permission itself, synchronously in its own submit
-// handler, and only sends PAIR_DEVICE once that's confirmed granted.
+// Chrome and Firefox. So: the popup requests the permission itself,
+// synchronously in its own submit handler, and only sends PAIR_DEVICE once
+// that's confirmed granted.
 
 import { getConfig, setConfig, clearConfig } from "../common/storage.js";
 
@@ -79,9 +79,9 @@ export async function getAuthState() {
   if (!config) {
     return { paired: false };
   }
-  // Deliberately never returns config.token to a caller -- the popup only
-  // ever needs to know *whether* pairing succeeded and which
-  // instance/device it's talking to, not the credential itself.
+  // Never returns config.token to a caller -- the popup only ever needs to
+  // know *whether* pairing succeeded and which instance/device it's talking
+  // to, not the credential itself.
   return {
     paired: true,
     workerBaseURL: config.workerBaseURL,
@@ -93,9 +93,8 @@ export async function unpair() {
   // Local-only: there's no device-facing endpoint to revoke this token
   // server-side yet. /internal/tokens/:id (DELETE) exists but is gated by
   // X-Service-Key, not a device bearer token -- it's the dashboard's own
-  // admin-side device-management endpoint (DESIGN.md's "Device management
-  // UI", still on the horizon), not something a paired device can call on
-  // itself. So "unpair" here really means "forget this device's own
+  // admin-side device-management endpoint, not something a paired device can
+  // call on itself. So "unpair" here really means "forget this device's own
   // stored credential" -- the token itself stays valid server-side until
   // an operator revokes it from the dashboard, once that exists.
   await clearConfig();

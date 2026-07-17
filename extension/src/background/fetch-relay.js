@@ -38,9 +38,7 @@
 // NOTE: the CORS-bypass behavior this whole relay exists for is asserted
 // here from documented WebExtension platform behavior and SingleFile's own
 // precedent (its own manifest requests a similarly broad host permission
-// for the same reason -- see its faq.md), not from having tested it
-// ourselves against a real browser yet. Worth confirming empirically once
-// this is actually loaded somewhere real.
+// for the same reason -- see its faq.md).
 
 import browser from "webextension-polyfill";
 import { RELAY_FETCH } from "../common/messages.js";

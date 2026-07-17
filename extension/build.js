@@ -17,9 +17,7 @@
  */
 
 // Builds two independent extension trees, one per browser target, from one
-// source tree -- see DESIGN.md §3g/architecture discussion for why a
-// single MV3 codebase covers both rather than forking like upstream
-// SingleFile did. Each target gets its own manifest (manifest.base.json
+// source tree. Each target gets its own manifest (manifest.base.json
 // merged with manifest.<browser>.json -- a shallow, top-level merge: a key
 // present in the browser overlay entirely replaces the base's value for
 // that key, it doesn't deep-merge) and its own esbuild bundle of the same
@@ -35,7 +33,7 @@
 // single-file-core dependency, the largest thing in this build) loads and
 // parses on every service-worker wake, for no benefit.
 
-import { build, context } from "esbuild";
+import { build } from "esbuild";
 import { readFile, writeFile, mkdir, copyFile } from "node:fs/promises";
 
 const BROWSERS = ["chrome", "firefox"];
@@ -62,7 +60,7 @@ async function buildManifest(browser) {
   );
 }
 
-async function buildBundle(browser, { entry, outfile }) {
+function buildBundle(browser, { entry, outfile }) {
   const options = {
     entryPoints: [new URL(entry, import.meta.url).pathname],
     outfile: new URL(`./dist/${browser}/${outfile}`, import.meta.url).pathname,
@@ -74,16 +72,6 @@ async function buildBundle(browser, { entry, outfile }) {
     minify: !watch,
   };
 
-  // esbuild's build({watch: true}) option was removed years ago (as of
-  // 0.17) in favor of a separate context()/ctx.watch() API -- confirmed
-  // against the actual installed version (0.25.12) rather than assumed,
-  // since this is exactly the kind of thing that's easy to get wrong from
-  // stale memory of an older esbuild release.
-  if (watch) {
-    const ctx = await context(options);
-    await ctx.watch();
-    return ctx;
-  }
   return build(options);
 }
 

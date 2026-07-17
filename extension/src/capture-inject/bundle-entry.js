@@ -36,10 +36,7 @@
 //
 // IMPORTANT CAVEAT: multi-frame capture (embedded iframes) is deliberately
 // not implemented here yet -- removeFrames: true below means only the top
-// document is captured. See DESIGN.md §3g and the conversation that scoped
-// this: single-file-core's frame-tree support needs its own per-frame
-// injection (single-file-hooks-frames.js) and is real, separable work,
-// planned as the immediate next piece once this is proven working.
+// document is captured.
 
 import * as singlefile from "single-file-core/single-file.js";
 import { relayFetch } from "./relay-fetch.js";

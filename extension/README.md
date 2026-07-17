@@ -2,9 +2,7 @@
 
 Pairing, capture (via
 [`single-file-core`](https://github.com/gildas-lormeau/single-file-core)), and
-upload to a self-hosted recueil instance. See `DESIGN.md` §3g and the
-architecture discussion in the project's history for the reasoning behind the
-pieces here; this file is just the practical build/install reference.
+upload to a self-hosted recueil instance.
 
 ## Build
 
@@ -25,11 +23,6 @@ committed.
 - **Firefox**: `about:debugging#/runtime/this-firefox` → "Load Temporary
   Add-on…" → select `dist/firefox/manifest.json` (or the packaged `.xpi`, see
   below — either works here).
-
-Both of these are session-only (Firefox) or increasingly likely to get
-auto-disabled on update (Chrome, as of the sideload-hardening rolled out through
-2024–2026) — fine for active development, not something to build a real workflow
-around.
 
 ## Package
 

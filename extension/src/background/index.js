@@ -18,9 +18,9 @@
 
 // Background entry point. Wires together the pieces that actually do
 // things (fetch-relay.js, auth.js, capture.js) behind a single
-// runtime.onMessage listener -- the popup (not built yet) will be the
-// real caller of all of this; until then, the __recueil* globals at the
-// bottom are how this gets exercised at all.
+// runtime.onMessage listener -- popup.js is the real caller of all of
+// this via that listener; the __recueil* globals at the bottom exist
+// alongside it, not instead of it.
 //
 // Still ahead: queue.js (alarm-driven polling + the open-tab/wait/close
 // lifecycle a queue-driven capture needs, distinct from capture.js's
@@ -37,7 +37,7 @@
 import browser from "webextension-polyfill";
 import { registerFetchRelay } from "./fetch-relay.js";
 import { pair, getAuthState, unpair } from "./auth.js";
-import { captureActiveTab } from "./capture.js";
+import { captureActiveTab, runCaptureInject } from "./capture.js";
 import {
   PAIR_DEVICE,
   GET_AUTH_STATE,
@@ -67,10 +67,16 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
   }
 });
 
-// Temporary manual-testing entry points: run these from the background
-// service worker's own devtools console (chrome://extensions in Chrome,
-// about:debugging in Firefox -> "Inspect") -- no popup UI exists yet to
-// drive any of this.
+// Manual-testing entry points, run from the background service worker's
+// own devtools console (chrome://extensions in Chrome, about:debugging in
+// Firefox -> "Inspect"). Kept even now that popup.js is real: these call
+// the same underlying functions the message listener above dispatches to,
+// so they're genuinely redundant with clicking through the popup for
+// testing "does capture/pairing work at all" -- but they're what lets you
+// tell a popup.js (DOM/message-passing) bug apart from a background-logic
+// bug, and they're faster during active development than clicking through
+// UI every time.
+// TODO: remove them once we're sure that everything is working
 globalThis.__recueilPair = pair;
 globalThis.__recueilUnpair = unpair;
 globalThis.__recueilAuthState = getAuthState;
@@ -79,7 +85,9 @@ globalThis.__recueilCapture = captureActiveTab;
 // Narrower than __recueilCapture above: runs only the capture-inject step
 // (no auth, no upload) against whatever tab is active, for isolating a
 // single-file-core/favicon-selection problem from an upload/auth one while
-// debugging.
+// debugging. Reuses capture.js's own runCaptureInject rather than
+// reimplementing the two-step injection dance a second time here.
+// TODO: remove this once we're sure that everything is working
 globalThis.__recueilTestCaptureOnly = async function () {
   const [tab] = await browser.tabs.query({
     active: true,
@@ -88,17 +96,5 @@ globalThis.__recueilTestCaptureOnly = async function () {
   if (!tab || tab.id === undefined) {
     throw new Error("no active tab found");
   }
-  const tabId = tab.id;
-
-  await browser.scripting.executeScript({
-    target: { tabId },
-    files: ["capture-inject.js"],
-  });
-
-  const [{ result }] = await browser.scripting.executeScript({
-    target: { tabId },
-    func: () => globalThis.__recueilSingleFile.captureFrame(),
-  });
-
-  return result;
+  return runCaptureInject(tab.id);
 };

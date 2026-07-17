@@ -24,11 +24,11 @@
 // them independently would be correct; a single key just makes "both or
 // neither" the only representable state.
 //
-// storage.local, deliberately never storage.sync: sync would replicate a
-// live bearer credential through the browser's account-sync mechanism
-// (Firefox Sync / Chrome Sync) to every other device signed into that
-// browser account -- a real, meaningful difference from "just picking a
-// storage API," not a style choice.
+// storage.local not storage.sync: sync would replicate a live bearer
+// credential through the browser's account-sync mechanism (Firefox Sync /
+// Chrome Sync) to every other device signed into that browser account -- a
+// real, meaningful difference from "just picking a storage API," not a style
+// choice.
 
 import browser from "webextension-polyfill";
 

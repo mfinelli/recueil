@@ -16,21 +16,18 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Favicon selection, per DESIGN.md §3g: link-level selection, not
-// pixel-level -- we never decode image bytes to compare resolutions, we
-// only compare what the page itself declares. If any <link rel="icon">
-// (or apple-touch-icon) tag exists, use it -- svg preferred outright over
-// any raster candidate, else the raster candidate with the largest
-// declared `sizes`, and if that single candidate's fetch fails we give up
-// entirely rather than falling through to the conventional paths below (a
-// declared-but-broken link is still a real answer to "does this page have
-// an icon", just a broken one). Only when there's no <link> tag at all do
-// we fall back to probing the conventional root-relative paths, in
-// preference order, stopping at the first one that actually exists.
+// Favicon selection: link-level selection, not pixel-level -- we never decode
+// image bytes to compare resolutions, we only compare what the page itself
+// declares. If any <link rel="icon"> (or apple-touch-icon) tag exists, use it
+// -- svg preferred outright over any raster candidate, else the raster
+// candidate with the largest declared `sizes`, and if that single candidate's
+// fetch fails we give up entirely rather than falling through to the
+// conventional paths below (adeclared-but-broken link is still a real answer
+// to "does this page have an icon", just a broken one). Only when there's no
+// <link> tag at all do we fall back to probing the conventional root-relative
+// paths, in preference order, stopping at the first one that actually exists.
 //
-// The returned bytes are stored completely unprocessed -- see the
-// package doc on why no image decoding/resizing happens anywhere in this
-// pipeline, here included.
+// The returned bytes are stored completely unprocessed.
 
 const ICON_LINK_SELECTOR =
   'link[rel="icon" i], link[rel="shortcut icon" i], link[rel="apple-touch-icon" i], link[rel="apple-touch-icon-precomposed" i]';
@@ -168,9 +165,9 @@ function extensionFor(response, url) {
   }
   // Fall back to the URL's own extension when the server didn't send a
   // usable content-type (surprisingly common for /favicon.ico in
-  // particular) -- still one of the three formats §3g scopes this to; if
-  // it isn't, the whole result is discarded upstream by the Worker's own
-  // FAVICON_EXTENSIONS validation rather than trusted blindly here.
+  // particular); if it isn't, the whole result is discarded upstream by the
+  // Worker's own FAVICON_EXTENSIONS validation rather than trusted blindly
+  // here.
   const pathExt = url.toLowerCase().split("?")[0].split(".").pop() ?? "";
   return ["svg", "png", "ico"].includes(pathExt) ? pathExt : "ico";
 }

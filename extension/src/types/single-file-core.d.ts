@@ -16,12 +16,10 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// single-file-core ships no types at all (see the architecture discussion
-// that led to depending on it directly rather than either official
-// extension repo) -- this declares only the two entry points
-// bundle-entry.js actually calls, deliberately not the library's whole
-// surface. Shapes are drawn from reading core/index.js and core/util.js
-// directly, not from any published documentation.
+// single-file-core ships no types at all  -- this declares only the two entry
+// points bundle-entry.js actually calls, not the library's whole surface.
+// Shapes are drawn from reading core/index.js and core/util.js directly, not
+// from any published documentation (there is none).
 declare module "single-file-core/single-file.js" {
   /**
    * Sets fetch/frameFetch overrides (see relay-fetch.js) and other

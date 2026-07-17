@@ -20,9 +20,7 @@
 // This is the "user is already on the page, click save" path -- the
 // queue-driven path (open a tab nobody has open, wait for it to load, run
 // this same capture, close the tab) is real, separable work that reuses
-// captureTab() below but isn't built yet; see DESIGN.md/the conversation
-// that scoped Phase 5 for why the two are genuinely different beyond just
-// "how the tab was obtained."
+// captureTab() below but isn't built yet.
 //
 // Talks to two genuinely different endpoint families, on purpose:
 // api-client.js's apiRequest() for the Worker's own JSON endpoints
@@ -138,7 +136,7 @@ export async function captureTab(tabId, url) {
  * @param {number} tabId
  * @returns {Promise<import("../capture-inject/bundle-entry.js").CapturedPage>}
  */
-async function runCaptureInject(tabId) {
+export async function runCaptureInject(tabId) {
   await browser.scripting.executeScript({
     target: { tabId },
     files: [CAPTURE_INJECT_FILE],
