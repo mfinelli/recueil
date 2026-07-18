@@ -134,9 +134,8 @@ async function handlePairSubmit(event, submitButton) {
     return;
   }
 
-  let originPattern;
   try {
-    originPattern = `${new URL(workerBaseURL).origin}/*`;
+    new URL(workerBaseURL);
   } catch {
     renderPairingForm("That doesn't look like a valid URL.");
     return;
@@ -146,8 +145,18 @@ async function handlePairSubmit(event, submitButton) {
   submitButton.textContent = "Pairing…";
 
   try {
+    // Requesting <all_urls> here, not just originPattern, is deliberate --
+    // this device needs more than just permission to talk to the Worker
+    // itself: capturing any page also means the background relay
+    // (fetch-relay.js) fetching that page's own arbitrary third-party
+    // resources, and uploading to R2's presigned URL, which lives on a
+    // completely different origin than the Worker. <all_urls> is the
+    // manifest's own declared ceiling for optional_host_permissions
+    // (manifest.base.json) precisely for this reason -- asking for only
+    // originPattern would pair successfully but silently break the very
+    // first real capture.
     const granted = await browser.permissions.request({
-      origins: [originPattern],
+      origins: ["<all_urls>"],
     });
     if (!granted) {
       renderPairingForm(

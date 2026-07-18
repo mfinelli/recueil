@@ -58,15 +58,30 @@ export async function apiRequest(config, path, options = {}) {
   const { method = "GET", body, headers = {} } = options;
   const url = `${config.workerBaseURL}${path}`;
 
-  const response = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${config.token}`,
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...headers,
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+  } catch (error) {
+    // A raw fetch() failure (DNS, connection refused, a CORS/permission
+    // block) throws a browser-generic error with no indication of what
+    // was even being attempted -- Firefox's own message for most of these
+    // is literally just "NetworkError when attempting to fetch resource.",
+    // giving zero clue which of several fetch() calls across this whole
+    // pipeline actually failed. Wrapping with the method/path here is what
+    // makes that diagnosable instead of a guessing game.
+    throw new Error(
+      `recueil: network error calling ${method} ${path}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
 
   if (response.status === 401) {
     // Distinguished from a generic ApiError specifically so callers (the

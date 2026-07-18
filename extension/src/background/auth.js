@@ -44,15 +44,25 @@ import { getConfig, setConfig, clearConfig } from "../common/storage.js";
 export async function pair({ workerBaseURL, pairingToken, deviceName }) {
   const normalizedBaseURL = workerBaseURL.replace(/\/+$/, "");
 
-  const response = await fetch(`${normalizedBaseURL}/pair`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      pairing_token: pairingToken,
-      device_name: deviceName,
-      device_type: "extension",
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(`${normalizedBaseURL}/pair`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pairing_token: pairingToken,
+        device_name: deviceName,
+        device_type: "extension",
+      }),
+    });
+  } catch (error) {
+    // Same reasoning as api-client.js's apiRequest -- see there for why
+    // this matters.
+    throw new Error(
+      `recueil: network error pairing with ${normalizedBaseURL}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");

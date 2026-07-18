@@ -158,7 +158,22 @@ export async function runCaptureInject(tabId) {
  * @param {BufferSource} body
  */
 async function putToPresignedUrl(url, headers, body) {
-  const response = await fetch(url, { method: "PUT", headers, body });
+  let response;
+  try {
+    response = await fetch(url, { method: "PUT", headers, body });
+  } catch (error) {
+    // Same reasoning as api-client.js's apiRequest -- a raw fetch()
+    // failure here throws a browser-generic message with zero indication
+    // this was even an R2 upload, let alone which one (html vs favicon).
+    // This is specifically the fetch most likely to fail from a missing
+    // host permission: R2 lives on a different origin than the Worker
+    // entirely (see popup.js's handlePairSubmit for why pairing requests
+    // <all_urls>, not just the Worker's own origin).
+    throw new Error(
+      `recueil: network error uploading to R2 (${url}): ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new Error(
