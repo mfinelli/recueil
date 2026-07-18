@@ -907,10 +907,76 @@ design writeup; this is the "what actually landed" companion to it.
 
 ## Phase 5 (the real extension) — in progress
 
-Extension work itself (scaffolding, capture core, auth) lives in `extension/`
-and isn't narrated blow-by-blow here the way backend phases have been — this
-section tracks backend/Worker-side additions made _because of_ that work, the
-same way Phase 3½'s favicon addendum did.
+### What actually works end to end
+
+Pairing, direct capture (single frame — see DESIGN.md §3h for why multi-frame is
+deferred), favicon capture, upload to R2, and backend ingestion via
+`recueil agent` have all been confirmed working together against a real deployed
+Worker and a real Postgres instance — not just unit-tested in isolation. A
+captured page shows up as a real row in `captures` with a real `favicon_path`,
+the same as if it had come through any other path.
+
+Concretely, what's built in `extension/`:
+
+- **Scaffolding**: `manifest.base.json` + per-browser overlays, `build.js`
+  (esbuild, three independent bundles — background/capture-inject/popup, see
+  DESIGN.md §3h for why not one), `package.js` (produces real `.xpi`/`.crx`
+  files via `web-ext`/`crx3` — neither installs _durably_ without further steps,
+  see `extension/README.md`).
+- **Auth** (`background/auth.js`): pairing against `POST /pair`'s real contract,
+  `storage.local` (never `storage.sync`) for the device token, `getAuthState()`
+  deliberately never returning the token itself to a caller.
+- **Capture** (`background/capture.js`, `capture-inject/`): the two-step
+  injection pattern, `single-file-core` wired with the direct-fetch-first relay
+  (`relay-fetch.js`, see DESIGN.md §3h), favicon selection (`favicon.js`), all
+  glued together in `captureTab`/`captureActiveTab`.
+- **Upload orchestration**: `POST /captures/upload-urls` → R2 PUT(s) →
+  `POST /captures/complete` — the same direct-capture endpoint added earlier
+  this phase, now with a real caller.
+- **Popup UI** (`popup/`): pairing form (with draft-state persistence across the
+  popup's own forced teardown on blur, and a computed `defaultDeviceName`
+  placeholder) and a "Save this page" button — deliberately unstyled, a second
+  pass once the UI's actual shape has stopped moving.
+- **Extension test suite**: a new `"extension"` vitest project (jsdom
+  environment), 70 tests across `favicon.js`, `hash.js`, `relay-fetch.js`,
+  `storage.js`, `api-client.js`, `auth.js`, and `device-name.js` — the last of
+  which caught a real bug (iOS user agents misdetected as macOS, since iOS UAs
+  always include "like Mac OS X" as a compatibility string and the OS check
+  order didn't account for that).
+- **Type checking**: `extension/tsconfig.json` (JSDoc-based, same pattern as the
+  Worker's), including a hand-written ambient declaration for `single-file-core`
+  (which ships no types at all) covering only the two functions actually called.
+
+### Real bugs caught along the way, worth remembering
+
+- **The permission requested at pairing time was scoped too narrowly.** Initial
+  version requested only the Worker's own origin; captures need `<all_urls>`
+  (the manifest's own declared ceiling for exactly this reason) to reach both
+  R2's presigned upload URLs (a different origin entirely) and whatever
+  third-party resources a captured page references. Pairing succeeded either way
+  — only the first real capture attempt surfaced it.
+- **None of the raw `fetch()` calls were wrapped**, so a network-level failure
+  anywhere surfaced as the browser's bare generic error message ("NetworkError
+  when attempting to fetch resource.") with no indication of which of several
+  fetch calls across the pipeline had actually failed. Fixed by wrapping each
+  one with context and a proper `.cause` chain.
+- **Multi-frame capture**: see DESIGN.md §3h for the full account — a genuine
+  hang, not a timeout, tracked down to one real, confirmed, and fixed bug along
+  the way (a missing `globalThis.singlefile` assignment `content-frame-tree.js`
+  depends on) that nonetheless did not resolve the actual hang. Deferred with
+  the investigation's findings preserved rather than re-attempted blind next
+  time.
+
+### Still ahead
+
+Queue-driven capture (alarm-driven polling, opening a tab nobody has open,
+waiting for it to load, running the same capture pipeline, closing it,
+`fail`-ing on timeout) and the bookmark-list menu (pulling the D1 mirror for
+popup display) — both fully independent of multi-frame capture, no forced
+ordering between them. Multi-frame capture itself, revisited later with actual
+runtime debugging rather than more source-reading. Safari packaging, whenever
+that becomes a priority — mechanical (Xcode-wrapped, same source), not attempted
+yet.
 
 ### `POST /captures/complete`: direct-capture completion
 

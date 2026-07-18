@@ -699,6 +699,108 @@ correct answer anyway.
 
 ---
 
+### 3h. Browser extension architecture
+
+**Single Manifest V3 codebase covers Chrome and Firefox.** Chrome's MV2 support
+is fully gone (dead since October 2024); Firefox supports both indefinitely, but
+nothing recueil needs (no blocking `webRequest`) actually requires MV2 there.
+Upstream SingleFile forked into two separate repos (`SingleFile` for
+Firefox/MV2, `SingleFile-MV3` for Chrome/Edge) specifically because migrating a
+large, mature, feature-heavy extension is real, risky work its own maintainer is
+deliberately delaying — confirmed directly by gildas-lormeau in a GitHub
+discussion: Firefox is technically MV3-ready, he's "waiting until the last
+moment to migrate" because "Manifest V3 extension development is a real pain."
+That asymmetry doesn't apply to recueil: there's no existing MV2 codebase to
+preserve, so a single MV3 codebase from day one is the right call, even though
+it wasn't the right call for him. Safari is MV3-capable too but needs a
+genuinely separate packaging/distribution pipeline (Xcode-wrapped,
+`safari-web-extension-converter`) — deferred as a later, mechanical step once
+the extension itself works, not attempted yet.
+
+**`single-file-core` is a direct dependency, not a vendored fork of either
+official extension.** Both `SingleFile` and `SingleFile-MV3` are full end-user
+extensions (options pages, multiple upload destinations, auto-save, annotation)
+built around a separate, genuinely engine-only npm package that also backs
+`single-file-cli` headlessly with zero browser-extension APIs involved. recueil
+depends on that same package directly and writes its own thin MV3 wrapper around
+it — recueil's surface area (no auto-save, no annotation, no multiple upload
+destinations) is much smaller than upstream's, so there was never a reason to
+inherit their UI or their Firefox/Chrome fork split. Both share the same
+AGPL-3.0-or-later license, so no licensing mismatch either.
+
+**Capture is a two-step injection**, not a single call:
+`scripting .executeScript({files: ["capture-inject.js"]})` loads the bundle
+(defines a global, since `func`-injected functions can't themselves import
+anything), then a separate
+`executeScript({func: () => globalThis.__recueilSingleFile .captureFrame()})`
+actually invokes it and returns the result. Background
+(`extension/src/background/`), the injectable capture bundle
+(`extension/src/capture-inject/`), and the popup (`extension/src/popup/`) are
+three genuinely separate esbuild entry points/bundles, not one — they run in
+different contexts (service worker vs. a page's content-script world vs. an
+extension page) and load at different times, so bundling them together would
+mean the largest thing in this build (`single-file-core`) parses on every
+service-worker wake for no benefit.
+
+**Resource fetching is direct-fetch-first, background-relay-fallback** — not the
+reverse. A background-context fetch bypasses a page's own CORS restrictions (the
+reason the relay exists at all: `single-file-core` needs to inline resources the
+page itself couldn't otherwise read), but routing _every_ resource through the
+background unconditionally means a capture's success depends on the background
+staying alive for the entire operation, which is exactly the wrong shape under
+MV3's non-persistent background model. Modeled directly on `SingleFile-MV3`'s
+own `fetchResource` (`src/lib/single-file/fetch/content/content-fetch.js`),
+which tries the page's own `fetch()` first and only relays on failure — most
+resources on most pages are same-origin or already CORS-permitted, so this
+resolves the large majority of fetches with no background round-trip at all.
+Notably, `SingleFile-MV3` has no keepalive mechanism anywhere in its source (no
+`runtime.connect` port, no alarm-based ping) — this fetch ordering is _why_, not
+a gap they left unaddressed.
+
+**Multi-frame (iframe) capture is deferred, not implemented — a real,
+partially-understood gap, not just an unattempted feature.** `single-file-core`
+already unconditionally bundles frame-tree collection logic as a transitive
+dependency (`processors/index.js` → `content-frame-tree.js`), gated behind the
+`removeFrames` option and requiring the bundle to be injected into every frame
+(`target.allFrames: true`), not just the top one. Reintroducing this was staged
+deliberately, in isolated steps, after an initial single-change attempt broke
+even single-frame pages in a way that was hard to diagnose:
+
+1. Injecting the bundle into every frame alone (`allFrames: true`, but
+   `removeFrames` still `true`, so collection itself never runs) — confirmed
+   safe on its own, both plain and iframe-containing pages captured correctly.
+2. Flipping `removeFrames: false` alone — this is where it actually breaks:
+   `getPageData()` hangs forever, confirmed via direct instrumentation (not
+   inferred), on _any_ page including ones with zero iframes. One real,
+   confirmed contributing bug was found and fixed along the way:
+   `content-frame-tree.js`'s `sendInitResponse` resolves the top window's own
+   session via `top.singlefile.processors.frameTree.initResponse(message)`, a
+   synchronous same-realm property access neither official extension needs to
+   arrange manually — their Rollup builds bundle
+   `single-file-core/single- file.js` as its own dedicated output with
+   `output.name: "singlefile"`, which exposes that exact module's exports as a
+   global automatically. recueil's bundle is a wrapper entry point with no
+   exports of its own, so the equivalent esbuild option (`globalName`) doesn't
+   achieve the same thing; explicitly assigning
+   `globalThis.singlefile = singlefile` (the already-imported namespace) does.
+   **This fix alone did not resolve the hang** — `getPageData()` still never
+   resolves with it in place, confirmed the same way (direct instrumentation,
+   not inference). The actual cause of the hang itself remains unidentified.
+
+Current state: `removeFrames` is back to `true`, `allFrames: true` injection
+(step 1 above) is kept since it's confirmed harmless, and the
+`globalThis.singlefile` assignment is _not_ currently in the codebase (reverted
+along with the rest of the `removeFrames: false` attempt, since it didn't fix
+anything on its own and there was no reason to carry a partial, unproven fix
+forward). A page with iframes captures correctly today — the parent page content
+is saved — just without the iframe content inlined. Revisiting this is better
+done with actual runtime debugging tools (a real Firefox/Chrome devtools session
+stepping through `content-frame-tree.js` itself) than more source-reading, which
+has now twice produced a plausible-sounding theory that didn't match observed
+behavior.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
