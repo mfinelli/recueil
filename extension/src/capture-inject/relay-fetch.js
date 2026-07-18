@@ -16,13 +16,33 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// The other half of background/fetch-relay.js -- see that file's doc
-// comment for why this needs to exist at all. This is passed to
-// single-file-core as its `fetch`/`frameFetch` init option (see
-// bundle-entry.js), so its signature has to match what core/util.js
+// The content-script side of two different things, tried in order:
+//
+// 1. A plain, direct fetch() from right here, in the page's own content-
+//    script world. This is deliberately tried FIRST, not as an
+//    optimization added later -- modeled directly on SingleFile-MV3's own
+//    fetchResource (src/lib/single-file/fetch/content/content-fetch.js in
+//    github.com/gildas-lormeau/SingleFile-MV3), which uses exactly this
+//    try-direct-then-relay-on-failure order rather than routing every
+//    resource through the background unconditionally. Most resources on
+//    most pages are same-origin or already CORS-permitted, so this
+//    resolves the overwhelming majority of fetches with zero background
+//    round-trip at all.
+// 2. background/fetch-relay.js, only reached when the direct fetch above
+//    actually throws -- i.e. a resource genuinely blocked by the page's
+//    own CORS restrictions, which is what needs a context not subject to
+//    them (see that file's doc comment). Routing *every* fetch through
+//    the background unconditionally (an earlier version of this file did
+//    exactly that) maximizes how much a capture depends on the background
+//    staying alive for the whole duration -- the opposite of what you
+//    want under MV3's idle-teardown model.
+//
+// Passed to single-file-core as its `fetch`/`frameFetch` init option (see
+// bundle-entry.js), so the signature has to match what core/util.js
 // actually calls: fetch(url, { headers, referrer, frameId }) and reads
 // back a Response-shaped object (.status, .url, .headers.get(...),
-// .arrayBuffer()).
+// .arrayBuffer()) -- a real, unmodified fetch() Response already satisfies
+// that directly, no adaptation needed for the direct-fetch path.
 
 import browser from "webextension-polyfill";
 import { RELAY_FETCH } from "../common/messages.js";
@@ -47,7 +67,9 @@ import { RELAY_FETCH } from "../common/messages.js";
  * relayFetch's own return shape -- exported so other modules that accept
  * "a fetch-like function" as a parameter (favicon.js, bundle-entry.js) can
  * reference the same type rather than each redeclaring an equivalent
- * shape that could quietly drift out of sync with this one.
+ * shape that could quietly drift out of sync with this one. A real fetch()
+ * Response satisfies this shape natively, which is exactly why the direct-
+ * fetch path below can return one as-is.
  * @typedef {Object} FetchLikeResponse
  * @property {number} status
  * @property {string} statusText
@@ -66,6 +88,36 @@ import { RELAY_FETCH } from "../common/messages.js";
  * @returns {Promise<FetchLikeResponse>}
  */
 export async function relayFetch(url, init = {}) {
+  try {
+    // cache/referrerPolicy match SingleFile-MV3's own defaults: force-cache
+    // prefers reusing whatever the browser already fetched while rendering
+    // the page over forcing a fresh network round-trip, and
+    // strict-origin-when-cross-origin is already every modern browser's
+    // own default when unspecified -- named explicitly here to match the
+    // reference implementation exactly rather than rely on that default
+    // silently holding.
+    return await fetch(url, {
+      method: init.method,
+      headers: init.headers,
+      referrer: init.referrer,
+      cache: "force-cache",
+      referrerPolicy: "strict-origin-when-cross-origin",
+    });
+  } catch {
+    // A genuinely CORS-blocked cross-origin request is exactly what
+    // throws here (a real TypeError, both in Chrome and Firefox) rather
+    // than resolving with some kind of readable error response -- this
+    // catch is the actual fallback trigger, not a defensive afterthought.
+    return relayThroughBackground(url, init);
+  }
+}
+
+/**
+ * @param {string} url
+ * @param {{method?: string, headers?: HeadersInit, referrer?: string}} init
+ * @returns {Promise<FetchLikeResponse>}
+ */
+async function relayThroughBackground(url, init) {
   const response = /** @type {RelayFetchResponse} */ (
     await browser.runtime.sendMessage({
       type: RELAY_FETCH,

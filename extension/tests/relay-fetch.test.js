@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const sendMessageMock = vi.fn();
 vi.mock("webextension-polyfill", () => ({
@@ -27,11 +27,64 @@ vi.mock("webextension-polyfill", () => ({
 // requires this to be set up before the module under test is loaded.
 const { relayFetch } = await import("../src/capture-inject/relay-fetch.js");
 
+let fetchMock;
 beforeEach(() => {
   sendMessageMock.mockReset();
+  fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
-describe("relayFetch -- header normalization", () => {
+describe("relayFetch -- direct fetch, tried first", () => {
+  it("returns the real Response directly when the direct fetch succeeds, without ever relaying", async () => {
+    const realResponse = new Response("hello", { status: 200 });
+    fetchMock.mockResolvedValue(realResponse);
+
+    const response = await relayFetch("https://example.com/x");
+
+    expect(response).toBe(realResponse);
+    expect(sendMessageMock).not.toHaveBeenCalled();
+  });
+
+  it("passes method/headers/referrer through, plus SingleFile-MV3-matching cache/referrerPolicy defaults", async () => {
+    fetchMock.mockResolvedValue(new Response("ok"));
+
+    await relayFetch("https://example.com/x", {
+      method: "GET",
+      headers: { "X-Test": "value" },
+      referrer: "https://example.com/",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("https://example.com/x", {
+      method: "GET",
+      headers: { "X-Test": "value" },
+      referrer: "https://example.com/",
+      cache: "force-cache",
+      referrerPolicy: "strict-origin-when-cross-origin",
+    });
+  });
+
+  it("falls back to relaying through the background when the direct fetch throws", async () => {
+    fetchMock.mockRejectedValue(
+      new TypeError("NetworkError when attempting to fetch resource."),
+    );
+    sendMessageMock.mockResolvedValue({ ok: true, status: 200, headers: {} });
+
+    await relayFetch("https://example.com/x");
+
+    expect(sendMessageMock).toHaveBeenCalled();
+  });
+});
+
+describe("relayFetch -- background relay fallback, header normalization", () => {
+  beforeEach(() => {
+    // Every test in this block is exercising the fallback path -- make
+    // the direct fetch always fail so relayThroughBackground is reached.
+    fetchMock.mockRejectedValue(new TypeError("blocked"));
+  });
+
   it("passes undefined through untouched when no headers are given", async () => {
     sendMessageMock.mockResolvedValue({ ok: true, status: 200, headers: {} });
     await relayFetch("https://example.com/x");
@@ -82,7 +135,11 @@ describe("relayFetch -- header normalization", () => {
   });
 });
 
-describe("relayFetch -- response shaping", () => {
+describe("relayFetch -- background relay fallback, response shaping", () => {
+  beforeEach(() => {
+    fetchMock.mockRejectedValue(new TypeError("blocked"));
+  });
+
   it("returns a fetch-like object on success", async () => {
     const body = new TextEncoder().encode("hello").buffer;
     sendMessageMock.mockResolvedValue({
