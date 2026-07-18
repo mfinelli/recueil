@@ -132,13 +132,21 @@ export async function captureTab(tabId, url) {
 // call -- see capture-inject/bundle-entry.js's own doc comment for why a
 // func-injected function can't itself import the bundle, only reference a
 // global it already defined.
+//
+// target.allFrames: true on the *first* call only -- every frame needs the
+// bundle loaded so its own copy of single-file-core's frame-tree
+// collection logic can participate (see bundle-entry.js's doc comment for
+// why that's an import-time side effect, not something we call
+// ourselves), but captureFrame() itself is only ever invoked once, in the
+// top frame -- a subframe has no favicon of its own to select and calling
+// getPageData() there again would be redundant, not additive.
 /**
  * @param {number} tabId
  * @returns {Promise<import("../capture-inject/bundle-entry.js").CapturedPage>}
  */
 export async function runCaptureInject(tabId) {
   await browser.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: true },
     files: [CAPTURE_INJECT_FILE],
   });
   const [{ result }] = await browser.scripting.executeScript({
