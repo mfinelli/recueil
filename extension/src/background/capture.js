@@ -132,13 +132,22 @@ export async function captureTab(tabId, url) {
 // call -- see capture-inject/bundle-entry.js's own doc comment for why a
 // func-injected function can't itself import the bundle, only reference a
 // global it already defined.
+//
+// target.allFrames: true on the *first* call only, deliberately isolated
+// from actually turning on frame-tree collection (that's a separate,
+// later step -- see bundle-entry.js's CAPTURE_OPTIONS.removeFrames, still
+// true for now). This step only tests whether merely loading the bundle
+// into every frame -- and thereby running single-file-core's frame-tree
+// module's own import-time side effects (a MutationObserver, postMessage
+// listeners) in each one -- causes any problem on its own, independent of
+// whether that machinery is ever actually used for collection.
 /**
  * @param {number} tabId
  * @returns {Promise<import("../capture-inject/bundle-entry.js").CapturedPage>}
  */
 export async function runCaptureInject(tabId) {
   await browser.scripting.executeScript({
-    target: { tabId },
+    target: { tabId, allFrames: true },
     files: [CAPTURE_INJECT_FILE],
   });
   const [{ result }] = await browser.scripting.executeScript({

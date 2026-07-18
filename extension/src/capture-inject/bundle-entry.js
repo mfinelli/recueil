@@ -36,7 +36,16 @@
 //
 // IMPORTANT CAVEAT: multi-frame capture (embedded iframes) is deliberately
 // not implemented here yet -- removeFrames: true below means only the top
-// document is captured.
+// document is captured. Being reintroduced as a sequence of isolated
+// steps rather than all at once this time (an earlier attempt bundled
+// this bundle's allFrames injection together with actually turning on
+// frame-tree collection, and something in that combination broke even
+// single-frame pages in a way that was hard to isolate). Right now: this
+// bundle *is* already being injected into every frame
+// (background/capture.js's runCaptureInject uses target.allFrames: true
+// for that step), but removeFrames stays true here, so single-file-core's
+// frame-tree collection itself never actually runs -- this step is purely
+// testing whether the injection alone is safe.
 
 import * as singlefile from "single-file-core/single-file.js";
 import { relayFetch } from "./relay-fetch.js";
