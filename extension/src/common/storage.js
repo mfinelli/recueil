@@ -168,3 +168,45 @@ export async function clearClaimedTab(tabId) {
   delete tabs[String(tabId)];
   await browser.storage.local.set({ [CLAIMED_TABS_KEY]: tabs });
 }
+
+// Bookmark sync state -- see background/bookmarks.js for the actual
+// reconciliation logic these back. Three separate keys rather than one
+// combined object for the same reason config/pairing-draft/queue-cache/
+// claimed-tabs already are: each is read and written independently, by
+// different call sites, and there's no scenario where combining them
+// would save anything.
+
+const BOOKMARK_SYNC_ENABLED_KEY = "recueil:bookmark-sync-enabled";
+
+/** @returns {Promise<boolean>} */
+export async function isBookmarkSyncEnabled() {
+  const stored = await browser.storage.local.get(BOOKMARK_SYNC_ENABLED_KEY);
+  return stored[BOOKMARK_SYNC_ENABLED_KEY] === true;
+}
+
+/** @param {boolean} enabled */
+export async function setBookmarkSyncEnabled(enabled) {
+  await browser.storage.local.set({ [BOOKMARK_SYNC_ENABLED_KEY]: enabled });
+}
+
+// The browser-assigned id of the dedicated "recueil" bookmarks folder --
+// per-browser-installation, like every bookmark/folder id, so this always
+// needs a liveness check (does bookmarks.get(id) still resolve?) before
+// being trusted, never assumed still valid just because it's stored. This
+// is the only bookmark-related state recueil persists at all -- see
+// background/bookmarks.js's own doc comment for why no per-page
+// page_id -> bookmark id map is needed on top of it: reconciliation is
+// done by diffing against the folder's actual live contents each sync,
+// not against a separately-tracked copy of them.
+const BOOKMARKS_FOLDER_ID_KEY = "recueil:bookmarks-folder-id";
+
+/** @returns {Promise<string|null>} */
+export async function getBookmarksFolderId() {
+  const stored = await browser.storage.local.get(BOOKMARKS_FOLDER_ID_KEY);
+  return /** @type {string|null} */ (stored[BOOKMARKS_FOLDER_ID_KEY] ?? null);
+}
+
+/** @param {string|null} folderId */
+export async function setBookmarksFolderId(folderId) {
+  await browser.storage.local.set({ [BOOKMARKS_FOLDER_ID_KEY]: folderId });
+}

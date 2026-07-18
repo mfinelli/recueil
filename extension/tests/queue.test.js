@@ -160,16 +160,17 @@ describe("registerQueueRefreshAlarm", () => {
 
     // An unrelated alarm firing must not trigger a refresh.
     alarmsOnAlarmListeners[0]({ name: "some-other-alarm" });
-    await Promise.resolve();
-    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
 
     // The real alarm firing does.
     await setConfig(config);
     fetchMock.mockResolvedValue(fakeQueueResponse([]));
     alarmsOnAlarmListeners[0]({ name: createdName });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
   });
 });
 

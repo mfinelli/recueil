@@ -50,6 +50,10 @@ const {
   getClaimedTabs,
   setClaimedTab,
   clearClaimedTab,
+  isBookmarkSyncEnabled,
+  setBookmarkSyncEnabled,
+  getBookmarksFolderId,
+  setBookmarksFolderId,
 } = await import("../src/common/storage.js");
 
 beforeEach(() => {
@@ -171,5 +175,29 @@ describe("claimed-tabs tracking", () => {
     await setClaimedTab(1, "item-a");
     await clearClaimedTab(999);
     expect(await getClaimedTabs()).toEqual({ 1: "item-a" });
+  });
+});
+
+describe("bookmark sync state", () => {
+  it("defaults isBookmarkSyncEnabled to false", async () => {
+    expect(await isBookmarkSyncEnabled()).toBe(false);
+  });
+
+  it("round-trips isBookmarkSyncEnabled", async () => {
+    await setBookmarkSyncEnabled(true);
+    expect(await isBookmarkSyncEnabled()).toBe(true);
+    await setBookmarkSyncEnabled(false);
+    expect(await isBookmarkSyncEnabled()).toBe(false);
+  });
+
+  it("defaults getBookmarksFolderId to null", async () => {
+    expect(await getBookmarksFolderId()).toBeNull();
+  });
+
+  it("round-trips getBookmarksFolderId/setBookmarksFolderId", async () => {
+    await setBookmarksFolderId("folder-1");
+    expect(await getBookmarksFolderId()).toBe("folder-1");
+    await setBookmarksFolderId(null);
+    expect(await getBookmarksFolderId()).toBeNull();
   });
 });
