@@ -57,3 +57,37 @@ export async function setConfig(config) {
 export async function clearConfig() {
   await browser.storage.local.remove(STORAGE_KEY);
 }
+
+// A separate key from STORAGE_KEY above, this is in-progress form state
+// (the popup's whole DOM/JS state is torn down the instant it loses focus,
+// in every browser, which is what actually prompted this: switching windows
+// mid-pairing to go copy a token loses whatever you'd typed). Kept as its own
+// key rather than folded into RecueilConfig because it's a fundamentally
+// different kind of data -- disposable UI draft state, cleared the moment
+// pairing actually succeeds (see auth.js's pair() call site in popup.js), not
+// a credential meant to persist. An interim fix: moving the pairing form to
+// its own real extension tab instead of the transient popup is the more
+// correct fix, planned for whenever the UI gets a real styling pass.
+const PAIRING_DRAFT_KEY = "recueil:pairing-draft";
+
+/**
+ * @typedef {Object} PairingDraft
+ * @property {string} [workerBaseURL]
+ * @property {string} [pairingToken]
+ * @property {string} [deviceName]
+ */
+
+/** @returns {Promise<PairingDraft>} */
+export async function getPairingDraft() {
+  const stored = await browser.storage.local.get(PAIRING_DRAFT_KEY);
+  return /** @type {PairingDraft} */ (stored[PAIRING_DRAFT_KEY] ?? {});
+}
+
+/** @param {PairingDraft} draft */
+export async function setPairingDraft(draft) {
+  await browser.storage.local.set({ [PAIRING_DRAFT_KEY]: draft });
+}
+
+export async function clearPairingDraft() {
+  await browser.storage.local.remove(PAIRING_DRAFT_KEY);
+}

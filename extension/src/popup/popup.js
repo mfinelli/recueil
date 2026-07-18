@@ -37,6 +37,11 @@ import {
   CAPTURE_ACTIVE_TAB,
   UNPAIR_DEVICE,
 } from "../common/messages.js";
+import {
+  getPairingDraft,
+  setPairingDraft,
+  clearPairingDraft,
+} from "../common/storage.js";
 
 /**
  * The shape background/auth.js's getAuthState() actually returns --
@@ -58,12 +63,49 @@ async function main() {
   if (authState.paired) {
     renderPairedView(authState);
   } else {
-    renderPairingForm();
+    await renderPairingForm();
   }
 }
 
+// "Firefox on Linux", "Chrome on Windows", etc -- a placeholder default
+// for device name, since there's no WebExtension API that exposes an
+// actual signed-in profile name (Sync or otherwise) for privacy reasons,
+// only navigator.userAgent to guess browser+OS from. A simple heuristic
+// string match, not a real UA-parsing dependency -- this is a cosmetic
+// default, not something that needs to be exactly right for every possible
+// browser/OS combination.
+function defaultDeviceName() {
+  const ua = navigator.userAgent;
+
+  let browserName = "Browser";
+  if (/Edg\//.test(ua)) {
+    browserName = "Edge";
+  } else if (/Firefox\//.test(ua)) {
+    browserName = "Firefox";
+  } else if (/Chrome\//.test(ua)) {
+    browserName = "Chrome";
+  } else if (/Safari\//.test(ua)) {
+    browserName = "Safari";
+  }
+
+  let osName = "Unknown OS";
+  if (/Windows/.test(ua)) {
+    osName = "Windows";
+  } else if (/Mac OS X/.test(ua)) {
+    osName = "macOS";
+  } else if (/Android/.test(ua)) {
+    osName = "Android";
+  } else if (/iPhone|iPad|iPod/.test(ua)) {
+    osName = "iOS";
+  } else if (/Linux/.test(ua)) {
+    osName = "Linux";
+  }
+
+  return `${browserName} on ${osName}`;
+}
+
 /** @param {string} [errorMessage] */
-function renderPairingForm(errorMessage) {
+async function renderPairingForm(errorMessage) {
   app.replaceChildren();
 
   const heading = document.createElement("h1");
@@ -72,16 +114,38 @@ function renderPairingForm(errorMessage) {
 
   const form = document.createElement("form");
 
+  // Restores whatever was last typed -- a popup's entire DOM/JS state is
+  // torn down the instant it loses focus (switching windows to go copy a
+  // pairing token, in particular), so without this every re-open of the
+  // popup mid-pairing would start completely blank. See storage.js's
+  // PAIRING_DRAFT_KEY doc comment for why this is a separate, disposable
+  // key from the real pairing config.
+  const draft = await getPairingDraft();
+
   form.append(
     fieldLabel(
       "worker-url",
       "Instance URL",
       "url",
       "https://recueil.example.com",
+      { value: draft.workerBaseURL },
     ),
-    fieldLabel("pairing-token", "Pairing token", "text", ""),
-    fieldLabel("device-name", "Device name", "text", "e.g. Firefox on laptop"),
+    fieldLabel("pairing-token", "Pairing token", "text", "", {
+      value: draft.pairingToken,
+    }),
+    fieldLabel("device-name", "Device name", "text", defaultDeviceName(), {
+      value: draft.deviceName,
+      required: false,
+    }),
   );
+
+  form.addEventListener("input", () => {
+    setPairingDraft({
+      workerBaseURL: getInputValue("worker-url"),
+      pairingToken: getInputValue("pairing-token"),
+      deviceName: getInputValue("device-name"),
+    });
+  });
 
   const submitButton = document.createElement("button");
   submitButton.type = "submit";
@@ -127,17 +191,20 @@ async function handlePairSubmit(event, submitButton) {
 
   const workerBaseURL = getInputValue("worker-url").replace(/\/+$/, "");
   const pairingToken = getInputValue("pairing-token");
-  const deviceName = getInputValue("device-name");
+  // Optional -- an empty field falls back to the same computed default
+  // shown as its placeholder (defaultDeviceName()), rather than blocking
+  // submission over a field most people will just leave alone.
+  const deviceName = getInputValue("device-name") || defaultDeviceName();
 
-  if (!workerBaseURL || !pairingToken || !deviceName) {
-    renderPairingForm("Every field is required.");
+  if (!workerBaseURL || !pairingToken) {
+    await renderPairingForm("Instance URL and pairing token are required.");
     return;
   }
 
   try {
     new URL(workerBaseURL);
   } catch {
-    renderPairingForm("That doesn't look like a valid URL.");
+    await renderPairingForm("That doesn't look like a valid URL.");
     return;
   }
 
@@ -159,7 +226,7 @@ async function handlePairSubmit(event, submitButton) {
       origins: ["<all_urls>"],
     });
     if (!granted) {
-      renderPairingForm(
+      await renderPairingForm(
         "recueil needs permission to talk to your instance to pair -- please allow it and try again.",
       );
       return;
@@ -171,12 +238,15 @@ async function handlePairSubmit(event, submitButton) {
         payload: { workerBaseURL, pairingToken, deviceName },
       })
     );
+    await clearPairingDraft();
     renderPairedView({
       workerBaseURL: config.workerBaseURL,
       deviceName: config.deviceName,
     });
   } catch (error) {
-    renderPairingForm(error instanceof Error ? error.message : String(error));
+    await renderPairingForm(
+      error instanceof Error ? error.message : String(error),
+    );
   }
 }
 
@@ -212,7 +282,7 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   unpairLink.addEventListener("click", async (event) => {
     event.preventDefault();
     await browser.runtime.sendMessage({ type: UNPAIR_DEVICE });
-    renderPairingForm();
+    await renderPairingForm();
   });
   app.append(unpairLink);
 }
@@ -246,8 +316,11 @@ async function handleCaptureClick(captureButton) {
  * @param {string} labelText
  * @param {string} type
  * @param {string} placeholder
+ * @param {{value?: string, required?: boolean}} [options]
  */
-function fieldLabel(id, labelText, type, placeholder) {
+function fieldLabel(id, labelText, type, placeholder, options = {}) {
+  const { value = "", required = true } = options;
+
   const label = document.createElement("label");
   label.htmlFor = id;
   label.textContent = labelText;
@@ -256,7 +329,8 @@ function fieldLabel(id, labelText, type, placeholder) {
   input.id = id;
   input.type = type;
   input.placeholder = placeholder;
-  input.required = true;
+  input.required = required;
+  input.value = value;
 
   label.append(input);
   return label;
