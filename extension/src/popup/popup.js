@@ -36,6 +36,8 @@ import {
   GET_AUTH_STATE,
   CAPTURE_ACTIVE_TAB,
   UNPAIR_DEVICE,
+  GET_QUEUE_LIST,
+  REFRESH_QUEUE_LIST,
 } from "../common/messages.js";
 import {
   getPairingDraft,
@@ -239,6 +241,8 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   status.id = "capture-status";
   app.append(status);
 
+  app.append(renderQueueSection());
+
   const unpairLink = document.createElement("a");
   unpairLink.href = "#";
   unpairLink.className = "unpair-link";
@@ -249,6 +253,77 @@ function renderPairedView({ workerBaseURL, deviceName }) {
     await renderPairingForm();
   });
   app.append(unpairLink);
+}
+
+// Just a URL list -- id and url are all GET /queue actually returns that's
+// meaningful to show, and clicking an item to claim/capture it is its own
+// separate piece of work (step 2), not built here. This cache is never
+// authoritative (see queue.js's own doc comment) -- displayed as-is,
+// refreshed either from whatever the background last cached or, on
+// request, live.
+function renderQueueSection() {
+  const section = document.createElement("div");
+  section.className = "queue-section";
+
+  const list = document.createElement("ul");
+  list.id = "queue-list";
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Queue";
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.className = "queue-refresh";
+  refreshButton.textContent = "Refresh";
+  refreshButton.addEventListener("click", () =>
+    handleRefreshQueueClick(refreshButton, list),
+  );
+  heading.append(refreshButton);
+
+  section.append(heading, list);
+
+  browser.runtime
+    .sendMessage({ type: GET_QUEUE_LIST })
+    .then((/** @type {any} */ cache) =>
+      renderQueueItems(list, cache?.items ?? []),
+    );
+
+  return section;
+}
+
+/**
+ * @param {HTMLElement} list
+ * @param {import("../common/storage.js").QueueCacheItem[]} items
+ */
+function renderQueueItems(list, items) {
+  list.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "queue-empty";
+    empty.textContent = "Nothing in the queue.";
+    list.append(empty);
+    return;
+  }
+  for (const item of items) {
+    const entry = document.createElement("li");
+    entry.textContent = item.url;
+    list.append(entry);
+  }
+}
+
+/**
+ * @param {HTMLButtonElement} refreshButton
+ * @param {HTMLElement} list
+ */
+async function handleRefreshQueueClick(refreshButton, list) {
+  refreshButton.disabled = true;
+  try {
+    const cache = /** @type {import("../common/storage.js").QueueCache} */ (
+      await browser.runtime.sendMessage({ type: REFRESH_QUEUE_LIST })
+    );
+    renderQueueItems(list, cache.items);
+  } finally {
+    refreshButton.disabled = false;
+  }
 }
 
 /** @param {HTMLButtonElement} captureButton */

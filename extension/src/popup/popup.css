@@ -94,3 +94,47 @@ button:disabled {
   margin-top: 10px;
   font-size: 12px;
 }
+
+.queue-section {
+  margin-top: 14px;
+}
+
+.queue-section h2 {
+  font-size: 13px;
+  margin: 0 0 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.queue-refresh {
+  margin-top: 0;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
+#queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 120px;
+  overflow-y: auto;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+#queue-list li {
+  padding: 4px 6px;
+  font-size: 12px;
+  word-break: break-all;
+  border-bottom: 1px solid #eee;
+}
+
+#queue-list li:last-child {
+  border-bottom: none;
+}
+
+.queue-empty {
+  color: #777;
+  font-style: italic;
+}

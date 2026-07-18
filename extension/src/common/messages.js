@@ -58,3 +58,16 @@ export const CAPTURE_ACTIVE_TAB = "recueil:capture-active-tab";
 // Sent by the popup to forget this device's locally-stored credential --
 // see auth.js's unpair() doc comment for why this is local-only for now.
 export const UNPAIR_DEVICE = "recueil:unpair-device";
+
+// Sent by the popup to read the cached GET /queue result (storage.js's
+// QueueCache) -- no network call, just whatever queue.js last refreshed.
+// Never authoritative on its own; see queue.js's own doc comment for why
+// the real lock check only ever happens live, at claim time.
+export const GET_QUEUE_LIST = "recueil:get-queue-list";
+
+// Sent by the popup's manual "Refresh" button to force a live GET /queue
+// call right now, updating both the cache and the toolbar badge -- see
+// queue.js. The periodic alarm-driven refresh calls the same underlying
+// function directly (no message round-trip needed, it's already running
+// in the background), this message type exists only for the popup's case.
+export const REFRESH_QUEUE_LIST = "recueil:refresh-queue-list";

@@ -91,3 +91,39 @@ export async function setPairingDraft(draft) {
 export async function clearPairingDraft() {
   await browser.storage.local.remove(PAIRING_DRAFT_KEY);
 }
+
+// A cache of the last successful GET /queue response -- never authoritative
+// on its own (see queue.js's doc comment: the real lock check happens at
+// claim time, live, not against whatever's cached here), just what the
+// popup displays without needing a network round-trip every time it opens.
+const QUEUE_CACHE_KEY = "recueil:queue-cache";
+
+/**
+ * @typedef {Object} QueueCacheItem
+ * @property {string} id
+ * @property {string} url
+ * @property {string} status
+ * @property {number|null} claimed_by_token_id
+ * @property {string|null} claimed_at
+ * @property {string} created_at
+ */
+
+/**
+ * @typedef {Object} QueueCache
+ * @property {QueueCacheItem[]} items
+ * @property {string|null} fetchedAt - ISO timestamp of the last successful
+ *   refresh, or null if one has never happened yet
+ */
+
+/** @returns {Promise<QueueCache>} */
+export async function getQueueCache() {
+  const stored = await browser.storage.local.get(QUEUE_CACHE_KEY);
+  return /** @type {QueueCache} */ (
+    stored[QUEUE_CACHE_KEY] ?? { items: [], fetchedAt: null }
+  );
+}
+
+/** @param {QueueCache} cache */
+export async function setQueueCache(cache) {
+  await browser.storage.local.set({ [QUEUE_CACHE_KEY]: cache });
+}
