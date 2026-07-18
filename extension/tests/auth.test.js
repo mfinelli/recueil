@@ -35,6 +35,11 @@ vi.mock("webextension-polyfill", () => ({
         async remove(key) {
           delete store[key];
         },
+        async clear() {
+          for (const key of Object.keys(store)) {
+            delete store[key];
+          }
+        },
       },
     },
   },
@@ -42,7 +47,8 @@ vi.mock("webextension-polyfill", () => ({
 
 const { pair, getAuthState, unpair } =
   await import("../src/background/auth.js");
-const { getConfig } = await import("../src/common/storage.js");
+const { getConfig, setPairingDraft, setQueueCache, setClaimedTab } =
+  await import("../src/common/storage.js");
 
 let fetchMock;
 beforeEach(() => {
@@ -224,5 +230,36 @@ describe("unpair", () => {
 
   it("is a harmless no-op when nothing was ever paired", async () => {
     await expect(unpair()).resolves.toBeUndefined();
+  });
+
+  it("clears every other storage.local key too, not just the config", async () => {
+    // The real concern this guards against: explicitly signing out should
+    // never leave stale, account-scoped data (a draft pairing form, cached
+    // queue URLs, a claimed-tab association) sitting around to carry over
+    // into whatever the user does next -- re-pairing to the same instance,
+    // a different one, or leaving the extension unpaired for a while.
+    fetchMock.mockResolvedValue(
+      fakePairResponse({
+        token: "t",
+        device_id: 1,
+        device_name: "d",
+        device_type: "extension",
+      }),
+    );
+    await pair({
+      workerBaseURL: "https://recueil.example.com",
+      pairingToken: "x",
+      deviceName: "d",
+    });
+    await setPairingDraft({ workerBaseURL: "https://leftover.example.com" });
+    await setQueueCache({
+      items: [{ id: "a", url: "https://example.com/a", status: "pending" }],
+      fetchedAt: new Date().toISOString(),
+    });
+    await setClaimedTab(42, "item-a");
+
+    await unpair();
+
+    expect(store).toEqual({});
   });
 });

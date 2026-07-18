@@ -35,7 +35,8 @@
 // synchronously in its own submit handler, and only sends PAIR_DEVICE once
 // that's confirmed granted.
 
-import { getConfig, setConfig, clearConfig } from "../common/storage.js";
+import browser from "webextension-polyfill";
+import { getConfig, setConfig } from "../common/storage.js";
 
 /**
  * @param {{workerBaseURL: string, pairingToken: string, deviceName: string}} params
@@ -100,12 +101,26 @@ export async function getAuthState() {
 }
 
 export async function unpair() {
-  // Local-only: there's no device-facing endpoint to revoke this token
-  // server-side yet. /internal/tokens/:id (DELETE) exists but is gated by
-  // X-Service-Key, not a device bearer token -- it's the dashboard's own
-  // admin-side device-management endpoint, not something a paired device can
-  // call on itself. So "unpair" here really means "forget this device's own
-  // stored credential" -- the token itself stays valid server-side until
-  // an operator revokes it from the dashboard, once that exists.
-  await clearConfig();
+  // Wipes storage.local entirely, not just the config. Every key this
+  // extension currently stores (config, the pairing-form draft, the queue
+  // cache, the claimed-tabs map) is scoped to "the currently paired
+  // instance/account" one way or another; leaving any of them behind after
+  // an explicit sign-out would mean stale queue URLs, a stale tab
+  // association, or a stale draft pairing form silently carrying over
+  // into whatever the user does next -- re-pairing to the same instance,
+  // a completely different one, or just leaving the extension unpaired for
+  // a while. storage.local.clear() rather than clearing each key individually
+  // means this stays correct even if a future key gets added and someone
+  // forgets to list it here; if a genuinely account-independent preference
+  // is ever introduced, this call would need revisiting, but nothing in
+  // storage.local today is that.
+  //
+  // Also local-only in a second sense: there's no device-facing endpoint
+  // to revoke the token server-side yet either. /internal/tokens/:id
+  // (DELETE) exists but is gated by X-Service-Key, not a device bearer
+  // token -- it's the dashboard's own admin-side device-management
+  // endpoint, not something a paired device can call on itself. So the
+  // token itself stays valid server-side until an operator revokes it
+  // from the dashboard, once that exists.
+  await browser.storage.local.clear();
 }
