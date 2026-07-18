@@ -20,6 +20,14 @@ export default [
     },
   },
   {
+    files: ["extension/tests/**/*.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.browser, ...globals.vitest },
+    },
+  },
+  {
     files: ["extension/src/background/**/*.js"],
     languageOptions: {
       ecmaVersion: "latest",

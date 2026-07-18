@@ -39,6 +39,13 @@ export default defineConfig(async () => {
             setupFiles: ["terraform/tests/apply-migrations.js"],
           },
         },
+        {
+          test: {
+            name: "extension",
+            environment: "jsdom",
+            include: ["extension/tests/**/*.test.js"],
+          },
+        },
       ],
     },
   };

@@ -42,6 +42,7 @@ import {
   setPairingDraft,
   clearPairingDraft,
 } from "../common/storage.js";
+import { defaultDeviceName } from "../common/device-name.js";
 
 /**
  * The shape background/auth.js's getAuthState() actually returns --
@@ -65,43 +66,6 @@ async function main() {
   } else {
     await renderPairingForm();
   }
-}
-
-// "Firefox on Linux", "Chrome on Windows", etc -- a placeholder default
-// for device name, since there's no WebExtension API that exposes an
-// actual signed-in profile name (Sync or otherwise) for privacy reasons,
-// only navigator.userAgent to guess browser+OS from. A simple heuristic
-// string match, not a real UA-parsing dependency -- this is a cosmetic
-// default, not something that needs to be exactly right for every possible
-// browser/OS combination.
-function defaultDeviceName() {
-  const ua = navigator.userAgent;
-
-  let browserName = "Browser";
-  if (/Edg\//.test(ua)) {
-    browserName = "Edge";
-  } else if (/Firefox\//.test(ua)) {
-    browserName = "Firefox";
-  } else if (/Chrome\//.test(ua)) {
-    browserName = "Chrome";
-  } else if (/Safari\//.test(ua)) {
-    browserName = "Safari";
-  }
-
-  let osName = "Unknown OS";
-  if (/Windows/.test(ua)) {
-    osName = "Windows";
-  } else if (/Mac OS X/.test(ua)) {
-    osName = "macOS";
-  } else if (/Android/.test(ua)) {
-    osName = "Android";
-  } else if (/iPhone|iPad|iPod/.test(ua)) {
-    osName = "iOS";
-  } else if (/Linux/.test(ua)) {
-    osName = "Linux";
-  }
-
-  return `${browserName} on ${osName}`;
 }
 
 /** @param {string} [errorMessage] */
