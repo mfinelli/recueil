@@ -86,7 +86,15 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
   }
   switch (message.type) {
     case PAIR_DEVICE:
-      return pair(message.payload);
+      return pair(message.payload).then((config) => {
+        // Otherwise the popup shows "Nothing in the queue" until the next
+        // alarm tick (up to 6 hours away) or a manual refresh, even if the
+        // instance already has real pending items -- worth doing eagerly
+        // right when pairing succeeds, since that's exactly when the user
+        // is about to look at the popup again anyway.
+        refreshQueueList().catch(() => {});
+        return config;
+      });
     case GET_AUTH_STATE:
       return getAuthState();
     case CAPTURE_ACTIVE_TAB:

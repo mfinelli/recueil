@@ -68,14 +68,24 @@ export async function captureActiveTab() {
 
   const result = await captureTab(tab.id, tab.url, queueItemId);
 
-  // Only cleared on success -- a failed attempt (a transient network
-  // error, say) shouldn't lose the tab's association with the queue item
-  // it's fulfilling; the user should just be able to click "Save this
-  // page" again on the same tab without needing to go back to the queue
-  // list and re-claim (which would be redundant anyway, this device
-  // already holds the claim).
+  // Only cleared/closed on success -- a failed attempt (a transient
+  // network error, say) shouldn't lose the tab's association with the
+  // queue item it's fulfilling; the user should just be able to click
+  // "Save this page" again on the same tab without needing to go back to
+  // the queue list and re-claim (which would be redundant anyway, this
+  // device already holds the claim).
   if (queueItemId && tab.id !== undefined) {
     await clearClaimedTab(tab.id);
+    // Only for queue-driven captures, never a direct one -- this tab only
+    // exists because clicking a queue item opened it (queue.js's
+    // claimQueueItem); a direct capture's tab is one the user already had
+    // open for their own reasons, and closing it out from under them
+    // would be genuinely disruptive. Best-effort: if the tab's somehow
+    // already gone by now (the user closed it themselves in the moments
+    // before capture finished), there's nothing to clean up and nothing
+    // worth surfacing as a capture failure over -- the capture itself
+    // already fully succeeded by this point.
+    await browser.tabs.remove(tab.id).catch(() => {});
   }
 
   return result;
