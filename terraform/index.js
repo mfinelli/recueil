@@ -40,6 +40,9 @@
 //   deletion reconciliation, batch delete) -- all four deliberately dumb:
 //   the backend computes what changed and what to delete, the Worker only
 //   ever executes exactly what it's told
+// - GET /archived-pages: device-facing read of the same mirror, for the
+//   extension's own bookmark sync -- a full list every time, not
+//   incremental, see handleListArchivedPages's own doc comment for why
 
 /**
  * @typedef {Object} Env
@@ -407,6 +410,9 @@ export default {
     if (method === "POST" && claimMatch) {
       return handleClaimQueueItem(request, env, ctx, claimMatch[1]);
     }
+    if (method === "GET" && pathname === "/archived-pages") {
+      return handleListArchivedPages(request, env, ctx);
+    }
     if (method === "GET" && pathname === "/internal/tokens") {
       return handleListTokens(request, env);
     }
@@ -742,6 +748,49 @@ export async function handleClaimQueueItem(request, env, ctx, itemId) {
     return new Response("Item already processed", { status: 410 });
   }
   return new Response("Item already claimed", { status: 409 });
+}
+
+/**
+ * GET /archived-pages: device-facing read of the bookmark-list mirror
+ * (archived_pages) -- for the extension's own bookmark sync
+ * (background/bookmarks.js), reconciling native browser bookmarks against
+ * a page's archived state. Just a plain, full-list read every time, no
+ * `since`/incremental support the way the backend's own Postgres ->
+ * archived_pages sync has (internal/mirror.Syncer's checkpoint): that
+ * complexity exists there because it's designed to scale past what makes
+ * sense for a single browser's bookmark tree, and a personal archive is
+ * realistically hundreds to low-thousands of pages -- simpler, and just as
+ * correct, for the extension to pull everything each sync and diff it
+ * locally against its own tracked page_id -> bookmark id mapping.
+ *
+ * No additional filtering needed here beyond user_id: archived_pages is
+ * already exactly the filtered mirror by the time anything reaches D1 --
+ * excluded_from_mirror pages are never pushed here in the first place
+ * (see internal/mirror's own doc comments) -- so what's in the table for
+ * this user is already exactly what should be bookmarked.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleListArchivedPages(request, env, ctx) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  const { results } = await env.DB.prepare(
+    `SELECT page_id, raw_url, title, latest_capture_at, updated_at
+     FROM archived_pages
+     WHERE user_id = ?
+     ORDER BY page_id ASC`,
+  )
+    .bind(auth.userId)
+    .all();
+
+  return new Response(JSON.stringify({ pages: results }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /**

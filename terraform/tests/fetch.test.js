@@ -65,6 +65,13 @@ describe("fetch (router)", () => {
     expect(response.status).toBe(401);
   });
 
+  it("routes GET /archived-pages to handleListArchivedPages (401 with no auth confirms it was reached)", async () => {
+    const response = await SELF.fetch("https://example.com/archived-pages", {
+      method: "GET",
+    });
+    expect(response.status).toBe(401);
+  });
+
   it("routes POST /queue/:id/claim, extracting the id from the path correctly", async () => {
     // With no auth this 401s before ever reading itemId, so this alone
     // doesn't prove extraction -- the real proof is in queue.test.js's

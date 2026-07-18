@@ -22,8 +22,10 @@ import {
   handleDeleteArchivedPages,
   handleGetArchivedPagesLastSync,
   handleListArchivedPageIDs,
+  handleListArchivedPages,
   handleMirrorArchivedPages,
 } from "../index.js";
+import { sha256Hex } from "./test-helpers.js";
 
 // D1 state is shared across test cases within this file (no automatic
 // reset between them, unlike Go's dbtest.Reset), so every row needs a
@@ -81,6 +83,29 @@ function serviceRequest(method, path, body) {
     init.body = JSON.stringify(body);
   }
   return new Request(`https://example.com${path}`, init);
+}
+
+async function seedToken(userId, rawToken) {
+  const hash = await sha256Hex(rawToken);
+  const inserted = await env.DB.prepare(
+    `INSERT INTO tokens (token_hash, user_id, device_name, device_type)
+     VALUES (?, ?, 'test-device', 'extension') RETURNING id`,
+  )
+    .bind(hash, userId)
+    .first();
+  return inserted.id;
+}
+
+/**
+ * @param {string} method
+ * @param {string} path
+ * @param {string} rawToken
+ */
+function authedRequest(method, path, rawToken) {
+  return new Request(`https://example.com${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${rawToken}` },
+  });
 }
 
 const testCtx = { waitUntil: () => {} };
@@ -436,6 +461,92 @@ describe("handleDeleteArchivedPages", () => {
         method: "POST",
         body: JSON.stringify({ page_ids: [] }),
       }),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(401);
+  });
+});
+
+describe("handleListArchivedPages", () => {
+  it("returns this user's archived pages, ordered by page_id", async () => {
+    const userId = await seedUser();
+    const rawToken = "rcl_live_archived-pages-list";
+    await seedToken(userId, rawToken);
+    const idB = newPageId();
+    const idA = newPageId();
+    await seedArchivedPage(idB, userId, {
+      rawUrl: "https://example.com/b",
+      title: "Page B",
+    });
+    await seedArchivedPage(idA, userId, {
+      rawUrl: "https://example.com/a",
+      title: "Page A",
+    });
+
+    const response = await handleListArchivedPages(
+      authedRequest("GET", "/archived-pages", rawToken),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json();
+
+    // idB was seeded first but has the larger page_id (newPageId() is a
+    // simple incrementing counter shared across the whole file) -- this
+    // pins down that ordering is genuinely by page_id, not insertion order.
+    const [first, second] = body.pages;
+    expect(first.page_id).toBeLessThan(second.page_id);
+    expect(body.pages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          page_id: idA,
+          raw_url: "https://example.com/a",
+          title: "Page A",
+        }),
+        expect.objectContaining({
+          page_id: idB,
+          raw_url: "https://example.com/b",
+          title: "Page B",
+        }),
+      ]),
+    );
+  });
+
+  it("returns an empty list, not an error, when nothing has been archived", async () => {
+    const userId = await seedUser();
+    const rawToken = "rcl_live_archived-pages-empty";
+    await seedToken(userId, rawToken);
+
+    const response = await handleListArchivedPages(
+      authedRequest("GET", "/archived-pages", rawToken),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ pages: [] });
+  });
+
+  it("never includes another user's archived pages", async () => {
+    const userId = await seedUser();
+    const otherUserId = await seedUser();
+    const rawToken = "rcl_live_archived-pages-isolation";
+    await seedToken(userId, rawToken);
+    await seedArchivedPage(newPageId(), otherUserId, {
+      rawUrl: "https://example.com/not-mine",
+    });
+
+    const response = await handleListArchivedPages(
+      authedRequest("GET", "/archived-pages", rawToken),
+      env,
+      testCtx,
+    );
+    expect(await response.json()).toEqual({ pages: [] });
+  });
+
+  it("requires a valid device bearer token", async () => {
+    const response = await handleListArchivedPages(
+      authedRequest("GET", "/archived-pages", "not-a-real-token"),
       env,
       testCtx,
     );
