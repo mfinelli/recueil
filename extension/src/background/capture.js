@@ -133,14 +133,16 @@ export async function captureTab(tabId, url) {
 // func-injected function can't itself import the bundle, only reference a
 // global it already defined.
 //
-// target.allFrames: true on the *first* call only, deliberately isolated
-// from actually turning on frame-tree collection (that's a separate,
-// later step -- see bundle-entry.js's CAPTURE_OPTIONS.removeFrames, still
-// true for now). This step only tests whether merely loading the bundle
-// into every frame -- and thereby running single-file-core's frame-tree
-// module's own import-time side effects (a MutationObserver, postMessage
-// listeners) in each one -- causes any problem on its own, independent of
-// whether that machinery is ever actually used for collection.
+// target.allFrames: true on the *first* call only: every frame needs the
+// bundle loaded so its own copy of single-file-core's frame-tree collector
+// can serialize that frame's DOM when the top frame walks the tree (see
+// bundle-entry.js's CAPTURE_OPTIONS.removeFrames and its doc comment).
+// captureFrame() itself is invoked once, in the top frame only -- the
+// second executeScript below has no allFrames, so it runs only in frameId
+// 0. A subframe has no favicon of its own to select and calling
+// getPageData() there would be redundant, not additive; its content
+// reaches the top frame through the frame-tree collection, not a second
+// captureFrame() call.
 /**
  * @param {number} tabId
  * @returns {Promise<import("../capture-inject/bundle-entry.js").CapturedPage>}

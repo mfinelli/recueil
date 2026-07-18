@@ -34,25 +34,31 @@
 // functions can't close over module scope), which is exactly why this
 // needs to be a global rather than an export.
 //
-// IMPORTANT CAVEAT: multi-frame capture (embedded iframes) is deliberately
-// not implemented here yet -- removeFrames: true below means only the top
-// document is captured. Being reintroduced as a sequence of isolated
-// steps rather than all at once this time (an earlier attempt bundled
-// this bundle's allFrames injection together with actually turning on
-// frame-tree collection, and something in that combination broke even
-// single-frame pages in a way that was hard to isolate). Right now: this
-// bundle *is* already being injected into every frame
-// (background/capture.js's runCaptureInject uses target.allFrames: true
-// for that step), but removeFrames stays true here, so single-file-core's
-// frame-tree collection itself never actually runs -- this step is purely
-// testing whether the injection alone is safe.
+// MULTI-FRAME CAPTURE (embedded iframes) is on: removeFrames is false
+// below, so single-file-core walks the frame tree and inlines each
+// subframe's content into the top document. Two pieces outside this file
+// make that work, and both have to be present for it to:
+//
+//   1. background/capture.js injects this bundle into every frame
+//      (target.allFrames: true on the `files` step), so each subframe has
+//      single-file-core's frame-tree collector loaded and can serialize
+//      its own DOM when the top frame asks. captureFrame() itself still
+//      runs in the top frame only.
+//   2. background/frame-tree-relay.js forwards the collector's cross-frame
+//      messages to the top frame. That relay is what a subframe's result
+//      travels through on Firefox (where the collector uses
+//      runtime.sendMessage); on Chrome the collector coordinates in-page
+//      via postMessage and the relay isn't involved. Without it, flipping
+//      removeFrames to false is exactly what surfaces "Could not establish
+//      connection. Receiving end does not exist." -- see that file's doc
+//      comment for the full mechanism.
 
 import * as singlefile from "single-file-core/single-file.js";
 import { relayFetch } from "./relay-fetch.js";
 import { selectFavicon } from "./favicon.js";
 
 const CAPTURE_OPTIONS = {
-  removeFrames: true, // top document only for now -- see caveat above
+  removeFrames: false, // inline embedded iframes too -- see file doc comment
   compressHTML: true,
   removeHiddenElements: true,
   removeUnusedStyles: true,
@@ -82,11 +88,16 @@ const CAPTURE_OPTIONS = {
 /** @returns {Promise<CapturedPage>} */
 async function captureFrame() {
   singlefile.init({
-    // frameFetch intentionally omitted: single-file-core's own default is
-    // `frameFetch || fetch`, and there are no frames to fetch from yet
-    // (see removeFrames above) -- nothing to wire up until multi-frame
-    // capture lands.
+    // fetch and frameFetch share relayFetch: both want the same
+    // direct-then-background-relay behavior (see relay-fetch.js).
+    // frameFetch is single-file-core's per-frame resource fetch, used when
+    // a resource is pulled on behalf of a specific frameId. Passing it is
+    // redundant with core/util.js's own `frameFetch || fetch` default
+    // (which already resolves to relayFetch here) -- named explicitly so
+    // it's clear the frame path isn't silently falling through to
+    // something else now that iframe capture is on.
     fetch: relayFetch,
+    frameFetch: relayFetch,
   });
 
   const pageData = await singlefile.getPageData(CAPTURE_OPTIONS);

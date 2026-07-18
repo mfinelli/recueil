@@ -36,6 +36,7 @@
 
 import browser from "webextension-polyfill";
 import { registerFetchRelay } from "./fetch-relay.js";
+import { registerFrameTreeRelay } from "./frame-tree-relay.js";
 import { pair, getAuthState, unpair } from "./auth.js";
 import { captureActiveTab, runCaptureInject } from "./capture.js";
 import {
@@ -46,6 +47,10 @@ import {
 } from "../common/messages.js";
 
 registerFetchRelay();
+// Routes single-file-core's cross-frame collection messages to the top
+// frame so embedded iframes get captured -- required on Firefox, a no-op
+// on Chrome (which coordinates frames in-page). See frame-tree-relay.js.
+registerFrameTreeRelay();
 
 // message is genuinely untyped at this boundary -- see fetch-relay.js's
 // own listener for the same reasoning.
