@@ -22,13 +22,6 @@
 // real caller of all of this via that listener; the __recueil* globals at
 // the bottom exist alongside it, not instead of it.
 //
-// queue.js so far only covers the list-refresh-and-badge half (this is
-// NOT the same thing as actually claiming/capturing a queue item): the
-// claim flow and the completion-routing change to the existing capture
-// button (so it completes via POST /queue/:id/complete instead of
-// POST /captures/complete when running against a claimed queue item's
-// tab) are still ahead.
-//
 // MV3 service workers are non-persistent: nothing in module scope here
 // survives an idle-timeout unload. registerFetchRelay() and
 // runtime.onMessage.addListener() re-registering on every wake is the
@@ -41,8 +34,12 @@ import { registerFetchRelay } from "./fetch-relay.js";
 import { registerFrameTreeRelay } from "./frame-tree-relay.js";
 import { pair, getAuthState, unpair } from "./auth.js";
 import { captureActiveTab, runCaptureInject } from "./capture.js";
-import { refreshQueueList, registerQueueRefreshAlarm } from "./queue.js";
-import { getQueueCache } from "../common/storage.js";
+import {
+  refreshQueueList,
+  registerQueueRefreshAlarm,
+  claimQueueItem,
+} from "./queue.js";
+import { getQueueCache, clearClaimedTab } from "../common/storage.js";
 import {
   PAIR_DEVICE,
   GET_AUTH_STATE,
@@ -50,6 +47,7 @@ import {
   UNPAIR_DEVICE,
   GET_QUEUE_LIST,
   REFRESH_QUEUE_LIST,
+  CLAIM_QUEUE_ITEM,
 } from "../common/messages.js";
 
 registerFetchRelay();
@@ -68,6 +66,16 @@ browser.runtime.onStartup.addListener(() => {
 });
 browser.runtime.onInstalled.addListener(() => {
   refreshQueueList().catch(() => {});
+});
+
+// Tidies up storage.js's claimed-tabs tracking when a tab closes --
+// purely storage hygiene, not a correctness requirement: an orphaned
+// entry left behind by, say, the browser crashing is harmless (the
+// Worker's own claim goes stale and becomes reclaimable after 15 minutes
+// regardless, see terraform/index.js's handleClaimQueueItem), just clutter
+// that would otherwise accumulate over a long browsing session.
+browser.tabs.onRemoved.addListener((tabId) => {
+  clearClaimedTab(tabId).catch(() => {});
 });
 
 // message is genuinely untyped at this boundary -- see fetch-relay.js's
@@ -89,6 +97,8 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
       return getQueueCache();
     case REFRESH_QUEUE_LIST:
       return refreshQueueList();
+    case CLAIM_QUEUE_ITEM:
+      return claimQueueItem(message.payload.itemId);
     default:
       return undefined;
   }
@@ -109,6 +119,7 @@ globalThis.__recueilUnpair = unpair;
 globalThis.__recueilAuthState = getAuthState;
 globalThis.__recueilCapture = captureActiveTab;
 globalThis.__recueilRefreshQueue = refreshQueueList;
+globalThis.__recueilClaimQueueItem = claimQueueItem;
 
 // Narrower than __recueilCapture above: runs only the capture-inject step
 // (no auth, no upload) against whatever tab is active, for isolating a

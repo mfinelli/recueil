@@ -134,6 +134,20 @@ button:disabled {
   border-bottom: none;
 }
 
+.queue-item {
+  cursor: pointer;
+}
+
+.queue-item:hover {
+  background: #f5f5f5;
+}
+
+.queue-item--claiming {
+  opacity: 0.6;
+  cursor: default;
+  pointer-events: none;
+}
+
 .queue-empty {
   color: #777;
   font-style: italic;

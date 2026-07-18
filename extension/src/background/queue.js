@@ -35,8 +35,9 @@
 // (REFRESH_QUEUE_LIST, background/index.js).
 
 import browser from "webextension-polyfill";
-import { getConfig, setQueueCache } from "../common/storage.js";
-import { apiRequest } from "../common/api-client.js";
+import { getConfig, setQueueCache, setClaimedTab } from "../common/storage.js";
+import { apiRequest, ApiError } from "../common/api-client.js";
+import { NotPairedError } from "./capture.js";
 
 const REFRESH_ALARM_NAME = "recueil-queue-refresh";
 const REFRESH_PERIOD_MINUTES = 360; // 6 hours
@@ -100,4 +101,65 @@ export function registerQueueRefreshAlarm() {
       refreshQueueList().catch(() => {});
     }
   });
+}
+
+/**
+ * Sends the real, live claim request (POST /queue/:id/claim) for one
+ * queue item -- the cached list this same module refreshes is never
+ * authoritative on its own, this is the actual lock check, at the moment
+ * the user actually wants to work on it. On success, opens a new, focused
+ * tab for the user to handle whatever the page needs entirely by hand (no
+ * detection, no automation attempted -- see DESIGN.md's queue-driven
+ * capture writeup for why) and tracks tabId -> itemId so the existing
+ * "Save this page" button knows to complete this one via
+ * POST /queue/:id/complete instead of its usual POST /captures/complete
+ * (capture.js's captureActiveTab).
+ *
+ * @param {string} itemId
+ * @returns {Promise<{id: string, url: string}>}
+ */
+export async function claimQueueItem(itemId) {
+  const config = await getConfig();
+  if (!config) {
+    throw new NotPairedError();
+  }
+
+  /** @type {{id: string, url: string}} */
+  let claimed;
+  try {
+    claimed = /** @type {{id: string, url: string}} */ (
+      await apiRequest(config, `/queue/${itemId}/claim`, { method: "POST" })
+    );
+  } catch (error) {
+    // Translated here, before crossing back to the popup via
+    // runtime.sendMessage -- a custom property like ApiError's .status
+    // isn't reliably preserved across that boundary (only .message
+    // reliably is), so the friendly message has to be fully baked in on
+    // this side, not reconstructed from a status code the popup might
+    // never actually see.
+    throw new Error(describeClaimFailure(error), { cause: error });
+  }
+
+  const tab = await browser.tabs.create({ url: claimed.url, active: true });
+  if (tab.id !== undefined) {
+    await setClaimedTab(tab.id, itemId);
+  }
+
+  return claimed;
+}
+
+/** @param {unknown} error */
+function describeClaimFailure(error) {
+  if (error instanceof ApiError) {
+    if (error.status === 409) {
+      return "recueil: this item is already being worked on from another device";
+    }
+    if (error.status === 410) {
+      return "recueil: this item has already been captured (or permanently failed)";
+    }
+    if (error.status === 404) {
+      return "recueil: this item no longer exists";
+    }
+  }
+  return error instanceof Error ? error.message : String(error);
 }

@@ -47,6 +47,9 @@ const {
   getPairingDraft,
   setPairingDraft,
   clearPairingDraft,
+  getClaimedTabs,
+  setClaimedTab,
+  clearClaimedTab,
 } = await import("../src/common/storage.js");
 
 beforeEach(() => {
@@ -138,5 +141,35 @@ describe("pairing draft storage", () => {
     await setPairingDraft({ deviceName: "something" });
     await clearPairingDraft();
     expect(await getPairingDraft()).toEqual({});
+  });
+});
+
+describe("claimed-tabs tracking", () => {
+  it("returns an empty object when nothing has been tracked", async () => {
+    expect(await getClaimedTabs()).toEqual({});
+  });
+
+  it("round-trips a tabId -> itemId association", async () => {
+    await setClaimedTab(42, "item-abc");
+    expect(await getClaimedTabs()).toEqual({ 42: "item-abc" });
+  });
+
+  it("tracks multiple tabs independently", async () => {
+    await setClaimedTab(1, "item-a");
+    await setClaimedTab(2, "item-b");
+    expect(await getClaimedTabs()).toEqual({ 1: "item-a", 2: "item-b" });
+  });
+
+  it("removes only the specified tab on clearClaimedTab", async () => {
+    await setClaimedTab(1, "item-a");
+    await setClaimedTab(2, "item-b");
+    await clearClaimedTab(1);
+    expect(await getClaimedTabs()).toEqual({ 2: "item-b" });
+  });
+
+  it("clearClaimedTab on an untracked tab is a harmless no-op", async () => {
+    await setClaimedTab(1, "item-a");
+    await clearClaimedTab(999);
+    expect(await getClaimedTabs()).toEqual({ 1: "item-a" });
   });
 });

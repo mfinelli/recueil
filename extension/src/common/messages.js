@@ -71,3 +71,12 @@ export const GET_QUEUE_LIST = "recueil:get-queue-list";
 // function directly (no message round-trip needed, it's already running
 // in the background), this message type exists only for the popup's case.
 export const REFRESH_QUEUE_LIST = "recueil:refresh-queue-list";
+
+// Sent by the popup when the user clicks a queue item they want to work
+// on right now -- see queue.js's claimQueueItem(). This is the real, live
+// lock check (POST /queue/:id/claim); the cached list GET_QUEUE_LIST
+// returns is never authoritative on its own. On success, opens a new,
+// focused tab for the user to solve whatever the page needs (CAPTCHA,
+// paywall, login) entirely by hand -- there's no way to detect that kind
+// of thing automatically, and no attempt is made to.
+export const CLAIM_QUEUE_ITEM = "recueil:claim-queue-item";

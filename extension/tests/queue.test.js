@@ -26,6 +26,7 @@ const setBadgeTextMock = vi.fn();
 const setBadgeBackgroundColorMock = vi.fn();
 const alarmsCreateMock = vi.fn();
 const alarmsOnAlarmListeners = [];
+const tabsCreateMock = vi.fn();
 
 vi.mock("webextension-polyfill", () => ({
   default: {
@@ -53,12 +54,16 @@ vi.mock("webextension-polyfill", () => ({
         addListener: (fn) => alarmsOnAlarmListeners.push(fn),
       },
     },
+    tabs: {
+      create: (...args) => tabsCreateMock(...args),
+    },
   },
 }));
 
-const { refreshQueueList, registerQueueRefreshAlarm } =
+const { refreshQueueList, registerQueueRefreshAlarm, claimQueueItem } =
   await import("../src/background/queue.js");
-const { setConfig, getQueueCache } = await import("../src/common/storage.js");
+const { setConfig, getQueueCache, getClaimedTabs } =
+  await import("../src/common/storage.js");
 
 const config = {
   workerBaseURL: "https://recueil.example.com",
@@ -75,6 +80,7 @@ beforeEach(() => {
   setBadgeBackgroundColorMock.mockReset();
   alarmsCreateMock.mockReset();
   alarmsOnAlarmListeners.length = 0;
+  tabsCreateMock.mockReset();
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -164,5 +170,73 @@ describe("registerQueueRefreshAlarm", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(fetchMock).toHaveBeenCalled();
+  });
+});
+
+function fakeClaimResponse(body, { status = 200 } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (name) =>
+        name.toLowerCase() === "content-type" ? "application/json" : null,
+    },
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
+}
+
+describe("claimQueueItem", () => {
+  it("claims via POST /queue/:id/claim, opens a focused tab, and tracks it", async () => {
+    await setConfig(config);
+    fetchMock.mockResolvedValue(
+      fakeClaimResponse({ id: "item-1", url: "https://example.com/x" }),
+    );
+    tabsCreateMock.mockResolvedValue({ id: 77 });
+
+    const claimed = await claimQueueItem("item-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://recueil.example.com/queue/item-1/claim",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(tabsCreateMock).toHaveBeenCalledWith({
+      url: "https://example.com/x",
+      active: true,
+    });
+    expect(claimed).toEqual({ id: "item-1", url: "https://example.com/x" });
+    expect(await getClaimedTabs()).toEqual({ 77: "item-1" });
+  });
+
+  it("does not track anything if the created tab has no id", async () => {
+    await setConfig(config);
+    fetchMock.mockResolvedValue(
+      fakeClaimResponse({ id: "item-1", url: "https://example.com/x" }),
+    );
+    tabsCreateMock.mockResolvedValue({});
+
+    await claimQueueItem("item-1");
+
+    expect(await getClaimedTabs()).toEqual({});
+  });
+
+  it.each([
+    [409, /already being worked on/],
+    [410, /already been captured/],
+    [404, /no longer exists/],
+  ])(
+    "translates a %i response into a human-readable message",
+    async (status, expectedMessage) => {
+      await setConfig(config);
+      fetchMock.mockResolvedValue(fakeClaimResponse({}, { status }));
+
+      await expect(claimQueueItem("item-1")).rejects.toThrow(expectedMessage);
+      expect(tabsCreateMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("throws NotPairedError when not paired, without calling the Worker", async () => {
+    await expect(claimQueueItem("item-1")).rejects.toThrow(/not paired/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

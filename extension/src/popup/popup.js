@@ -38,6 +38,7 @@ import {
   UNPAIR_DEVICE,
   GET_QUEUE_LIST,
   REFRESH_QUEUE_LIST,
+  CLAIM_QUEUE_ITEM,
 } from "../common/messages.js";
 import {
   getPairingDraft,
@@ -279,7 +280,10 @@ function renderQueueSection() {
   );
   heading.append(refreshButton);
 
-  section.append(heading, list);
+  const status = document.createElement("div");
+  status.id = "queue-status";
+
+  section.append(heading, list, status);
 
   browser.runtime
     .sendMessage({ type: GET_QUEUE_LIST })
@@ -305,7 +309,11 @@ function renderQueueItems(list, items) {
   }
   for (const item of items) {
     const entry = document.createElement("li");
+    entry.className = "queue-item";
     entry.textContent = item.url;
+    entry.addEventListener("click", () =>
+      handleQueueItemClick(item.id, entry, list),
+    );
     list.append(entry);
   }
 }
@@ -323,6 +331,52 @@ async function handleRefreshQueueClick(refreshButton, list) {
     renderQueueItems(list, cache.items);
   } finally {
     refreshButton.disabled = false;
+  }
+}
+
+/**
+ * Claiming is the real, live lock check (see queue.js's claimQueueItem) --
+ * the list this renders from is only ever a cache. On success, a new
+ * focused tab opens for the user to handle the page by hand (CAPTCHA,
+ * paywall, login, whatever); this popup will most likely lose focus and
+ * close as that tab takes over, same as any other extension popup does,
+ * so there's nothing further to show here in that case. On failure
+ * (already claimed elsewhere, already captured, no longer exists -- see
+ * queue.js's describeClaimFailure), the message already comes back fully
+ * human-readable.
+ *
+ * @param {string} itemId
+ * @param {HTMLElement} itemElement
+ * @param {HTMLElement} list
+ */
+async function handleQueueItemClick(itemId, itemElement, list) {
+  const status = /** @type {HTMLElement} */ (
+    document.getElementById("queue-status")
+  );
+  itemElement.classList.add("queue-item--claiming");
+  status.className = "status status--pending";
+  status.textContent = "Claiming…";
+
+  try {
+    await browser.runtime.sendMessage({
+      type: CLAIM_QUEUE_ITEM,
+      payload: { itemId },
+    });
+    status.className = "status status--success";
+    status.textContent = "Opened in a new tab.";
+  } catch (error) {
+    status.className = "status status--error";
+    status.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    itemElement.classList.remove("queue-item--claiming");
+    // Refresh regardless of outcome -- a successful claim makes the item
+    // disappear from GET /queue's own results (no longer 'pending'), and a
+    // failed one means whatever the popup had cached was already stale;
+    // either way, re-fetching is what makes the list honest again.
+    const cache = /** @type {import("../common/storage.js").QueueCache} */ (
+      await browser.runtime.sendMessage({ type: REFRESH_QUEUE_LIST })
+    );
+    renderQueueItems(list, cache.items);
   }
 }
 

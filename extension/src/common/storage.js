@@ -127,3 +127,44 @@ export async function getQueueCache() {
 export async function setQueueCache(cache) {
   await browser.storage.local.set({ [QUEUE_CACHE_KEY]: cache });
 }
+
+// Tracks which open tab is fulfilling which claimed queue item -- see
+// queue.js's claimQueueItem() (which sets this right after opening the
+// tab) and capture.js's captureActiveTab() (which checks this to decide
+// whether to complete via POST /queue/:id/complete instead of the default
+// POST /captures/complete). Keyed by tabId, stringified -- object keys are
+// always strings regardless of what you index with, made explicit here
+// rather than relying on implicit coercion to be obvious at every call
+// site.
+//
+// Never explicitly cleaned up if a tab is just closed without capturing since it's
+// not needed: the Worker's own claim already goes stale and
+// becomes reclaimable after 15 minutes (see terraform/index.js's
+// handleClaimQueueItem), so an orphaned entry here is harmless clutter,
+// not a correctness problem. Tidied up on tab close anyway
+// (background/index.js's tabs.onRemoved listener) purely so this doesn't
+// grow without bound over a long browsing session.
+const CLAIMED_TABS_KEY = "recueil:claimed-tabs";
+
+/** @returns {Promise<Record<string, string>>} stringified tabId -> queue item id */
+export async function getClaimedTabs() {
+  const stored = await browser.storage.local.get(CLAIMED_TABS_KEY);
+  return /** @type {Record<string, string>} */ (stored[CLAIMED_TABS_KEY] ?? {});
+}
+
+/**
+ * @param {number} tabId
+ * @param {string} itemId
+ */
+export async function setClaimedTab(tabId, itemId) {
+  const tabs = await getClaimedTabs();
+  tabs[String(tabId)] = itemId;
+  await browser.storage.local.set({ [CLAIMED_TABS_KEY]: tabs });
+}
+
+/** @param {number} tabId */
+export async function clearClaimedTab(tabId) {
+  const tabs = await getClaimedTabs();
+  delete tabs[String(tabId)];
+  await browser.storage.local.set({ [CLAIMED_TABS_KEY]: tabs });
+}

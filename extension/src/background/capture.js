@@ -17,10 +17,15 @@
  */
 
 // Direct capture end to end: inject -> hash -> presign -> upload -> notify.
-// This is the "user is already on the page, click save" path -- the
-// queue-driven path (open a tab nobody has open, wait for it to load, run
-// this same capture, close the tab) is real, separable work that reuses
-// captureTab() below but isn't built yet.
+// This is the "user is already on the page, click save" path -- also now
+// how a claimed queue item actually gets captured, once the user has
+// solved whatever the page needed by hand: queue.js's claimQueueItem()
+// opens a focused tab and records tabId -> queueItemId (storage.js), and
+// captureActiveTab() below checks that record to decide whether this
+// capture completes via POST /queue/:id/complete instead of its default
+// POST /captures/complete. Everything else about the capture itself is
+// identical either way -- there's no "queue mode" capture pipeline, only a
+// different completion call at the very end.
 //
 // Talks to two genuinely different endpoint families, on purpose:
 // api-client.js's apiRequest() for the Worker's own JSON endpoints
@@ -31,7 +36,11 @@
 // Authorization header R2 never asked for and doesn't want.
 
 import browser from "webextension-polyfill";
-import { getConfig } from "../common/storage.js";
+import {
+  getConfig,
+  getClaimedTabs,
+  clearClaimedTab,
+} from "../common/storage.js";
 import { apiRequest } from "../common/api-client.js";
 import { sha256Hex } from "../common/hash.js";
 
@@ -53,17 +62,39 @@ export async function captureActiveTab() {
   if (!tab || tab.id === undefined || tab.url === undefined) {
     throw new Error("recueil: no active tab found");
   }
-  return captureTab(tab.id, tab.url);
+
+  const claimedTabs = await getClaimedTabs();
+  const queueItemId = claimedTabs[String(tab.id)];
+
+  const result = await captureTab(tab.id, tab.url, queueItemId);
+
+  // Only cleared on success -- a failed attempt (a transient network
+  // error, say) shouldn't lose the tab's association with the queue item
+  // it's fulfilling; the user should just be able to click "Save this
+  // page" again on the same tab without needing to go back to the queue
+  // list and re-claim (which would be redundant anyway, this device
+  // already holds the claim).
+  if (queueItemId && tab.id !== undefined) {
+    await clearClaimedTab(tab.id);
+  }
+
+  return result;
 }
 
 /**
  * @param {number} tabId
  * @param {string} url - the tab's current URL, passed separately rather
- *   than re-read from the tab, since the queue-driven path (not built yet)
- *   will want to pass the *enqueued* URL explicitly rather than trust
- *   whatever the tab navigated to.
+ *   than re-read from the tab. Only actually used when queueItemId is
+ *   unset (POST /captures/complete needs it explicitly; POST
+ *   /queue/:id/complete reads the URL back off the queue_items row itself
+ *   instead) -- still always passed in either way, so callers don't need
+ *   to know which completion path applies.
+ * @param {string} [queueItemId] - if set, this capture completes via
+ *   POST /queue/:id/complete instead of POST /captures/complete -- see
+ *   captureActiveTab above and queue.js's claimQueueItem for where this
+ *   comes from.
  */
-export async function captureTab(tabId, url) {
+export async function captureTab(tabId, url, queueItemId) {
   const config = await getConfig();
   if (!config) {
     throw new NotPairedError();
@@ -114,15 +145,29 @@ export async function captureTab(tabId, url) {
     );
   }
 
-  const completion = await apiRequest(config, "/captures/complete", {
-    method: "POST",
-    body: {
-      capture_id: captureId,
-      url,
-      captured_at: new Date().toISOString(),
-      ...(faviconBytes ? { favicon_ext: faviconExt } : {}),
-    },
-  });
+  // POST /queue/:id/complete doesn't take url in its body at all -- it
+  // reads it back off the queue_items row the Worker already has (see
+  // terraform/index.js's handleCompleteQueueItem), unlike
+  // POST /captures/complete, which has no queue_items row to fall back on
+  // and needs the caller to supply it directly.
+  const completion = queueItemId
+    ? await apiRequest(config, `/queue/${queueItemId}/complete`, {
+        method: "POST",
+        body: {
+          capture_id: captureId,
+          captured_at: new Date().toISOString(),
+          ...(faviconBytes ? { favicon_ext: faviconExt } : {}),
+        },
+      })
+    : await apiRequest(config, "/captures/complete", {
+        method: "POST",
+        body: {
+          capture_id: captureId,
+          url,
+          captured_at: new Date().toISOString(),
+          ...(faviconBytes ? { favicon_ext: faviconExt } : {}),
+        },
+      });
 
   return { captureId, title: captured.title, ...completion };
 }
