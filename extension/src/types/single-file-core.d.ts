@@ -21,25 +21,22 @@
 // Shapes are drawn from reading core/index.js and core/util.js directly, not
 // from any published documentation (there is none).
 declare module "single-file-core/single-file.js" {
-  type FetchLikeFn = (
-    url: string,
-    init?: { headers?: HeadersInit; referrer?: string },
-  ) => Promise<{
-    status: number;
-    statusText: string;
-    url: string;
-    headers: { get(name: string): string | null };
-    arrayBuffer(): Promise<ArrayBuffer>;
-  }>;
-
   /**
    * Sets fetch/frameFetch overrides (see relay-fetch.js) and other
    * process-wide options core/util.js's getInstance() reads back later.
    * Real signature is far broader; only what we actually pass is declared.
    */
   export function init(options?: {
-    fetch?: FetchLikeFn;
-    frameFetch?: FetchLikeFn;
+    fetch?: (
+      url: string,
+      init?: { headers?: HeadersInit; referrer?: string },
+    ) => Promise<{
+      status: number;
+      statusText: string;
+      url: string;
+      headers: { get(name: string): string | null };
+      arrayBuffer(): Promise<ArrayBuffer>;
+    }>;
   }): void;
 
   /**

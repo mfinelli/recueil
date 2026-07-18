@@ -34,31 +34,16 @@
 // functions can't close over module scope), which is exactly why this
 // needs to be a global rather than an export.
 //
-// MULTI-FRAME CAPTURE: this same bundle is injected into every frame on
-// the page (background/capture.js's runCaptureInject uses
-// target.allFrames: true for the `files` step), but captureFrame() below
-// is only ever invoked in the top frame (the second, func-based
-// executeScript call is never allFrames). That asymmetry is deliberate,
-// not an oversight: single-file-core/single-file.js unconditionally
-// imports processors/index.js, which unconditionally imports
-// content-frame-tree.js -- the actual frame-tree collection logic already
-// runs its own postMessage-based coordination protocol as an import-time
-// side effect (a MutationObserver plus window "message" listeners), in
-// every frame that has this bundle loaded, regardless of whether
-// captureFrame() itself is ever called there. So merely loading this
-// bundle in a subframe is what lets it participate -- calling
-// captureFrame() a second time there would be redundant (and wrong: a
-// subframe has no favicon of its own to select, for one). getPageData()'s
-// own removeFrames: false below is what makes it actually go looking for
-// those other frames' data at all, via the same content-frame-tree module,
-// which the top frame's copy also has loaded.
+// IMPORTANT CAVEAT: multi-frame capture (embedded iframes) is deliberately
+// not implemented here yet -- removeFrames: true below means only the top
+// document is captured.
 
 import * as singlefile from "single-file-core/single-file.js";
 import { relayFetch } from "./relay-fetch.js";
 import { selectFavicon } from "./favicon.js";
 
 const CAPTURE_OPTIONS = {
-  removeFrames: false, // collect embedded iframes too -- see file doc comment
+  removeFrames: true, // top document only for now -- see caveat above
   compressHTML: true,
   removeHiddenElements: true,
   removeUnusedStyles: true,
@@ -88,13 +73,11 @@ const CAPTURE_OPTIONS = {
 /** @returns {Promise<CapturedPage>} */
 async function captureFrame() {
   singlefile.init({
-    // frameFetch shares relayFetch with fetch -- both need the same
-    // background-context CORS bypass (see background/fetch-relay.js),
-    // and single-file-core's own default (frameFetch || fetch) would
-    // already end up here anyway; passing it explicitly just documents
-    // that this isn't an oversight now that frames are actually in play.
+    // frameFetch intentionally omitted: single-file-core's own default is
+    // `frameFetch || fetch`, and there are no frames to fetch from yet
+    // (see removeFrames above) -- nothing to wire up until multi-frame
+    // capture lands.
     fetch: relayFetch,
-    frameFetch: relayFetch,
   });
 
   const pageData = await singlefile.getPageData(CAPTURE_OPTIONS);
