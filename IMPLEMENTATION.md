@@ -984,12 +984,58 @@ Concretely, what's built in `extension/`:
 
 ### Still ahead
 
-Queue-driven capture (alarm-driven polling, opening a tab nobody has open,
-waiting for it to load, running the same capture pipeline, closing it,
-`fail`-ing on timeout) and the bookmark-list menu (pulling the D1 mirror for
-popup display) — no forced ordering between them. Safari packaging, whenever
-that becomes a priority — mechanical (Xcode-wrapped, same source), not attempted
-yet.
+The bookmark-list menu (pulling the D1 mirror for popup display). Safari
+packaging, whenever that becomes a priority — mechanical (Xcode-wrapped, same
+source), not attempted yet.
+
+### Queue-driven capture
+
+Built as two isolated steps, tested separately, per Mario's own preference for
+incremental delivery: the list-refresh-and-badge half first, then the actual
+claim flow and completion-routing change on top. Ended up simpler on the backend
+side than expected — `POST /queue/:id/claim` and its 404/409/410 distinctions
+already existed from Phase 2 (atomic claim + 15-minute stale-reclaim), so this
+phase needed zero new Worker endpoints, only the extension-side pieces:
+
+- `background/queue.js`: `refreshQueueList()` (cache + badge, see DESIGN.md §3i
+  for the four refresh triggers and why none of them fire on every
+  service-worker wake) and `claimQueueItem()` (the real, live lock check, opens
+  a focused tab on success, tracks `tabId -> queueItemId`).
+- `background/capture.js`: `captureActiveTab()` checks that tracked map and
+  routes completion to `POST /queue/:id/complete` instead of the default
+  `POST /captures/complete` when it's set; also where the tab-auto-close logic
+  lives (queue-driven only, never direct — see DESIGN.md §3i for the reasoning).
+- `popup/popup.js`: a clickable queue list, a manual refresh button, and a
+  status area for claim errors (already fully human-readable by the time they
+  reach the popup — see DESIGN.md §3i on why that translation has to happen in
+  the background, before crossing the messaging boundary).
+
+The core design pivot worth remembering: the original plan (background tab,
+unsupervised, timeout-based failure detection) doesn't work, for a reason that
+only became clear from testing rather than reasoning about it in advance — a
+CAPTCHA or paywall page captures _successfully_, no error at all, just wrong
+content. Nothing about a background tab's load state distinguishes that from a
+real page loading correctly. The fix wasn't a better detection heuristic (there
+isn't one), it was putting a human in the loop by default, for every queue item,
+and reusing the already-proven direct-capture pipeline as the actual completion
+mechanism instead of building a separate automated one.
+
+Two small follow-up fixes landed once real use surfaced them: refreshing the
+queue immediately after a successful pairing (otherwise the popup shows "nothing
+in the queue" until whichever of the alarm/startup triggers happens to fire
+next, even with real pending items already on the instance), and confirming
+(against Chrome's own documentation, consistent with Firefox's own bug history)
+that a periodic alarm missed across several ticks — a laptop suspended for 24
+hours against a 6-hour period, say — fires exactly once on resume rather than
+once per missed tick.
+
+11 new tests (`queue.test.js`'s `claimQueueItem`, `storage.test.js`'s
+claimed-tabs round-trips) — `captureActiveTab`'s tab-closing behavior itself was
+deliberately left to manual/console verification rather than given a dedicated
+test, since exercising it meaningfully would mean mocking the entire
+tab/scripting/fetch pipeline just to check one boolean call at the end, the same
+coverage-theater tradeoff already ruled out for `capture.js`'s other
+tab-touching functions.
 
 ### `POST /captures/complete`: direct-capture completion
 

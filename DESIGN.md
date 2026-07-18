@@ -842,6 +842,96 @@ in `bundle-entry.js`, though that's documentation only: `core/util.js`'s own
 
 ---
 
+### 3i. Queue-driven capture
+
+**Human-in-the-loop by default, not as a detected-failure fallback.** The
+original design assumed queue-driven capture would open a tab in the background
+(`active: false`), wait for it to load, capture it, and close it — unsupervised,
+the same shape as a headless-browser cron job. That assumption turned out to be
+wrong for a specific, concrete reason: a CAPTCHA or paywall page captures
+_successfully_ from `single-file-core`'s point of view — no error, no timeout,
+just the wrong content, silently archived as if it were the real page (confirmed
+directly: pages already archived this way exist in testing). There is no generic
+signal — no DOM marker, no HTTP status, nothing — that distinguishes "this page
+needs a human" from "this page loaded fine." Any design that tries to detect
+that automatically doesn't work, and trying to solve it (auto-bypassing
+CAPTCHAs, defeating paywalls) isn't something this project should be doing
+anyway. So the design puts a human in the loop for every queue item, always —
+not as a fallback path for failures the system noticed, since it fundamentally
+can't notice this particular kind of failure.
+
+**Concretely:**
+
+- The popup shows a plain list of pending items (`GET /queue` — id and url are
+  all that's meaningful to show), cached in `storage.local` and refreshed from
+  four places: `runtime.onStartup`/`onInstalled`, a 6-hour alarm, the popup's
+  own manual refresh button, and immediately after a successful pairing
+  (otherwise the popup shows "nothing in the queue" until whichever of the first
+  three happens to fire next, even when the instance already has real pending
+  items). None of these run on every service-worker wake, which would mean an
+  extra Worker round-trip on nearly every message this background handles,
+  including ones with nothing to do with the queue.
+- **This cached list is never authoritative.** Clicking an item sends the real,
+  live `POST /queue/:id/claim` — reusing Phase 2's existing atomic claim
+  (`UPDATE ... WHERE status = 'pending' OR (status = 'claimed' AND claimed_at < ...)`)
+  and its 404/409/410 distinctions untouched; no new backend work was needed for
+  any of this. A claim failure's status code is translated into a human-readable
+  message in the background, before it ever crosses the `runtime.sendMessage`
+  boundary back to the popup — a custom property like an error's `.status` isn't
+  reliably preserved across that boundary the way `.message` is, so the
+  translation has to happen while it's still a real, in-process object, not be
+  reconstructed from whatever survives the crossing.
+- **On a successful claim, a new tab opens focused, in the current window**
+  (`tabs.create({url, active: true})`) — deliberately stealing focus, unlike the
+  original background-tab assumption, precisely because this is now an explicit
+  action the user just asked for, the same as clicking any other link.
+- **The user solves whatever the page needs entirely by hand** — no detection,
+  no automation, ever attempted.
+- **Completion reuses the exact existing direct-capture pipeline, not a separate
+  "queue capture" path.** `capture.js`'s `captureTab`/`captureActiveTab` take an
+  optional `queueItemId`, sourced from a small `tabId -> queueItemId` map
+  (`storage.js`, written by the claim step) — when set, completion calls
+  `POST /queue/:id/complete` instead of `POST /captures/complete`; everything
+  upstream of that one call (inject, hash, presign, upload) is identical either
+  way. The map entry is only cleared on success, not on failure — a failed
+  attempt (a transient network error) shouldn't lose the tab's association with
+  the item it's fulfilling; retrying is just clicking "Save this page" again on
+  the same tab, not going back to re-claim (which would be redundant anyway —
+  this device already holds the claim).
+- **An abandoned claim needs no explicit handling.** If the user closes the tab
+  without ever completing it, nothing further happens on the extension side —
+  the Worker's own claim already goes stale and becomes reclaimable (by any
+  device) after 15 minutes, a mechanism that already existed before any of this
+  was built. A `tabs.onRemoved` listener does tidy up the `tabId -> queueItemId`
+  map entry on tab close, but purely for storage hygiene (so it doesn't grow
+  without bound over a long browsing session), not because leaving it would be
+  incorrect.
+- **The tab auto-closes on success, but only for queue-driven captures, never
+  direct ones.** A direct capture's tab is one the user already had open for
+  their own reasons — closing it out from under them would be genuinely
+  disruptive. A queue-driven tab exists _only_ because clicking a queue item
+  created it; once the capture succeeds it's served its entire purpose, the same
+  way a print-preview window closing after printing feels natural rather than
+  disruptive. Left open on failure, so the user can see what went wrong or just
+  retry. Best-effort (`.catch(() => {})`) either way: the capture itself has
+  already fully succeeded by the point the tab close is attempted, so a failure
+  to close (the user having already closed it themselves in the interim, say) is
+  not a reason to report the capture as failed.
+- **A missed periodic alarm doesn't accumulate.** Confirmed against Chrome's own
+  documentation ("repeating alarms will fire at most once and then be
+  rescheduled using the specified period starting from when the device wakes")
+  and consistent with Firefox's own bug history (reports describe a missed alarm
+  firing _late_, never multiple times to catch up) — a laptop suspended through
+  several missed 6-hour ticks triggers exactly one refresh on resume, not one
+  per missed tick.
+
+The toolbar badge (`action.setBadgeText`/`setBadgeBackgroundColor`, cleared to
+empty when the queue is empty) is updated in the same function that refreshes
+the cache, so there's exactly one place that can ever disagree with the list the
+popup shows — not a separately-maintained count that could drift from it.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
