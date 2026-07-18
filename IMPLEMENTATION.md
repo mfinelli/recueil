@@ -909,12 +909,12 @@ design writeup; this is the "what actually landed" companion to it.
 
 ### What actually works end to end
 
-Pairing, direct capture (single frame — see DESIGN.md §3h for why multi-frame is
-deferred), favicon capture, upload to R2, and backend ingestion via
-`recueil agent` have all been confirmed working together against a real deployed
-Worker and a real Postgres instance — not just unit-tested in isolation. A
-captured page shows up as a real row in `captures` with a real `favicon_path`,
-the same as if it had come through any other path.
+Pairing, direct capture (including embedded-iframe inlining — see DESIGN.md
+§3h), favicon capture, upload to R2, and backend ingestion via `recueil agent`
+have all been confirmed working together against a real deployed Worker and a
+real Postgres instance — not just unit-tested in isolation. A captured page
+shows up as a real row in `captures` with a real `favicon_path`, the same as if
+it had come through any other path.
 
 Concretely, what's built in `extension/`:
 
@@ -928,8 +928,10 @@ Concretely, what's built in `extension/`:
   deliberately never returning the token itself to a caller.
 - **Capture** (`background/capture.js`, `capture-inject/`): the two-step
   injection pattern, `single-file-core` wired with the direct-fetch-first relay
-  (`relay-fetch.js`, see DESIGN.md §3h), favicon selection (`favicon.js`), all
-  glued together in `captureTab`/`captureActiveTab`.
+  (`relay-fetch.js`, see DESIGN.md §3h), embedded-iframe inlining
+  (`allFrames: true` injection + `background/frame-tree-relay.js`, see DESIGN.md
+  §3h), favicon selection (`favicon.js`), all glued together in
+  `captureTab`/`captureActiveTab`.
 - **Upload orchestration**: `POST /captures/upload-urls` → R2 PUT(s) →
   `POST /captures/complete` — the same direct-capture endpoint added earlier
   this phase, now with a real caller.
@@ -938,11 +940,14 @@ Concretely, what's built in `extension/`:
   placeholder) and a "Save this page" button — deliberately unstyled, a second
   pass once the UI's actual shape has stopped moving.
 - **Extension test suite**: a new `"extension"` vitest project (jsdom
-  environment), 70 tests across `favicon.js`, `hash.js`, `relay-fetch.js`,
-  `storage.js`, `api-client.js`, `auth.js`, and `device-name.js` — the last of
-  which caught a real bug (iOS user agents misdetected as macOS, since iOS UAs
-  always include "like Mac OS X" as a compatibility string and the OS check
-  order didn't account for that).
+  environment), 80 tests across `favicon.js`, `hash.js`, `relay-fetch.js`,
+  `storage.js`, `api-client.js`, `auth.js`, `device-name.js`, and
+  `frame-tree-relay.js`. `device-name.js` caught a real bug (iOS user agents
+  misdetected as macOS, since iOS UAs always include "like Mac OS X" as a
+  compatibility string and the OS check order didn't account for that);
+  `frame-tree-relay.js` pins the relay's forwarding, its `Promise.resolve`
+  response, and that it leaves non-frame-tree messages for the other background
+  listeners.
 - **Type checking**: `extension/tsconfig.json` (JSDoc-based, same pattern as the
   Worker's), including a hand-written ambient declaration for `single-file-core`
   (which ships no types at all) covering only the two functions actually called.
@@ -960,21 +965,29 @@ Concretely, what's built in `extension/`:
   when attempting to fetch resource.") with no indication of which of several
   fetch calls across the pipeline had actually failed. Fixed by wrapping each
   one with context and a proper `.cause` chain.
-- **Multi-frame capture**: see DESIGN.md §3h for the full account — a genuine
-  hang, not a timeout, tracked down to one real, confirmed, and fixed bug along
-  the way (a missing `globalThis.singlefile` assignment `content-frame-tree.js`
-  depends on) that nonetheless did not resolve the actual hang. Deferred with
-  the investigation's findings preserved rather than re-attempted blind next
-  time.
+- **Multi-frame capture** (now fixed): see DESIGN.md §3h for the full account.
+  The symptom — `getPageData()` hanging plus Firefox's "Receiving end does not
+  exist." the moment `removeFrames` flipped to `false` — was a missing
+  **background frame-tree relay**, not anything on the content side. On Firefox
+  (native `globalThis.browser`), `content-frame-tree.js` hands each frame's DOM
+  to the top frame via `browser.runtime.sendMessage` and expects the background
+  to forward it to `frameId: 0`; with no such listener the send both rejected
+  and never delivered, so collection never completed. Two prior source-reading
+  theories (notably a missing `globalThis.singlefile` assignment) pointed at the
+  content side and didn't fix it — instructive because the leg they addressed is
+  one the code only sometimes takes, falling through to the
+  `runtime.sendMessage` transport that actually had no receiver. Chrome was
+  never affected (`globalThis.browser` is `undefined` there, so the collector
+  coordinates in-page via `postMessage`). Fixed with
+  `background/frame-tree-relay.js`, modeled on `SingleFile-MV3`'s own
+  `frame-tree/bg/frame-tree.js`, and confirmed in a real capture.
 
 ### Still ahead
 
 Queue-driven capture (alarm-driven polling, opening a tab nobody has open,
 waiting for it to load, running the same capture pipeline, closing it,
 `fail`-ing on timeout) and the bookmark-list menu (pulling the D1 mirror for
-popup display) — both fully independent of multi-frame capture, no forced
-ordering between them. Multi-frame capture itself, revisited later with actual
-runtime debugging rather than more source-reading. Safari packaging, whenever
+popup display) — no forced ordering between them. Safari packaging, whenever
 that becomes a priority — mechanical (Xcode-wrapped, same source), not attempted
 yet.
 

@@ -757,47 +757,88 @@ Notably, `SingleFile-MV3` has no keepalive mechanism anywhere in its source (no
 `runtime.connect` port, no alarm-based ping) — this fetch ordering is _why_, not
 a gap they left unaddressed.
 
-**Multi-frame (iframe) capture is deferred, not implemented — a real,
-partially-understood gap, not just an unattempted feature.** `single-file-core`
-already unconditionally bundles frame-tree collection logic as a transitive
-dependency (`processors/index.js` → `content-frame-tree.js`), gated behind the
+**Multi-frame (iframe) capture is implemented — embedded frames are inlined into
+the top document, not dropped.** `single-file-core` already unconditionally
+bundles frame-tree collection logic as a transitive dependency
+(`processors/index.js` → `content-frame-tree.js`), gated behind the
 `removeFrames` option and requiring the bundle to be injected into every frame
-(`target.allFrames: true`), not just the top one. Reintroducing this was staged
-deliberately, in isolated steps, after an initial single-change attempt broke
-even single-frame pages in a way that was hard to diagnose:
+(`target.allFrames: true`), not just the top one. Turning it on took three
+pieces, staged deliberately in isolated steps after an initial single-change
+attempt broke even single-frame pages in a way that was hard to diagnose:
 
-1. Injecting the bundle into every frame alone (`allFrames: true`, but
-   `removeFrames` still `true`, so collection itself never runs) — confirmed
-   safe on its own, both plain and iframe-containing pages captured correctly.
-2. Flipping `removeFrames: false` alone — this is where it actually breaks:
-   `getPageData()` hangs forever, confirmed via direct instrumentation (not
-   inferred), on _any_ page including ones with zero iframes. One real,
-   confirmed contributing bug was found and fixed along the way:
-   `content-frame-tree.js`'s `sendInitResponse` resolves the top window's own
-   session via `top.singlefile.processors.frameTree.initResponse(message)`, a
-   synchronous same-realm property access neither official extension needs to
-   arrange manually — their Rollup builds bundle
-   `single-file-core/single- file.js` as its own dedicated output with
-   `output.name: "singlefile"`, which exposes that exact module's exports as a
-   global automatically. recueil's bundle is a wrapper entry point with no
-   exports of its own, so the equivalent esbuild option (`globalName`) doesn't
-   achieve the same thing; explicitly assigning
-   `globalThis.singlefile = singlefile` (the already-imported namespace) does.
-   **This fix alone did not resolve the hang** — `getPageData()` still never
-   resolves with it in place, confirmed the same way (direct instrumentation,
-   not inference). The actual cause of the hang itself remains unidentified.
+1. Injecting the bundle into every frame (`allFrames: true` on the `files` step,
+   `removeFrames` still `true` so collection never runs) — confirmed safe on its
+   own, both plain and iframe-containing pages captured correctly.
+2. Flipping `removeFrames: false` — where the symptom appeared: `getPageData()`
+   hung and Firefox reported
+   `Could not establish connection. Receiving end does not exist.`, on _any_
+   page including ones with zero iframes (the top frame still runs `getAsync`
+   there, because `globalThis.frames` is always truthy — it reports its own
+   empty frame list through the same path).
+3. Adding a **background frame-tree relay**
+   (`extension/src/background/frame-tree-relay.js`) — the actual fix.
 
-Current state: `removeFrames` is back to `true`, `allFrames: true` injection
-(step 1 above) is kept since it's confirmed harmless, and the
-`globalThis.singlefile` assignment is _not_ currently in the codebase (reverted
-along with the rest of the `removeFrames: false` attempt, since it didn't fix
-anything on its own and there was no reason to carry a partial, unproven fix
-forward). A page with iframes captures correctly today — the parent page content
-is saved — just without the iframe content inlined. Revisiting this is better
-done with actual runtime debugging tools (a real Firefox/Chrome devtools session
-stepping through `content-frame-tree.js` itself) than more source-reading, which
-has now twice produced a plausible-sounding theory that didn't match observed
-behavior.
+The root cause is a transport split inside `content-frame-tree.js`'s
+`sendMessage`, which chooses how a frame hands its serialized DOM back to the
+top frame by reading `globalThis.browser`:
+
+```js
+if (targetWindow == top && browser && browser.runtime && browser.runtime.sendMessage) {
+  browser.runtime.sendMessage(message); // expects the background to forward to frameId 0
+} else {
+  targetWindow.postMessage(...);        // in-page, no background involved
+}
+```
+
+- On **Chrome**, `globalThis.browser` is `undefined` in the content-script world
+  — `webextension-polyfill` is bundled as a module import, which under esbuild's
+  CJS path never assigns `globalThis.browser`, and Chrome has no native
+  `browser`. So the collector takes the `postMessage`/`MessageChannel` branch
+  and coordinates entirely in-page; no background is involved and step 1's
+  injection is all it needs.
+- On **Firefox** (where `web-ext run` puts iterative testing),
+  `globalThis .browser` is native, so a frame posts its result through
+  `browser.runtime.sendMessage` and _expects the background to relay it to the
+  top frame_. With no relay listener, that send both rejects with "Receiving end
+  does not exist." _and_ never delivers the frame data — so the top frame's
+  collection never completes. The hang and the error are the same event, which
+  is why it fired even on zero-iframe pages.
+
+`SingleFile-MV3` has exactly this relay and recueil simply lacked it: its
+`background.js` imports `frame-tree/bg/frame-tree.js`, a small listener that
+forwards `singlefile.frameTree.initResponse` / `ackInitRequest` to
+`tabs.sendMessage(tabId, message, { frameId: 0 })` and returns a resolved
+promise so the sender settles instead of rejecting. recueil's
+`frame-tree-relay.js` is modeled directly on it, registered alongside the fetch
+relay in `background/index.js`. It's a hard requirement on Firefox and a no-op
+on Chrome (never invoked there), so both targets stay on one background code
+path even though the content side diverges — which also keeps Chrome on its
+background-independent in-page path, consistent with the direct-fetch-first
+reasoning above.
+
+Two earlier source-reading theories pointed at the content side rather than the
+background, and neither fixed it — the more instructive one:
+`content-frame-tree.js`'s `sendInitResponse` _first_ tries a synchronous
+same-realm call, `top.singlefile.processors.frameTree.initResponse(message)`,
+before falling back to `sendMessage`. Both official extensions get
+`globalThis.singlefile` for free because their Rollup builds emit
+`single-file-core/single-file.js` as its own output with
+`output.name: "singlefile"`; recueil's wrapper entry point has no exports of its
+own, so the equivalent esbuild `globalName` wouldn't reproduce it, and
+`globalThis.singlefile = singlefile` (the already-imported namespace) would. But
+that leg only matters for the top frame's own frames — cross-origin subframes
+always throw on `top.singlefile` and fall through regardless — and the leg it
+falls _through to_ is the `runtime.sendMessage` transport above, the one with no
+receiver. That's why assigning the global didn't resolve the hang on its own: it
+fixes a path the code only sometimes takes. It's deliberately left out of the
+shipped fix; at most it's a latency optimization (one fewer round-trip for the
+top frame's own frames) worth adding later as its own isolated step.
+
+This was confirmed in a real capture, not just the toolchain — closing out the
+earlier state where source-reading had twice produced a plausible theory that
+didn't match observed behavior. `frameFetch` is wired to `relayFetch` explicitly
+in `bundle-entry.js`, though that's documentation only: `core/util.js`'s own
+`frameFetch || fetch` default already resolves to `relayFetch`.
 
 ---
 
