@@ -163,13 +163,85 @@ func applyAndRecord(
 	if ignoreConflict {
 		insertVerb = "INSERT OR IGNORE INTO"
 	}
+	// Comments are stripped before this ever reaches D1's HTTP API: its
+	// server-side multi-statement splitter (used whenever a raw
+	// semicolon-joined "sql" string is posted to /query, as opposed to an
+	// array of pre-split statements) is not reliably comment-aware — a
+	// stray apostrophe inside a "--" comment, for instance, is enough to
+	// desync its quote tracking and misparse statement boundaries,
+	// surfacing as a 400 "SQL code did not contain a statement" even
+	// though the SQL is entirely valid. See
+	// github.com/cloudflare/workers-sdk#4767 (and #3892, #7739) for the
+	// documented upstream bug class. Our own migration files are
+	// human-documented with license headers and doc comments that are
+	// only ever meant for readers, not for D1, so stripping them here
+	// sidesteps the whole bug class rather than chasing its exact
+	// trigger conditions.
+	stripped := stripSQLComments(string(sqlBytes))
 	combined := fmt.Sprintf("%s\n%s schema_migrations (id) VALUES ('%s');",
-		string(sqlBytes), insertVerb, id)
+		stripped, insertVerb, id)
 
 	_, err = client.D1.Database.Query(ctx, cfg.DatabaseID,
 		queryParams(cfg, combined))
 
 	return err
+}
+
+// stripSQLComments removes "--" line comments and "/* */" block comments
+// from SQL text, tracking single-quoted string literals so that a comment
+// marker (or an apostrophe) occurring inside an actual string literal isn't
+// mistaken for one. Migration files carry a license header and doc comments
+// meant for human readers; this keeps them out of what's actually sent to
+// D1, which is the surface where the comment-parsing bug documented in
+// applyAndRecord lives.
+func stripSQLComments(sql string) string {
+	var b strings.Builder
+	runes := []rune(sql)
+	inString := false
+
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+
+		if inString {
+			b.WriteRune(c)
+			if c == '\'' {
+				inString = false
+			}
+			continue
+		}
+
+		if c == '\'' {
+			inString = true
+			b.WriteRune(c)
+			continue
+		}
+
+		if c == '-' && i+1 < len(runes) && runes[i+1] == '-' {
+			for i < len(runes) && runes[i] != '\n' {
+				i++
+			}
+			// Preserve the newline (if any) so a statement before the
+			// comment and one after it don't get glued onto the same
+			// line; harmless either way, but keeps output readable.
+			if i < len(runes) {
+				b.WriteRune('\n')
+			}
+			continue
+		}
+
+		if c == '/' && i+1 < len(runes) && runes[i+1] == '*' {
+			i += 2
+			for i+1 < len(runes) && !(runes[i] == '*' && runes[i+1] == '/') {
+				i++
+			}
+			i++ // land on the closing '/'; loop's i++ steps past it
+			continue
+		}
+
+		b.WriteRune(c)
+	}
+
+	return b.String()
 }
 
 func appliedIDs(

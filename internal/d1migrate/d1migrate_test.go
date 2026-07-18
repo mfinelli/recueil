@@ -81,6 +81,62 @@ func TestReadMigrations(t *testing.T) {
 	}
 }
 
+// TestStripSQLComments guards against the D1 remote /query bug that
+// motivated stripping comments in the first place (see the comment in
+// applyAndRecord and github.com/cloudflare/workers-sdk#4767): comments,
+// including ones containing apostrophes or semicolons, must never reach the
+// combined SQL sent to D1, while string literals (which also contain
+// apostrophes) must survive untouched.
+func TestStripSQLComments(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "strips line comment to end of line",
+			in:   "SELECT 1; -- trailing comment\nSELECT 2;",
+			want: "SELECT 1; \nSELECT 2;",
+		},
+		{
+			name: "strips block comment",
+			in:   "/* block */ SELECT 1;",
+			want: " SELECT 1;",
+		},
+		{
+			name: "strips multi-line block comment",
+			in:   "/*\n * license\n */\nSELECT 1;",
+			want: "\nSELECT 1;",
+		},
+		{
+			name: "apostrophe inside a line comment does not open a string",
+			in:   "-- before it's able to query\nSELECT 1;",
+			want: "\nSELECT 1;",
+		},
+		{
+			name: "semicolon inside a line comment is not a statement boundary",
+			in:   "-- drop me; entirely\nSELECT 1;",
+			want: "\nSELECT 1;",
+		},
+		{
+			name: "real string literals are preserved untouched",
+			in:   "INSERT INTO t (v) VALUES ('it\\'s fine');",
+			want: "INSERT INTO t (v) VALUES ('it\\'s fine');",
+		},
+		{
+			name: "line comment after a real string literal",
+			in:   "SELECT 'value'; -- comment with a apostrophe\nSELECT 2;",
+			want: "SELECT 'value'; \nSELECT 2;",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, stripSQLComments(tt.in))
+		})
+	}
+}
+
 func TestQueryParams(t *testing.T) {
 	cfg := Config{AccountID: "acct-123", DatabaseID: "db-456"}
 	params := queryParams(cfg, "SELECT 1;")
@@ -116,7 +172,12 @@ func TestRun(t *testing.T) {
 		//   - a migration already reported as applied is never re-sent
 		//   - a pending migration is sent, combined with a plain INSERT
 		fsys := fstest.MapFS{
-			"0000_schema_migrations.sql": {Data: []byte("CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;")},
+			// The leading comment (with an apostrophe, mirroring the real
+			// 0000_schema_migrations.sql doc comment) is a regression
+			// fixture for the D1 comment-parsing bug
+			// (github.com/cloudflare/workers-sdk#4767) that
+			// stripSQLComments exists to route around.
+			"0000_schema_migrations.sql": {Data: []byte("-- runner's own bookkeeping table\nCREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY) STRICT, WITHOUT ROWID;")},
 			"0001_users.sql":             {Data: []byte("CREATE TABLE users (id INTEGER PRIMARY KEY) STRICT;")},
 			"0002_sessions.sql":          {Data: []byte("CREATE TABLE sessions (id TEXT PRIMARY KEY) STRICT;")},
 		}
@@ -175,6 +236,8 @@ func TestRun(t *testing.T) {
 
 		assert.Contains(t, receivedSQL[0], "CREATE TABLE IF NOT EXISTS schema_migrations")
 		assert.Contains(t, receivedSQL[0], "INSERT OR IGNORE INTO schema_migrations (id) VALUES ('0000_schema_migrations')")
+		assert.NotContains(t, receivedSQL[0], "--",
+			"comments (and their apostrophes) must never reach D1's /query endpoint")
 
 		assert.Equal(t, "SELECT id FROM schema_migrations;", receivedSQL[1])
 
