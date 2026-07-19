@@ -74,3 +74,19 @@ variable "r2_secret_access_key" {
   type        = string
   sensitive   = true
 }
+
+variable "enable_browser_integrity_check_bypass" {
+  description = <<-EOT
+    Whether to provision a zone-level ruleset that skips Cloudflare's
+    Browser Integrity Check (BIC) for requests carrying recueil's own
+    Go-client User-Agent (see internal/deviceapi, internal/mirror,
+    internal/ingest). Only relevant if BIC is actually enabled on the zone
+    -- Cloudflare's BIC heuristics otherwise tend to flag the CLI's and
+    backend's non-browser HTTP clients. The browser extension is unaffected
+    since it's a real browser making the request. Defaults to true since
+    this is a narrow, additive bypass with no real downside for a zone that
+    doesn't have BIC on at all.
+  EOT
+  type        = bool
+  default     = true
+}

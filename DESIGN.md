@@ -1415,6 +1415,48 @@ doesn't mean zero risk:
 This tradeoff is accepted as part of the design and should be stated plainly in
 the repo's security documentation rather than left implicit.
 
+### 5c. Cloudflare Browser Integrity Check bypass
+
+recueil's own non-browser Go clients — the CLI (`internal/deviceapi`) and the
+backend's Worker-facing clients (`internal/mirror`,
+`internal/ingest.WorkerClient`) — send every request with a fixed
+`User-Agent: recueil/1.0`. This exists because Cloudflare's Browser Integrity
+Check (BIC), when enabled on the zone, tends to flag exactly this shape of
+traffic (no browser TLS/JA3 fingerprint, no normal navigation headers) and drop
+it before it ever reaches the Worker — first hit years ago against a different
+zone, by the Python glue script this project's own CLI eventually replaced.
+
+A Terraform-provisioned `cloudflare_ruleset` (`terraform/waf.tf`'s
+`browser_integrity_check_bypass`, toggled by
+`var.enable_browser_integrity_check_bypass`, default `true`) skips BIC for
+requests matching that User-Agent. One important caveat:
+
+- **The bypass is keyed on User-Agent alone, not on the presence of a bearer
+  token or service-key header.** An earlier version of this rule required both —
+  but `POST /pair` (§5) is unauthenticated by design, carrying neither header,
+  so a bearer-token requirement would leave pairing exposed to the exact
+  BIC-flagging problem this rule exists to fix. BIC is a low-stakes
+  anti-scraping heuristic, not a real security boundary, so identifying "this is
+  one of our own clients" by User-Agent alone is sufficient here — this rule
+  makes no attempt to enforce real authentication; the Worker's own per-route
+  bearer-token/`X-Service-Key` checks (§5, §5a) still do that job entirely on
+  their own.
+
+**The browser extension is deliberately untouched by any of this.** Its requests
+carry a real browser's TLS fingerprint and User-Agent, so BIC isn't expected to
+flag them in the first place — and forcing a custom User-Agent onto a
+WebExtension's own `fetch()` calls isn't something the browser reliably allows
+anyway.
+
+**The User-Agent string is a fixed protocol constant, not a release version.**
+`recueil/1.0` doesn't track the CLI/backend's actual build version (§13a) and
+isn't threaded through from it. Coupling the two would mean every app release
+needs a coordinated `terraform apply` to keep the WAF rule's exact-match
+expression working — otherwise the bypass silently breaks the moment a binary
+ships ahead of (or behind) the infra change. This string only needs to answer
+"is this one of our own clients," never "which version," so it's bumped only if
+its own meaning ever changes, independent of ordinary releases.
+
 ---
 
 ## 6. Screenshot / Thumbnail Generation

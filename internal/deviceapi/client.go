@@ -28,6 +28,14 @@ import (
 	"time"
 )
 
+// userAgent identifies every request this package sends to the Worker as
+// coming from recueil's own CLI, not a browser -- lets the Worker's
+// Cloudflare zone bypass Browser Integrity Check for these calls
+// specifically (see terraform's browser_integrity_check_bypass ruleset),
+// which otherwise flags this kind of non-browser, automated traffic.
+// Shared across client.go and pair.go, both package deviceapi.
+const userAgent = "recueil/1.0"
+
 // Client is a paired device's authenticated access to the Worker --
 // everything that needs the bearer token Pair (above) produced.
 type Client struct {
@@ -63,6 +71,7 @@ func (c *Client) Enqueue(ctx context.Context, id, url string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.deviceToken)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

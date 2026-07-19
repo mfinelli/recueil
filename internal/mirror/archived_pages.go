@@ -59,6 +59,7 @@ func (c *Client) GetArchivedPagesLastSync(ctx context.Context) (*time.Time, erro
 		return nil, err
 	}
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -122,6 +123,7 @@ func (c *Client) MirrorArchivedPages(ctx context.Context, pages []ArchivedPage) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -145,6 +147,7 @@ func (c *Client) ListArchivedPageIDs(ctx context.Context) ([]int64, error) {
 		return nil, err
 	}
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -186,6 +189,7 @@ func (c *Client) DeleteArchivedPages(ctx context.Context, pageIDs []int64) error
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

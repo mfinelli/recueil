@@ -36,6 +36,15 @@ import (
 // (reads pending_captures, and its "mark fetched" call is itself a
 // read-then-acknowledge, not a data mirror push), so it doesn't belong in
 // that package's stated scope.
+
+// userAgent identifies every request this package sends to the Worker as
+// coming from recueil's own backend, not a browser -- lets the Worker's
+// Cloudflare zone bypass Browser Integrity Check for these calls
+// specifically (see terraform's browser_integrity_check_bypass ruleset),
+// which otherwise flags this kind of non-browser, automated polling
+// traffic.
+const userAgent = "recueil/1.0"
+
 type WorkerClient struct {
 	baseURL       string
 	serviceSecret string
@@ -80,6 +89,7 @@ func (c *WorkerClient) ListPendingCaptures(ctx context.Context, limit int) ([]Pe
 		return nil, fmt.Errorf("ingest: building pending-captures request: %w", err)
 	}
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -108,6 +118,7 @@ func (c *WorkerClient) MarkFetched(ctx context.Context, captureID string) error 
 		return fmt.Errorf("ingest: building mark-fetched request: %w", err)
 	}
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

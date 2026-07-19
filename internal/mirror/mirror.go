@@ -35,6 +35,14 @@ import (
 	"time"
 )
 
+// userAgent identifies every request this package sends to the Worker as
+// coming from recueil's own backend, not a browser -- lets the Worker's
+// Cloudflare zone bypass Browser Integrity Check for these calls
+// specifically (see terraform's browser_integrity_check_bypass ruleset),
+// which otherwise flags this kind of non-browser, automated traffic.
+// Shared across mirror.go and archived_pages.go, both package mirror.
+const userAgent = "recueil/1.0"
+
 type Client struct {
 	baseURL       string
 	serviceSecret string
@@ -78,6 +86,7 @@ func (c *Client) PushUser(ctx context.Context, id int64, pairingTokenHash *strin
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

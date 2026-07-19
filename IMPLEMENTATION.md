@@ -903,6 +903,27 @@ design writeup; this is the "what actually landed" companion to it.
 - Username is a positional arg (not a flag) on both commands; `--role` remains a
   flag on `create`, defaulting to `member`.
 
+### Browser Integrity Check bypass (post-closeout addition)
+
+Carried over from the Python glue script this project's CLI replaced, which had
+hit the same problem against a different zone: Cloudflare's Browser Integrity
+Check (BIC) tends to flag non-browser Go HTTP clients and drop their requests
+before they reach the Worker. See DESIGN.md §5c for the full writeup; landed
+this round:
+
+- `internal/deviceapi`, `internal/mirror`, and `internal/ingest.WorkerClient`
+  each set `User-Agent: recueil/1.0` on every outbound request (one
+  package-local `const userAgent`, not a shared package — only a handful of call
+  sites, so a new package wasn't worth it). The browser extension is untouched;
+  its requests already carry a real browser's User-Agent and TLS fingerprint.
+- New `terraform/waf.tf`: a `cloudflare_ruleset`
+  (`browser_integrity_check_bypass`) that skips BIC for that User-Agent, gated
+  by `var.enable_browser_integrity_check_bypass` (default `true`).
+- The User-Agent string is a fixed `1.0` protocol constant, not the CLI/
+  backend's real release version — intentionally not threaded through from
+  `cmd`'s ldflags-injected `Version`, to avoid coupling every app release to a
+  coordinated `terraform apply` for an exact-match WAF expression.
+
 ---
 
 ## Phase 5 (the real extension) — in progress

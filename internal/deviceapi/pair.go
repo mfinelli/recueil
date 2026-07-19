@@ -74,6 +74,7 @@ func Pair(ctx context.Context, workerURL, pairingToken, deviceName, deviceType s
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", userAgent)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
