@@ -39,6 +39,9 @@ import {
   GET_QUEUE_LIST,
   REFRESH_QUEUE_LIST,
   CLAIM_QUEUE_ITEM,
+  GET_BOOKMARK_SYNC_STATE,
+  ENABLE_BOOKMARK_SYNC,
+  DISABLE_BOOKMARK_SYNC,
 } from "../common/messages.js";
 import {
   getPairingDraft,
@@ -243,6 +246,7 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   app.append(status);
 
   app.append(renderQueueSection());
+  app.append(renderBookmarkSyncSection());
 
   const unpairLink = document.createElement("a");
   unpairLink.href = "#";
@@ -377,6 +381,83 @@ async function handleQueueItemClick(itemId, itemElement, list) {
       await browser.runtime.sendMessage({ type: REFRESH_QUEUE_LIST })
     );
     renderQueueItems(list, cache.items);
+  }
+}
+
+// A checkbox toggle, not a button -- reflects an actual on/off state
+// (unlike "Save this page"/"Refresh", which are one-shot actions), and
+// checkboxes are the conventional control for that.
+function renderBookmarkSyncSection() {
+  const section = document.createElement("div");
+  section.className = "bookmark-sync-section";
+
+  const label = document.createElement("label");
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.id = "bookmark-sync-toggle";
+  label.append(
+    checkbox,
+    document.createTextNode(" Sync archived pages to bookmarks"),
+  );
+
+  const status = document.createElement("div");
+  status.id = "bookmark-sync-status";
+
+  section.append(label, status);
+
+  browser.runtime
+    .sendMessage({ type: GET_BOOKMARK_SYNC_STATE })
+    .then((/** @type {any} */ enabled) => {
+      checkbox.checked = Boolean(enabled);
+    });
+
+  checkbox.addEventListener("change", () =>
+    handleBookmarkSyncToggle(checkbox, status),
+  );
+
+  return section;
+}
+
+/**
+ * @param {HTMLInputElement} checkbox
+ * @param {HTMLElement} status
+ */
+async function handleBookmarkSyncToggle(checkbox, status) {
+  checkbox.disabled = true;
+  status.textContent = "";
+
+  try {
+    if (checkbox.checked) {
+      // Requesting the permission here, synchronously in this change
+      // handler, for the same user-gesture reasoning as pairing's own
+      // <all_urls> request (see auth.js's doc comment) -- once this
+      // crosses the runtime.sendMessage boundary into the background,
+      // whether the browser still considers it "triggered by a real user
+      // action" isn't reliable to assume across Chrome and Firefox.
+      const granted = await browser.permissions.request({
+        permissions: ["bookmarks"],
+      });
+      if (!granted) {
+        checkbox.checked = false;
+        status.className = "status status--error";
+        status.textContent = "Permission was not granted.";
+        return;
+      }
+      await browser.runtime.sendMessage({ type: ENABLE_BOOKMARK_SYNC });
+    } else {
+      await browser.runtime.sendMessage({ type: DISABLE_BOOKMARK_SYNC });
+    }
+  } catch (error) {
+    // Enabling failed (the initial sync itself, most likely -- see
+    // bookmarks.js's enableBookmarkSync doc comment for why that error is
+    // allowed to propagate this far rather than being swallowed like the
+    // alarm's own retries are) -- reflect that the toggle didn't actually
+    // end up in the state it looks like from the checkbox alone.
+    checkbox.checked = false;
+    status.className = "status status--error";
+    status.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    checkbox.disabled = false;
   }
 }
 

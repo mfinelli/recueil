@@ -66,6 +66,7 @@ import browser from "webextension-polyfill";
 import {
   getConfig,
   isBookmarkSyncEnabled,
+  setBookmarkSyncEnabled,
   getBookmarksFolderId,
   setBookmarksFolderId,
 } from "../common/storage.js";
@@ -229,6 +230,42 @@ export async function deleteBookmarksFolderAndState() {
     await browser.bookmarks.removeTree(folderId).catch(() => {});
   }
   await setBookmarksFolderId(null);
+}
+
+/**
+ * Turns bookmark sync on and runs an immediate sync -- called by the
+ * popup's toggle only *after* it has already requested and confirmed the
+ * `bookmarks` permission itself (see popup.js: that request has to happen
+ * synchronously in the toggle's own change handler, the same
+ * user-gesture reasoning as pairing's own <all_urls> request, not in
+ * here). If the immediate sync itself fails (offline, instance
+ * temporarily down), that error is allowed to propagate to the caller --
+ * unlike the alarm's own best-effort handling, the popup can usefully
+ * show this one -- but sync is left enabled regardless; the next alarm
+ * tick will just try again.
+ */
+export async function enableBookmarkSync() {
+  await setBookmarkSyncEnabled(true);
+  await syncBookmarks();
+}
+
+/**
+ * Turns bookmark sync off: tears down the folder and its tracked state
+ * (deleteBookmarksFolderAndState above), clears the enabled flag, and
+ * relinquishes the `bookmarks` permission itself -- no reason to keep
+ * holding a permission that isn't being used; re-enabling later just
+ * requests it again. Used both by the popup's toggle and by unpair() --
+ * see background/index.js for why the ordering there matters (this has
+ * to run before unpair's own storage.local.clear(), not after).
+ * Intentionally swallows its own failures throughout: unpairing in
+ * particular must never be blocked by a bookmarks-API hiccup.
+ */
+export async function disableBookmarkSync() {
+  await deleteBookmarksFolderAndState();
+  await setBookmarkSyncEnabled(false);
+  await browser.permissions
+    .remove({ permissions: ["bookmarks"] })
+    .catch(() => {});
 }
 
 /**

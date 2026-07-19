@@ -42,12 +42,13 @@ import {
 import {
   syncBookmarks,
   registerBookmarkSyncAlarm,
-  deleteBookmarksFolderAndState,
+  enableBookmarkSync,
+  disableBookmarkSync,
 } from "./bookmarks.js";
 import {
   getQueueCache,
   clearClaimedTab,
-  setBookmarkSyncEnabled,
+  isBookmarkSyncEnabled,
 } from "../common/storage.js";
 import {
   PAIR_DEVICE,
@@ -57,6 +58,9 @@ import {
   GET_QUEUE_LIST,
   REFRESH_QUEUE_LIST,
   CLAIM_QUEUE_ITEM,
+  GET_BOOKMARK_SYNC_STATE,
+  ENABLE_BOOKMARK_SYNC,
+  DISABLE_BOOKMARK_SYNC,
 } from "../common/messages.js";
 
 registerFetchRelay();
@@ -110,13 +114,28 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
     case CAPTURE_ACTIVE_TAB:
       return captureActiveTab();
     case UNPAIR_DEVICE:
-      return unpair();
+      // disableBookmarkSync() has to run before unpair()'s own
+      // storage.local.clear() -- it reads the tracked folder id from
+      // storage to know what to remove, which unpair's own wipe would
+      // otherwise have already erased by the time it ran. Caught here,
+      // not just relied on disableBookmarkSync's own internal
+      // best-effort handling: unpairing itself must never be blocked by
+      // a bookmarks-API hiccup, no matter what.
+      return disableBookmarkSync()
+        .catch(() => {})
+        .then(() => unpair());
     case GET_QUEUE_LIST:
       return getQueueCache();
     case REFRESH_QUEUE_LIST:
       return refreshQueueList();
     case CLAIM_QUEUE_ITEM:
       return claimQueueItem(message.payload.itemId);
+    case GET_BOOKMARK_SYNC_STATE:
+      return isBookmarkSyncEnabled();
+    case ENABLE_BOOKMARK_SYNC:
+      return enableBookmarkSync();
+    case DISABLE_BOOKMARK_SYNC:
+      return disableBookmarkSync();
     default:
       return undefined;
   }
@@ -139,21 +158,18 @@ globalThis.__recueilCapture = captureActiveTab;
 globalThis.__recueilRefreshQueue = refreshQueueList;
 globalThis.__recueilClaimQueueItem = claimQueueItem;
 
-// Step 1 of bookmark sync: grant the `bookmarks` optional permission
-// yourself first (this extension's own details page in
+// Bookmark sync is now driven by the popup's own toggle -- these remain
+// for the same reason every other __recueil* global does (faster than
+// clicking through the UI during active development, and lets you tell a
+// popup.js bug apart from a background-logic one). Still need to grant
+// the `bookmarks` permission yourself first if you haven't gone through
+// the popup's toggle at least once (this extension's own details page in
 // about:addons/chrome://extensions, or
 // `await browser.permissions.request({permissions: ["bookmarks"]})` right
-// here in this same console), then use these to exercise the actual
-// reconciliation logic before there's a UI to do it from.
-globalThis.__recueilEnableBookmarkSync = async () => {
-  await setBookmarkSyncEnabled(true);
-  await syncBookmarks();
-};
+// here in this console).
+globalThis.__recueilEnableBookmarkSync = enableBookmarkSync;
 globalThis.__recueilSyncBookmarks = syncBookmarks;
-globalThis.__recueilDisableBookmarkSync = async () => {
-  await deleteBookmarksFolderAndState();
-  await setBookmarkSyncEnabled(false);
-};
+globalThis.__recueilDisableBookmarkSync = disableBookmarkSync;
 
 // Narrower than __recueilCapture above: runs only the capture-inject step
 // (no auth, no upload) against whatever tab is active, for isolating a

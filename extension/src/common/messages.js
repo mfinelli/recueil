@@ -80,3 +80,21 @@ export const REFRESH_QUEUE_LIST = "recueil:refresh-queue-list";
 // paywall, login) entirely by hand -- there's no way to detect that kind
 // of thing automatically, and no attempt is made to.
 export const CLAIM_QUEUE_ITEM = "recueil:claim-queue-item";
+
+// Sent by the popup's bookmark-sync toggle to read the current
+// enabled/disabled state when rendering -- storage.js's
+// isBookmarkSyncEnabled(), just message-passed the same way everything
+// else here is.
+export const GET_BOOKMARK_SYNC_STATE = "recueil:get-bookmark-sync-state";
+
+// Sent by the popup's toggle when the user turns bookmark sync on --
+// only *after* the popup has already requested and confirmed the
+// `bookmarks` permission itself (see bookmarks.js's enableBookmarkSync()
+// doc comment for why that request can't happen here in the background).
+export const ENABLE_BOOKMARK_SYNC = "recueil:enable-bookmark-sync";
+
+// Sent by the popup's toggle when the user turns bookmark sync off. See
+// bookmarks.js's disableBookmarkSync() for what this actually does
+// (folder teardown, clearing the enabled flag, relinquishing the
+// permission) -- also called directly from unpair, not just this message.
+export const DISABLE_BOOKMARK_SYNC = "recueil:disable-bookmark-sync";

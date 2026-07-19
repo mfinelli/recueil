@@ -36,6 +36,7 @@ let bookmarksUpdateMock;
 
 let alarmsCreateMock;
 let alarmsOnAlarmListeners;
+let permissionsRemoveMock;
 
 vi.mock("webextension-polyfill", () => ({
   default: {
@@ -87,6 +88,9 @@ vi.mock("webextension-polyfill", () => ({
         addListener: (fn) => alarmsOnAlarmListeners.push(fn),
       },
     },
+    permissions: {
+      remove: (...args) => permissionsRemoveMock(...args),
+    },
   },
 }));
 
@@ -94,9 +98,15 @@ const {
   syncBookmarks,
   deleteBookmarksFolderAndState,
   registerBookmarkSyncAlarm,
+  enableBookmarkSync,
+  disableBookmarkSync,
 } = await import("../src/background/bookmarks.js");
-const { setConfig, setBookmarkSyncEnabled, getBookmarksFolderId } =
-  await import("../src/common/storage.js");
+const {
+  setConfig,
+  setBookmarkSyncEnabled,
+  isBookmarkSyncEnabled,
+  getBookmarksFolderId,
+} = await import("../src/common/storage.js");
 
 const config = {
   workerBaseURL: "https://recueil.example.com",
@@ -121,6 +131,7 @@ beforeEach(() => {
   });
   alarmsCreateMock = vi.fn();
   alarmsOnAlarmListeners = [];
+  permissionsRemoveMock = vi.fn().mockResolvedValue(undefined);
   fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
 });
@@ -390,6 +401,62 @@ describe("deleteBookmarksFolderAndState", () => {
 
   it("is a harmless no-op when no folder was ever created", async () => {
     await expect(deleteBookmarksFolderAndState()).resolves.toBeUndefined();
+  });
+});
+
+describe("enableBookmarkSync", () => {
+  it("sets the enabled flag and runs an immediate sync", async () => {
+    await setConfig(config);
+    fetchMock.mockResolvedValue(fakePagesResponse([]));
+
+    await enableBookmarkSync();
+
+    expect(await isBookmarkSyncEnabled()).toBe(true);
+    // The immediate sync actually ran, not just the flag flipped -- it
+    // created the dedicated folder as a side effect.
+    expect(await getBookmarksFolderId()).not.toBeNull();
+  });
+
+  it("leaves sync enabled even if the immediate sync itself fails", async () => {
+    await setConfig(config);
+    fetchMock.mockRejectedValue(new TypeError("network error"));
+
+    await expect(enableBookmarkSync()).rejects.toThrow();
+
+    // Unlike the alarm's own best-effort handling, this error is allowed
+    // to propagate to the caller (the popup can usefully show it) -- but
+    // the flag itself isn't rolled back; the next alarm tick just tries
+    // again.
+    expect(await isBookmarkSyncEnabled()).toBe(true);
+  });
+});
+
+describe("disableBookmarkSync", () => {
+  it("tears down the folder, clears the flag, and relinquishes the permission", async () => {
+    await setConfig(config);
+    await setBookmarkSyncEnabled(true);
+    fetchMock.mockResolvedValue(
+      fakePagesResponse([
+        { page_id: 1, raw_url: "https://example.com/a", title: "Page A" },
+      ]),
+    );
+    await syncBookmarks();
+    expect(store.size).toBeGreaterThan(0);
+
+    await disableBookmarkSync();
+
+    expect(store.size).toBe(0);
+    expect(await getBookmarksFolderId()).toBeNull();
+    expect(await isBookmarkSyncEnabled()).toBe(false);
+    expect(permissionsRemoveMock).toHaveBeenCalledWith({
+      permissions: ["bookmarks"],
+    });
+  });
+
+  it("does not throw if relinquishing the permission itself fails", async () => {
+    permissionsRemoveMock.mockRejectedValue(new Error("boom"));
+    await expect(disableBookmarkSync()).resolves.toBeUndefined();
+    expect(await isBookmarkSyncEnabled()).toBe(false);
   });
 });
 
