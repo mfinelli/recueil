@@ -18,9 +18,9 @@
 
 // No framework -- this is small enough (two views: pairing form, paired
 // state) that plain DOM manipulation is less code and less to reason about
-// than reaching for anything heavier, especially while the popup's actual
-// shape is still expected to move (see popup.html's comment on styling
-// being deferred).
+// than reaching for anything heavier. Styling now lives in popup.css's
+// token system (see its own file comment); the class names/ids assigned
+// below are its hooks, not incidental.
 //
 // The permissions.request() call in handlePairSubmit is the one thing in
 // here that HAS to stay exactly where it is, synchronously inside the
@@ -225,7 +225,11 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   app.replaceChildren();
 
   const heading = document.createElement("h1");
-  heading.textContent = "recueil";
+  heading.append(document.createTextNode("recueil"));
+  const statusSub = document.createElement("span");
+  statusSub.className = "sub";
+  statusSub.textContent = "paired · self-hosted";
+  heading.append(statusSub);
   app.append(heading);
 
   const info = document.createElement("dl");
@@ -233,19 +237,30 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   info.append(dtdd("Instance", workerBaseURL), dtdd("This device", deviceName));
   app.append(info);
 
+  const captureBlock = document.createElement("div");
+  captureBlock.className = "capture-block";
+
   const captureButton = document.createElement("button");
   captureButton.type = "button";
+  captureButton.className = "capture-button";
   captureButton.textContent = "Save this page";
   captureButton.addEventListener("click", () =>
     handleCaptureClick(captureButton),
   );
-  app.append(captureButton);
+  captureBlock.append(captureButton);
 
   const status = document.createElement("div");
   status.id = "capture-status";
-  app.append(status);
+  captureBlock.append(status);
+
+  app.append(captureBlock);
 
   app.append(renderQueueSection());
+
+  const divider = document.createElement("hr");
+  divider.className = "rule";
+  app.append(divider);
+
   app.append(renderBookmarkSyncSection());
 
   const unpairLink = document.createElement("a");
@@ -278,7 +293,7 @@ function renderQueueSection() {
   const refreshButton = document.createElement("button");
   refreshButton.type = "button";
   refreshButton.className = "queue-refresh";
-  refreshButton.textContent = "Refresh";
+  refreshButton.textContent = "↻ Refresh";
   refreshButton.addEventListener("click", () =>
     handleRefreshQueueClick(refreshButton, list),
   );
@@ -358,7 +373,7 @@ async function handleQueueItemClick(itemId, itemElement, list) {
     document.getElementById("queue-status")
   );
   itemElement.classList.add("queue-item--claiming");
-  status.className = "status status--pending";
+  status.className = "status status--pending-plain";
   status.textContent = "Claiming…";
 
   try {
@@ -366,8 +381,8 @@ async function handleQueueItemClick(itemId, itemElement, list) {
       type: CLAIM_QUEUE_ITEM,
       payload: { itemId },
     });
-    status.className = "status status--success";
-    status.textContent = "Opened in a new tab.";
+    status.className = "status status--success-plain";
+    status.textContent = "Opened in a new tab";
   } catch (error) {
     status.className = "status status--error";
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -392,13 +407,12 @@ function renderBookmarkSyncSection() {
   section.className = "bookmark-sync-section";
 
   const label = document.createElement("label");
+  const labelText = document.createElement("span");
+  labelText.textContent = "Sync archived pages to bookmarks";
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.id = "bookmark-sync-toggle";
-  label.append(
-    checkbox,
-    document.createTextNode(" Sync archived pages to bookmarks"),
-  );
+  label.append(labelText, checkbox);
 
   const status = document.createElement("div");
   status.id = "bookmark-sync-status";
@@ -476,7 +490,7 @@ async function handleCaptureClick(captureButton) {
   try {
     await browser.runtime.sendMessage({ type: CAPTURE_ACTIVE_TAB });
     status.className = "status status--success";
-    status.textContent = "Saved.";
+    status.textContent = "Saved";
   } catch (error) {
     status.className = "status status--error";
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -497,7 +511,14 @@ function fieldLabel(id, labelText, type, placeholder, options = {}) {
 
   const label = document.createElement("label");
   label.htmlFor = id;
-  label.textContent = labelText;
+  label.append(document.createTextNode(labelText));
+  if (required) {
+    const marker = document.createElement("span");
+    marker.className = "required-marker";
+    marker.setAttribute("aria-hidden", "true");
+    marker.textContent = " *";
+    label.append(marker);
+  }
 
   const input = document.createElement("input");
   input.id = id;

@@ -16,92 +16,279 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-/* Functional only -- no design system, no real visual identity. See
-   popup.html's comment. */
+/* Design direction: recueil means "a collection" -- library card catalogs,
+   ledgers, ink stamps, rather than generic extension-popup chrome. Follows
+   the OS light/dark setting via prefers-color-scheme; no separate manual
+   toggle is exposed since a popup this small doesn't need one. */
+
+:root {
+  --ink: #2b2924;
+  --ink-muted: #746c5c;
+  --paper: #f2ede1;
+  --paper-raised: #fdfbf6;
+  --rule: #ddd2b8;
+  --accent: #8a3223; /* stamp ink: oxblood */
+  --accent-success: #3c5c3a; /* stamp ink: moss */
+  --focus: #4a6b8a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ece5d4;
+    --ink-muted: #a89c86;
+    --paper: #1d1b17;
+    --paper-raised: #29261f;
+    --rule: #40392d;
+    --accent: #d17b64;
+    --accent-success: #8bb385;
+    --focus: #7fa8c9;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
 
 body {
-  width: 320px;
+  width: 360px;
   margin: 0;
-  padding: 12px;
-  font-family: system-ui, sans-serif;
-  font-size: 14px;
+  padding: 16px;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  background: var(--paper);
+  color: var(--ink);
 }
 
 h1 {
-  font-size: 15px;
-  margin: 0 0 12px;
+  font-family: ui-serif, Georgia, "Iowan Old Style", serif;
+  font-size: 19px;
+  font-weight: 600;
+  margin: 0 0 20px;
+  letter-spacing: 0.01em;
+}
+
+h1 .sub {
+  display: block;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-top: 2px;
 }
 
 label {
   display: block;
-  margin-top: 8px;
-  font-weight: bold;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  margin-top: 12px;
+}
+
+.required-marker {
+  color: var(--accent);
 }
 
 input {
   display: block;
   width: 100%;
-  box-sizing: border-box;
-  margin-top: 2px;
-  padding: 4px;
+  margin-top: 4px;
+  padding: 7px 8px;
+  font: inherit;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+
+input:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 button {
-  margin-top: 12px;
-  padding: 6px 10px;
+  font: inherit;
 }
 
 button:disabled {
   opacity: 0.6;
+  cursor: default;
 }
 
-.status {
-  margin-top: 10px;
-  padding: 6px;
-  border-radius: 4px;
+/* Primary one-shot actions -- "Pair" and "Save this page" */
+form > button[type="submit"],
+.capture-button {
+  margin-top: 16px;
+  width: 100%;
+  padding: 9px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--paper);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: 3px;
+  cursor: pointer;
 }
 
-.status--error {
-  background: #fdd;
-  color: #900;
+form > button[type="submit"]:hover,
+.capture-button:hover:not(:disabled) {
+  opacity: 0.88;
 }
 
+/* Save button + its status get room to breathe -- this is the moment the
+   whole popup is opened for. */
+.capture-block {
+  margin: 22px 0 30px;
+}
+
+#capture-status,
+#queue-status {
+  margin-top: 20px;
+}
+
+/* ---- stamp: signature element for pending/success. Errors deliberately
+   don't get a stamp -- a stamp reads as "done/approved", which is wrong
+   for e.g. "this claim already expired". ---- */
+.status--pending,
 .status--success {
-  background: #dfd;
-  color: #060;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0 14px;
+  border-radius: 2px;
+  transform: rotate(-2.5deg);
+  opacity: 0.92;
 }
 
 .status--pending {
-  background: #eee;
-  color: #333;
+  color: var(--ink-muted);
+  border: 2px dashed var(--ink-muted);
+  /* deliberately not animated -- it's not an event, it's a wait */
+}
+
+.status--success {
+  color: var(--accent-success);
+  border: 2px solid var(--accent-success);
+  box-shadow:
+    0 0 0 1px var(--paper),
+    0 0 0 2.5px color-mix(in srgb, var(--accent-success) 55%, transparent);
+  animation: stamp-in 0.42s cubic-bezier(0.36, 1.6, 0.4, 1) both;
+}
+
+@keyframes stamp-in {
+  0% {
+    transform: rotate(-16deg) scale(1.9);
+    opacity: 0;
+  }
+  55% {
+    transform: rotate(-1deg) scale(0.94);
+    opacity: 1;
+  }
+  75% {
+    transform: rotate(-4.5deg) scale(1.05);
+  }
+  100% {
+    transform: rotate(-2.5deg) scale(1);
+    opacity: 0.92;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status--success {
+    animation: none;
+  }
+}
+
+.status--error,
+.status--success-plain,
+.status--pending-plain {
+  font-size: 12px;
+  border-left: 2px solid;
+  padding-left: 8px;
+  line-height: 1.4;
+}
+
+.status--error {
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+.status--success-plain {
+  color: var(--accent-success);
+  border-left-color: var(--accent-success);
+}
+
+.status--pending-plain {
+  color: var(--ink-muted);
+  border-left-color: var(--ink-muted);
 }
 
 .paired-info {
-  margin-bottom: 12px;
+  margin: 0 0 4px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  font-size: 11.5px;
 }
 
 .paired-info dt {
-  font-weight: bold;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  font-weight: 400;
+  padding-top: 2px;
 }
 
 .paired-info dd {
-  margin: 0 0 6px;
+  margin: 0;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  font-size: 11.5px;
   word-break: break-all;
+}
+
+hr.rule {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 16px 0;
 }
 
 .unpair-link {
   display: inline-block;
-  margin-top: 10px;
-  font-size: 12px;
+  margin-top: 16px;
+  font-size: 11px;
+  color: var(--ink-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.unpair-link:hover {
+  color: var(--accent);
 }
 
 .queue-section {
-  margin-top: 14px;
+  margin-top: 18px;
 }
 
 .queue-section h2 {
-  font-size: 13px;
-  margin: 0 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-muted);
+  font-weight: 600;
+  margin: 0;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -109,25 +296,40 @@ button:disabled {
 
 .queue-refresh {
   margin-top: 0;
-  padding: 2px 8px;
-  font-size: 11px;
+  padding: 0;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: none;
+  border: none;
+  color: var(--focus);
+  cursor: pointer;
 }
 
+.queue-refresh:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---- queue: catalog entries. Long URLs truncate with an ellipsis
+   rather than wrapping onto a second line. ---- */
 #queue-list {
   list-style: none;
-  margin: 0;
+  margin: 8px 0 0;
   padding: 0;
-  max-height: 120px;
+  max-height: 130px;
   overflow-y: auto;
-  border: 1px solid #ccc;
-  border-radius: 4px;
 }
 
 #queue-list li {
-  padding: 4px 6px;
-  font-size: 12px;
-  word-break: break-all;
-  border-bottom: 1px solid #eee;
+  padding: 6px 2px;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", "Cascadia Code", monospace;
+  border-bottom: 1px dotted var(--rule);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #queue-list li:last-child {
@@ -138,8 +340,13 @@ button:disabled {
   cursor: pointer;
 }
 
+.queue-item::before {
+  content: "― ";
+  color: var(--ink-muted);
+}
+
 .queue-item:hover {
-  background: #f5f5f5;
+  color: var(--focus);
 }
 
 .queue-item--claiming {
@@ -148,18 +355,74 @@ button:disabled {
   pointer-events: none;
 }
 
+/* Not a link or button -- no hover color, no pointer cursor. */
 .queue-empty {
-  color: #777;
+  color: var(--ink-muted);
   font-style: italic;
+  font-family: -apple-system, sans-serif;
+  cursor: default;
 }
 
 .bookmark-sync-section {
-  margin-top: 14px;
+  margin-top: 0;
   font-size: 12px;
 }
 
 .bookmark-sync-section label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+
+/* Native checkbox re-skinned as a pill switch -- keeps real checkbox
+   semantics/keyboard behavior, just looks like the toggle it represents. */
+.bookmark-sync-section input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  width: 30px;
+  height: 17px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  box-shadow: none;
+  border-radius: 10px;
+  background: var(--rule);
+  position: relative;
+  flex: none;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.15s ease;
+}
+
+.bookmark-sync-section input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--paper-raised);
+  transition: left 0.15s ease;
+}
+
+.bookmark-sync-section input[type="checkbox"]:checked {
+  background: var(--accent-success);
+}
+
+.bookmark-sync-section input[type="checkbox"]:checked::before {
+  left: 15px;
+}
+
+.bookmark-sync-section input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+#bookmark-sync-status {
+  margin-top: 6px;
 }

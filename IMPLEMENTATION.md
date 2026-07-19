@@ -982,20 +982,42 @@ Concretely, what's built in `extension/`:
   `background/frame-tree-relay.js`, modeled on `SingleFile-MV3`'s own
   `frame-tree/bg/frame-tree.js`, and confirmed in a real capture.
 
+### Popup visual design pass
+
+Done, in its own follow-up session rather than as a quick pass tacked onto Phase
+5's functional work. No logo yet, and none was needed in the popup itself since
+the popup is opened _from_ the toolbar icon, so repeating the logo inside it
+would be redundant.
+
+Grounded in what "recueil" actually means (a collection) rather than generic
+extension-popup chrome: warm paper/ink palette with an oxblood accent, a serif
+heading against monospace for URLs/data and system sans for everything else,
+hairline/dotted rules instead of boxed cards, and one signature element —
+pending/success status render as an ink stamp (rotated, double-outlined; success
+gets a slam-down entrance animation, pending stays static since a wait isn't an
+event). Errors don't get the stamp treatment — a stamp reads as "done," which is
+wrong for e.g. a queue claim that already expired — and stay a plain
+accent-colored alert line instead. Follows `prefers-color-scheme` for
+light/dark; no in-popup theme toggle. Iterated via a standalone static HTML
+mockup (both modes, every state) before touching real extension files, which is
+where the animation timing, spacing around the capture button,
+ellipsis-truncated queue entries, and several hover/cursor fixes (toggle switch,
+refresh control, non-interactive empty- queue row) all got settled before the
+CSS/JS wiring pass.
+
 ### Still ahead
 
 Safari packaging, whenever that becomes a priority — mechanical (Xcode-wrapped,
-same source), not attempted yet, and deliberately not a priority right now. A
-real visual design pass on the popup — deferred to a separate session, expected
-to be a larger, iterative piece of work rather than a quick follow-up. Moving
-settings (bookmark sync's toggle, so far the only one) into a dedicated
+same source), not attempted yet, and deliberately not a priority right now.
+Moving settings (bookmark sync's toggle, so far the only one) into a dedicated
 extension options page was considered and explicitly decided against for now,
 after actually using the popup during testing — everything stays in the popup
 unless/until there are enough settings that it stops making sense there.
 
-With those three exceptions, every piece from the original five-step plan
+With those two exceptions, every piece from the original five-step plan
 (pairing, capture, upload, queue-driven capture, bookmark sync) is built and
-confirmed working end to end.
+confirmed working end to end, and the popup now has a real visual identity
+rather than functional-only styling.
 
 ### Queue-driven capture
 
