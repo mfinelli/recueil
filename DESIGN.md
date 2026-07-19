@@ -309,14 +309,14 @@ Postgres for an already-committed row matching the original `source_capture_id`
 fetch, because a prior attempt's delete already succeeded — is safe to treat as
 "already done," and processing jumps straight to R2/D1 cleanup. If nothing is
 found, the failure is real and gets surfaced normally (logged, retried on the
-next poll). This fallback deliberately never runs _instead of_ the first
-attempt, only _after_ it fails — gating it upfront (checking Postgres before
-ever touching R2) was tried and rejected during implementation, specifically
-because it would skip the content_hash comparison above entirely and reintroduce
-problem 2 in a different place. R2's own `DeleteObject` (and R2's S3-compatible
-equivalent) is documented to be idempotent — deleting an already-gone key
-returns success, not an error — so the cleanup steps themselves need no special
-"tolerate already deleted" handling either way.
+next poll). This fallback never runs _instead of_ the first attempt, only
+_after_ it fails — gating it upfront (checking Postgres before ever touching R2)
+was tried and rejected during implementation, specifically because it would skip
+the content_hash comparison above entirely and reintroduce problem 2 in a
+different place. R2's own `DeleteObject` (and R2's S3-compatible equivalent) is
+documented to be idempotent — deleting an already-gone key returns success, not
+an error — so the cleanup steps themselves need no special "tolerate already
+deleted" handling either way.
 
 Ordering the steps this way — disk write, then DB commit, then R2 delete, then
 D1 flag, then (only once both cleanup calls have actually succeeded) clearing
@@ -485,8 +485,8 @@ incidentally job-queue-shaped, built that way on purpose.
 poll loop as a pure latency optimization — the poll loop stays the actual
 correctness guarantee regardless, since `NOTIFY` isn't durable and a missed
 notification with no fallback poll would just silently never process that job)
-was discussed and deliberately deferred, not rejected. Plain polling is entirely
-sufficient at this project's scale for now; worth reconsidering only if
+was discussed and intentionally deferred, not rejected. Plain polling is
+entirely sufficient at this project's scale for now; worth reconsidering only if
 poll-interval latency ever actually becomes a real complaint.
 
 **Startup and migrations**: `agent` does **not** run migrations itself, unlike
@@ -510,22 +510,21 @@ loops. The simplest thing that works; splitting them onto separate cadences is a
 natural, easy follow-up if one ever genuinely needs to run more or less often
 than the other, not a constraint this design paints itself into. A cycle runs
 synchronously within the same `select` loop iteration that reads the ticker
-channel, deliberately not spawned into its own goroutine per tick —
-`time.Ticker`'s channel buffers exactly one pending tick, so a cycle that runs
-longer than the interval simply means some ticks are silently dropped rather
-than a backlog of queued cycles building up; the next cycle starts as soon as
-the current one finishes and at least one tick has fired since, not once per
-missed interval. Either job failing is logged, not propagated as the agent
-process's own failure — the same "log and continue" philosophy
-`RunOnce`/`SyncOnce` already apply at their own per-item/per-batch level, one
-layer further up.
+channel, not spawned into its own goroutine per tick — `time.Ticker`'s channel
+buffers exactly one pending tick, so a cycle that runs longer than the interval
+simply means some ticks are silently dropped rather than a backlog of queued
+cycles building up; the next cycle starts as soon as the current one finishes
+and at least one tick has fired since, not once per missed interval. Either job
+failing is logged, not propagated as the agent process's own failure — the same
+"log and continue" philosophy `RunOnce`/`SyncOnce` already apply at their own
+per-item/per-batch level, one layer further up.
 
 ---
 
 ### 3f. The CLI (`recueil auth` / `recueil enqueue`)
 
 The CLI's own two commands, and specifically why their configuration handling
-deliberately diverges from `server`/`agent`'s:
+differs from `server`/`agent`'s:
 
 - **Two different config postures for two different audiences.**
   `server`/`agent` require an explicit `--config` file or environment variables
@@ -545,14 +544,14 @@ deliberately diverges from `server`/`agent`'s:
   nothing left for the CLI to read from `config.toml` at all. `enqueue`/`auth`
   don't touch Viper or `internal/config` in any way; every server-only key stays
   exactly as it is.
-- **Pairing token input: masked prompt if a TTY, stdin otherwise — deliberately
-  never a `--token` flag.** A flag would be visible in shell history and
-  system-wide `ps` output for the process's whole lifetime — a real exposure for
-  a bearer credential, not a theoretical one. `mattn/go-isatty` (already a
-  dependency) decides which path to take; `golang.org/x/term.ReadPassword` (new,
-  small, official) does the actual no-echo read. This gets scriptability for
-  free without ever needing the flag: `echo "$TOKEN" | recueil auth --url ...`
-  reads from stdin directly since stdin isn't a terminal in that case.
+- **Pairing token input: masked prompt if a TTY, stdin otherwise — never a
+  `--token` flag.** A flag would be visible in shell history and system-wide
+  `ps` output for the process's whole lifetime — a real exposure for a bearer
+  credential, not a theoretical one. `mattn/go-isatty` (already a dependency)
+  decides which path to take; `golang.org/x/term.ReadPassword` (new, small,
+  official) does the actual no-echo read. This gets scriptability for free
+  without ever needing the flag: `echo "$TOKEN" | recueil auth --url ...` reads
+  from stdin directly since stdin isn't a terminal in that case.
 - **`internal/clicreds`: a dedicated file, not a field in `config.toml`.**
   `$XDG_CONFIG_HOME/recueil/credentials.json` (falling back to
   `$HOME/.config/recueil/`, the Base Directory spec's own documented default),
@@ -577,18 +576,18 @@ deliberately diverges from `server`/`agent`'s:
   default to fall back to, and no config file to read one from either);
   `recueil enqueue` then reads both back from the one stored file, with no
   `--url` override flag on `enqueue` itself. A per-call override, or real
-  multi-server profile support, was considered and deliberately deferred:
-  there's no supporting machinery on the `auth` side yet (nothing to switch
-  between), so adding the flag now would just be confusing rather than actually
-  useful — an honest 401 if you ever do point a stored token at the wrong Worker
-  is a fine failure mode until multi-profile support is worth building for real.
-- **`internal/deviceapi`: `Pair` and `Client` are deliberately separate, not one
-  unified type.** `POST /pair` is unauthenticated by nature — it's how a device
-  obtains a bearer token in the first place, so it can't require one — while
-  `Client.Enqueue` (`POST /queue`) requires a token already in hand. Forcing
-  both into one type would mean either a `Client` that's usable before it has
-  real credentials, or a separate construction path for pairing anyway — no
-  simpler than just keeping them apart. Neither authenticates as the backend
+  multi-server profile support, was considered and deferred: there's no
+  supporting machinery on the `auth` side yet (nothing to switch between), so
+  adding the flag now would just be confusing rather than actually useful — an
+  honest 401 if you ever do point a stored token at the wrong Worker is a fine
+  failure mode until multi-profile support is worth building for real.
+- **`internal/deviceapi`: `Pair` and `Client` are intentionally separate, not
+  one unified type.** `POST /pair` is unauthenticated by nature — it's how a
+  device obtains a bearer token in the first place, so it can't require one —
+  while `Client.Enqueue` (`POST /queue`) requires a token already in hand.
+  Forcing both into one type would mean either a `Client` that's usable before
+  it has real credentials, or a separate construction path for pairing anyway —
+  no simpler than just keeping them apart. Neither authenticates as the backend
   itself (unlike `internal/mirror` and `internal/ingest.WorkerClient`, both
   service-secret-gated); this package is specifically what a paired _device_
   does against the Worker's public, device-facing endpoints.
@@ -628,11 +627,11 @@ among raster candidates), then falling back to the conventional root-relative
 that resolves to anything, `favicon_path` simply stays `NULL` for that capture —
 not every site has one, and not finding one is never an error.
 
-**No image processing, deliberately.** Whatever bytes come back — including a
-legacy multi-resolution `.ico` container — are stored exactly as received. Every
-modern browser renders `.ico` directly in an `<img>` tag, so there's no real
-need to decode "the largest embedded image" out of one; that's a "revisit if it
-becomes a felt problem" item, not a day-one requirement.
+**No image processing.** Whatever bytes come back — including a legacy
+multi-resolution `.ico` container — are stored exactly as received. Every modern
+browser renders `.ico` directly in an `<img>` tag, so there's no real need to
+decode "the largest embedded image" out of one; that's a "revisit if it becomes
+a felt problem" item, not a day-one requirement.
 
 **Favicon is per-capture state, not page state**, the same way the HTML itself
 is: `captures.favicon_path` (§10) is written once per capture and never mutated
@@ -707,7 +706,7 @@ nothing recueil needs (no blocking `webRequest`) actually requires MV2 there.
 Upstream SingleFile forked into two separate repos (`SingleFile` for
 Firefox/MV2, `SingleFile-MV3` for Chrome/Edge) specifically because migrating a
 large, mature, feature-heavy extension is real, risky work its own maintainer is
-deliberately delaying — confirmed directly by gildas-lormeau in a GitHub
+intentionally delaying — confirmed directly by gildas-lormeau in a GitHub
 discussion: Firefox is technically MV3-ready, he's "waiting until the last
 moment to migrate" because "Manifest V3 extension development is a real pain."
 That asymmetry doesn't apply to recueil: there's no existing MV2 codebase to
@@ -763,8 +762,8 @@ bundles frame-tree collection logic as a transitive dependency
 (`processors/index.js` → `content-frame-tree.js`), gated behind the
 `removeFrames` option and requiring the bundle to be injected into every frame
 (`target.allFrames: true`), not just the top one. Turning it on took three
-pieces, staged deliberately in isolated steps after an initial single-change
-attempt broke even single-frame pages in a way that was hard to diagnose:
+pieces, staged in isolated steps after an initial single-change attempt broke
+even single-frame pages in a way that was hard to diagnose:
 
 1. Injecting the bundle into every frame (`allFrames: true` on the `files` step,
    `removeFrames` still `true` so collection never runs) — confirmed safe on its
@@ -830,9 +829,9 @@ that leg only matters for the top frame's own frames — cross-origin subframes
 always throw on `top.singlefile` and fall through regardless — and the leg it
 falls _through to_ is the `runtime.sendMessage` transport above, the one with no
 receiver. That's why assigning the global didn't resolve the hang on its own: it
-fixes a path the code only sometimes takes. It's deliberately left out of the
-shipped fix; at most it's a latency optimization (one fewer round-trip for the
-top frame's own frames) worth adding later as its own isolated step.
+fixes a path the code only sometimes takes. It's left out of the shipped fix; at
+most it's a latency optimization (one fewer round-trip for the top frame's own
+frames) worth adding later as its own isolated step.
 
 This was confirmed in a real capture, not just the toolchain — closing out the
 earlier state where source-reading had twice produced a plausible theory that
@@ -882,9 +881,9 @@ can't notice this particular kind of failure.
   translation has to happen while it's still a real, in-process object, not be
   reconstructed from whatever survives the crossing.
 - **On a successful claim, a new tab opens focused, in the current window**
-  (`tabs.create({url, active: true})`) — deliberately stealing focus, unlike the
-  original background-tab assumption, precisely because this is now an explicit
-  action the user just asked for, the same as clicking any other link.
+  (`tabs.create({url, active: true})`) — intentionally stealing focus, unlike
+  the original background-tab assumption, precisely because this is now an
+  explicit action the user just asked for, the same as clicking any other link.
 - **The user solves whatever the page needs entirely by hand** — no detection,
   no automation, ever attempted.
 - **Completion reuses the exact existing direct-capture pipeline, not a separate
@@ -1223,7 +1222,7 @@ operator friction than holding one additional narrowly-scoped credential.
 ### Account creation and roles
 
 - **Open registration.** Anyone who can reach the dashboard can create a
-  `member` account via a signup form — no invite step. This is deliberately
+  `member` account via a signup form — no invite step. This is intentionally
   consistent with the dashboard's threat model: reachability is already gated by
   whatever network the operator chose (LAN/VPN/tunnel), so anyone who can reach
   the signup form is presumed already trusted at the network level, the same way
@@ -1288,9 +1287,9 @@ operator friction than holding one additional narrowly-scoped credential.
   calls `DeleteSessionsForUser`, invalidating any existing dashboard sessions —
   a pre-reset cookie staying valid would undercut the point of resetting a
   password. Neither command touches the bootstrap token itself; they're a
-  straight-line administrative path that deliberately requires server-level
-  access (the same trust boundary `server`/`agent`'s config already assumes),
-  not a second way to satisfy the first-admin flow's own token requirement.
+  straight-line administrative path that requires server-level access (the same
+  trust boundary `server`/`agent`'s config already assumes), not a second way to
+  satisfy the first-admin flow's own token requirement.
 
 ### Security note: D1 as a mirror target
 
@@ -1536,9 +1535,9 @@ screenshot job in §6.
 ### Queue (phone → desktop archiving)
 
 - Adding a URL from a phone (via Shortcut, PWA, or CLI) only **enqueues** it —
-  it does not attempt to archive anything server-side. The intended workflow is
-  deliberately: queue remotely, archive later from the desktop extension, where
-  a real rendered/authenticated browser session exists.
+  it does not attempt to archive anything server-side. The intended workflow is:
+  queue remotely, archive later from the desktop extension, where a real
+  rendered/authenticated browser session exists.
 - The desktop extension polls the queue via the Worker/D1 (see §7 polling
   cadence in the original numbering — now consolidated below) and can notify the
   user that items are waiting.
@@ -1563,8 +1562,8 @@ screenshot job in §6.
 three cases, decided during Phase 2 rather than left as a uniform `409`:
 
 - `404` — the item doesn't exist, or belongs to a different user. These two
-  cases are deliberately collapsed together rather than distinguished, so a
-  claim attempt never leaks cross-user existence.
+  cases are collapsed together rather than distinguished, so a claim attempt
+  never leaks cross-user existence.
 - `410` — the item is in a terminal state (`captured` or `failed`): it used to
   be claimable and permanently isn't anymore. This is more precise than a bare
   404 (which conventionally means "wrong ID") for "this happened, but it's
@@ -1599,18 +1598,18 @@ and would otherwise accumulate forever. Surfaced during Phase 2 implementation,
 not anticipated in the original design:
 
 - **`POST /internal/queue-items/cleanup`**, service-secret gated, called on the
-  backend's own schedule (once or twice a day is plenty) — deliberately **not**
-  a Cloudflare Cron Trigger, for exactly the same "keep the Worker dumb, let the
-  backend own scheduling" reasoning already applied to the visibility-timeout
-  reclaim above. Not scoped to a single user — this is a maintenance sweep
-  across the whole deployment, not a per-device operation, so it takes no
-  `user_id` parameter the way the device-facing endpoints do.
+  backend's own schedule (once or twice a day is plenty) — **not** a Cloudflare
+  Cron Trigger, for exactly the same "keep the Worker dumb, let the backend own
+  scheduling" reasoning already applied to the visibility-timeout reclaim above.
+  Not scoped to a single user — this is a maintenance sweep across the whole
+  deployment, not a per-device operation, so it takes no `user_id` parameter the
+  way the device-facing endpoints do.
 - **Deletes only `captured` items**, and only once older than a 72-hour
   retention window (long enough to be useful for auditability/debugging shortly
   after the fact, short enough not to accumulate indefinitely). `failed` items
-  are deliberately **not** touched — they're kept indefinitely for now. What to
-  do about them long-term (surface them to the user, retry them, expire them on
-  a separate/longer schedule) is an open question, not decided here — see §15.
+  are **not** touched — they're kept indefinitely for now. What to do about them
+  long-term (surface them to the user, retry them, expire them on a
+  separate/longer schedule) is an open question, not decided here — see §15.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
   `pending` for a long time before being claimed; it's time since actual
   completion that should drive retention, not time since the original enqueue.
@@ -1787,16 +1786,16 @@ Cloudflare Worker. Two independent reasons converge on the same answer:
 ### Pipeline architecture
 
 Normalization is a **pipeline of independent steps**, not a single hardcoded
-function — deliberately, since ClearURLs is expected to be the first entry, not
-the only one. A future step might be a different third-party library, or a
-hand-rolled Recueil-specific ruleset; the pipeline shape means adding one never
-requires touching an existing step, and steps can be freely reordered.
-Implemented as `internal/urlnorm`: a `Step` interface
+function — , since ClearURLs is expected to be the first entry, not the only
+one. A future step might be a different third-party library, or a hand-rolled
+Recueil-specific ruleset; the pipeline shape means adding one never requires
+touching an existing step, and steps can be freely reordered. Implemented as
+`internal/urlnorm`: a `Step` interface
 (`Normalize(ctx, rawURL string) (string, error)`, string in/string out —
-deliberately not a shared parsed-URL representation, so an external library with
-its own string-based API is trivial to slot in as a step) and a `Pipeline` that
-runs a sequence of `Step`s, each fed the previous one's output. Today's pipeline
-is exactly two steps, run in this order:
+intentionally not a shared parsed-URL representation, so an external library
+with its own string-based API is trivial to slot in as a step) and a `Pipeline`
+that runs a sequence of `Step`s, each fed the previous one's output. Today's
+pipeline is exactly two steps, run in this order:
 
 1. **ClearURLs** — strips known tracking parameters and unwraps redirect-wrapper
    URLs (below).
@@ -1853,8 +1852,8 @@ hand-roll a tracking-parameter list.
   (lookaround and similar PCRE-ish constructs); `regexp2` is a real, PCRE-like
   engine that can. This is a real dependency addition, acceptable because it's
   backend-only — the Worker's dependency-free constraint doesn't apply here.
-- **Two upstream behaviors are deliberately not ported at all** — not bugs, not
-  future work, structurally excluded from `internal/urlnorm`'s own data model:
+- **Two upstream behaviors are not ported at all** — not bugs, not future work,
+  structurally excluded from `internal/urlnorm`'s own data model:
   - `completeProvider` ("block this request outright") is a live-browsing
     concept — dropping a tracking-pixel request before it's ever made. It
     doesn't apply to a URL a user already chose to archive: a bookmark is
@@ -2146,7 +2145,7 @@ CREATE TABLE readability_jobs (
 );
 
 -- Retry/backoff bookkeeping for the async screenshot job (§6), one row per
--- capture -- same shape as readability_jobs above, and deliberately its own
+-- capture -- same shape as readability_jobs above, and intentionally its own
 -- table rather than merged with it, even though both run through the same
 -- headless-Chrome sidecar and often the same page load (see §6's "Design"
 -- subsection for why: independent failure modes, and re-extraction after a
@@ -2378,7 +2377,7 @@ recueil/
 │   │                            # init() (§13a)
 │   ├── clicreds/              # where `recueil auth`/`enqueue` store/read
 │   │                             # this device's pairing result (§3f) --
-│   │                             # deliberately separate from
+│   │                             # intentionally separate from
 │   │                             # internal/config, not one more thing
 │   │                             # that package's server-oriented Load()
 │   │                             # has to stay agnostic about
@@ -2525,9 +2524,9 @@ README that can drift out of sync with the architecture decisions around it.
   interleave. Takes an already-open `*pgxpool.Pool` rather than a database URL,
   so a caller that already has a pool (production startup, the test harness
   below) doesn't open a second connection just to migrate. This resolves the
-  goose-as-library question raised and deliberately deferred earlier (see §15) —
-  and ends up going a step further than D1's migration runner by adding the
-  session lock, which D1's Cloudflare-API-based approach has no equivalent for.
+  goose-as-library question raised and deferred earlier (see §15) — and ends up
+  going a step further than D1's migration runner by adding the session lock,
+  which D1's Cloudflare-API-based approach has no equivalent for.
 - **Postgres test harness:** `internal/dbtest` — connects to a dedicated,
   ephemeral test Postgres container (`docker-compose.test.yml`; a distinct port
   from the dev database so both can run at once; `tmpfs` data directory so every
@@ -2605,7 +2604,7 @@ README that can drift out of sync with the architecture decisions around it.
   the global default). A failed collection (e.g. the DB unreachable) is logged
   and simply omits that one metric rather than failing the whole scrape —
   confirmed for real, both the success and failure paths. **OpenTelemetry
-  (distributed tracing) was considered and deliberately deferred, not rejected
+  (distributed tracing) was considered and intentionally deferred, not rejected
   outright.** The core API/SDK (`go.opentelemetry.io/otel`) is actually light on
   its own (just `go-logr`), but any real exporter — confirmed even the
   OTLP-over-HTTP variant, not just gRPC — pulls in `google.golang.org/grpc`'s
@@ -2634,13 +2633,13 @@ README that can drift out of sync with the architecture decisions around it.
   logging, plus a handful of chi's own middlewares — chosen and ordered based on
   what actually held up under testing, not just chi's defaults.
   `httplog.RequestLogger` already wraps chi's own `RequestID` and `Recoverer`
-  internally (confirmed via source and by deliberately panicking a handler:
+  internally (confirmed via source and by intentionally panicking a handler:
   clean `500`, full stacktrace logged, server kept running) — neither needed
-  adding separately. `CleanPath` is kept; `RedirectSlashes` deliberately is not,
-  because `CleanPath`'s `path.Clean()` silently strips a trailing slash into
-  chi's internal `RoutePath` before any redirect-based slash-handling middleware
-  would ever see one — confirmed for real that a `POST` to a trailing-slash
-  route variant hits the handler directly with no visible redirect, same method,
+  adding separately. `CleanPath` is kept; `RedirectSlashes` is not, because
+  `CleanPath`'s `path.Clean()` silently strips a trailing slash into chi's
+  internal `RoutePath` before any redirect-based slash-handling middleware would
+  ever see one — confirmed for real that a `POST` to a trailing-slash route
+  variant hits the handler directly with no visible redirect, same method,
   making `RedirectSlashes` inert given this ordering (and a silent internal
   normalization is the safer behavior for a JSON API regardless — no HTTP
   redirect method-preservation question ever arises). `RequestSize` (1MB cap)
@@ -2650,16 +2649,16 @@ README that can drift out of sync with the architecture decisions around it.
   not a general protection every current or future route should inherit
   (confirmed harmless on bodyless requests either way — it skips the check when
   `r.ContentLength == 0` — but scoped for what it communicates, not because
-  scoping changes behavior today). `RealIP` was considered and deliberately not
-  added: genuinely useful behind a trusted reverse proxy, but this project
-  treats network exposure (LAN-only, VPN, tunnel, reverse proxy) as entirely the
+  scoping changes behavior today). `RealIP` was considered and not added:
+  genuinely useful behind a trusted reverse proxy, but this project treats
+  network exposure (LAN-only, VPN, tunnel, reverse proxy) as entirely the
   operator's choice (§2, §12) — blindly trusting a client-supplied header
   without knowing a proxy is actually in front would let anyone reachable spoof
-  their IP in logs. `pprof` (`middleware.Profiler`) was also considered and
-  deliberately not added: useful for an operator diagnosing their own instance,
-  but exposes sensitive runtime info and its own CPU-cost surface, not something
-  to mount on the same unauthenticated router as health checks without a
-  separate, deliberate decision about how it's gated.
+  their IP in logs. `pprof` (`middleware.Profiler`) was also considered and not
+  added: useful for an operator diagnosing their own instance, but exposes
+  sensitive runtime info and its own CPU-cost surface, not something to mount on
+  the same unauthenticated router as health checks without a separate,
+  deliberate decision about how it's gated.
 - **Testing:** `testify`, with table-driven cases (`t.Run` subtests, or
   `[]struct{...}` tables) where that reduces duplication rather than as a
   blanket rule. For code that calls an external HTTP API, tests run against a
@@ -2667,7 +2666,7 @@ README that can drift out of sync with the architecture decisions around it.
   exists (e.g. `option.WithBaseURL` for `cloudflare-go`), rather than a
   hand-rolled interface mock — closer to the real request/response shape for the
   same effort. Handler-level tests (`internal/httpapi`) are written as external
-  `_test` packages deliberately — exercising only the package's exported
+  `_test` packages exclusively — exercising only the package's exported
   constructors, the same way a real caller would, rather than reaching into
   unexported internals.
 
