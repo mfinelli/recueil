@@ -235,6 +235,63 @@ form > button[type="submit"]:hover,
   border-left-color: var(--ink-muted);
 }
 
+/* Auto-dismiss for "Opened in a new tab" only (see
+   showAutoDismissingSuccess) -- the bar gives a clear sense of how much
+   longer the message will stay up when claiming several items in a row. */
+.dismissing {
+  animation: status-fade-out 10s linear 1 forwards;
+}
+
+@keyframes status-fade-out {
+  0%,
+  90% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dismissing {
+    animation: none;
+  }
+}
+
+.countdown-track {
+  margin-top: 5px;
+  height: 2px;
+  width: 100%;
+  max-width: 160px;
+  background: color-mix(in srgb, var(--accent-success) 20%, transparent);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.countdown-fill {
+  height: 100%;
+  width: 100%;
+  background: var(--accent-success);
+  transform-origin: left;
+}
+
+.countdown-fill.running {
+  animation: countdown-shrink 10s linear 1 forwards;
+}
+
+@keyframes countdown-shrink {
+  to {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .countdown-fill.running {
+    animation: none;
+    display: none;
+  }
+}
+
 .paired-info {
   margin: 0 0 4px;
   display: grid;

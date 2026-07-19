@@ -63,6 +63,13 @@ import { defaultDeviceName } from "../common/device-name.js";
 // site below would otherwise need.
 const app = /** @type {HTMLElement} */ (document.getElementById("app"));
 
+// Only #queue-status's "Opened in a new tab" success message auto-dismisses
+// (see handleQueueItemClick) -- "Claiming..." and errors stay put until the
+// next thing overwrites them. Tracked at module scope so a fresh claim can
+// cancel a still-pending dismissal from an earlier one instead of letting
+// it fire later and blank out whatever the new claim just set.
+let queueStatusDismissTimer = /** @type {number|undefined} */ (undefined);
+
 async function main() {
   const authState = /** @type {AuthState} */ (
     await browser.runtime.sendMessage({ type: GET_AUTH_STATE })
@@ -372,6 +379,7 @@ async function handleQueueItemClick(itemId, itemElement, list) {
   const status = /** @type {HTMLElement} */ (
     document.getElementById("queue-status")
   );
+  clearTimeout(queueStatusDismissTimer);
   itemElement.classList.add("queue-item--claiming");
   status.className = "status status--pending-plain";
   status.textContent = "Claiming…";
@@ -381,8 +389,7 @@ async function handleQueueItemClick(itemId, itemElement, list) {
       type: CLAIM_QUEUE_ITEM,
       payload: { itemId },
     });
-    status.className = "status status--success-plain";
-    status.textContent = "Opened in a new tab";
+    showAutoDismissingSuccess(status, "Opened in a new tab");
   } catch (error) {
     status.className = "status status--error";
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -397,6 +404,42 @@ async function handleQueueItemClick(itemId, itemElement, list) {
     );
     renderQueueItems(list, cache.items);
   }
+}
+
+// Auto-dismisses after 10s with a linear countdown bar so that claiming
+// several queue items in a row each gets its own visible confirmation
+// instead of them piling up or one stale message lingering. Only this
+// specific message does this -- "Claiming..." and errors are left for
+// handleQueueItemClick's other branches to overwrite instead, since an
+// error in particular shouldn't disappear on its own.
+const QUEUE_SUCCESS_DISMISS_MS = 10000;
+
+/**
+ * @param {HTMLElement} status
+ * @param {string} text
+ */
+function showAutoDismissingSuccess(status, text) {
+  clearTimeout(queueStatusDismissTimer);
+
+  status.className = "status status--success-plain dismissing";
+  status.replaceChildren();
+
+  const label = document.createElement("span");
+  label.textContent = text;
+
+  const track = document.createElement("div");
+  track.className = "countdown-track";
+  const fill = document.createElement("div");
+  fill.className = "countdown-fill running";
+  track.append(fill);
+
+  status.append(label, track);
+
+  queueStatusDismissTimer = setTimeout(() => {
+    status.className = "status";
+    status.replaceChildren();
+    queueStatusDismissTimer = undefined;
+  }, QUEUE_SUCCESS_DISMISS_MS);
 }
 
 // A checkbox toggle, not a button -- reflects an actual on/off state
