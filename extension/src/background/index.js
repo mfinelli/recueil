@@ -73,13 +73,18 @@ registerQueueRefreshAlarm();
 registerBookmarkSyncAlarm();
 // Once per real browser start/extension install-or-update, not per
 // service-worker wake (see queue.js's own doc comment for why that
-// distinction matters) -- gets the badge roughly right without waiting for
-// the first 6-hour alarm tick after e.g. a fresh install.
+// distinction matters) -- gets the badge (and, for bookmark sync, the
+// folder's contents) roughly right without waiting for the first 6-hour
+// alarm tick after e.g. a fresh install. syncBookmarks() is always safe to
+// call unconditionally here -- it no-ops on its own if sync isn't enabled
+// or the device isn't paired yet, the same as the alarm-driven call does.
 browser.runtime.onStartup.addListener(() => {
   refreshQueueList().catch(() => {});
+  syncBookmarks().catch(() => {});
 });
 browser.runtime.onInstalled.addListener(() => {
   refreshQueueList().catch(() => {});
+  syncBookmarks().catch(() => {});
 });
 
 // Tidies up storage.js's claimed-tabs tracking when a tab closes --
@@ -105,8 +110,15 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
         // alarm tick (up to 6 hours away) or a manual refresh, even if the
         // instance already has real pending items -- worth doing eagerly
         // right when pairing succeeds, since that's exactly when the user
-        // is about to look at the popup again anyway.
+        // is about to look at the popup again anyway. syncBookmarks() is
+        // wired in for the same consistency, even though in practice it's
+        // almost always a no-op here: unpair() already clears the enabled
+        // flag along with everything else, so there's rarely a case where
+        // sync is already enabled at the exact moment a *new* pairing
+        // succeeds. Harmless either way, and correct if that assumption
+        // ever stops holding.
         refreshQueueList().catch(() => {});
+        syncBookmarks().catch(() => {});
         return config;
       });
     case GET_AUTH_STATE:
