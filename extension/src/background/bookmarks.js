@@ -46,6 +46,15 @@
 // never searches the user's whole bookmark tree and never touches
 // anything outside that one folder.
 //
+// To be explicit about what that means in practice: any bookmark
+// management inside the recueil folder -- adding your own bookmarks
+// there, renaming or moving the ones recueil created, anything -- is
+// unsupported. It isn't preserved and isn't specially detected; it gets
+// overwritten or removed the next time sync runs (see syncBookmarks'
+// removal step below), on the same ordinary schedule as everything else,
+// not just when disabling sync or unpairing. The folder is recueil's own
+// managed space, not a general-purpose one recueil happens to also use.
+//
 // "Local edits get overwritten, deleting one just gets it recreated" is
 // the explicit policy (not tracked/reconciled more cleverly) -- the
 // correct way to stop syncing one specific page is the excluded_from_mirror
@@ -63,17 +72,37 @@ import {
 import { apiRequest } from "../common/api-client.js";
 
 const FOLDER_TITLE = "recueil";
+// An explicitly unusual, unlikely-to-collide title -- see ensureFolder's
+// doc comment for what this is actually for (discovering the real default
+// bookmarks container's id, not a real bookmark meant to persist).
+const PROBE_TITLE = "__recueil_probe__";
 const SYNC_ALARM_NAME = "recueil-bookmarks-sync";
 const SYNC_PERIOD_MINUTES = 360; // 6 hours, matching queue.js's own cadence
 
 /**
- * Ensures the dedicated recueil bookmarks folder exists, creating a fresh
- * one if the tracked id is missing or no longer resolves (the user
- * deleted it, or this is a browser recueil has never created it on yet).
- * Omits `parentId` when creating: it defaults to "Other Bookmarks" in
- * Chrome and "Unfiled Bookmarks" in Firefox, in both cases the same
- * portable, sensible default without needing to manually walk
- * bookmarks.getTree() to find it.
+ * Ensures the dedicated recueil bookmarks folder exists -- reusing the
+ * tracked id if it still resolves, otherwise searching for (and adopting)
+ * one that already exists before creating a fresh one. That search
+ * matters for the same reason individual bookmarks are reconciled by URL
+ * rather than tracked id (see file doc comment): Firefox Sync (or
+ * similar) could have already propagated a "recueil" folder from another
+ * device to this one before this device's own extension has ever synced
+ * -- without checking first, this would create a second, duplicate
+ * folder rather than recognizing the one that's already there. The
+ * standard this enforces: recueil will either create or adopt (outside
+ * of native browser sync propagating one, which is expected and fine, not
+ * something to guard against) exactly one bookmarks folder named
+ * "recueil" -- never two.
+ *
+ * Finding the right place to look is the tricky part: Chrome and Firefox
+ * use different, non-portable ids for "Other Bookmarks"/"Unfiled
+ * Bookmarks" (and the title itself can be locale-translated), so neither
+ * a hardcoded id nor a title match on the container itself is reliable.
+ * Instead, a throwaway probe bookmark (created the same way the real
+ * folder is, parentId omitted) discovers the actual default container's
+ * id empirically -- whatever the browser just used for the probe is
+ * exactly where bookmarks.create() would also put the real folder, no
+ * guessing needed.
  *
  * @returns {Promise<string>}
  */
@@ -84,10 +113,37 @@ async function ensureFolder() {
       await browser.bookmarks.get(folderId);
       return folderId;
     } catch {
-      // Falls through to create a fresh one below.
+      // Falls through to search-or-create below.
     }
   }
-  const folder = await browser.bookmarks.create({ title: FOLDER_TITLE });
+
+  const probe = await browser.bookmarks.create({ title: PROBE_TITLE });
+  await browser.bookmarks.remove(probe.id).catch(() => {});
+  if (probe.parentId === undefined) {
+    // Shouldn't happen in practice -- a bookmark the browser itself just
+    // created always has a real parent -- but the type is honestly
+    // optional (BookmarkTreeNode.parentId is only absent for the true
+    // root), so this is a real, if unreachable-in-practice, guard rather
+    // than an unchecked assertion.
+    throw new Error(
+      "recueil: could not determine the default bookmarks folder",
+    );
+  }
+  const defaultParentId = probe.parentId;
+
+  const siblings = await browser.bookmarks.getChildren(defaultParentId);
+  const existingFolder = siblings.find(
+    (node) => node.title === FOLDER_TITLE && node.url === undefined,
+  );
+  if (existingFolder) {
+    await setBookmarksFolderId(existingFolder.id);
+    return existingFolder.id;
+  }
+
+  const folder = await browser.bookmarks.create({
+    parentId: defaultParentId,
+    title: FOLDER_TITLE,
+  });
   await setBookmarksFolderId(folder.id);
   return folder.id;
 }
@@ -155,12 +211,17 @@ export async function syncBookmarks() {
 
 /**
  * Shared teardown, used both by the popup's "disable" toggle and by unpair()
- * -- deletes the entire recueil folder (whatever's actually in it, not just
- * what this sync last touched) and forgets its tracked id. A full removeTree
- * rather than removing entries one at a time is deliberate: simpler, and the
- * accepted tradeoff (something the user manually placed inside recueil's own
- * folder would be swept away too) is a narrow, well-labeled-folder edge case,
- * not a real risk to anything outside it.
+ * -- deletes the entire recueil folder (whatever's actually in it) and
+ * forgets its tracked id.
+ *
+ * Using a full removeTree rather than removing entries one at a time
+ * isn't introducing a new risk here -- any bookmark manually placed
+ * inside recueil's own folder is already unsupported and already gets
+ * swept away on the very next regular sync (syncBookmarks above removes
+ * anything whose URL isn't in the current archived-pages list, with no
+ * special case for "but a human put this here on purpose"), not just at
+ * teardown. This is the same policy applied more thoroughly, not a
+ * separate tradeoff specific to disabling/unpairing.
  */
 export async function deleteBookmarksFolderAndState() {
   const folderId = await getBookmarksFolderId();

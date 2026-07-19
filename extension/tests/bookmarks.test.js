@@ -23,6 +23,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // rejecting for an unknown id) for syncBookmarks' own reconciliation logic
 // to exercise meaningfully, the same spirit as storage.test.js's in-memory
 // storage.local fake.
+// Simulates the real browser assigning an actual container id when
+// bookmarks.create() omits parentId -- a real Chrome/Firefox never
+// returns undefined for this on something it just created, only recueil's
+// own earlier, unfixed code assumed it might stay unset.
+const DEFAULT_ROOT_ID = "default-root";
+
 let store;
 let nextBookmarkId;
 let storageStore;
@@ -49,7 +55,7 @@ vi.mock("webextension-polyfill", () => ({
     bookmarks: {
       async create({ parentId, title, url }) {
         const id = String(nextBookmarkId++);
-        const node = { id, parentId, title, url };
+        const node = { id, parentId: parentId ?? DEFAULT_ROOT_ID, title, url };
         store.set(id, node);
         return node;
       },
@@ -152,7 +158,7 @@ describe("syncBookmarks -- gating", () => {
 });
 
 describe("syncBookmarks -- folder handling", () => {
-  it("creates the dedicated folder on first sync, with no parentId", async () => {
+  it("creates the dedicated folder in the discovered default location on first sync", async () => {
     await setConfig(config);
     await setBookmarkSyncEnabled(true);
     fetchMock.mockResolvedValue(fakePagesResponse([]));
@@ -163,7 +169,12 @@ describe("syncBookmarks -- folder handling", () => {
     expect(folderId).not.toBeNull();
     const folder = store.get(folderId);
     expect(folder.title).toBe("recueil");
-    expect(folder.parentId).toBeUndefined();
+    expect(folder.parentId).toBe(DEFAULT_ROOT_ID);
+    // The probe bookmark used to discover that location is cleaned up,
+    // not left behind.
+    expect(
+      [...store.values()].some((n) => n.title === "__recueil_probe__"),
+    ).toBe(false);
   });
 
   it("reuses the tracked folder id on a later sync, without creating a new one", async () => {
@@ -193,6 +204,30 @@ describe("syncBookmarks -- folder handling", () => {
     const newFolderId = await getBookmarksFolderId();
     expect(newFolderId).not.toBe(oldFolderId);
     expect(store.has(newFolderId)).toBe(true);
+  });
+
+  it("adopts an existing recueil folder in the default location instead of creating a duplicate", async () => {
+    // Simulates a folder that arrived via Firefox Sync (or similar) from
+    // another device, before this device's own recueil extension has
+    // ever synced -- no tracked folder id locally at all yet.
+    store.set("synced-folder-1", {
+      id: "synced-folder-1",
+      parentId: DEFAULT_ROOT_ID,
+      title: "recueil",
+      url: undefined,
+    });
+
+    await setConfig(config);
+    await setBookmarkSyncEnabled(true);
+    fetchMock.mockResolvedValue(fakePagesResponse([]));
+
+    await syncBookmarks();
+
+    expect(await getBookmarksFolderId()).toBe("synced-folder-1");
+    const recueilFolders = [...store.values()].filter(
+      (n) => n.title === "recueil" && n.url === undefined,
+    );
+    expect(recueilFolders).toHaveLength(1);
   });
 });
 
