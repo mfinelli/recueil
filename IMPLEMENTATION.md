@@ -984,9 +984,18 @@ Concretely, what's built in `extension/`:
 
 ### Still ahead
 
-The bookmark-list menu (pulling the D1 mirror for popup display). Safari
-packaging, whenever that becomes a priority — mechanical (Xcode-wrapped, same
-source), not attempted yet.
+Safari packaging, whenever that becomes a priority — mechanical (Xcode-wrapped,
+same source), not attempted yet, and deliberately not a priority right now. A
+real visual design pass on the popup — deferred to a separate session, expected
+to be a larger, iterative piece of work rather than a quick follow-up. Moving
+settings (bookmark sync's toggle, so far the only one) into a dedicated
+extension options page was considered and explicitly decided against for now,
+after actually using the popup during testing — everything stays in the popup
+unless/until there are enough settings that it stops making sense there.
+
+With those three exceptions, every piece from the original five-step plan
+(pairing, capture, upload, queue-driven capture, bookmark sync) is built and
+confirmed working end to end.
 
 ### Queue-driven capture
 
@@ -1036,6 +1045,78 @@ test, since exercising it meaningfully would mean mocking the entire
 tab/scripting/fetch pipeline just to check one boolean call at the end, the same
 coverage-theater tradeoff already ruled out for `capture.js`'s other
 tab-touching functions.
+
+### Bookmark sync
+
+The original plan (§8, §15 in earlier revisions) was a custom in-popup bookmark
+list, mirroring D1's `archived_pages`. That plan changed mid-phase, prompted by
+a direct question about whether the browser's own native bookmarks could be used
+instead — and the answer turned out to be yes, with a real, non-obvious
+reconciliation approach rather than a compromise. See DESIGN.md §3j for the full
+design writeup; concretely, what got built:
+
+- **One new Worker endpoint**, unlike queue-driven capture's zero:
+  `GET /archived-pages` (`terraform/index.js`'s `handleListArchivedPages`),
+  device-bearer-token authed, a plain full-list read of the caller's own
+  `archived_pages` rows — no pagination, no `since` parameter, deliberately
+  simpler than the backend's own Postgres → D1 sync, which needs that complexity
+  at a scale a single browser's bookmark tree never will.
+- **`background/bookmarks.js`**: `syncBookmarks()` (the full-list diff --
+  create/adopt/update/remove), `ensureFolder()` (create-or-adopt exactly one
+  "recueil" folder, never a duplicate — see DESIGN.md §3j for the probe-bookmark
+  technique this needed), `enableBookmarkSync()` / `disableBookmarkSync()` (the
+  latter also relinquishes the `bookmarks` permission itself), and
+  `registerBookmarkSyncAlarm()` (same 6-hour cadence as the queue).
+- **`popup/popup.js`**: a checkbox toggle (reflects actual on/off state, unlike
+  the queue's one-shot buttons) that requests the `bookmarks` optional
+  permission synchronously in its own change handler — same user-gesture
+  reasoning as pairing's `<all_urls>` request — before sending the enable
+  message.
+- **`background/index.js`**: `unpair()` now runs `disableBookmarkSync()` first,
+  specifically _before_ its own `storage.local.clear()` — ordering that matters,
+  since the teardown needs to read the tracked folder id before that wipe would
+  otherwise have already erased it. Wrapped in its own `.catch(() => {})` at the
+  dispatch layer, on top of `disableBookmarkSync`'s own internal safeguards:
+  unpairing itself must never be blocked by a bookmarks-API hiccup.
+
+**The real design pivot, found via a direct question rather than discovered the
+hard way**: an initial version tracked a `page_id -> bookmark id` map in
+`storage.local`, reconciling by id the same way the queue's claimed-tabs map
+works. That turned out to be solving a harder problem than existed —
+`GET /archived-pages`'s `raw_url` field is actually sourced from
+`pages.normalized_url` (`internal/mirror/sync.go`'s `RawURL: p.NormalizedUrl`),
+the exact column `pages`' own `UNIQUE (user_id, normalized_url)` constraint is
+built on, so it's already a stable, unique identity key with no separate
+tracking needed at all. Diffing the archived-pages list directly against
+`browser.bookmarks.getChildren(folderId)` by URL is simpler than _and_ more
+correct than the id-map version: the browser's own bookmark tree already is the
+persisted state to compare against, and the cross-device-sync case (a bookmark
+that arrived via Firefox Sync from another device before this device's own next
+sync tick runs) falls out for free, needing no special "adopt" branch at all —
+it just looks like "a URL that's already there," identical to one created
+locally. The same reasoning was then applied one level up, in a second real fix:
+the dedicated folder itself needed the same create-or-adopt treatment (a probe
+bookmark discovers the real default container id, searched before falling back
+to creating a fresh folder), after the first version would have blindly created
+a duplicate "recueil" folder if one had already arrived via sync before this
+device's own first sync ran.
+
+One documentation bug caught and fixed along the way, worth remembering as a
+category: an earlier comment framed "a bookmark manually placed inside recueil's
+own folder gets swept away" as a risk specific to disabling sync or unpairing.
+That was never accurate — `syncBookmarks` already removes any unrecognized
+folder child on _every_ ordinary sync, not just at teardown. The behavior was
+already correct; only the comment describing it was misleading, in a way that
+could have led someone to believe manual bookmark management inside the folder
+was safer than it actually is.
+
+23 new tests across `bookmarks.test.js` (19) and `storage.test.js`'s
+bookmark-sync keys (4) — including the folder-adoption and per-bookmark-adoption
+cases, the `enableBookmarkSync`/`disableBookmarkSync` orchestration, and a real
+test-setup bug caught in the process (a mock's default `vi.fn()` returned
+`undefined` instead of a resolved promise, breaking a `.catch()` chained onto it
+— fixed by giving the mock a proper default resolved value, not by changing the
+production code).
 
 ### `POST /captures/complete`: direct-capture completion
 

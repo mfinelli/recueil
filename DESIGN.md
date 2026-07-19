@@ -931,6 +931,97 @@ popup shows — not a separately-maintained count that could drift from it.
 
 ---
 
+### 3j. Bookmark sync (native browser bookmarks, not a custom list)
+
+**The original plan was a custom in-popup bookmark list, mirroring the same
+`archived_pages` D1 table §8 already maintains — that changed mid-phase, in
+favor of syncing into the browser's own native bookmarks instead.** Prompted
+directly by asking whether the browser's own bookmarks machinery could be used,
+rather than discovered as a problem with the custom-list plan. The reasoning
+that made the switch worthwhile: native bookmarks already come with a
+full-featured, familiar UI (search, folders, the browser's own sidebar/manager)
+that a cramped popup view would never match, and favicon display is handled
+entirely by the browser itself, for free — no separate favicon-fetching or
+caching logic needed on the extension side at all, for this specific feature.
+
+**The one rule reconciliation is built around: recueil only ever touches
+bookmarks that are children of one dedicated folder it creates and manages
+itself.** It never searches the user's whole bookmark tree and never touches
+anything outside that folder. Any bookmark management inside that folder — the
+user adding their own bookmarks there, renaming or moving the ones recueil
+created, anything — is unsupported: it isn't preserved and isn't specially
+detected, it gets overwritten or removed the next time sync runs, on the same
+ordinary schedule as everything else, not just when disabling sync or unpairing.
+An earlier version of this document's own comments described that sweeping-away
+as a risk specific to teardown specifically — that was a real inconsistency in
+the write-up, not the behavior: `syncBookmarks` already applies this on every
+ordinary sync, and the comment was corrected to say so plainly once the
+inconsistency was pointed out.
+
+**Reconciled by URL, not by tracking bookmark ids at all — no stored
+`page_id -> bookmark id` map anywhere.** This is a real simplification found by
+asking a direct question (why not just diff by URL against the folder's actual
+contents?) rather than assumed safe: it depends on `raw_url` (what
+`GET /archived-pages` returns) actually being a stable, unique identity key,
+which turned out to already be true but wasn't obvious from the field name.
+`raw_url` is sourced from `pages.normalized_url` (`internal/mirror/sync.go`'s
+`RawURL: p.NormalizedUrl`), the exact column `pages`' own
+`UNIQUE (user_id, normalized_url)` constraint is built on — not the literal URL
+string from whichever capture happened to run last, which could differ across
+captures of the same page (tracking parameters, trailing slashes) even though
+the identity stays the same. With that confirmed, diffing the fetched
+archived-pages list directly against `browser.bookmarks.getChildren(folderId)`
+by URL is simpler than _and_ at least as correct as a tracked-id map: the
+browser's own bookmark tree already _is_ the persisted state to compare against,
+so keeping a redundant local copy of it would only be a second thing that could
+drift from the truth. It also means the cross-device-sync case (a bookmark
+recueil created on another device, already propagated here by Firefox Sync or
+similar, before this device's own next sync tick runs) needs no special "adopt"
+branch at all: it just looks like "a URL that's already there," identical to one
+created locally.
+
+**The dedicated folder itself needed the same create-or-adopt treatment, one
+level up — a second real gap, found the same way as the first.** An initial
+version only ever created the folder fresh if no tracked id resolved, which
+would blindly create a _second_ "recueil" folder on a fresh device where one had
+already arrived via native sync before this device's own first sync ran. The fix
+enforces the same standard as individual bookmarks: create or adopt, never
+duplicate. Finding the right place to look is the tricky part — Chrome and
+Firefox use different, non-portable ids for "Other Bookmarks"/"Unfiled
+Bookmarks" (and the title itself can be locale-translated), so neither a
+hardcoded id nor a title match on the container itself is reliable. The actual
+fix: a throwaway probe bookmark, created the same way the real folder is
+(`parentId` omitted), discovers the real default container's id empirically —
+whatever the browser just used for the probe is exactly where
+`bookmarks.create()` would also put the real folder, then the probe itself is
+removed. Confirmed directly against both Chrome's and Firefox's own docs that
+there's no way to do better than this — a genuinely top-level folder (a sibling
+of "Bookmarks Bar"/"Other Bookmarks" rather than nested inside one of them)
+isn't possible at all: both browsers explicitly block creating anything as a
+child of the true root node ("The bookmark root cannot be modified"), so landing
+inside the default container is the closest to top-level actually achievable,
+not a fallback settled for over a better option.
+
+**Opt-in, not bundled into pairing.** `bookmarks` is a distinct, user-visible
+permission (`optional_permissions` in the manifest) unrelated to capture itself,
+requested only when the popup's own toggle is turned on — synchronously in that
+toggle's change handler, same user-gesture reasoning as pairing's own
+`<all_urls>` request (§3h). Turning sync off relinquishes the permission too,
+not just stops syncing while holding it; turning it back on later just requests
+it again. The same teardown (delete the folder, clear tracked state, relinquish
+the permission) is shared between the popup's toggle and `unpair()` — with one
+ordering requirement where it's called from unpair specifically: it has to run
+_before_ unpair's own `storage.local.clear()`, since it needs to read the
+tracked folder id from storage before that wipe would otherwise have already
+erased it.
+
+**No incremental sync on the extension side either** — see §8's own
+bookmark-list-mirror section for why a full-list pull, diffed locally, is the
+right level of complexity at a personal archive's actual scale, rather than
+reusing the backend's own checkpoint-based approach.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
@@ -1620,11 +1711,13 @@ not anticipated in the original design:
   If a future phase's `complete`/`fail` endpoint adds a dedicated completion
   timestamp, this is a one-line filter change, not a design change.
 
-### Bookmark-list mirror (extension as a browsable list)
+### Bookmark-list mirror (backend → D1 → the browser's own native bookmarks)
 
-- Separately from the queue, the extension can act as a lightweight bookmark
-  list of everything already archived — similar to a browser's native bookmarks
-  UI: just title + URL, no thumbnails.
+- Separately from the queue, the extension syncs everything already archived
+  into the browser's own native bookmarks — not a custom in-popup list. See §3j
+  for why that changed from the original custom-UI plan and how the extension
+  side actually works; this section covers the backend → D1 half only, which
+  didn't change.
 - This is a **one-way, backend → D1 push** — the mirror-image of the credential
   mirror (backend → D1, rather than D1 → backend), keeping the same principle:
   the extension only ever needs to talk to the Worker/D1, never the backend.
@@ -1708,12 +1801,14 @@ not anticipated in the original design:
   `GET .../page-ids` returns a raw list; `POST .../delete` deletes exactly the
   ids it's given. All the actual logic — what changed, what to delete — lives on
   the backend.
-- The extension does **not** live-sync this list either. It caches the list
-  locally and refreshes on a coarse schedule (see §7 polling cadence below) or
-  on explicit user request, using its own incremental "give me changes since X"
-  query against `archived_pages.updated_at` — a separate concern from the
-  backend's own sync job above, just reusing the same column for the same
-  reason.
+- The extension does **not** live-sync this list either. It refreshes on a
+  coarse schedule (see §7 polling cadence below) or on explicit user request —
+  but, unlike the backend's own Postgres → D1 sync above, with **no incremental
+  checkpoint at all**: it pulls the whole current list every time and diffs it
+  locally (§3j). That's a deliberate scale-appropriate simplification, not an
+  oversight — a personal archive is realistically hundreds to low-thousands of
+  pages, nowhere near where an incremental `since` parameter would start to
+  matter the way it does for the backend's own sync job above.
 - Because this list is just title + URL, no thumbnail storage is needed in R2 or
   D1 for this feature.
 
@@ -2859,3 +2954,16 @@ What remains open is purely implementation-phase, not architectural:
   §6's "Design" subsection for the reasoning (independent failure modes;
   re-extraction after a Readability.js upgrade shouldn't force a redundant
   re-screenshot).
+- **Resolved this round: every piece of the original five-step extension plan
+  (pairing, capture, upload, queue-driven capture, bookmark sync — §3h–§3j) is
+  now built and confirmed working end to end**, including two mid-phase design
+  pivots (queue-driven capture's human-in-the-loop redesign, bookmark sync's
+  switch to native browser bookmarks) that only became the right call once
+  actually tested or directly questioned, not apparent from the original plan
+  alone. What's left, all explicitly deferred rather than forgotten: Safari
+  packaging (mechanical, Xcode-wrapped, not a current priority); a real visual
+  design pass on the popup (deferred to a separate session — expected to be
+  larger, iterative work); and moving settings into a dedicated extension
+  options page, considered and declined for now after actually using the popup
+  during testing — everything stays there unless/until there are enough settings
+  that it stops making sense to.
