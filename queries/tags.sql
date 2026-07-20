@@ -26,3 +26,6 @@
 INSERT INTO tags (user_id, name) VALUES ($1, $2)
 ON CONFLICT (user_id, name) DO UPDATE SET name = EXCLUDED.name
 RETURNING *;
+
+-- name: ListTags :many
+SELECT * FROM tags WHERE user_id = $1 ORDER BY name;

@@ -565,19 +565,33 @@ type captureSummaryResponse struct {
 	CapturedAt                time.Time `json:"captured_at"`
 }
 
-// pageDetailResponse embeds pageResponse so its fields flatten into the
-// same top-level JSON object as "captures" -- the page detail view's
-// natural shape is "the page, plus its history," not a nested "page"
-// envelope key.
-type pageDetailResponse struct {
-	pageResponse
-	Captures []captureSummaryResponse `json:"captures"`
+type pageTagResponse struct {
+	ID     int64  `json:"id"`
+	Name   string `json:"name"`
+	Source string `json:"source"`
 }
 
-// GET /api/pages/{id}: page detail plus full capture (version) history,
-// most recent first. Deliberately a summary per capture, not the full
-// row -- reader_text/ai_summary are large and belong to a future
-// GET /api/captures/{id} detail endpoint, not this list.
+type pageCollectionResponse struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	ParentID *int64 `json:"parent_id"`
+}
+
+// pageDetailResponse embeds pageResponse so its fields flatten into the
+// same top-level JSON object as "captures"/"tags"/"collections" -- the
+// page detail view's natural shape is "the page, plus everything
+// attached to it," not a nested "page" envelope key.
+type pageDetailResponse struct {
+	pageResponse
+	Captures    []captureSummaryResponse `json:"captures"`
+	Tags        []pageTagResponse        `json:"tags"`
+	Collections []pageCollectionResponse `json:"collections"`
+}
+
+// GET /api/pages/{id}: page detail plus full capture (version) history
+// (most recent first), tags, and collection memberships. Captures are
+// deliberately a summary per row, not the full row -- reader_text/
+// ai_summary are large and belong to GET /api/captures/{id} instead.
 func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -603,8 +617,25 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	tags, err := s.Queries.ListPageTags(ctx, page.ID)
+	if err != nil {
+		log.Printf("warning: failed to list tags for page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	collections, err := s.Queries.ListPageCollections(ctx, page.ID)
+	if err != nil {
+		log.Printf("warning: failed to list collections for page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
-	resp := pageDetailResponse{pageResponse: pageResponseFromPage(page), Captures: []captureSummaryResponse{}}
+	resp := pageDetailResponse{
+		pageResponse: pageResponseFromPage(page),
+		Captures:     []captureSummaryResponse{},
+		Tags:         []pageTagResponse{},
+		Collections:  []pageCollectionResponse{},
+	}
 	for _, c := range captures {
 		resp.Captures = append(resp.Captures, captureSummaryResponse{
 			ID: c.ID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
@@ -612,6 +643,12 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 			HTMLCompressedSizeBytes: c.HtmlCompressedSizeBytes, HTMLUncompressedSizeBytes: c.HtmlUncompressedSizeBytes,
 			CapturedAt: c.CapturedAt.Time,
 		})
+	}
+	for _, t := range tags {
+		resp.Tags = append(resp.Tags, pageTagResponse{ID: t.TagID, Name: t.Name, Source: t.Source})
+	}
+	for _, c := range collections {
+		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -866,6 +903,372 @@ func (s *Server) ListTextSearchConfigs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string][]string{"languages": configs})
+}
+
+type tagResponse struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// GET /api/tags: the user's full tag vocabulary, for the tags management
+// screen and for populating an "add tag" autocomplete.
+func (s *Server) ListTags(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	tags, err := s.Queries.ListTags(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list tags for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp := make([]tagResponse, 0, len(tags))
+	for _, t := range tags {
+		resp = append(resp, tagResponse{ID: t.ID, Name: t.Name})
+	}
+	writeJSON(w, http.StatusOK, map[string][]tagResponse{"tags": resp})
+}
+
+type addPageTagRequest struct {
+	Name string `json:"name"`
+}
+
+// POST /api/pages/{id}/tags: gets-or-creates a tag by name (UpsertTag),
+// then links it to the page with source "manual" -- the same source
+// value a person applying a tag through the dashboard should carry,
+// distinguishing it from the AI enrichment job's own tags.
+func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pageID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	req, err := decodeJSON[addPageTagRequest](r)
+	if err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	tag, err := s.Queries.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: req.Name})
+	if err != nil {
+		log.Printf("warning: failed to upsert tag for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	if err := s.Queries.AddPageTag(ctx, db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual"}); err != nil {
+		log.Printf("warning: failed to add tag %d to page %d: %v", tag.ID, page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, tagResponse{ID: tag.ID, Name: tag.Name})
+}
+
+// DELETE /api/pages/{id}/tags/{tagId}
+func (s *Server) RemovePageTag(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pageID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	tagID, err := strconv.ParseInt(chi.URLParam(r, "tagId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tag id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	if err := s.Queries.RemovePageTag(ctx, db.RemovePageTagParams{PageID: page.ID, TagID: tagID}); err != nil {
+		log.Printf("warning: failed to remove tag %d from page %d: %v", tagID, page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// int8OrNil converts a pgtype.Int8 into the *int64 shape the dashboard's
+// JSON responses use -- nil rather than 0 for a genuinely NULL
+// parent_id (a top-level collection), same reasoning as textOrNil.
+func int8OrNil(v pgtype.Int8) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	return &v.Int64
+}
+
+type collectionResponse struct {
+	ID        int64     `json:"id"`
+	ParentID  *int64    `json:"parent_id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func collectionResponseFromCollection(c db.Collection) collectionResponse {
+	return collectionResponse{ID: c.ID, ParentID: int8OrNil(c.ParentID), Name: c.Name, CreatedAt: c.CreatedAt.Time}
+}
+
+// GET /api/collections: flat list; the dashboard reconstructs the tree
+// client-side from (id, parent_id), same as ListCollectionsByUser's own
+// doc comment already explains.
+func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	rows, err := s.Queries.ListCollectionsByUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list collections for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp := make([]collectionResponse, 0, len(rows))
+	for _, c := range rows {
+		resp = append(resp, collectionResponseFromCollection(c))
+	}
+	writeJSON(w, http.StatusOK, map[string][]collectionResponse{"collections": resp})
+}
+
+type createCollectionRequest struct {
+	Name     string `json:"name"`
+	ParentID *int64 `json:"parent_id"`
+}
+
+// POST /api/collections. When parent_id is given, it's verified to
+// belong to this user before use -- collections.parent_id's own FK has
+// no user_id check, so without this a request could nest a new
+// collection under another user's collection id. A duplicate name under
+// the same parent (top-level or not) collides with one of the schema's
+// two partial unique indexes and surfaces here as a 409.
+func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	req, err := decodeJSON[createCollectionRequest](r)
+	if err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	ctx := r.Context()
+
+	var parentID pgtype.Int8
+	if req.ParentID != nil {
+		if _, err := s.Queries.GetCollectionByID(ctx, db.GetCollectionByIDParams{ID: *req.ParentID, UserID: user.ID}); err != nil {
+			writeError(w, http.StatusBadRequest, "parent collection not found")
+			return
+		}
+		parentID = pgtype.Int8{Int64: *req.ParentID, Valid: true}
+	}
+
+	collection, err := s.Queries.CreateCollection(ctx, db.CreateCollectionParams{
+		UserID: user.ID, ParentID: parentID, Name: req.Name,
+	})
+	if err != nil {
+		writeError(w, http.StatusConflict, "a collection with that name already exists here")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, collectionResponseFromCollection(collection))
+}
+
+type renameCollectionRequest struct {
+	Name string `json:"name"`
+}
+
+// PATCH /api/collections/{id}
+func (s *Server) RenameCollection(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+	req, err := decodeJSON[renameCollectionRequest](r)
+	if err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	collection, err := s.Queries.RenameCollection(r.Context(), db.RenameCollectionParams{Name: req.Name, ID: id, UserID: user.ID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+		writeError(w, http.StatusConflict, "a collection with that name already exists here")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, collectionResponseFromCollection(collection))
+}
+
+// DELETE /api/collections/{id}: cascades to child collections and
+// page_collections rows via the schema's own ON DELETE CASCADE chain.
+func (s *Server) DeleteCollection(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeleteCollection(r.Context(), db.DeleteCollectionParams{ID: id, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete collection %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// GET /api/collections/{id}/pages
+func (s *Server) ListCollectionPages(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+	ctx := r.Context()
+
+	if _, err := s.Queries.GetCollectionByID(ctx, db.GetCollectionByIDParams{ID: id, UserID: user.ID}); err != nil {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	pages, err := s.Queries.ListCollectionPages(ctx, id)
+	if err != nil {
+		log.Printf("warning: failed to list pages for collection %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp := make([]pageResponse, 0, len(pages))
+	for _, p := range pages {
+		resp = append(resp, pageResponseFromPage(p))
+	}
+	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
+}
+
+type addPageToCollectionRequest struct {
+	CollectionID int64 `json:"collection_id"`
+}
+
+// POST /api/pages/{id}/collections
+func (s *Server) AddPageToCollection(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pageID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	req, err := decodeJSON[addPageToCollectionRequest](r)
+	if err != nil || req.CollectionID == 0 {
+		writeError(w, http.StatusBadRequest, "collection_id is required")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	if _, err := s.Queries.GetCollectionByID(ctx, db.GetCollectionByIDParams{ID: req.CollectionID, UserID: user.ID}); err != nil {
+		writeError(w, http.StatusNotFound, "collection not found")
+		return
+	}
+
+	if err := s.Queries.AddPageToCollection(ctx, db.AddPageToCollectionParams{PageID: page.ID, CollectionID: req.CollectionID}); err != nil {
+		log.Printf("warning: failed to add page %d to collection %d: %v", page.ID, req.CollectionID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DELETE /api/pages/{id}/collections/{collectionId}
+func (s *Server) RemovePageFromCollection(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pageID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	collectionID, err := strconv.ParseInt(chi.URLParam(r, "collectionId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	if err := s.Queries.RemovePageFromCollection(ctx, db.RemovePageFromCollectionParams{PageID: page.ID, CollectionID: collectionID}); err != nil {
+		log.Printf("warning: failed to remove page %d from collection %d: %v", page.ID, collectionID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.User) {

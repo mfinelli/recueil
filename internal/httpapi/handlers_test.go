@@ -1121,6 +1121,317 @@ func TestListTextSearchConfigs(t *testing.T) {
 	})
 }
 
+func TestListTags(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("returns only the caller's tags, alphabetically", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: other.ID, Name: "not-mine"})
+		require.NoError(t, err)
+		_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "zebra"})
+		require.NoError(t, err)
+		_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "aardvark"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/tags", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Tags []struct {
+				Name string `json:"name"`
+			} `json:"tags"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Tags, 2)
+		assert.Equal(t, "aardvark", got.Tags[0].Name)
+		assert.Equal(t, "zebra", got.Tags[1].Name)
+	})
+}
+
+func TestAddAndRemovePageTag(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("adds a tag with source manual, then removes it", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/tag-me")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/tags", page.ID),
+			strings.NewReader(`{"name":"recipes"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		var tag struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&tag))
+		assert.Equal(t, "recipes", tag.Name)
+
+		detailResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		var detail struct {
+			Tags []struct {
+				Name   string `json:"name"`
+				Source string `json:"source"`
+			} `json:"tags"`
+		}
+		require.NoError(t, json.NewDecoder(detailResp.Body).Decode(&detail))
+		require.Len(t, detail.Tags, 1)
+		assert.Equal(t, "recipes", detail.Tags[0].Name)
+		assert.Equal(t, "manual", detail.Tags[0].Source)
+
+		delResp := requestWithCookie(t, server, http.MethodDelete,
+			fmt.Sprintf("/api/pages/%d/tags/%d", page.ID, tag.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, delResp.StatusCode)
+
+		afterResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		var after struct {
+			Tags []struct{} `json:"tags"`
+		}
+		require.NoError(t, json.NewDecoder(afterResp.Body).Decode(&after))
+		assert.Empty(t, after.Tags)
+	})
+
+	t.Run("tagging another user's page returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-your-tag-target")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/tags", page.ID),
+			strings.NewReader(`{"name":"recipes"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestCollectionsCRUD(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("create, list, rename, delete a top-level collection", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		createReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections",
+			strings.NewReader(`{"name":"Reading List"}`))
+		require.NoError(t, err)
+		createReq.Header.Set("Content-Type", "application/json")
+		createReq.AddCookie(cookie)
+		createResp, err := http.DefaultClient.Do(createReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusCreated, createResp.StatusCode)
+
+		var collection struct {
+			ID       int64  `json:"id"`
+			Name     string `json:"name"`
+			ParentID *int64 `json:"parent_id"`
+		}
+		require.NoError(t, json.NewDecoder(createResp.Body).Decode(&collection))
+		assert.Equal(t, "Reading List", collection.Name)
+		assert.Nil(t, collection.ParentID)
+
+		listResp := requestWithCookie(t, server, http.MethodGet, "/api/collections", cookie)
+		var list struct {
+			Collections []struct {
+				ID int64 `json:"id"`
+			} `json:"collections"`
+		}
+		require.NoError(t, json.NewDecoder(listResp.Body).Decode(&list))
+		require.Len(t, list.Collections, 1)
+		assert.Equal(t, collection.ID, list.Collections[0].ID)
+
+		renameReq, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/collections/%d", collection.ID),
+			strings.NewReader(`{"name":"Books"}`))
+		require.NoError(t, err)
+		renameReq.Header.Set("Content-Type", "application/json")
+		renameReq.AddCookie(cookie)
+		renameResp, err := http.DefaultClient.Do(renameReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, renameResp.StatusCode)
+		var renamed struct {
+			Name string `json:"name"`
+		}
+		require.NoError(t, json.NewDecoder(renameResp.Body).Decode(&renamed))
+		assert.Equal(t, "Books", renamed.Name)
+
+		delResp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/collections/%d", collection.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, delResp.StatusCode)
+
+		getAfterDelete := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/collections/%d/pages", collection.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, getAfterDelete.StatusCode)
+	})
+
+	t.Run("a duplicate top-level name returns 409", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		body := `{"name":"Duplicate"}`
+
+		firstReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections", strings.NewReader(body))
+		require.NoError(t, err)
+		firstReq.Header.Set("Content-Type", "application/json")
+		firstReq.AddCookie(cookie)
+		firstResp, err := http.DefaultClient.Do(firstReq)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, firstResp.StatusCode)
+
+		secondReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections", strings.NewReader(body))
+		require.NoError(t, err)
+		secondReq.Header.Set("Content-Type", "application/json")
+		secondReq.AddCookie(cookie)
+		secondResp, err := http.DefaultClient.Do(secondReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusConflict, secondResp.StatusCode)
+	})
+
+	t.Run("nesting under another user's collection id is rejected", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		otherCollection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
+			UserID: owner.ID, Name: "Owner's Collection",
+		})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		body := fmt.Sprintf(`{"name":"Sneaky","parent_id":%d}`, otherCollection.ID)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("renaming or deleting another user's collection returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		collection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
+			UserID: owner.ID, Name: "Not Yours",
+		})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		renameReq, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/collections/%d", collection.ID),
+			strings.NewReader(`{"name":"Hijacked"}`))
+		require.NoError(t, err)
+		renameReq.Header.Set("Content-Type", "application/json")
+		renameReq.AddCookie(cookie)
+		renameResp, err := http.DefaultClient.Do(renameReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, renameResp.StatusCode)
+
+		delResp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/collections/%d", collection.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, delResp.StatusCode)
+	})
+}
+
+func TestPageCollectionMembership(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("add a page to a collection, list it, then remove it", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/collect-me")
+		q := db.New(pool)
+		collection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
+			UserID: user.ID, Name: "My Collection",
+		})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		addReq, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/collections", page.ID),
+			strings.NewReader(fmt.Sprintf(`{"collection_id":%d}`, collection.ID)))
+		require.NoError(t, err)
+		addReq.Header.Set("Content-Type", "application/json")
+		addReq.AddCookie(cookie)
+		addResp, err := http.DefaultClient.Do(addReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNoContent, addResp.StatusCode)
+
+		pagesResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/collections/%d/pages", collection.ID), cookie)
+		assert.Equal(t, http.StatusOK, pagesResp.StatusCode)
+		var pages struct {
+			Pages []struct {
+				ID int64 `json:"id"`
+			} `json:"pages"`
+		}
+		require.NoError(t, json.NewDecoder(pagesResp.Body).Decode(&pages))
+		require.Len(t, pages.Pages, 1)
+		assert.Equal(t, page.ID, pages.Pages[0].ID)
+
+		detailResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		var detail struct {
+			Collections []struct {
+				ID int64 `json:"id"`
+			} `json:"collections"`
+		}
+		require.NoError(t, json.NewDecoder(detailResp.Body).Decode(&detail))
+		require.Len(t, detail.Collections, 1)
+		assert.Equal(t, collection.ID, detail.Collections[0].ID)
+
+		remResp := requestWithCookie(t, server, http.MethodDelete,
+			fmt.Sprintf("/api/pages/%d/collections/%d", page.ID, collection.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, remResp.StatusCode)
+
+		afterResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/collections/%d/pages", collection.ID), cookie)
+		var after struct {
+			Pages []struct{} `json:"pages"`
+		}
+		require.NoError(t, json.NewDecoder(afterResp.Body).Decode(&after))
+		assert.Empty(t, after.Pages)
+	})
+
+	t.Run("adding to another user's collection returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		otherOwner := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/my-page-their-collection")
+		q := db.New(pool)
+		theirCollection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
+			UserID: otherOwner.ID, Name: "Not Yours Either",
+		})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/collections", page.ID),
+			strings.NewReader(fmt.Sprintf(`{"collection_id":%d}`, theirCollection.ID)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
 func TestPairingToken(t *testing.T) {
 	pool := dbtest.Setup(t)
 

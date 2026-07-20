@@ -21,10 +21,14 @@
 // /api/auth/me, session-protected pairing-token management
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
 // member-vs-admin scoped -- see resolveTargetUserID), session-protected
-// library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}), and
+// library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}),
 // session-protected capture detail/HTML/language correction
 // (GET /api/captures/{id}, GET /api/captures/{id}/html,
-// PATCH /api/captures/{id}/language, GET /api/text-search-configs).
+// PATCH /api/captures/{id}/language, GET /api/text-search-configs), and
+// session-protected tags/collections (GET /api/tags,
+// POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
+// /api/collections, and page<->collection membership under
+// /api/pages/{id}/collections).
 // Routed via chi, with auth.RequireSession used as ordinary chi
 // middleware (no httpapi-specific auth plumbing of its own); RequireAdmin
 // exists in internal/auth but isn't used here yet -- Manage Devices'
@@ -117,6 +121,16 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/captures/{id}/html", s.GetCaptureHTML)
 			r.Patch("/captures/{id}/language", s.PatchCaptureLanguage)
 			r.Get("/text-search-configs", s.ListTextSearchConfigs)
+			r.Get("/tags", s.ListTags)
+			r.Post("/pages/{id}/tags", s.AddPageTag)
+			r.Delete("/pages/{id}/tags/{tagId}", s.RemovePageTag)
+			r.Get("/collections", s.ListCollections)
+			r.Post("/collections", s.CreateCollection)
+			r.Patch("/collections/{id}", s.RenameCollection)
+			r.Delete("/collections/{id}", s.DeleteCollection)
+			r.Get("/collections/{id}/pages", s.ListCollectionPages)
+			r.Post("/pages/{id}/collections", s.AddPageToCollection)
+			r.Delete("/pages/{id}/collections/{collectionId}", s.RemovePageFromCollection)
 		})
 	})
 
