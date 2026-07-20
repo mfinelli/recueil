@@ -2977,32 +2977,42 @@ README that can drift out of sync with the architecture decisions around it.
   rather than threading the raw `*pgxpool.Pool` into `httpapi`.
 - **Metrics:** `/metrics`, Prometheus exposition format, mounted on the same chi
   router (`internal/metrics`). Standard Go runtime and process collectors
-  (`collectors.NewGoCollector`/`NewProcessCollector`) plus a custom
-  `recueil_users_total` gauge — a `prometheus.Collector` that queries
-  `CountUsers` fresh on every scrape rather than maintaining cached state,
-  expected to grow (pages, captures, collections) as those features exist.
-  Deliberately built on its own `prometheus.NewRegistry()`, not the global
-  `prometheus.DefaultRegisterer` — same reasoning as choosing goose's `Provider`
-  API over its package-level `SetBaseFS`/`SetDialect`: avoids hidden shared
-  mutable state that could collide across multiple instantiations (confirmed via
-  test: two independently-built registries never collide, which they would under
-  the global default). A failed collection (e.g. the DB unreachable) is logged
-  and simply omits that one metric rather than failing the whole scrape —
-  confirmed for real, both the success and failure paths. **OpenTelemetry
-  (distributed tracing) was considered and intentionally deferred, not rejected
-  outright.** The core API/SDK (`go.opentelemetry.io/otel`) is actually light on
-  its own (just `go-logr`), but any real exporter — confirmed even the
-  OTLP-over-HTTP variant, not just gRPC — pulls in `google.golang.org/grpc`'s
-  full tree, comparable in weight to `testcontainers-go` (§13a, rejected earlier
-  for the same reason). More fundamentally, tracing's value scales with a
-  request's hop count across services, and this project's current call graph is
-  shallow (one backend process, Postgres, occasional Worker calls) — the
-  architectural case isn't there yet, and self-hosted personal-scale operators
-  are unlikely to be running a trace backend to send spans to regardless. Worth
-  revisiting once the screenshot service (§6) and AI enrichment (§7) exist as a
-  genuine async multi-stage pipeline — that's the shape (multiple hops,
-  independent failure points, a second real process boundary in the chromedp
-  sidecar) where tracing's value proposition actually applies here.
+  (`collectors.NewGoCollector`/`NewProcessCollector`) plus custom gauges — a
+  `recueil_users_total` count, and, once the screenshot/readability/AI jobs
+  existed to have something worth watching, `recueil_jobs_total{job,status}`
+  (every (job, status) combination emitted explicitly every scrape, including
+  zeros, rather than only whatever a given scrape's query happens to return —
+  PromQL's `rate()`/`sum()` behave far more predictably against a
+  continuously-present-at-0 series than one that silently appears and
+  disappears) and `recueil_job_oldest_pending_age_seconds{job}` (absent, not
+  zero, for a job type with nothing currently pending — a real backlog signal a
+  raw pending count alone wouldn't surface as clearly). All three are a
+  `prometheus.Collector` that queries fresh on every scrape rather than
+  maintaining cached state. Deliberately built on its own
+  `prometheus.NewRegistry()`, not the global `prometheus.DefaultRegisterer` —
+  same reasoning as choosing goose's `Provider` API over its package-level
+  `SetBaseFS`/`SetDialect`: avoids hidden shared mutable state that could
+  collide across multiple instantiations (confirmed via test: two
+  independently-built registries never collide, which they would under the
+  global default). A failed collection (e.g. the DB unreachable) is logged and
+  simply omits that one metric rather than failing the whole scrape — confirmed
+  for real, both the success and failure paths, independently for each of the
+  three custom gauges now that there's more than one.
+- **OpenTelemetry (distributed tracing) was considered and intentionally
+  deferred, not rejected outright.** The core API/SDK
+  (`go.opentelemetry.io/otel`) is actually light on its own (just `go-logr`),
+  but any real exporter — confirmed even the OTLP-over-HTTP variant, not just
+  gRPC — pulls in `google.golang.org/grpc`'s full tree, comparable in weight to
+  `testcontainers-go` (§13a, rejected earlier for the same reason). More
+  fundamentally, tracing's value scales with a request's hop count across
+  services, and this project's current call graph is shallow (one backend
+  process, Postgres, occasional Worker calls) — the architectural case isn't
+  there yet, and self-hosted personal-scale operators are unlikely to be running
+  a trace backend to send spans to regardless. Worth revisiting once the
+  screenshot service (§6) and AI enrichment (§7) exist as a genuine async
+  multi-stage pipeline — that's the shape (multiple hops, independent failure
+  points, a second real process boundary in the chromedp sidecar) where
+  tracing's value proposition actually applies here.
 - **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
 - **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
   transitive dependencies, and its middleware signature

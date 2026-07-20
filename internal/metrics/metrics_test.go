@@ -22,7 +22,10 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -95,6 +98,149 @@ func TestNewRegistry_IndependentInstances(t *testing.T) {
 // with how the rest of this project tests DB-touching code. Confirms
 // Collect's documented behavior: the scrape still succeeds, every other
 // metric is still present, only recueil_users_total is missing.
+// newTestCapture inserts just enough of a page/capture row to hang job
+// rows off of -- the metrics collector's own queries only care about
+// screenshot_jobs/readability_jobs/ai_jobs rows existing, not anything
+// about the capture's actual content, so this stays minimal rather than
+// mirroring internal/ingest's full real capture flow.
+func newTestCapture(t *testing.T, pool *pgxpool.Pool, q *db.Queries) int64 {
+	t.Helper()
+	ctx := context.Background()
+
+	user := dbtest.CreateUser(t, pool, "member")
+	page, err := q.UpsertPage(ctx, db.UpsertPageParams{
+		UserID:          user.ID,
+		NormalizedUrl:   "https://example.com/" + uuid.NewString(),
+		Title:           pgtype.Text{String: "metrics test", Valid: true},
+		LatestCaptureAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	})
+	require.NoError(t, err)
+
+	inserted, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+		PageID:                    page.ID,
+		SourceCaptureID:           pgtype.Text{String: uuid.NewString(), Valid: true},
+		Source:                    "extension",
+		RawUrl:                    "https://example.com/" + uuid.NewString(),
+		HtmlPath:                  "irrelevant/for/this/test.html.zst",
+		HtmlCompressedSizeBytes:   1,
+		HtmlUncompressedSizeBytes: 1,
+		ContentHash:               uuid.NewString(),
+		CapturedAt:                pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		Language:                  "english",
+	})
+	require.NoError(t, err)
+
+	return inserted.ID
+}
+
+func TestNewRegistry_JobMetrics_AllCombinationsReportEvenAtZero(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	// 3 job types x 4 statuses -- every combination should be present
+	// and 0, none of them silently absent, confirming collectJobCounts
+	// fills in every known combination rather than only what the query
+	// happens to return.
+	count, err := testutil.GatherAndCount(reg, "recueil_jobs_total")
+	require.NoError(t, err)
+	assert.Equal(t, 12, count)
+}
+
+func TestNewRegistry_JobMetrics_ReflectsRealCounts(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	doneCapture := newTestCapture(t, pool, q)
+	require.NoError(t, q.CreateScreenshotJob(ctx, doneCapture))
+	_, err := pool.Exec(ctx, "UPDATE screenshot_jobs SET status = 'done' WHERE capture_id = $1", doneCapture)
+	require.NoError(t, err)
+
+	failedCapture := newTestCapture(t, pool, q)
+	require.NoError(t, q.CreateScreenshotJob(ctx, failedCapture))
+	_, err = pool.Exec(ctx, "UPDATE screenshot_jobs SET status = 'failed' WHERE capture_id = $1", failedCapture)
+	require.NoError(t, err)
+
+	pendingCapture := newTestCapture(t, pool, q)
+	require.NoError(t, q.CreateReadabilityJob(ctx, pendingCapture))
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_jobs_total Current number of background jobs, by job type and status.
+# TYPE recueil_jobs_total gauge
+recueil_jobs_total{job="ai",status="done"} 0
+recueil_jobs_total{job="ai",status="failed"} 0
+recueil_jobs_total{job="ai",status="pending"} 0
+recueil_jobs_total{job="ai",status="processing"} 0
+recueil_jobs_total{job="readability",status="done"} 0
+recueil_jobs_total{job="readability",status="failed"} 0
+recueil_jobs_total{job="readability",status="pending"} 1
+recueil_jobs_total{job="readability",status="processing"} 0
+recueil_jobs_total{job="screenshot",status="done"} 1
+recueil_jobs_total{job="screenshot",status="failed"} 1
+recueil_jobs_total{job="screenshot",status="pending"} 0
+recueil_jobs_total{job="screenshot",status="processing"} 0
+`), "recueil_jobs_total"))
+}
+
+func TestNewRegistry_JobOldestPendingAge(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	capture := newTestCapture(t, pool, q)
+	require.NoError(t, q.CreateScreenshotJob(ctx, capture))
+	// Backdate created_at so the resulting age is deterministically
+	// checkable, rather than asserting against wall-clock time taken to
+	// run this test.
+	_, err := pool.Exec(ctx,
+		"UPDATE screenshot_jobs SET created_at = NOW() - INTERVAL '90 seconds' WHERE capture_id = $1", capture)
+	require.NoError(t, err)
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	var sawScreenshot, sawReadability, sawAI bool
+	for _, f := range families {
+		if f.GetName() != "recueil_job_oldest_pending_age_seconds" {
+			continue
+		}
+		for _, m := range f.Metric {
+			var job string
+			for _, l := range m.Label {
+				if l.GetName() == "job" {
+					job = l.GetValue()
+				}
+			}
+			switch job {
+			case "screenshot":
+				sawScreenshot = true
+				assert.InDelta(t, 90, m.Gauge.GetValue(), 5,
+					"expected roughly 90s of age for the one pending screenshot job")
+			case "readability":
+				sawReadability = true
+			case "ai":
+				sawAI = true
+			}
+		}
+	}
+
+	assert.True(t, sawScreenshot, "expected an age metric for the job type with a real pending row")
+	assert.False(t, sawReadability, "job types with zero pending rows should be absent, not zero")
+	assert.False(t, sawAI, "job types with zero pending rows should be absent, not zero")
+}
+
 func TestNewRegistry_QueryFailureIsGraceful(t *testing.T) {
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, "postgres://recueil:recueil@localhost:5432/recueil")
@@ -109,16 +255,22 @@ func TestNewRegistry_QueryFailureIsGraceful(t *testing.T) {
 	families, err := reg.Gather()
 	require.NoError(t, err, "a failed collector must not fail the whole scrape")
 
-	var sawUsersMetric, sawGoCollector bool
+	var sawUsersMetric, sawJobsMetric, sawJobAgeMetric, sawGoCollector bool
 	for _, f := range families {
-		if f.GetName() == "recueil_users_total" {
+		switch f.GetName() {
+		case "recueil_users_total":
 			sawUsersMetric = true
-		}
-		if f.GetName() == "go_goroutines" {
+		case "recueil_jobs_total":
+			sawJobsMetric = true
+		case "recueil_job_oldest_pending_age_seconds":
+			sawJobAgeMetric = true
+		case "go_goroutines":
 			sawGoCollector = true
 		}
 	}
 	assert.False(t, sawUsersMetric, "recueil_users_total should be absent when the query fails, not zero or an error")
+	assert.False(t, sawJobsMetric, "recueil_jobs_total should be absent when its query fails too")
+	assert.False(t, sawJobAgeMetric, "recueil_job_oldest_pending_age_seconds should be absent when its query fails too")
 	assert.True(t, sawGoCollector, "other collectors must still report even when one fails")
 
 	// Double-close should also be safe.

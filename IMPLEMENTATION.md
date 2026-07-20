@@ -1500,3 +1500,26 @@ done), a tag colliding with a pre-existing manual one being a silent no-op,
 stale-job reclaim, one failure not blocking the batch, permanent failure after
 max attempts, and a no-op with nothing due — plus pure unit tests for `backoff`
 and `parseTags`.
+
+## Phase 7 continued: job metrics
+
+Prompted by a simple question worth asking of any new async job: is it worth
+surfacing completed/failed counts to Prometheus? Yes, and it turned out to fit
+the existing `internal/metrics` collector cleanly — `/metrics` is served by the
+web server process (`internal/httpapi/router.go`), not the agent, but since job
+status lives in Postgres regardless of which process is actually running
+`RunOnce` cycles, the existing "query fresh on every scrape" pattern already
+used for `recueil_users_total` extends to job status with no new architecture
+needed.
+
+Added two gauges: `recueil_jobs_total{job,status}` (current count per job
+type/status combination — `screenshot`/`readability`/`ai` × `pending`/
+`processing`/`done`/`failed`, 12 combinations total, all emitted explicitly
+every scrape including zeros — a metric that appears and disappears as data
+comes and goes makes `rate()`/`sum()` behave far less predictably than one
+continuously present at 0) and `recueil_job_oldest_pending_age_seconds{job}`
+(age of the oldest still-pending job of that type — a more actionable backlog
+signal than a raw pending count, since some pending jobs at any given moment is
+normal; a _growing_ age is what actually indicates something stuck).
+Deliberately absent, not zero, for a job type with nothing currently pending —
+asserted directly in `internal/metrics/metrics_test.go`.
