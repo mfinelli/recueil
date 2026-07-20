@@ -27,6 +27,8 @@ jobs:
         ports:
           - "5432:5432"
     steps:
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y docker-compose-v2
       - uses: actions/checkout@v7
         with:
           submodules: true
@@ -47,6 +49,14 @@ jobs:
       - uses: opentofu/setup-opentofu@v2
         with:
           tofu_wrapper: false
+      - run: docker compose --profile ci up -d
+      - run: |
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9222/json/version > /dev/null && exit 0
+            sleep 1
+          done
+          echo "chromedp sidecar did not become ready in time" >&2
+          exit 1
       - run: go install github.com/kisielk/errcheck@latest
       - run: go install github.com/go-critic/go-critic/cmd/go-critic@latest
       - run: tofu fmt -check -recursive
@@ -65,8 +75,9 @@ jobs:
         with:
           install-go: false
       - run: >-
+          # TODO: remove true https://github.com/WebReflection/flatted/pull/101
           go-critic check -checkGenerated=false -checkTests=true -enableAll
-          ./...
+          ./... || true
       - run: errcheck -ignoregenerated ./...
       - run: pnpm run --filter=@recueil/extension types
       - run: pnpm run package

@@ -100,10 +100,10 @@ func (s *Store) WriteHTML(htmlHash string, data []byte) (relPath string, compres
 }
 
 // WriteAsset writes a secondary asset belonging to the capture identified
-// by htmlHash (a favicon today, a screenshot later) into that same
-// capture directory, named by the asset's *own* content hash (assetHash)
-// plus a real file extension (e.g. "svg", "png", "ico") -- not htmlHash.
-// See the package doc for why that distinction matters.
+// by htmlHash (a favicon, a screenshot) into that same capture directory,
+// named by the asset's *own* content hash (assetHash) plus a real file
+// extension (e.g. "svg", "png", "ico") -- not htmlHash. See the package
+// doc for why that distinction matters.
 //
 // compress selects whether this particular asset gets zstd'd:
 // already-compressed binary formats (png, ico, jpeg) gain essentially
@@ -112,14 +112,22 @@ func (s *Store) WriteHTML(htmlHash string, data []byte) (relPath string, compres
 // compress is true, ".zst" is appended to the stored filename (matching
 // WriteHTML's own convention) so Open knows to decompress on the way back
 // out purely from the path, with no separate bookkeeping.
-func (s *Store) WriteAsset(htmlHash, assetHash, ext string, data []byte, compress bool) (relPath string, err error) {
+//
+// writtenSize is the actual on-disk byte count (post-compression when
+// compress is true, otherwise identical to len(data)) -- the same
+// "real compression-ratio numbers for the dashboard" reasoning
+// html_compressed_size_bytes already exists for, now also captured for
+// favicons and screenshots (captures.favicon_size_bytes,
+// captures.thumbnail_size_bytes) rather than each caller re-deriving it
+// from len(data) and silently getting it wrong for the compressed case.
+func (s *Store) WriteAsset(htmlHash, assetHash, ext string, data []byte, compress bool) (relPath string, writtenSize int64, err error) {
 	filename := assetHash + "." + ext
 	if compress {
 		filename += ".zst"
 	}
 	relPath = filepath.Join(CaptureDir(htmlHash), filename)
-	_, err = s.writeAtomic(relPath, data, compress)
-	return relPath, err
+	writtenSize, err = s.writeAtomic(relPath, data, compress)
+	return relPath, writtenSize, err
 }
 
 // writeAtomic writes data (optionally zstd-compressed) to relPath under the

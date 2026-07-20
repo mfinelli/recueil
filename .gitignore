@@ -5,4 +5,5 @@
 /recueil
 /terraform/*.tfstate*
 /terraform/.terraform*
+/tmp/*
 /www/public/*

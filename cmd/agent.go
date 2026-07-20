@@ -32,19 +32,32 @@ import (
 
 	"github.com/go-chi/httplog/v2"
 
+	"github.com/mfinelli/recueil/internal/ai"
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/ingest"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/r2"
+	"github.com/mfinelli/recueil/internal/readability"
+	"github.com/mfinelli/recueil/internal/screenshot"
+	"github.com/mfinelli/recueil/internal/sidecar"
 	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
-// agentCmd is Recueil's background job runner: ingestion (pulling
-// completed captures from R2/D1 into Postgres and local disk) and the D1
-// bookmark-list mirror sync, both driven by a shared ticker rather than
-// any push/event mechanism.
+var (
+	ReadabilityJS      string
+	ReadabilityVersion string
+)
+
+// agentCmd is Recueil's background job runner, split across two
+// independent schedules: a slower, Worker-free-tier-friendly one for
+// ingestion (pulling completed captures from R2/D1 into Postgres and
+// local disk) and the D1 bookmark-list mirror sync, and a faster,
+// Postgres-only one for jobs like the screenshot job that never touch
+// the Cloudflare Worker at all. Both are driven by their own ticker
+// rather than any push/event mechanism -- see runWorkerCycle/
+// runLocalCycle.
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Run the Recueil background job agent",
@@ -72,20 +85,19 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	defer pool.Close()
 
-	// Deliberately does NOT run migrations itself, unlike `server` --
-	// Postgres migrations are safe to run from multiple processes
-	// concurrently (goose's own session-level advisory lock, via
-	// internal/pgmigrate, serializes that), but D1 migrations have no
-	// equivalent locking, and `server` and `agent` starting together in
-	// compose gives no ordering guarantee. Rather than run Postgres
-	// migrations here but not D1 (an asymmetry that's more confusing
-	// than it's worth), the agent runs neither: it assumes `server` owns
-	// migrations exclusively. If the agent starts before `server` has
-	// finished migrating, its first cycle(s) will fail against a
-	// not-yet-ready schema, get logged, and self-heal on the next tick
-	// once `server` catches up -- the same graceful-degradation shape
-	// RunOnce/SyncOnce already have for a single failed item, just at
-	// the whole-cycle level.
+	// Does NOT run migrations itself, unlike `server` -- Postgres
+	// migrations are safe to run from multiple processes concurrently
+	// (goose's own session-level advisory lock, via  internal/pgmigrate,
+	// serializes that), but D1 migrations have no equivalent locking, and
+	// `server` and `agent` starting together in compose gives no ordering
+	// guarantee. Rather than run Postgres migrations here but not D1 (an
+	// asymmetry that's more confusing than it's worth), the agent runs
+	// neither: it assumes `server` owns migrations exclusively. If the
+	// agent starts before `server` has finished migrating, its first
+	// cycle(s) will fail against a not-yet-ready schema, get logged, and
+	// self-heal on the next tick once `server` catches up -- the same
+	// graceful-degradation shape RunOnce/SyncOnce already have for a
+	// single failed item, just at the whole-cycle level.
 	queries := db.New(pool)
 
 	r2Client, err := r2.New(r2.Config{
@@ -121,30 +133,110 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Client:  mirrorClient,
 	})
 
-	interval := time.Duration(cfg.AgentPollIntervalSeconds) * time.Second
-	log.Printf("recueil agent started, poll interval: %s", interval)
+	// The one shared headless-Chrome connection + ephemeral render
+	// server (internal/sidecar) both the screenshot and readability
+	// Runners open tabs against -- constructed once, here, since it's
+	// the only thing between them with real OS resources to close.
+	// Neither Runner owns or closes it themselves.
+	sc, err := sidecar.New(&sidecar.Params{
+		SidecarURL: cfg.SidecarURL,
+		RenderHost: cfg.SidecarRenderHost,
+		Logger:     logger.Logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating sidecar connection: %w", err)
+	}
+	defer func() {
+		if err := sc.Close(); err != nil {
+			logger.Logger.Error("agent: failed to close sidecar connection cleanly", "error", err)
+		}
+	}()
 
-	// Run one cycle immediately on startup, rather than waiting for the
-	// first tick -- otherwise a freshly-deployed agent sits idle for a
-	// full interval before doing anything.
-	runAgentCycle(cmd.Context(), ingester, syncer, logger.Logger)
+	screenshotRunner, err := screenshot.New(&screenshot.Params{
+		Pool:        pool,
+		Queries:     queries,
+		Store:       archive.New(cfg.ArchiveDir),
+		Sidecar:     sc,
+		Concurrency: cfg.ScreenshotWorkerConcurrency,
+		MaxAttempts: cfg.ScreenshotMaxAttempts,
+		Logger:      logger.Logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating screenshot runner: %w", err)
+	}
 
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	readabilityRunner, err := readability.New(&readability.Params{
+		Pool:        pool,
+		Queries:     queries,
+		Store:       archive.New(cfg.ArchiveDir),
+		Sidecar:     sc,
+		Source:      ReadabilityJS,
+		Version:     ReadabilityVersion,
+		Concurrency: cfg.ReadabilityWorkerConcurrency,
+		MaxAttempts: cfg.ReadabilityMaxAttempts,
+		Logger:      logger.Logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating readability runner: %w", err)
+	}
+
+	// Unlike screenshotRunner/readabilityRunner, aiRunner may be nil:
+	// an empty AIBaseURL is how AI enrichment is toggled off entirely,
+	// and runLocalCycle below checks for that explicitly rather than
+	// constructing a Runner pointed at nothing.
+	var aiRunner *ai.Runner
+	if cfg.AIBaseURL != "" {
+		aiRunner, err = ai.New(&ai.Params{
+			Pool:           pool,
+			Queries:        queries,
+			BaseURL:        cfg.AIBaseURL,
+			APIKey:         cfg.AIAPIKey,
+			Model:          cfg.AIModel,
+			Concurrency:    cfg.AIWorkerConcurrency,
+			MaxAttempts:    cfg.AIMaxAttempts,
+			RequestTimeout: time.Duration(cfg.AIRequestTimeoutSeconds) * time.Second,
+			MaxInputChars:  cfg.AIMaxInputChars,
+			Logger:         logger.Logger,
+		})
+		if err != nil {
+			return fmt.Errorf("creating ai runner: %w", err)
+		}
+	}
+
+	workerInterval := time.Duration(cfg.AgentWorkerPollIntervalSeconds) * time.Second
+	localInterval := time.Duration(cfg.AgentLocalPollIntervalSeconds) * time.Second
+	log.Printf("recueil agent started, worker poll interval: %s, local poll interval: %s",
+		workerInterval, localInterval)
+
+	// Run one cycle of each immediately on startup, rather than waiting
+	// for their first tick -- otherwise a freshly-deployed agent sits
+	// idle for a full interval before doing anything.
+	runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
+	runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+
+	workerTicker := time.NewTicker(workerInterval)
+	defer workerTicker.Stop()
+	localTicker := time.NewTicker(localInterval)
+	defer localTicker.Stop()
 
 	for {
 		select {
-		case <-ticker.C:
-			// Deliberately synchronous within the select loop, not
-			// spawned into its own goroutine per tick: this is what
-			// prevents overlapping cycles if one ever runs longer than
-			// the poll interval. time.Ticker's channel has a buffer of
-			// exactly one pending tick, so a slow cycle simply means
-			// some ticks are silently dropped rather than queuing up a
-			// backlog -- the next cycle starts as soon as this one
-			// finishes and at least one tick has fired since, not once
-			// per missed interval.
-			runAgentCycle(cmd.Context(), ingester, syncer, logger.Logger)
+		case <-workerTicker.C:
+			// Synchronous within the select loop, not spawned
+			// into its own goroutine per tick: this is what
+			// prevents overlapping cycles of the *same* schedule if one
+			// ever runs longer than its own interval. Each ticker's
+			// channel has a buffer of exactly one pending tick, so a
+			// slow cycle simply means some ticks are silently dropped
+			// rather than queuing up a backlog -- the next cycle starts
+			// as soon as this one finishes and at least one tick has
+			// fired since, not once per missed interval. The two
+			// tickers are independent of *each other*, though: a slow
+			// worker cycle doesn't delay the local ticker's own firing,
+			// since each is just another case in the same select.
+			runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
+		case <-localTicker.C:
+			runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 		case <-cmd.Context().Done():
 			log.Println("shutting down...")
 			return nil
@@ -152,20 +244,40 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 }
 
-// runAgentCycle runs one ingestion pass and one mirror-sync pass.
-// Deliberately both, sequentially, on one shared tick rather than two
-// independently-scheduled loops -- the simplest thing that works, and
-// splitting them onto separate intervals is a natural, easy follow-up if
-// one ever needs to run on a different cadence than the other. Errors
-// from either are logged, not returned/propagated: a failed cycle
-// shouldn't crash the agent process, it should just try again next tick
-// -- the same "log and continue" philosophy RunOnce and SyncOnce already
-// apply at the per-item level, just one level up.
-func runAgentCycle(ctx context.Context, ingester *ingest.Ingester, syncer *mirror.Syncer, logger *slog.Logger) {
+// runWorkerCycle runs one ingestion pass and one mirror-sync pass --
+// everything that talks to the Cloudflare Worker (and, through it, D1),
+// which is why it's on the slower, Worker-free-tier-friendly schedule
+// (AgentWorkerPollIntervalSeconds). Errors from either are logged, not
+// returned/propagated: a failed cycle shouldn't crash the agent process,
+// it should just try again next tick -- the same "log and continue"
+// philosophy RunOnce/SyncOnce already apply at the per-item level, just
+// one level up.
+func runWorkerCycle(ctx context.Context, ingester *ingest.Ingester, syncer *mirror.Syncer, logger *slog.Logger) {
 	if err := ingester.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: ingestion cycle failed", "error", err)
 	}
 	if err := syncer.SyncOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: mirror sync cycle failed", "error", err)
+	}
+}
+
+// runLocalCycle runs the jobs that only ever touch this process's own
+// Postgres instance -- the screenshot job, the readability job, and the
+// AI enrichment job -- all on the same faster schedule
+// (AgentLocalPollIntervalSeconds), since none of them have any
+// Worker/free-tier request budget to respect. aiRunner may be nil (AI
+// enrichment disabled entirely, via an empty AIBaseURL), in which case
+// this cycle simply skips it -- not an error, just nothing to run.
+func runLocalCycle(ctx context.Context, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, logger *slog.Logger) {
+	if err := screenshotRunner.RunOnce(ctx); err != nil {
+		logger.ErrorContext(ctx, "agent: screenshot cycle failed", "error", err)
+	}
+	if err := readabilityRunner.RunOnce(ctx); err != nil {
+		logger.ErrorContext(ctx, "agent: readability cycle failed", "error", err)
+	}
+	if aiRunner != nil {
+		if err := aiRunner.RunOnce(ctx); err != nil {
+			logger.ErrorContext(ctx, "agent: ai enrichment cycle failed", "error", err)
+		}
 	}
 }

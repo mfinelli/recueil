@@ -35,6 +35,13 @@ jobs:
         with:
           cache: true
           go-version-file: go.mod
+      - uses: pnpm/action-setup@v6
+        with:
+          version: latest
+      - uses: actions/setup-node@v6
+        with:
+          cache: pnpm
+          node-version: lts/*
       - uses: sqlc-dev/setup-sqlc@v5
         with:
           sqlc-version: 1.31.1
@@ -43,6 +50,7 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
       - run: |
+          pnpm ci
           go mod download
           make
         if: matrix.build-mode == 'manual'

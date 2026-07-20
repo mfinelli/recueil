@@ -22,11 +22,18 @@ FROM golang:alpine AS gotools
 WORKDIR /app
 RUN go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
+FROM node:lts-alpine AS buildjs
+WORKDIR /app
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml /app/
+RUN pnpm install --frozen-lockfile
+
 FROM golang:1.26.5-alpine AS buildgo
 ARG GITSHA
 WORKDIR /app
 RUN apk add coreutils gawk gcc git jq make musl-dev
 COPY --from=gotools /go/bin/sqlc /usr/local/bin/sqlc
+COPY --from=buildjs /app/node_modules /app/node_modules
 COPY . /app/
 RUN make internal/db/db.go
 RUN go mod vendor

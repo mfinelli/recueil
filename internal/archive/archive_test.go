@@ -163,7 +163,7 @@ func TestStore_WriteAsset_LivesAlongsideHTMLInSameCaptureDir(t *testing.T) {
 	htmlPath, _, err := store.WriteHTML(htmlHash, []byte("<html></html>"))
 	require.NoError(t, err)
 
-	faviconPath, err := store.WriteAsset(htmlHash, "favicon-hash-111", "png", []byte("fake-png-bytes"), false)
+	faviconPath, _, err := store.WriteAsset(htmlHash, "favicon-hash-111", "png", []byte("fake-png-bytes"), false)
 	require.NoError(t, err)
 
 	assert.Equal(t, filepath.Dir(htmlPath), filepath.Dir(faviconPath),
@@ -181,10 +181,10 @@ func TestStore_WriteAsset_KeyedByItsOwnHashNotHTMLHash(t *testing.T) {
 
 	htmlHash := "shared0000-0000-0000-0000-000000000000"
 
-	path1, err := store.WriteAsset(htmlHash, "favicon-old", "png", []byte("old favicon bytes"), false)
+	path1, _, err := store.WriteAsset(htmlHash, "favicon-old", "png", []byte("old favicon bytes"), false)
 	require.NoError(t, err)
 
-	path2, err := store.WriteAsset(htmlHash, "favicon-new", "svg", []byte("<svg>new favicon</svg>"), true)
+	path2, _, err := store.WriteAsset(htmlHash, "favicon-new", "svg", []byte("<svg>new favicon</svg>"), true)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, path1, path2)
@@ -212,7 +212,7 @@ func TestStore_WriteAsset_CompressTrueAppendsZstExtensionAndCompresses(t *testin
 
 	original := []byte(strings.Repeat("<svg><!-- repeated --></svg>", 5000))
 
-	relPath, err := store.WriteAsset("html0000-0000-0000-0000-000000000000", "favicon-svg", "svg", original, true)
+	relPath, writtenSize, err := store.WriteAsset("html0000-0000-0000-0000-000000000000", "favicon-svg", "svg", original, true)
 	require.NoError(t, err)
 
 	assert.True(t, strings.HasSuffix(relPath, "favicon-svg.svg.zst"))
@@ -226,7 +226,9 @@ func TestStore_WriteAsset_CompressTrueAppendsZstExtensionAndCompresses(t *testin
 
 	info, err := os.Stat(filepath.Join(root, relPath))
 	require.NoError(t, err)
-	assert.Less(t, info.Size(), int64(len(original))/2,
+	assert.Equal(t, info.Size(), writtenSize,
+		"the returned writtenSize should match the actual on-disk (compressed) size")
+	assert.Less(t, writtenSize, int64(len(original))/2,
 		"expected meaningful compression on highly repetitive content")
 }
 
@@ -236,7 +238,7 @@ func TestStore_WriteAsset_CompressFalseStoresRawBytes(t *testing.T) {
 
 	original := []byte("not-actually-a-png-but-treated-as-opaque-bytes")
 
-	relPath, err := store.WriteAsset("html0000-0000-0000-0000-000000000000", "favicon-png", "png", original, false)
+	relPath, _, err := store.WriteAsset("html0000-0000-0000-0000-000000000000", "favicon-png", "png", original, false)
 	require.NoError(t, err)
 
 	assert.True(t, strings.HasSuffix(relPath, "favicon-png.png"),

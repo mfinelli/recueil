@@ -1525,15 +1525,143 @@ Because the screenshot is no longer produced client-side and never touches R2:
   earlier revision but never actually given a schema entry; that gap is closed
   here.
 
+### Implementation (Phase 7)
+
+Built as `internal/screenshot`, a `RunOnce`-shaped callable unit with no
+scheduler of its own, same as `internal/ingest` — `cmd/agent.go` drives it on
+its own faster, Postgres-only ticker (`agent_local_poll_interval_seconds`),
+separate from the slower ticker ingestion and the mirror sync share
+(`agent_worker_poll_interval_seconds`) — see "Two independent agent schedules"
+below.
+
+**Resolved: two independent runners, not a combined page-load.** §6a's "whether
+to actually combine them ... is an implementation-phase decision, not resolved
+here" is now resolved in favor of staying independent — simpler, and the
+scheduling optimization it gives up (one page load serving both a pending
+screenshot job and a pending readability job for the same capture) was judged
+not worth the added coordination complexity for what's still a modest-scale,
+self-hosted workload.
+
+**Claiming due jobs: atomic, `FOR UPDATE SKIP LOCKED`.**
+`ClaimDueScreenshotJobs` selects and claims the batch in one statement — see
+"Atomic multi-claimant claiming" below for the full reasoning (today's
+single-ticker, single-process agent doesn't strictly need the locking, but
+building it in now means a future horizontally-scaled or hosted deployment needs
+no changes to this package at all). Bounded concurrency _within_ one `RunOnce`
+call is separately plain Go concurrency — a semaphore-bounded worker pool over
+the one already-claimed batch (config's `screenshot_worker_concurrency`, default
+3, matching this section's own "2-3 concurrent tabs" guidance).
+
+**Serving HTML to the sidecar: an ephemeral HTTP server, not `file://`.** The
+sidecar is a separate process — usually a separate container — with no
+filesystem access to the agent's local archive, so `file://` was ruled out in
+favor of the "brief ephemeral local HTTP server" alternative this section
+already named as an option. `internal/screenshot.Runner` runs one long-lived
+HTTP server (bound to every interface) for its own lifetime; each render
+registers that job's already-decompressed HTML bytes at a fresh random-token
+path, hands the sidecar a URL pointing back at itself, and unregisters it once
+the render finishes (success or failure). This needed a config field on each
+side of the connection, since the two directions have genuinely different
+reachability answers:
+
+- `sidecar_url` — the agent's own outbound address for the sidecar (agent →
+  sidecar). `http://chromedp:9222` when both run in the same compose network;
+  `http://127.0.0.1:9222` when the agent binary runs directly on the operator's
+  own machine against the sidecar's published host port — see compose.yaml's own
+  comment on why that port stays published even though an all-in-docker
+  deployment doesn't need it.
+- `sidecar_render_host` — the hostname the _sidecar_ should use to reach back
+  into the agent's render server (sidecar → agent), the opposite direction.
+  `chromedp`'s own compose service name works when both run in the same network
+  (there is no agent-side published port to configure here, since the render
+  server's port is assigned dynamically and embedded in the per-job URL at
+  runtime — nothing for the operator to pin); the local-dev split shape (sidecar
+  in Docker, agent on the host) instead needs `host.docker.internal`, which is
+  why compose.yaml's `chromedp` service carries an explicit
+  `extra_hosts: host.docker.internal:host-gateway` (needed on Linux; harmless,
+  and unnecessary, on Docker Desktop).
+
+**Retry/backoff**: exponential, `30s * 2^(attempts-1)` capped at 30 minutes,
+bounded by `screenshot_max_attempts` (default 3) before the job moves to
+`failed` permanently — the concrete numbers this section's original "bounded
+retry with backoff" left unspecified.
+
+**Testing**: `internal/screenshot`'s tests run against a real Postgres (via
+`internal/dbtest`, same as every other DB-touching package) _and_ a real
+`chromedp` sidecar (`compose.yaml`'s `chromedp` service, `test` profile) rather
+than a mocked CDP client — consistent with this project's standing "no mocks for
+DB-touching code" convention, extended here to "no mocks for sidecar-touching
+code" for the same reason: a hand-rolled fake CDP implementation would just be
+re-testing this package's own assumptions about chromedp's behavior, not
+chromedp itself.
+
+**Revised after a first review pass**, before this had run for real:
+
+- **Fixed viewport, not full-page.** §6's own "Design" subsection already says
+  this job exists on the backend specifically for _consistent, full-page-quality
+  thumbnails_ — but "full-page" and "consistent" turn out to be in tension: a
+  full-page (variable-height) screenshot means every capture gets a different
+  aspect ratio, which is the opposite of consistent once there's an actual grid
+  of thumbnails to look at. Resolved in favor of `chromedp.CaptureScreenshot`
+  (current viewport only) against a fixed `chromedp.EmulateViewport(1280, 800)`,
+  not `chromedp.FullScreenshot` (the entire scrollable page). Uniform
+  dimensions, not maximal content, is the actual goal.
+- **Startup reachability check.** `Runner.New` now does one bounded-time
+  `GET /json/version` against the sidecar before creating any resources, and
+  fails loudly if it doesn't answer — rather than starting up "successfully" and
+  then having every single job fail against an unreachable sidecar forever. This
+  is what lets an orchestrator's restart-until-healthy policy (Docker Compose's
+  restart policy, systemd's `Restart=on-failure`, etc.) actually do its job. A
+  **container-level** Docker healthcheck on the `chromedp` service itself was
+  considered too, but ruled out once confirmed (not just suspected) that the
+  `headless-shell` image has neither `curl` nor `wget` — there's no `CMD-SHELL`
+  worth writing. This startup check is the only reachability signal this project
+  has, and arguably the more useful one anyway: it's written from the actual
+  consumer's perspective (can _our_ code reach it), not a generic
+  container-level probe.
+- **Atomic multi-claimant claiming, ahead of actually needing it.**
+  `ClaimDueScreenshotJobs` now does `FOR UPDATE SKIP LOCKED` plus an atomic
+  claim-and-mark-`processing` update (new migration: a `'processing'` status and
+  `claimed_at` column on both `screenshot_jobs` and `readability_jobs`), rather
+  than the plain unlocked `SELECT` the first version shipped with. Today's
+  single-ticker, single-process agent never actually needs the locking — but
+  building it in now means a future horizontally-scaled or hosted deployment (a
+  paid SaaS tier, say) needs zero changes to this package when that day comes,
+  rather than a retrofit. A `'processing'` job whose claimant crashed mid-render
+  becomes reclaimable again after 15 minutes (`claimStaleTimeout`), the same
+  number the D1 queue's own claim-visibility timeout already uses (§8) rather
+  than inventing a second one for the same underlying question.
+- **`renderTimeout` raised from 30s to 60s** — more headroom for a large,
+  fully-inlined SingleFile capture without changing anything else about the
+  design.
+- **Two independent agent schedules, not one shared ticker.** `cmd/agent.go` now
+  runs `AgentWorkerPollIntervalSeconds` (default 300s) for everything that talks
+  to the Cloudflare Worker (ingestion, the D1 mirror sync) and
+  `AgentLocalPollIntervalSeconds` (default 30s) for everything that only touches
+  this process's own Postgres (the screenshot job today; readability and AI
+  enrichment will join it on the same schedule). This is what makes "runs
+  comfortably on Cloudflare's free tier" and "picks up new captures quickly"
+  both true at once, rather than trading one off against the other on a single
+  shared interval — see §15.
+- **`thumbnail_size_bytes`/`favicon_size_bytes`.** Two new nullable columns on
+  `captures`, mirroring `html_compressed_size_bytes`'s own "so the dashboard can
+  surface real numbers" reasoning for the two other on-disk assets a capture can
+  have. `archive.Store.WriteAsset` now returns the actual on-disk
+  (post-compression) byte count instead of discarding it, so both this job and
+  ingestion's favicon handling record a real number rather than each re-deriving
+  (and risking silently getting wrong for the compressed case) an approximation
+  from `len(data)`.
+
 ### Tradeoff, stated explicitly
 
 This adds a real piece of self-hosting weight — an extra container, its memory
 overhead, and one more moving part — compared to the originally proposed
 `chrome.tabs.captureVisibleTab` approach in the extension. In exchange it
 removes the extension's dependency on the user's current scroll/viewport state
-entirely and produces consistent, full-page-quality thumbnails server-side.
-Given Compose already orchestrates Postgres, this was judged worth the added
-weight.
+entirely and produces consistent, uniform-dimension thumbnails server-side (a
+fixed viewport — see "Implementation (Phase 7)" above for why that ended up
+being the right call over a full-page capture). Given Compose already
+orchestrates Postgres, this was judged worth the added weight.
 
 A cross-browser (Firefox) equivalent was considered and rejected: Firefox
 doesn't speak the Chrome DevTools Protocol, so there's no chromedp-equivalent
@@ -1618,6 +1746,68 @@ plainly rather than assuming away.
   will ever populate it going forward, since no client extracts or uploads
   reader text anymore.
 
+### Implementation
+
+Built as `internal/readability`, same `RunOnce`-shaped callable unit as
+`internal/screenshot`, on the same faster, Postgres-only agent ticker
+(`agent_local_poll_interval_seconds`). Claiming, retry/backoff, and the atomic
+`FOR UPDATE SKIP LOCKED` claim-and-mark-`processing` shape are all identical in
+spirit to `internal/screenshot`'s own (`ClaimDueReadabilityJobs` mirrors
+`ClaimDueScreenshotJobs` exactly, just against `readability_jobs`).
+
+**§6's "whether to actually combine them into one job/one page-load" is resolved
+the same way here as it was on the screenshot side: they stay two independent
+runners** — but sharing the underlying sidecar _connection_ turned out to be a
+separate, and better, question than sharing a _page load_. `internal/sidecar`
+was factored out of what was originally `internal/screenshot`'s own private
+plumbing (one `chromedp.RemoteAllocator` connection, one ephemeral HTML render
+server) specifically because both jobs needed near-identical infrastructure with
+nothing but "what happens once a tab is loaded" actually differing between them.
+`cmd/agent.go` now constructs one `*sidecar.Sidecar` and hands it to both
+Runners — a `RemoteAllocator` connection is designed to have many tabs opened
+against it concurrently, which is exactly what two independent worker pools
+drawing from the same connection amounts to, so there's no real benefit to each
+job holding its own separate connection to the same sidecar process. This also
+simplified `cmd/agent.go` itself: one `Close()` call site instead of one per
+job, and `sidecar_url`/`sidecar_render_host` (renamed from their original
+`screenshot_`-prefixed names now that they're no longer that job's alone) are
+each set once, not duplicated per job.
+
+What `internal/sidecar` deliberately does _not_ own: retry/backoff/claim
+bookkeeping. `screenshot_jobs` and `readability_jobs` are sqlc-generated as
+separate Go types even though structurally identical, and forcing them through a
+shared interface (or Go generics) for what's ultimately a few dozen lines of
+already-well-tested bookkeeping each was judged not worth the abstraction cost —
+the two `backoff()` functions are simply duplicated, byte-for-byte, rather than
+shared.
+
+**Readability.js itself is threaded in via `Params`, not embedded by
+`internal/readability` at all.** `main.go` embeds
+`node_modules/@mozilla/readability/Readability.js` directly via `go:embed` — a
+sibling of `main.go` at the repo root, unlike `internal/urlnorm`'s
+`clearurls-rules` git submodule, which has to be vendored _inside_ that package
+specifically because `go:embed` can't cross package-directory boundaries. Since
+`node_modules/@mozilla/readability` is already inside `go:embed`'s reach from
+`main.go`'s own location, no copy-into-an-internal- package build step was
+needed at all. The embedded source and the installed package's own version
+(`node_modules/@mozilla/readability/package.json`'s `.version`, injected via the
+same `ldflags`-from-`package.json` mechanism the Makefile already used for
+`main.version`) are assigned to `cmd.ReadabilityJS`/`cmd.ReadabilityVersion` in
+`main.go`, mirroring exactly how
+`cmd.PostgresMigrationsFS`/`cmd.Commit`/`cmd.Date`/`cmd.Version` already worked
+— not a new pattern, the existing one applied to a second embedded asset.
+`cmd/agent.go` reads those two vars when constructing `readability.Runner`, and
+that Runner injects `Params.Source` as-is into each loaded page via
+`chromedp.Evaluate`: the real, unmodified upstream `Readability.js` is a plain
+global-scope script already (its one `module.exports` line is a no-op inside a
+browser page, guarded by `typeof module === "object"`), so no bundler step was
+needed either.
+
+`Params.Version` is empty outside of `make`-built binaries (`go test` doesn't go
+through the Makefile's `ldflags`), in which case `readability_version` is stored
+as `NULL` rather than an empty string — a real, deliberate distinction
+(`pgtype.Text{Valid: r.version != ""}`), not an oversight.
+
 ---
 
 ## 7. AI Enrichment (Optional)
@@ -1628,20 +1818,43 @@ plainly rather than assuming away.
 - Runs against the Readability-extracted plain text, not the raw HTML — cheaper
   and produces better summaries than trying to parse rendered HTML. This
   introduces a real **sequencing dependency** on §6a that didn't exist when
-  extraction was synchronous: the AI job for a capture should not run (or should
-  itself wait/reschedule) until that capture's `readability_jobs` row shows a
-  completed extraction with non-null `reader_text` — unlike the screenshot job
-  (§6), which has no such dependency on anything else async.
-- Supports **two backend types**, chosen by the user in configuration:
-  Ollama-compatible (local) or OpenAI-compatible (hosted). A single small
-  interface (`Summarize(text) (summary, tags, error)`) covers both.
-- Tracked in its own `ai_jobs` table, one row per capture, decoupled from the
-  `captures` table so enrichment status/failure never affects the capture's core
-  validity.
+  extraction was synchronous: the AI job for a capture should not run until that
+  capture's readability extraction has actually completed with a non-null
+  `reader_text`. Expressed the same way the "why not a message broker" reasoning
+  already describes: an `ai_jobs` row simply doesn't exist until the readability
+  job creates it, on success, in the same transaction — not a join/readiness
+  check at claim time.
+- **A single OpenAI-compatible backend, not two separate Ollama/OpenAI code
+  paths.** Ollama, llama.cpp's own server, and effectively every hosted provider
+  besides Anthropic have all standardized on the same `/v1/chat/completions`
+  request/response shape, so one configurable base URL + API key + model name
+  covers all of them — there's no separate backend abstraction to design or
+  maintain. (This is a revision of an earlier "two backend types" plan below
+  this section originally described; left resolved here rather than narrated as
+  history, since the two-backend design was never built.)
+- `ai_summary`/`ai_model` live on `captures` directly, not decoupled in
+  `ai_jobs` — the same reasoning §6a's `reader_text` already established once
+  TOAST made the original "keep this decoupled for storage reasons" concern
+  moot: a nullable column already gives "a capture is fully valid with zero AI
+  fields populated," regardless of which table those fields live in. `ai_model`
+  is kept (not just `ai_summary`) specifically so a summary can be regenerated
+  later against a different model, knowing what produced the existing one; no
+  `ai_summary_hash` — unlike favicon/ thumbnail/reader-text, this data only ever
+  lives in Postgres (nothing on disk to verify against), and LLM output is
+  non-deterministic even for identical input and model, so a hash couldn't
+  answer "did this change" in any useful way anyway.
 - AI-generated tags are written to the same `page_tags` table as manual tags,
-  distinguished by a `source` column (see §9). The dashboard visually
-  distinguishes them from manual tags (e.g. a small badge/icon or muted styling)
-  rather than rendering them identically — the `source` column exists
+  distinguished by a `source` column (see §9). Generated by a **separate** chat
+  completion call from the summary, not one combined prompt — simpler prompts
+  and no dependency on the model reliably producing one specific combined
+  structure, at the cost of an extra call's latency (tolerated: AI enrichment's
+  own request timeout is generously long, minutes not seconds, given
+  local/smaller models can legitimately take a while). Tag parsing is
+  deliberately lenient (a plain comma-separated list, not JSON or any
+  structured-output feature) since support for those varies significantly across
+  compatible servers, especially smaller local models. The dashboard visually
+  distinguishes AI tags from manual tags (e.g. a small badge/icon or muted
+  styling) rather than rendering them identically — the `source` column exists
   specifically to support this.
 
 ### Retry and failure handling
@@ -1660,6 +1873,41 @@ is optional and low-stakes; the failed row itself serves that purpose.
 
 The same `attempts`/`next_attempt_at`/bounded-retry shape is reused for the
 screenshot job in §6.
+
+### Implementation
+
+Built as `internal/ai`, same `RunOnce`-shaped callable unit as
+`internal/screenshot`/`internal/readability`, on the same
+`agent_local_poll_interval_seconds` ticker — but, unlike either of those, it
+never touches `internal/sidecar` at all: there's no browser involved, just a
+plain HTTP JSON client (the official `openai-go` SDK, given `option.WithBaseURL`
+supports pointing it at any compatible server cleanly, and reusing it means less
+boilerplate/tests to maintain than a hand-rolled client, matching this backend's
+existing precedent of using official SDKs — `aws-sdk-go-v2` for R2 — rather than
+the Worker/JS side's deliberate zero-dependency approach).
+
+**Toggled off entirely by an empty `ai_base_url`**, not a separate `ai_enabled`
+boolean: `cmd/agent.go` simply never constructs an `*ai.Runner` when it's unset,
+which is simpler than an explicit flag that could disagree with whether the rest
+of the AI config is actually filled in.
+
+**`ClaimDueAIJobs` needs no readiness join at all**, unlike a first instinct
+might suggest — since a row only ever exists once `internal/readability`'s own
+`commitDone` creates it (in the same transaction as marking itself done), its
+mere existence already implies `reader_text` is set. This also means a capture
+whose readability extraction permanently fails simply never gets an `ai_jobs`
+row at all — AI enrichment silently never runs for it, which is correct: there's
+no text to summarize.
+
+**Tags required building `tags`/`page_tags` for real** — they existed only in
+this document's data model (§10) as prose, never as an actual migration, since
+they were originally meant to arrive with the dashboard/manual-tagging work (§6
+explicitly deferred that phase). Built now rather than deferred again, to avoid
+retrofitting the AI job around a schema change later. `AddPageTag`'s
+`ON CONFLICT (page_id, tag_id) DO NOTHING` is what makes an AI-suggested tag
+colliding with one the user already applied manually (or vice versa) a silent
+no-op rather than a constraint-violation error — whichever source got there
+first simply wins.
 
 ---
 
@@ -2729,32 +2977,42 @@ README that can drift out of sync with the architecture decisions around it.
   rather than threading the raw `*pgxpool.Pool` into `httpapi`.
 - **Metrics:** `/metrics`, Prometheus exposition format, mounted on the same chi
   router (`internal/metrics`). Standard Go runtime and process collectors
-  (`collectors.NewGoCollector`/`NewProcessCollector`) plus a custom
-  `recueil_users_total` gauge — a `prometheus.Collector` that queries
-  `CountUsers` fresh on every scrape rather than maintaining cached state,
-  expected to grow (pages, captures, collections) as those features exist.
-  Deliberately built on its own `prometheus.NewRegistry()`, not the global
-  `prometheus.DefaultRegisterer` — same reasoning as choosing goose's `Provider`
-  API over its package-level `SetBaseFS`/`SetDialect`: avoids hidden shared
-  mutable state that could collide across multiple instantiations (confirmed via
-  test: two independently-built registries never collide, which they would under
-  the global default). A failed collection (e.g. the DB unreachable) is logged
-  and simply omits that one metric rather than failing the whole scrape —
-  confirmed for real, both the success and failure paths. **OpenTelemetry
-  (distributed tracing) was considered and intentionally deferred, not rejected
-  outright.** The core API/SDK (`go.opentelemetry.io/otel`) is actually light on
-  its own (just `go-logr`), but any real exporter — confirmed even the
-  OTLP-over-HTTP variant, not just gRPC — pulls in `google.golang.org/grpc`'s
-  full tree, comparable in weight to `testcontainers-go` (§13a, rejected earlier
-  for the same reason). More fundamentally, tracing's value scales with a
-  request's hop count across services, and this project's current call graph is
-  shallow (one backend process, Postgres, occasional Worker calls) — the
-  architectural case isn't there yet, and self-hosted personal-scale operators
-  are unlikely to be running a trace backend to send spans to regardless. Worth
-  revisiting once the screenshot service (§6) and AI enrichment (§7) exist as a
-  genuine async multi-stage pipeline — that's the shape (multiple hops,
-  independent failure points, a second real process boundary in the chromedp
-  sidecar) where tracing's value proposition actually applies here.
+  (`collectors.NewGoCollector`/`NewProcessCollector`) plus custom gauges — a
+  `recueil_users_total` count, and, once the screenshot/readability/AI jobs
+  existed to have something worth watching, `recueil_jobs_total{job,status}`
+  (every (job, status) combination emitted explicitly every scrape, including
+  zeros, rather than only whatever a given scrape's query happens to return —
+  PromQL's `rate()`/`sum()` behave far more predictably against a
+  continuously-present-at-0 series than one that silently appears and
+  disappears) and `recueil_job_oldest_pending_age_seconds{job}` (absent, not
+  zero, for a job type with nothing currently pending — a real backlog signal a
+  raw pending count alone wouldn't surface as clearly). All three are a
+  `prometheus.Collector` that queries fresh on every scrape rather than
+  maintaining cached state. Deliberately built on its own
+  `prometheus.NewRegistry()`, not the global `prometheus.DefaultRegisterer` —
+  same reasoning as choosing goose's `Provider` API over its package-level
+  `SetBaseFS`/`SetDialect`: avoids hidden shared mutable state that could
+  collide across multiple instantiations (confirmed via test: two
+  independently-built registries never collide, which they would under the
+  global default). A failed collection (e.g. the DB unreachable) is logged and
+  simply omits that one metric rather than failing the whole scrape — confirmed
+  for real, both the success and failure paths, independently for each of the
+  three custom gauges now that there's more than one.
+- **OpenTelemetry (distributed tracing) was considered and intentionally
+  deferred, not rejected outright.** The core API/SDK
+  (`go.opentelemetry.io/otel`) is actually light on its own (just `go-logr`),
+  but any real exporter — confirmed even the OTLP-over-HTTP variant, not just
+  gRPC — pulls in `google.golang.org/grpc`'s full tree, comparable in weight to
+  `testcontainers-go` (§13a, rejected earlier for the same reason). More
+  fundamentally, tracing's value scales with a request's hop count across
+  services, and this project's current call graph is shallow (one backend
+  process, Postgres, occasional Worker calls) — the architectural case isn't
+  there yet, and self-hosted personal-scale operators are unlikely to be running
+  a trace backend to send spans to regardless. Worth revisiting once the
+  screenshot service (§6) and AI enrichment (§7) exist as a genuine async
+  multi-stage pipeline — that's the shape (multiple hops, independent failure
+  points, a second real process boundary in the chromedp sidecar) where
+  tracing's value proposition actually applies here.
 - **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
 - **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
   transitive dependencies, and its middleware signature
@@ -2996,6 +3254,22 @@ What remains open is purely implementation-phase, not architectural:
   §6's "Design" subsection for the reasoning (independent failure modes;
   re-extraction after a Readability.js upgrade shouldn't force a redundant
   re-screenshot).
+- **Resolved this round (Phase 7): the screenshot job is built** —
+  `internal/screenshot`, wired into `cmd/agent.go`. This also resolves §6's own
+  "whether to actually combine [screenshot and readability] into one job/one
+  page-load ... is an implementation-phase decision, not resolved here": they
+  stay two fully independent runners, not a shared page-load, judged simpler for
+  a modest-scale self-hosted workload than the coordination a combined scheduler
+  would need. See §6's "Implementation (Phase 7)" subsection for the
+  ephemeral-render-server design this needed (the sidecar has no filesystem
+  access to the agent's local archive), the two new, direction-specific config
+  values it introduced (`sidecar_url`, `sidecar_render_host`), and its "Revised
+  after a first review pass" subsection for what changed after initial review
+  (fixed-viewport screenshots, atomic multi-claimant job claiming, and —
+  resolving the per-job scheduling cadence question this bullet used to leave
+  open — two independent agent tickers: a slower Worker-facing one and a faster
+  Postgres-only one). Still open: the readability and AI jobs themselves, which
+  this same phase builds next.
 - **Resolved this round: every piece of the original five-step extension plan
   (pairing, capture, upload, queue-driven capture, bookmark sync — §3h–§3j) is
   now built and confirmed working end to end**, including two mid-phase design

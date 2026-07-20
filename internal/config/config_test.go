@@ -77,7 +77,19 @@ func TestLoad(t *testing.T) {
 			check: func(t *testing.T, cfg Config) {
 				assert.Equal(t, ":8080", cfg.ListenAddr)
 				assert.True(t, cfg.SessionCookieSecure)
-				assert.Equal(t, 120, cfg.AgentPollIntervalSeconds)
+				assert.Equal(t, 1800, cfg.AgentWorkerPollIntervalSeconds)
+				assert.Equal(t, 300, cfg.AgentLocalPollIntervalSeconds)
+				assert.Equal(t, "http://127.0.0.1:9222", cfg.SidecarURL)
+				assert.Equal(t, "127.0.0.1", cfg.SidecarRenderHost)
+				assert.Equal(t, 3, cfg.ReadabilityWorkerConcurrency)
+				assert.Equal(t, 3, cfg.ReadabilityMaxAttempts)
+				assert.Equal(t, "", cfg.AIBaseURL)
+				assert.Equal(t, 1, cfg.AIWorkerConcurrency)
+				assert.Equal(t, 3, cfg.AIMaxAttempts)
+				assert.Equal(t, 300, cfg.AIRequestTimeoutSeconds)
+				assert.Equal(t, 0, cfg.AIMaxInputChars, "no default here -- internal/ai applies its own fallback for zero")
+				assert.Equal(t, 3, cfg.ScreenshotWorkerConcurrency)
+				assert.Equal(t, 3, cfg.ScreenshotMaxAttempts)
 			},
 		},
 		{
@@ -86,12 +98,14 @@ func TestLoad(t *testing.T) {
 				allRequiredSet()
 				viper.Set("listen_addr", ":9090")
 				viper.Set("session_cookie_secure", false)
-				viper.Set("agent_poll_interval_seconds", 30)
+				viper.Set("agent_worker_poll_interval_seconds", 600)
+				viper.Set("agent_local_poll_interval_seconds", 10)
 			},
 			check: func(t *testing.T, cfg Config) {
 				assert.Equal(t, ":9090", cfg.ListenAddr)
 				assert.False(t, cfg.SessionCookieSecure)
-				assert.Equal(t, 30, cfg.AgentPollIntervalSeconds)
+				assert.Equal(t, 600, cfg.AgentWorkerPollIntervalSeconds)
+				assert.Equal(t, 10, cfg.AgentLocalPollIntervalSeconds)
 			},
 		},
 		{
@@ -147,7 +161,17 @@ func TestLoad(t *testing.T) {
 			viper.Reset()
 			viper.SetDefault("listen_addr", ":8080")
 			viper.SetDefault("session_cookie_secure", true)
-			viper.SetDefault("agent_poll_interval_seconds", 120)
+			viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
+			viper.SetDefault("agent_local_poll_interval_seconds", 300)
+			viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")
+			viper.SetDefault("sidecar_render_host", "127.0.0.1")
+			viper.SetDefault("readability_worker_concurrency", 3)
+			viper.SetDefault("readability_max_attempts", 3)
+			viper.SetDefault("ai_worker_concurrency", 1)
+			viper.SetDefault("ai_max_attempts", 3)
+			viper.SetDefault("ai_request_timeout_seconds", 300)
+			viper.SetDefault("screenshot_worker_concurrency", 3)
+			viper.SetDefault("screenshot_max_attempts", 3)
 			tt.setup()
 
 			cfg, err := Load()

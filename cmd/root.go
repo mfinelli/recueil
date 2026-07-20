@@ -71,7 +71,21 @@ func init() {
 		"r2_bucket_name",
 		"r2_access_key_id",
 		"r2_access_key_secret",
-		"agent_poll_interval_seconds",
+		"agent_worker_poll_interval_seconds",
+		"agent_local_poll_interval_seconds",
+		"sidecar_url",
+		"sidecar_render_host",
+		"readability_worker_concurrency",
+		"readability_max_attempts",
+		"ai_base_url",
+		"ai_api_key",
+		"ai_model",
+		"ai_worker_concurrency",
+		"ai_max_attempts",
+		"ai_request_timeout_seconds",
+		"ai_max_input_chars",
+		"screenshot_worker_concurrency",
+		"screenshot_max_attempts",
 	)
 }
 

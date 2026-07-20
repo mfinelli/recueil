@@ -220,10 +220,10 @@ runner) and `users` exist, both `STRICT`; `schema_migrations` is additionally
 `WITHOUT ROWID`. D1's `users` table holds only `id` and `pairing_token_hash`
 (nullable, `SHA-256` of the pairing token) — no `username`, since pairing is
 single-credential (a device submits only the token, never a username), and no
-password-derived value of any kind. Named deliberately _not_ `d1_migrations`
-(wrangler's own convention) — wrangler is absent from this project's toolchain
-entirely; the Worker deploys via Terraform's Cloudflare provider directly, and
-D1 migrations run via a direct backend → Cloudflare API call, never
+password-derived value of any kind. Explicitly _not_ `d1_migrations` (wrangler's
+own convention) — wrangler is absent from this project's toolchain entirely; the
+Worker deploys via Terraform's Cloudflare provider directly, and D1 migrations
+run via a direct backend → Cloudflare API call, never
 `wrangler d1 migrations apply`.
 
 **Migrations, both stores** — embedded into the binary (`main.go` does the
@@ -301,11 +301,11 @@ regenerate, without affecting any bearer tokens a device already obtained.
   `httptest.Server` plus that library's own base-URL override where one exists,
   rather than a hand-rolled interface mock.
 - `internal/httpapi` and `internal/metrics` tests are external `_test` packages
-  deliberately (exercise only exported constructors, same as a real caller
-  would); `internal/auth`'s tests are internal (`package auth`) deliberately,
-  since they need real access to unexported internals (`cookieName`,
-  `userContextKey`, the bootstrap holder's private fields) to prove the mutex
-  and consume-only-on-success logic actually hold.
+  (exercise only exported constructors, same as a real caller would);
+  `internal/auth`'s tests are internal (`package auth`), since they need real
+  access to unexported internals (`cookieName`, `userContextKey`, the bootstrap
+  holder's private fields) to prove the mutex and consume-only-on-success logic
+  actually hold.
 - `internal/httpapi`'s pairing-token tests register a real account through the
   actual HTTP flow (rather than `dbtest.CreateUser`'s placeholder fixture) and
   verify that the token the dashboard decrypts actually hashes to what was
@@ -342,11 +342,11 @@ regenerate, without affecting any bearer tokens a device already obtained.
   proposition to apply. Revisit once the screenshot service and AI enrichment
   (§6, §7) form a genuine async multi-stage pipeline — that's the shape where
   it'll actually pay off.
-- **`RealIP` and `pprof` middleware were both considered and deliberately not
-  added.** `RealIP` is a spoofing risk without a trusted reverse proxy in front,
-  and this project treats network exposure as entirely the operator's choice.
-  `pprof` leaks sensitive runtime info and needs its own deliberate gating
-  decision, not a default mount alongside health checks.
+- **`RealIP` and `pprof` middleware were both considered and not added.**
+  `RealIP` is a spoofing risk without a trusted reverse proxy in front, and this
+  project treats network exposure as entirely the operator's choice. `pprof`
+  leaks sensitive runtime info and needs its own gating decision, not a default
+  mount alongside health checks.
 - **A new capture pathway — manual upload — is designed but not yet
   implemented** (design doc §3d): dashboard-direct upload of an already-captured
   SingleFile HTML file, bypassing R2/D1/Worker entirely. Needs its own, much
@@ -414,7 +414,7 @@ A failed claim (`POST /queue/:id/claim` matching zero rows) distinguishes three
 cases rather than a uniform `409`, decided during this phase:
 
 - **`404`** — wrong id, or the item belongs to a different user (collapsed
-  together deliberately, so a claim attempt never leaks cross-user existence).
+  together so that a claim attempt never leaks cross-user existence).
 - **`410`** — the item is `captured` or `failed`: a terminal state, permanently
   no longer claimable. More precise than a bare 404 for "this happened, and it's
   over."
@@ -513,13 +513,12 @@ the same convention as they're implemented").
   endpoint), but requiring `user_id` to match the token's actual owner means a
   backend-side bug that passes the wrong id/user_id pair deletes nothing rather
   than someone else's device.
-- **`complete`/`fail` are deliberately not built yet.** The brief for this phase
-  was device auth + queue read/write; the endpoints that would actually
-  transition a claimed item to `captured`/`failed` and write a
-  `pending_captures` row are entangled with the capture-upload pipeline's shape
-  (presigned R2 URLs, the upload-complete notification) rather than the
-  queue/auth mechanics this phase covered — deferred to the phase that builds
-  that pipeline.
+- **`complete`/`fail` are not built yet.** The brief for this phase was device
+  auth + queue read/write; the endpoints that would actually transition a
+  claimed item to `captured`/`failed` and write a `pending_captures` row are
+  entangled with the capture-upload pipeline's shape (presigned R2 URLs, the
+  upload-complete notification) rather than the queue/auth mechanics this phase
+  covered — deferred to the phase that builds that pipeline.
 - **What to do with `failed` queue items long-term is unresolved.** The cleanup
   endpoint only ever sweeps `captured` rows; `failed` rows accumulate
   indefinitely until some future decision (surface to the user? retry? a
@@ -587,8 +586,8 @@ entry, not the only one:
   (`//go:embed clearurls-rules/data.min.json`), not threaded through
   `main.go`/`cmd` the way the Postgres/D1 migration directories are, since
   nothing outside this package ever needs it. `completeProvider` and
-  `forceRedirection` are deliberately not ported at all — see DESIGN.md §9 for
-  why neither applies to normalizing an already-known URL string.
+  `forceRedirection` are not ported at all — see DESIGN.md §9 for why neither
+  applies to normalizing an already-known URL string.
 - `Canonicalize` — host/scheme lowercasing, default-port stripping (including
   correct IPv6 bracket handling), fragment dropping, query-param sorting,
   trailing-slash stripping.
@@ -614,8 +613,8 @@ overwriting with identical bytes is a harmless no-op.
 
 - `WorkerClient` — the two service-secret-gated polling endpoints above.
 - `Ingester.RunOnce(ctx) error` — processes one bounded batch. **No scheduler
-  wired up yet** — deliberately deferred (see Open items below); this is a fully
-  callable, tested unit with nothing calling it in production yet.
+  wired up yet** — deferred (see Open items below); this is a fully callable,
+  tested unit with nothing calling it in production yet.
 - Per-capture flow: pull from R2 → hash → zstd-compress to local disk → detect
   language → normalize URL (via `internal/urlnorm`) → one Postgres transaction
   (upsert page, insert capture, enqueue `screenshot_jobs`/ `readability_jobs`
@@ -701,11 +700,11 @@ deliberately rather than by default.
 
 **Explicitly deferred — will resolve or revisit in a later phase:**
 
-- **`docker-compose.yml` still doesn't exist** for any service. Deliberately not
-  built yet: local development currently uses a personal `compose.yaml` and the
-  binary run directly, and the real, end-user-facing compose file will get built
-  alongside end-user documentation, so the two stay consistent with each other
-  rather than needing to be reconciled later.
+- **`docker-compose.yml` still doesn't exist** for any service. Not built yet:
+  local development currently uses a personal `compose.yaml` and the binary run
+  directly, and the real, end-user-facing compose file will get built alongside
+  end-user documentation, so the two stay consistent with each other rather than
+  needing to be reconciled later.
 - **`failed` queue items' long-term retention** — unresolved since Phase 2; the
   cleanup endpoint only ever sweeps `captured` rows. Still open, not forgotten.
 - **Fragment-aware URL canonicalization for known SPAs** —
@@ -946,7 +945,7 @@ Concretely, what's built in `extension/`:
   see `extension/README.md`).
 - **Auth** (`background/auth.js`): pairing against `POST /pair`'s real contract,
   `storage.local` (never `storage.sync`) for the device token, `getAuthState()`
-  deliberately never returning the token itself to a caller.
+  never returns the token itself to a caller.
 - **Capture** (`background/capture.js`, `capture-inject/`): the two-step
   injection pattern, `single-file-core` wired with the direct-fetch-first relay
   (`relay-fetch.js`, see DESIGN.md §3h), embedded-iframe inlining
@@ -1029,11 +1028,11 @@ CSS/JS wiring pass.
 ### Still ahead
 
 Safari packaging, whenever that becomes a priority — mechanical (Xcode-wrapped,
-same source), not attempted yet, and deliberately not a priority right now.
-Moving settings (bookmark sync's toggle, so far the only one) into a dedicated
-extension options page was considered and explicitly decided against for now,
-after actually using the popup during testing — everything stays in the popup
-unless/until there are enough settings that it stops making sense there.
+same source), not attempted yet, and not a priority right now. Moving settings
+(bookmark sync's toggle, so far the only one) into a dedicated extension options
+page was considered and explicitly decided against for now, after actually using
+the popup during testing — everything stays in the popup unless/until there are
+enough settings that it stops making sense there.
 
 With those two exceptions, every piece from the original five-step plan
 (pairing, capture, upload, queue-driven capture, bookmark sync) is built and
@@ -1042,7 +1041,7 @@ rather than functional-only styling.
 
 ### Queue-driven capture
 
-Built as two isolated steps, tested separately, per Mario's own preference for
+Built as two isolated steps, tested separately, per ours own preference for
 incremental delivery: the list-refresh-and-badge half first, then the actual
 claim flow and completion-routing change on top. Ended up simpler on the backend
 side than expected — `POST /queue/:id/claim` and its 404/409/410 distinctions
@@ -1101,9 +1100,9 @@ design writeup; concretely, what got built:
 - **One new Worker endpoint**, unlike queue-driven capture's zero:
   `GET /archived-pages` (`terraform/index.js`'s `handleListArchivedPages`),
   device-bearer-token authed, a plain full-list read of the caller's own
-  `archived_pages` rows — no pagination, no `since` parameter, deliberately
-  simpler than the backend's own Postgres → D1 sync, which needs that complexity
-  at a scale a single browser's bookmark tree never will.
+  `archived_pages` rows — no pagination, no `since` parameter, simpler than the
+  backend's own Postgres → D1 sync, which needs that complexity at a scale a
+  single browser's bookmark tree never will.
 - **`background/bookmarks.js`**: `syncBookmarks()` (the full-list diff --
   create/adopt/update/remove), `ensureFolder()` (create-or-adopt exactly one
   "recueil" folder, never a duplicate — see DESIGN.md §3j for the probe-bookmark
@@ -1183,3 +1182,344 @@ scoped to a queue item."
 Full test coverage added (`captures.test.js`, plus a routing test in
 `fetch.test.js`), run against real Miniflare D1 the same way the rest of this
 suite is — all 177 tests across the Worker suite pass.
+
+## Phase 7 (Screenshot Job) — in progress
+
+Phase 6 (the dashboard) is being skipped for now, on the reasoning that Phase
+7's work makes it a more complete dashboard once it does get built. Phase 7
+itself is three pieces — screenshot job, readability job, AI job — built in that
+order; only the first is done so far.
+
+### What exists now
+
+- **`queries/screenshot_jobs.sql`**: `ClaimDueScreenshotJobs`,
+  `GetScreenshotJobByCaptureID`, `SetCaptureThumbnail`, `MarkScreenshotJobDone`,
+  `RetryScreenshotJob`, `FailScreenshotJob` — alongside the
+  `CreateScreenshotJob` insert that already existed from Phase 3½'s ingestion
+  work.
+- **`internal/screenshot`**: the `Runner` — a long-lived `chromedp`
+  `RemoteAllocator` connection to the shared sidecar, plus a long-lived
+  ephemeral HTTP server (see DESIGN.md §6's "Implementation (Phase 7)" for why
+  that exists instead of `file://`). `RunOnce` claims a bounded batch of due
+  jobs and processes them with a `screenshot_worker_concurrency`-bounded worker
+  pool; each job opens the capture's already-decompressed HTML at a fresh
+  random-token URL, takes a full-page PNG screenshot, hashes and stores it via
+  `archive.Store.WriteAsset` (keyed by the _screenshot's_ own hash, not the
+  capture's — same reasoning archive.go's package doc already gives for
+  favicons), and commits `captures.thumbnail_path` + the job's `done` status in
+  one transaction. Failure hands off to exponential backoff
+  (`30s * 2^(attempts-1)`, capped at 30 minutes) up to `screenshot_max_attempts`
+  (default 3) before marking the job `failed` permanently.
+- **`internal/config`**: four new fields, all with defaults, explicitly _not_
+  added to the required-config list — an unreachable or unconfigured sidecar
+  degrades to "no thumbnail, retried later," never a startup failure, matching
+  this whole feature's optional-by-design status.
+  `sidecar_url`/`sidecar_render_host` are two different directions of the same
+  connection (agent→sidecar vs. sidecar→agent) and need genuinely different
+  values depending on deployment shape; see DESIGN.md §6 for the concrete
+  local-dev-vs-all-docker cases this covers.
+- **`compose.yaml`**: a new `chromedp` service (`chromedp/headless-shell`,
+  `shm_size: 2gb`) in both the `local` and `test` profiles. Its host port stays
+  published (`127.0.0.1:9222:9222`) — a real difference from what the eventual
+  operator-facing deployment docs should show, since we run the agent binary
+  directly during development rather than as a container on the same compose
+  network, and needs to reach the sidecar from outside it.
+  `extra_hosts: host.docker.internal:host-gateway` is what lets the sidecar
+  container reach back out to that host-side agent process in turn (needed on
+  Linux; a no-op, not a conflict, on Docker Desktop).
+- **`cmd/agent.go`**: `screenshot.Runner` constructed alongside the existing
+  `Ingester`/`Syncer`, with its own `defer Close()` (it's the first of these
+  three to hold live OS resources — the sidecar connection and the render
+  server's listener — that need explicit teardown, unlike `Ingester`/`Syncer`
+  themselves). `runAgentCycle` now runs all three passes sequentially on the
+  same shared tick.
+
+### Testing
+
+`internal/screenshot`'s tests run against real Postgres (`internal/dbtest`)
+_and_ the real `chromedp` sidecar (compose's new `test`-profile service) — no
+mocked CDP client, extending this project's existing "no mocks for DB-touching
+code" convention to the sidecar for the same reason: a hand-rolled fake would
+just re-test this package's own assumptions about chromedp, not chromedp itself.
+Coverage so far: a happy-path render (asserted all the way down to the stored
+file's actual PNG magic bytes, not just "no error"), one failure not blocking
+the rest of a batch, permanent failure once `max_attempts` is exhausted, and a
+no-due-jobs no-op. `backoff` itself (pure, unexported) gets its own table-driven
+unit test in an internal (`package screenshot`) test file — the one exception to
+this project's external-test-package default, per its own stated testing
+convention.
+
+### Round 2: review feedback and the resulting changes
+
+A first review pass (before any of this had run against real Postgres/Chrome)
+caught several things worth fixing before, not after, first real use:
+
+- Fixed viewport (`chromedp.CaptureScreenshot` + `EmulateViewport(1280, 800)`)
+  replaced `chromedp.FullScreenshot` — full-page screenshots directly
+  contradicted the "uniform thumbnails for the dashboard" reason this job exists
+  on the backend at all.
+- `Runner.New` now pings the sidecar's `/json/version` once at startup and fails
+  loudly if it's unreachable, so a restart-until-healthy orchestrator policy
+  actually has something to act on.
+- `ListDueScreenshotJobs` became `ClaimDueScreenshotJobs`: a real atomic
+  `FOR UPDATE SKIP LOCKED` claim (new migration `00007` adds a `'processing'`
+  status + `claimed_at` to both `screenshot_jobs` and `readability_jobs`, plus a
+  15-minute stale-reclaim, matching the D1 queue's own number), ahead of
+  actually needing multi-process safety — future-proofing for a
+  horizontally-scaled or hosted deployment, not solving a problem that exists
+  today.
+- `cmd/agent.go` now runs two independent tickers instead of one:
+  `agent_worker_poll_interval_seconds` (default 300s, everything touching the
+  Cloudflare Worker/D1) and `agent_local_poll_interval_seconds` (default 30s,
+  Postgres-only jobs) — the old single `agent_poll_interval_seconds` is gone.
+  This is what lets the Worker stay comfortably inside Cloudflare's free tier
+  without also slowing down how quickly a freshly-ingested capture gets its
+  screenshot.
+- New migration `00008` adds `captures.thumbnail_size_bytes` and
+  `captures.favicon_size_bytes` (both nullable); `archive.Store.WriteAsset` now
+  returns the actual on-disk size instead of discarding it, threaded through
+  both this job and `internal/ingest`'s favicon handling.
+
+### Round 3: asset hashes and a non-root sidecar
+
+- **`favicon_hash`/`thumbnail_hash`** (new migration `00009`): both already
+  keyed by their own sha256 hash as their on-disk filename (see
+  `internal/archive`'s package doc), but a filename is an implementation detail
+  — recording the hash as its own column is what a future integrity-check
+  command needs (hash everything actually on disk, compare against what was
+  recorded at write time, independent of whatever naming scheme is current).
+  Sha256 throughout, not a faster algorithm for these smaller assets: the
+  performance difference is irrelevant at this scale (small files, hashed once,
+  async), and a second algorithm would only cost a future verify command the
+  need to track which column uses which. `archive.Store.WriteAsset`'s
+  already-computed hash is now threaded through `internal/ingest`'s favicon
+  handling and `internal/screenshot`'s thumbnail handling into
+  `InsertCaptureIdempotent`/`SetCaptureThumbnail` rather than only ever living
+  in the returned path string.
+
+### Round 4: first real run against Docker — two genuine bugs found
+
+The first attempt at `just compose test` failed outright, surfacing two
+unrelated problems, both fixed once actually run for real rather than only
+reasoned through:
+
+- **Chromium's DevTools port turned out to be permanently loopback-only, full
+  stop.** Since Chromium M113/M114, an all-zeros
+  `--remote-debugging-address=0.0.0.0` is silently forced back to `127.0.0.1` in
+  Chromium's own source — a non-configurable security decision (unrestricted
+  network access to the DevTools protocol is a full remote-control vector), not
+  a bug and not something any flag works around. This meant `sidecar_url` was
+  never actually reachable — not from the host via the published port, and,
+  worse, not from another container on the same compose network either, meaning
+  this would have equally broken a fully-dockerized production deployment, not
+  just local dev. **Fix**: `compose.yaml`'s `chromedp` service now runs
+  Chromium's real listener on an internal-only port (9223); a new
+  `chromedp-proxy` service (`alpine/socat`, sharing `chromedp`'s network
+  namespace via `network_mode: "service:chromedp"`) bridges the
+  externally-reachable 9222 to it with a plain TCP forward. Nothing in Go or
+  `internal/config` changed — `sidecar_url` still targets port 9222 either way,
+  now transparently proxied rather than hitting Chromium directly.
+
+## Phase 7 continued: the readability job, and `internal/sidecar`
+
+Built next, per Phase 7's stated order (screenshot, then readability, then AI
+enrichment). Two decisions made before writing any code, both implemented as
+decided:
+
+1. **Extract the plumbing `internal/screenshot` and `internal/readability` both
+   need (the `chromedp` allocator connection, the ephemeral render server) into
+   a shared `internal/sidecar` package**, refactoring the already-working
+   `internal/screenshot` to use it, rather than duplicating that infrastructure
+   a second time. What stays duplicated instead: the retry/backoff/claim
+   bookkeeping, since `screenshot_jobs` and `readability_jobs` are separate
+   sqlc-generated Go types and the actual duplication is small (a few dozen
+   lines each) — see DESIGN.md §6a's own "Implementation" section for the fuller
+   reasoning either way.
+2. **Readability.js itself is threaded through `main.go`, not vendored into
+   `internal/readability` via a Makefile copy step.** `main.go` embeds
+   `node_modules/@mozilla/readability/Readability.js` directly (already within
+   `go:embed`'s reach from the repo root) and assigns it to `cmd.ReadabilityJS`,
+   mirroring exactly how `PostgresMigrationsFS`/ `Commit`/`Date`/`Version`
+   already flow from `main.go` into `cmd`. No new vendoring pattern, no new
+   `.gitignore` entry, no generated file to keep in sync.
+
+### What exists now
+
+- **`internal/sidecar`** (new package): `Sidecar.New` pings the sidecar at
+  startup (same fail-loudly reasoning as the original `screenshot.Runner`),
+  starts the ephemeral render server, dials the `RemoteAllocator`.
+  `Sidecar.NewTab(htmlData, timeout)` registers HTML and hands back a ready tab
+  context + URL — never calls `chromedp.Run` itself, since a shared package
+  can't know whether a caller needs e.g. a fixed viewport applied before
+  `Navigate`. `Sidecar.Close()` is the only close call site `cmd/agent.go` needs
+  now, for both jobs.
+- **`internal/screenshot`** refactored: `Runner` no longer holds a listener,
+  server, or allocator context directly, no longer has a `Close()`, and `Params`
+  takes a `*sidecar.Sidecar` instead of `SidecarURL`/`RenderHost`. Behavior
+  otherwise unchanged; its existing tests were updated for the new construction
+  shape, not rewritten.
+- **`internal/readability`** (new package): same `RunOnce`/`processOne`/
+  `commitDone`/`handleFailure`/`backoff` shape as `internal/screenshot`.
+  `render` does two `chromedp.Evaluate` calls against a `sidecar.NewTab`-
+  provided tab: inject `Source` (defining the global `Readability` constructor),
+  then run `new Readability(document.cloneNode(true)).parse()` and bind the JSON
+  result into a `*article` (a pointer, specifically so a JSON `null` —
+  Readability's own signal that a page isn't extractable — correctly leaves it
+  `nil` rather than silently unmarshaling into a zero-value struct). Only
+  `textContent` is persisted (`reader_text`); the rest of `parse()`'s output
+  (`title`, `byline`, `excerpt`, etc.) is decoded but not yet used anywhere.
+- **`queries/readability_jobs.sql`**: `ClaimDueReadabilityJobs`,
+  `GetReadabilityJobByCaptureID`, `SetCaptureReadability`,
+  `MarkReadabilityJobDone`, `RetryReadabilityJob`, `FailReadabilityJob` —
+  alongside the `CreateReadabilityJob` insert that already existed.
+  `SetCaptureReadability` overwrites `reader_text`/`reader_text_hash`/
+  `readability_version` in place (no history kept, per DESIGN.md §6a);
+  `captures.reader_text_tsv` (a generated column) recomputes automatically as
+  part of that same `UPDATE`.
+- **`main.go`**: new
+  `//go:embed node_modules/@mozilla/readability/ Readability.js` and a
+  `readabilityVersion` var (ldflags-injected), both assigned into the new
+  `cmd.ReadabilityJS`/`cmd.ReadabilityVersion` vars (declared alongside the
+  existing `Commit`/`Date`/`Version`/migrations-FS ones in `cmd/server.go`).
+- **`internal/config`**: `screenshot_sidecar_url`/`screenshot_render_host`
+  renamed to `sidecar_url`/`sidecar_render_host` (no longer screenshot-only, now
+  that the connection is shared) — a real breaking rename, judged worth it over
+  keeping a screenshot-specific name that would actively mislead once a second
+  job depends on the same config. New
+  `readability_worker_concurrency`/`readability_max_attempts`, mirroring the
+  screenshot job's own pair exactly.
+- **`cmd/agent.go`**: constructs one `*sidecar.Sidecar`, then both
+  `screenshot.Runner` and `readability.Runner` on top of it; `runLocalCycle` now
+  runs both `RunOnce` calls on the shared local ticker.
+
+### Testing
+
+`internal/sidecar` gets its own tests against the real sidecar (a startup
+reachability failure, and a `NewTab` round-trip confirming served HTML is
+actually fetchable and that `cleanup` actually tears things down).
+`internal/readability`'s tests are the same shape as `internal/screenshot`'s
+(real Postgres, real chromedp, real vendored `Readability.js` read directly off
+disk via a relative path — skipped with a clear message if `node_modules` isn't
+present rather than failing confusingly), plus one specific to this package:
+confirming an empty `Version` is stored as `NULL`, not an empty string. The test
+HTML is intentionally more than a one-liner — Readability's own heuristics judge
+very short pages "not extractable" and return `null`, which would make every
+test fail at the extraction step itself rather than testing anything this
+package's own logic is responsible for.
+
+## Phase 7 continued: the AI job, and the tagging schema
+
+Two decisions made before writing code, both implemented as decided:
+
+1. **A single OpenAI-compatible backend**, not separate Ollama/OpenAI code paths
+   — Ollama, llama.cpp's own server, and effectively every hosted provider
+   besides Anthropic all speak the same `/v1/chat/completions` shape.
+   `BaseURL`/`APIKey`/`Model` config covers all of them.
+2. **`tags`/`page_tags` built now**, not deferred to the dashboard work they
+   were originally meant to arrive with — they existed only as prose in
+   DESIGN.md §10 before this, never an actual migration. Building them now
+   avoids retrofitting the AI job around a schema change later.
+
+### What exists now
+
+- **`migrations/00007_create_tags.sql`**: `tags` (unique per `(user_id, name)`)
+  and `page_tags` (`(page_id, tag_id)` primary key, `source` distinguishing
+  `'manual'`/`'ai'`).
+- **`migrations/00008_create_ai_jobs.sql`**: `captures.ai_summary`/
+  `captures.ai_model` (both nullable, mirroring `reader_text`'s own precedent
+  now that TOAST makes the original "keep this decoupled for storage reasons"
+  concern moot — no `ai_summary_hash`, since this data never touches disk and
+  LLM output isn't deterministic enough for a hash to answer anything useful);
+  `ai_jobs` itself, with `'processing'`/ `claimed_at` from day one.
+- **`queries/tags.sql`**: `UpsertTag` — get-or-create by `(user_id, name)`,
+  using the `ON CONFLICT ... DO UPDATE SET name = EXCLUDED.name RETURNING *`
+  idiom rather than `DO NOTHING`, since the latter returns zero rows on the
+  conflict path instead of the existing row.
+- **`queries/page_tags.sql`**: `AddPageTag`
+  (`ON CONFLICT (page_id, tag_id) DO NOTHING` — an AI tag colliding with an
+  existing manual one, or vice versa, is a no-op, never an error),
+  `ListPageTags`.
+- **`queries/ai_jobs.sql`**: `CreateAIJob`, `GetAIJobByCaptureID`,
+  `ClaimDueAIJobs` (no readiness join needed — a row's mere existence already
+  implies `reader_text` is set, joins `pages` too since tags need
+  `page_id`/`user_id`, not just `capture_id`), `SetCaptureAI`, `MarkAIJobDone`,
+  `RetryAIJob`, `FailAIJob`.
+- **`internal/readability`**: `commitDone` now also calls `CreateAIJob` in the
+  same transaction as marking itself done — the one and only place an `ai_jobs`
+  row ever gets created, expressing the readability→AI dependency as "when does
+  the row get created" rather than a claim-time join.
+- **`internal/ai`** (new package): `Runner` — same `RunOnce`/`processOne`/
+  `commitDone`/`handleFailure`/`backoff` shape as `internal/screenshot`/
+  `internal/readability`, but never touches `internal/sidecar` at all (a plain
+  HTTP client, no browser). Uses the official `openai-go` SDK
+  (`option.WithBaseURL` supports pointing it at any compatible server cleanly;
+  matches this backend's existing precedent of official SDKs — `aws-sdk-go-v2`
+  for R2 — over the Worker/JS side's deliberate zero-dependency approach). Two
+  separate chat completion calls per capture (summarize, then generate tags)
+  rather than one combined prompt — simpler prompts, no dependency on a model
+  reliably producing one specific combined structure; a failure in either
+  discards an already-successful result from the same attempt rather than
+  partially committing (accepted, low-stakes waste, not an oversight — see the
+  package's own `processOne` doc). Tag parsing is a lenient comma-separated-list
+  split, not JSON or any structured-output feature, since support for those
+  varies significantly across compatible servers. `reader_text` is truncated to
+  `ai_max_input_chars` per call (default 24,000, ~6k tokens by the common
+  ~4-chars-per-token rule of thumb -- raised from an initial, too-conservative
+  12,000 after review, and made configurable rather than staying a single fixed
+  number, since the right value genuinely differs between a large-context hosted
+  model and a constrained local one).
+- **`internal/config`**: `ai_base_url`/`ai_api_key`/`ai_model`/
+  `ai_worker_concurrency` (default 2, more conservative than
+  screenshot/readability's default 3 — hosted APIs often rate-limit, and many
+  local single-GPU model servers can't meaningfully parallelize inference
+  against one loaded model anyway)/`ai_max_attempts`/
+  `ai_request_timeout_seconds` (default 300 — much longer than the sidecar jobs'
+  fixed 60s, per the tolerance for slow local-model completions). No
+  `ai_enabled` boolean: an empty `ai_base_url` is what disables AI enrichment
+  entirely.
+- **`cmd/agent.go`**: constructs `*ai.Runner` only if `cfg.AIBaseURL != ""`;
+  `runLocalCycle` takes it as a possibly-nil parameter and simply skips it
+  otherwise.
+
+### Testing
+
+`internal/ai`'s tests run against real Postgres, but a **fake**
+OpenAI-compatible HTTP server (`net/http/httptest`), not a real LLM — a
+departure from `internal/screenshot`/`internal/readability`'s "no mocks, real
+backing service" convention. Reasoning: a real local model would make these
+tests slow, heavy (an actual model download/load), and non-deterministic enough
+that they could only ever assert "got some non-empty text back" — far weaker
+than what's actually worth testing here. What this package owns and could have
+bugs in is request/response handling, retry bookkeeping, and tag parsing, all of
+which a fake server exercises precisely without depending on any model's actual
+output quality. The fake server distinguishes the summarize vs. tag-generation
+call by checking which system prompt came through, and simulates a failure
+deterministically via a sentinel string in the user content rather than needing
+a second server or base URL. Coverage: a full enrichment (summary + tags + job
+done), a tag colliding with a pre-existing manual one being a silent no-op,
+stale-job reclaim, one failure not blocking the batch, permanent failure after
+max attempts, and a no-op with nothing due — plus pure unit tests for `backoff`
+and `parseTags`.
+
+## Phase 7 continued: job metrics
+
+Prompted by a simple question worth asking of any new async job: is it worth
+surfacing completed/failed counts to Prometheus? Yes, and it turned out to fit
+the existing `internal/metrics` collector cleanly — `/metrics` is served by the
+web server process (`internal/httpapi/router.go`), not the agent, but since job
+status lives in Postgres regardless of which process is actually running
+`RunOnce` cycles, the existing "query fresh on every scrape" pattern already
+used for `recueil_users_total` extends to job status with no new architecture
+needed.
+
+Added two gauges: `recueil_jobs_total{job,status}` (current count per job
+type/status combination — `screenshot`/`readability`/`ai` × `pending`/
+`processing`/`done`/`failed`, 12 combinations total, all emitted explicitly
+every scrape including zeros — a metric that appears and disappears as data
+comes and goes makes `rate()`/`sum()` behave far less predictably than one
+continuously present at 0) and `recueil_job_oldest_pending_age_seconds{job}`
+(age of the oldest still-pending job of that type — a more actionable backlog
+signal than a raw pending count, since some pending jobs at any given moment is
+normal; a _growing_ age is what actually indicates something stuck).
+Deliberately absent, not zero, for a job type with nothing currently pending —
+asserted directly in `internal/metrics/metrics_test.go`.

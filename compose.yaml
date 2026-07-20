@@ -35,5 +35,85 @@ services:
     profiles:
       - test
 
+  # The shared headless-Chrome sidecar the screenshot and readability jobs
+  # render already-captured HTML through. The published host port is
+  # kept here even though a fully-dockerized deployment (agent running as a
+  # container on this same compose network) never needs it: in local dev and
+  # testing we run the binary directly on the host machine, not in docker, so
+  # it has to be reachable from outside the compose network too. See the
+  # README's "production" section for the operator-facing compose example,
+  # which drops the published port and extra_hosts entry for exactly that
+  # reason.
+  #
+  # extra_hosts' host-gateway alias is what lets *this* container
+  # connect back out to the agent process listening on the host itself
+  # (config's sidecar_render_host) when the agent isn't running in
+  # compose at all -- needed on Linux; Docker Desktop (macOS/Windows)
+  # resolves host.docker.internal without it, but the alias is harmless
+  # there too.
+  #
+  # Runs as the unprivileged "nobody" user, but with Chromium's own
+  # renderer sandbox disabled (--no-sandbox) rather than the custom
+  # seccomp profile chromedp/docker-headless-shell's README documents as
+  # the alternative to that. Losing Chromium's internal renderer sandbox is a
+  # real tradeoff -- normally there specifically to contain a compromised
+  # renderer process after a malicious page exploits a bug in it -- but a
+  # meaningfully smaller one here than for a general-purpose scraper:
+  # this sidecar only ever renders HTML this project already captured
+  # itself, never arbitrary live pages fetched on demand. It's also the
+  # same tradeoff most community headless-Chrome Docker images already
+  # make by default (root + --no-sandbox); running as "nobody" here is
+  # strictly better than that default, not worse.
+  #
+  # --remote-debugging-port is 9223, not the externally-reachable 9222,
+  # and intentionally has no --remote-debugging-address flag at all: since
+  # Chromium M113/M114, an all-zeros bind address is silently forced back
+  # to 127.0.0.1 no matter what's passed (a deliberate Chromium security
+  # decision -- unrestricted network access to the DevTools protocol is a
+  # full remote-control vector -- not a bug, and not configurable). That
+  # makes Chromium's own listener genuinely unreachable from outside its
+  # own network namespace, whether that's a host-published port *or*
+  # another container on this same compose network -- so it isn't just a
+  # local-dev quirk, it would also break a fully-dockerized deployment.
+  # chromedp-proxy below is the fix: a plain TCP forwarder sharing this
+  # container's network namespace (network_mode: "service:chromedp"),
+  # bridging the externally-reachable 9222 to Chromium's loopback-only
+  # 9223. This is why `ports` stays declared here rather than on the
+  # proxy itself -- Compose doesn't allow port publishing on a service
+  # using `network_mode: service:...` at all, since it has no network
+  # identity of its own to publish from; the "owning" service (this one)
+  # is where it belongs regardless of which container in the shared
+  # namespace actually holds the listening socket.
+  chromedp:
+    image: chromedp/headless-shell:latest
+    user: nobody
+    entrypoint:
+      - /headless-shell/headless-shell
+      - --remote-debugging-port=9223
+      - --disable-gpu
+      - --enable-unsafe-swiftshader
+      - --headless
+      - --no-sandbox
+    shm_size: "1gb"
+    ports:
+      - "127.0.0.1:9222:9222"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - ci
+      - local
+      - test
+
+  chromedp-proxy:
+    image: alpine/socat:latest
+    network_mode: "service:chromedp"
+    depends_on:
+      - chromedp
+    command: ["tcp-listen:9222,fork,reuseaddr", "tcp:127.0.0.1:9223"]
+    profiles:
+      - ci
+      - local
+      - test
+
 volumes:
   recueilpsql:

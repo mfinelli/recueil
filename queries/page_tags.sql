@@ -16,39 +16,15 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-package main
+-- name: AddPageTag :exec
+-- ON CONFLICT DO NOTHING: adding a tag that's already present on a page
+-- (from either source) is a no-op, not an error.
+INSERT INTO page_tags (page_id, tag_id, source) VALUES ($1, $2, $3)
+ON CONFLICT (page_id, tag_id) DO NOTHING;
 
-import (
-	"embed"
-	"os"
-
-	"github.com/mfinelli/recueil/cmd"
-)
-
-//go:embed migrations/*.sql
-var postgresMigrationsFS embed.FS
-
-//go:embed terraform/migrations/*.sql
-var d1MigrationsFS embed.FS
-
-//go:embed node_modules/@mozilla/readability/Readability.js
-var readabilityJS string
-var readabilityVersion string
-
-var commit string
-var date string
-var version string
-
-func main() {
-	cmd.Commit = commit
-	cmd.Date = date
-	cmd.Version = version
-	cmd.PostgresMigrationsFS = postgresMigrationsFS
-	cmd.D1MigrationsFS = d1MigrationsFS
-	cmd.ReadabilityJS = readabilityJS
-	cmd.ReadabilityVersion = readabilityVersion
-
-	if r := cmd.Execute(); r != 0 {
-		os.Exit(r)
-	}
-}
+-- name: ListPageTags :many
+SELECT tags.id AS tag_id, tags.name AS name, page_tags.source AS source
+FROM page_tags
+JOIN tags ON tags.id = page_tags.tag_id
+WHERE page_tags.page_id = $1
+ORDER BY tags.name;

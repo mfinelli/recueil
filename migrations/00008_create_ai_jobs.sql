@@ -15,8 +15,7 @@
 -- along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 -- +goose Up
--- Retry/backoff bookkeeping for the async screenshot job, one row per capture.
-CREATE TABLE screenshot_jobs (
+CREATE TABLE ai_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   capture_id BIGINT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -26,14 +25,14 @@ CREATE TABLE screenshot_jobs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
-  CONSTRAINT screenshot_jobs_pkey PRIMARY KEY (id),
-  CONSTRAINT screenshot_jobs_capture_id_fkey FOREIGN KEY (capture_id)
+  CONSTRAINT ai_jobs_pkey PRIMARY KEY (id),
+  CONSTRAINT ai_jobs_capture_id_fkey FOREIGN KEY (capture_id)
     REFERENCES captures(id) ON DELETE CASCADE,
-  CONSTRAINT screenshot_jobs_status_check
+  CONSTRAINT ai_jobs_status_check
     CHECK (status IN ('pending', 'processing', 'done', 'failed'))
 );
 
-CREATE INDEX idx_screenshot_jobs_capture_id ON screenshot_jobs(capture_id);
+CREATE INDEX idx_ai_jobs_capture_id ON ai_jobs(capture_id);
 
 -- +goose Down
-DROP TABLE screenshot_jobs;
+DROP TABLE ai_jobs;
