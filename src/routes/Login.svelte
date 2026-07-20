@@ -45,7 +45,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <h1>recueil</h1>
 
     <label for="username">Username</label>
-    <input id="username" type="text" autocomplete="username" bind:value={username} required disabled={submitting} />
+    <input
+      id="username"
+      type="text"
+      autocomplete="username"
+      bind:value={username}
+      required
+      disabled={submitting}
+    />
 
     <label for="password">Password</label>
     <input
@@ -61,7 +68,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <p class="error" role="alert">{error}</p>
     {/if}
 
-    <button type="submit" disabled={submitting}>{submitting ? "Signing in…" : "Sign in"}</button>
+    <button type="submit" disabled={submitting}
+      >{submitting ? "Signing in…" : "Sign in"}</button
+    >
   </form>
 </main>
 

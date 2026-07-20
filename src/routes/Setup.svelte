@@ -69,7 +69,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <p class="hint">Printed to the backend's logs on startup.</p>
 
     <label for="username">Username</label>
-    <input id="username" type="text" autocomplete="username" bind:value={username} required disabled={submitting} />
+    <input
+      id="username"
+      type="text"
+      autocomplete="username"
+      bind:value={username}
+      required
+      disabled={submitting}
+    />
 
     <label for="password">Password</label>
     <input
@@ -95,7 +102,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <p class="error" role="alert">{error}</p>
     {/if}
 
-    <button type="submit" disabled={submitting}>{submitting ? "Creating…" : "Create admin account"}</button>
+    <button type="submit" disabled={submitting}
+      >{submitting ? "Creating…" : "Create admin account"}</button
+    >
   </form>
 </main>
 
