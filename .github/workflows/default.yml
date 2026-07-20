@@ -75,9 +75,9 @@ jobs:
       - uses: dominikh/staticcheck-action@v1
         with:
           install-go: false
-      - run: >-
+      - run: |
           # TODO: remove true https://github.com/WebReflection/flatted/pull/101
-          go-critic check -checkGenerated=false -checkTests=true -enableAll
+          go-critic check -checkGenerated=false -checkTests=true -enableAll \
           ./... || true
       - run: errcheck -ignoregenerated ./...
       - run: pnpm run --filter=@recueil/terraform types

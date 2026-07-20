@@ -36,6 +36,7 @@ function myversion() {
   dockerfile="$(grep $dockerlabel Dockerfile | awk -F= '{print $2}')"
   extpackagejson="$(jq -r .version extension/package.json)"
   extmanifestjson="$(jq -r .version extension/manifest.base.json)"
+  tfpackagejson="$(jq -r .version terraform/package.json)"
 
   if [[ $packagejson != "$cmdroot" ]]; then
     echo >&2 "error: cmd/root.go version mismatch"
@@ -54,6 +55,11 @@ function myversion() {
 
   if [[ $packagejson != "$extmanifestjson" ]]; then
     echo >&2 "error: extension/manifest.base.json version mismatch"
+    exit 1
+  fi
+
+  if [[ $packagejson != "$tfpackagejson" ]]; then
+    echo >&2 "error: terraform/package.json version mismatch"
     exit 1
   fi
 
