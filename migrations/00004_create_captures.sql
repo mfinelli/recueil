@@ -36,6 +36,8 @@ CREATE TABLE captures (
   readability_version TEXT,
   content_hash TEXT NOT NULL,
   reader_text_hash TEXT,
+  ai_summary TEXT,
+  ai_model TEXT,
   language REGCONFIG NOT NULL DEFAULT 'simple',
   captured_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

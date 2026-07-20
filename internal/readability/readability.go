@@ -38,6 +38,14 @@
 // LOCKED claim-and-mark-processing shape are all identical in spirit to
 // internal/screenshot's own -- see its package doc for the fuller
 // reasoning, not repeated here.
+//
+// One responsibility this package has that internal/screenshot doesn't:
+// on success, commitDone also creates the capture's ai_jobs row
+// (internal/ai) in the same transaction. AI enrichment can only run once
+// reader_text exists, and rather than have the AI job poll/filter for
+// that readiness itself, the dependency is expressed the simplest way
+// Postgres already supports it -- a row for that job simply doesn't
+// exist until this one succeeds.
 package readability
 
 import (
@@ -284,6 +292,13 @@ func (r *Runner) commitDone(ctx context.Context, job db.ClaimDueReadabilityJobsR
 	}
 	if err := qtx.MarkReadabilityJobDone(ctx, job.JobID); err != nil {
 		return fmt.Errorf("marking readability job done: %w", err)
+	}
+	// The AI job's whole precondition -- reader_text existing at all --
+	// is exactly what this transaction just established, so this is the
+	// one and only place an ai_jobs row ever gets created: never at
+	// ingest time, since AI enrichment can't run before this succeeds.
+	if err := qtx.CreateAIJob(ctx, job.CaptureID); err != nil {
+		return fmt.Errorf("enqueuing ai job: %w", err)
 	}
 
 	return tx.Commit(ctx)

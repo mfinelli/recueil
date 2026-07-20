@@ -136,6 +136,59 @@ type Config struct {
 	// above.
 	ReadabilityWorkerConcurrency int `mapstructure:"readability_worker_concurrency"`
 	ReadabilityMaxAttempts       int `mapstructure:"readability_max_attempts"`
+
+	// AIBaseURL is the OpenAI-compatible API's base URL -- e.g.
+	// "https://api.openai.com/v1", "http://ollama:11434/v1", or a
+	// llama.cpp server's own address. A single path, not a separate
+	// Ollama/OpenAI backend abstraction: Ollama, llama.cpp's own server,
+	// and effectively every hosted provider besides Anthropic have all
+	// standardized on the same /v1/chat/completions request/response
+	// shape, so one configurable base URL (plus AIAPIKey/AIModel) covers
+	// all of them.
+	//
+	// This is how AI enrichment gets toggled off entirely, rather
+	// than a separate ai_enabled boolean: an empty AIBaseURL means
+	// cmd/agent.go never constructs an *ai.Runner at all, which is
+	// simpler than an explicit flag that could disagree with whether
+	// the rest of the AI config is actually filled in.
+	AIBaseURL string `mapstructure:"ai_base_url"`
+
+	// AIAPIKey is sent as a bearer token. Many local runtimes (Ollama's
+	// own OpenAI-compatible endpoint, in particular) don't validate it
+	// at all, so any non-empty placeholder value works fine against
+	// those.
+	AIAPIKey string `mapstructure:"ai_api_key"`
+
+	// AIModel is the model name sent on every request -- an arbitrary
+	// string, since operators can point this at literally any model a
+	// compatible server exposes, not just OpenAI's own named ones.
+	AIModel string `mapstructure:"ai_model"`
+
+	// AIWorkerConcurrency and AIMaxAttempts are this job's own
+	// counterparts to the screenshot/readability jobs' own pairs.
+	// AIWorkerConcurrency defaults more conservatively than those two:
+	// hosted APIs often rate-limit, and many local single-GPU model
+	// servers can't meaningfully parallelize inference against one
+	// loaded model anyway.
+	AIWorkerConcurrency int `mapstructure:"ai_worker_concurrency"`
+	AIMaxAttempts       int `mapstructure:"ai_max_attempts"`
+
+	// AIRequestTimeoutSeconds bounds a single chat completion call --
+	// much longer than the sidecar jobs' fixed 60s renderTimeout, since
+	// LLM completions (especially against local/smaller models) can
+	// legitimately take several minutes.
+	AIRequestTimeoutSeconds int `mapstructure:"ai_request_timeout_seconds"`
+
+	// AIMaxInputChars bounds how much of a capture's reader_text gets
+	// sent per chat completion call. There's no single right value here
+	// -- raise it for a large-context hosted model (little real risk of
+	// truncating even long-form articles), lower it for a constrained
+	// local setup (Ollama's own *default* request context is often much
+	// smaller than what the underlying model actually supports, unless
+	// explicitly configured otherwise, and exceeding it fails the call
+	// outright rather than just producing a slightly-truncated summary).
+	// Defaults to internal/ai's own defaultMaxInputChars if unset (0).
+	AIMaxInputChars int `mapstructure:"ai_max_input_chars"`
 }
 
 func init() {
@@ -149,6 +202,11 @@ func init() {
 	viper.SetDefault("screenshot_max_attempts", 3)
 	viper.SetDefault("readability_worker_concurrency", 3)
 	viper.SetDefault("readability_max_attempts", 3)
+	// ai_base_url has no default: empty is what disables AI enrichment
+	// entirely.
+	viper.SetDefault("ai_worker_concurrency", 1)
+	viper.SetDefault("ai_max_attempts", 3)
+	viper.SetDefault("ai_request_timeout_seconds", 300)
 }
 
 func Load() (Config, error) {

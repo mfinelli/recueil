@@ -220,10 +220,10 @@ runner) and `users` exist, both `STRICT`; `schema_migrations` is additionally
 `WITHOUT ROWID`. D1's `users` table holds only `id` and `pairing_token_hash`
 (nullable, `SHA-256` of the pairing token) — no `username`, since pairing is
 single-credential (a device submits only the token, never a username), and no
-password-derived value of any kind. Named deliberately _not_ `d1_migrations`
-(wrangler's own convention) — wrangler is absent from this project's toolchain
-entirely; the Worker deploys via Terraform's Cloudflare provider directly, and
-D1 migrations run via a direct backend → Cloudflare API call, never
+password-derived value of any kind. Explicitly _not_ `d1_migrations` (wrangler's
+own convention) — wrangler is absent from this project's toolchain entirely; the
+Worker deploys via Terraform's Cloudflare provider directly, and D1 migrations
+run via a direct backend → Cloudflare API call, never
 `wrangler d1 migrations apply`.
 
 **Migrations, both stores** — embedded into the binary (`main.go` does the
@@ -301,11 +301,11 @@ regenerate, without affecting any bearer tokens a device already obtained.
   `httptest.Server` plus that library's own base-URL override where one exists,
   rather than a hand-rolled interface mock.
 - `internal/httpapi` and `internal/metrics` tests are external `_test` packages
-  deliberately (exercise only exported constructors, same as a real caller
-  would); `internal/auth`'s tests are internal (`package auth`) deliberately,
-  since they need real access to unexported internals (`cookieName`,
-  `userContextKey`, the bootstrap holder's private fields) to prove the mutex
-  and consume-only-on-success logic actually hold.
+  (exercise only exported constructors, same as a real caller would);
+  `internal/auth`'s tests are internal (`package auth`), since they need real
+  access to unexported internals (`cookieName`, `userContextKey`, the bootstrap
+  holder's private fields) to prove the mutex and consume-only-on-success logic
+  actually hold.
 - `internal/httpapi`'s pairing-token tests register a real account through the
   actual HTTP flow (rather than `dbtest.CreateUser`'s placeholder fixture) and
   verify that the token the dashboard decrypts actually hashes to what was
@@ -342,11 +342,11 @@ regenerate, without affecting any bearer tokens a device already obtained.
   proposition to apply. Revisit once the screenshot service and AI enrichment
   (§6, §7) form a genuine async multi-stage pipeline — that's the shape where
   it'll actually pay off.
-- **`RealIP` and `pprof` middleware were both considered and deliberately not
-  added.** `RealIP` is a spoofing risk without a trusted reverse proxy in front,
-  and this project treats network exposure as entirely the operator's choice.
-  `pprof` leaks sensitive runtime info and needs its own deliberate gating
-  decision, not a default mount alongside health checks.
+- **`RealIP` and `pprof` middleware were both considered and not added.**
+  `RealIP` is a spoofing risk without a trusted reverse proxy in front, and this
+  project treats network exposure as entirely the operator's choice. `pprof`
+  leaks sensitive runtime info and needs its own gating decision, not a default
+  mount alongside health checks.
 - **A new capture pathway — manual upload — is designed but not yet
   implemented** (design doc §3d): dashboard-direct upload of an already-captured
   SingleFile HTML file, bypassing R2/D1/Worker entirely. Needs its own, much
@@ -414,7 +414,7 @@ A failed claim (`POST /queue/:id/claim` matching zero rows) distinguishes three
 cases rather than a uniform `409`, decided during this phase:
 
 - **`404`** — wrong id, or the item belongs to a different user (collapsed
-  together deliberately, so a claim attempt never leaks cross-user existence).
+  together so that a claim attempt never leaks cross-user existence).
 - **`410`** — the item is `captured` or `failed`: a terminal state, permanently
   no longer claimable. More precise than a bare 404 for "this happened, and it's
   over."
@@ -513,13 +513,12 @@ the same convention as they're implemented").
   endpoint), but requiring `user_id` to match the token's actual owner means a
   backend-side bug that passes the wrong id/user_id pair deletes nothing rather
   than someone else's device.
-- **`complete`/`fail` are deliberately not built yet.** The brief for this phase
-  was device auth + queue read/write; the endpoints that would actually
-  transition a claimed item to `captured`/`failed` and write a
-  `pending_captures` row are entangled with the capture-upload pipeline's shape
-  (presigned R2 URLs, the upload-complete notification) rather than the
-  queue/auth mechanics this phase covered — deferred to the phase that builds
-  that pipeline.
+- **`complete`/`fail` are not built yet.** The brief for this phase was device
+  auth + queue read/write; the endpoints that would actually transition a
+  claimed item to `captured`/`failed` and write a `pending_captures` row are
+  entangled with the capture-upload pipeline's shape (presigned R2 URLs, the
+  upload-complete notification) rather than the queue/auth mechanics this phase
+  covered — deferred to the phase that builds that pipeline.
 - **What to do with `failed` queue items long-term is unresolved.** The cleanup
   endpoint only ever sweeps `captured` rows; `failed` rows accumulate
   indefinitely until some future decision (surface to the user? retry? a
@@ -587,8 +586,8 @@ entry, not the only one:
   (`//go:embed clearurls-rules/data.min.json`), not threaded through
   `main.go`/`cmd` the way the Postgres/D1 migration directories are, since
   nothing outside this package ever needs it. `completeProvider` and
-  `forceRedirection` are deliberately not ported at all — see DESIGN.md §9 for
-  why neither applies to normalizing an already-known URL string.
+  `forceRedirection` are not ported at all — see DESIGN.md §9 for why neither
+  applies to normalizing an already-known URL string.
 - `Canonicalize` — host/scheme lowercasing, default-port stripping (including
   correct IPv6 bracket handling), fragment dropping, query-param sorting,
   trailing-slash stripping.
@@ -614,8 +613,8 @@ overwriting with identical bytes is a harmless no-op.
 
 - `WorkerClient` — the two service-secret-gated polling endpoints above.
 - `Ingester.RunOnce(ctx) error` — processes one bounded batch. **No scheduler
-  wired up yet** — deliberately deferred (see Open items below); this is a fully
-  callable, tested unit with nothing calling it in production yet.
+  wired up yet** — deferred (see Open items below); this is a fully callable,
+  tested unit with nothing calling it in production yet.
 - Per-capture flow: pull from R2 → hash → zstd-compress to local disk → detect
   language → normalize URL (via `internal/urlnorm`) → one Postgres transaction
   (upsert page, insert capture, enqueue `screenshot_jobs`/ `readability_jobs`
@@ -701,11 +700,11 @@ deliberately rather than by default.
 
 **Explicitly deferred — will resolve or revisit in a later phase:**
 
-- **`docker-compose.yml` still doesn't exist** for any service. Deliberately not
-  built yet: local development currently uses a personal `compose.yaml` and the
-  binary run directly, and the real, end-user-facing compose file will get built
-  alongside end-user documentation, so the two stay consistent with each other
-  rather than needing to be reconciled later.
+- **`docker-compose.yml` still doesn't exist** for any service. Not built yet:
+  local development currently uses a personal `compose.yaml` and the binary run
+  directly, and the real, end-user-facing compose file will get built alongside
+  end-user documentation, so the two stay consistent with each other rather than
+  needing to be reconciled later.
 - **`failed` queue items' long-term retention** — unresolved since Phase 2; the
   cleanup endpoint only ever sweeps `captured` rows. Still open, not forgotten.
 - **Fragment-aware URL canonicalization for known SPAs** —
@@ -946,7 +945,7 @@ Concretely, what's built in `extension/`:
   see `extension/README.md`).
 - **Auth** (`background/auth.js`): pairing against `POST /pair`'s real contract,
   `storage.local` (never `storage.sync`) for the device token, `getAuthState()`
-  deliberately never returning the token itself to a caller.
+  never returns the token itself to a caller.
 - **Capture** (`background/capture.js`, `capture-inject/`): the two-step
   injection pattern, `single-file-core` wired with the direct-fetch-first relay
   (`relay-fetch.js`, see DESIGN.md §3h), embedded-iframe inlining
@@ -1029,11 +1028,11 @@ CSS/JS wiring pass.
 ### Still ahead
 
 Safari packaging, whenever that becomes a priority — mechanical (Xcode-wrapped,
-same source), not attempted yet, and deliberately not a priority right now.
-Moving settings (bookmark sync's toggle, so far the only one) into a dedicated
-extension options page was considered and explicitly decided against for now,
-after actually using the popup during testing — everything stays in the popup
-unless/until there are enough settings that it stops making sense there.
+same source), not attempted yet, and not a priority right now. Moving settings
+(bookmark sync's toggle, so far the only one) into a dedicated extension options
+page was considered and explicitly decided against for now, after actually using
+the popup during testing — everything stays in the popup unless/until there are
+enough settings that it stops making sense there.
 
 With those two exceptions, every piece from the original five-step plan
 (pairing, capture, upload, queue-driven capture, bookmark sync) is built and
@@ -1101,9 +1100,9 @@ design writeup; concretely, what got built:
 - **One new Worker endpoint**, unlike queue-driven capture's zero:
   `GET /archived-pages` (`terraform/index.js`'s `handleListArchivedPages`),
   device-bearer-token authed, a plain full-list read of the caller's own
-  `archived_pages` rows — no pagination, no `since` parameter, deliberately
-  simpler than the backend's own Postgres → D1 sync, which needs that complexity
-  at a scale a single browser's bookmark tree never will.
+  `archived_pages` rows — no pagination, no `since` parameter, simpler than the
+  backend's own Postgres → D1 sync, which needs that complexity at a scale a
+  single browser's bookmark tree never will.
 - **`background/bookmarks.js`**: `syncBookmarks()` (the full-list diff --
   create/adopt/update/remove), `ensureFolder()` (create-or-adopt exactly one
   "recueil" folder, never a duplicate — see DESIGN.md §3j for the probe-bookmark
@@ -1407,3 +1406,97 @@ HTML is intentionally more than a one-liner — Readability's own heuristics jud
 very short pages "not extractable" and return `null`, which would make every
 test fail at the extraction step itself rather than testing anything this
 package's own logic is responsible for.
+
+## Phase 7 continued: the AI job, and the tagging schema
+
+Two decisions made before writing code, both implemented as decided:
+
+1. **A single OpenAI-compatible backend**, not separate Ollama/OpenAI code paths
+   — Ollama, llama.cpp's own server, and effectively every hosted provider
+   besides Anthropic all speak the same `/v1/chat/completions` shape.
+   `BaseURL`/`APIKey`/`Model` config covers all of them.
+2. **`tags`/`page_tags` built now**, not deferred to the dashboard work they
+   were originally meant to arrive with — they existed only as prose in
+   DESIGN.md §10 before this, never an actual migration. Building them now
+   avoids retrofitting the AI job around a schema change later.
+
+### What exists now
+
+- **`migrations/00007_create_tags.sql`**: `tags` (unique per `(user_id, name)`)
+  and `page_tags` (`(page_id, tag_id)` primary key, `source` distinguishing
+  `'manual'`/`'ai'`).
+- **`migrations/00008_create_ai_jobs.sql`**: `captures.ai_summary`/
+  `captures.ai_model` (both nullable, mirroring `reader_text`'s own precedent
+  now that TOAST makes the original "keep this decoupled for storage reasons"
+  concern moot — no `ai_summary_hash`, since this data never touches disk and
+  LLM output isn't deterministic enough for a hash to answer anything useful);
+  `ai_jobs` itself, with `'processing'`/ `claimed_at` from day one.
+- **`queries/tags.sql`**: `UpsertTag` — get-or-create by `(user_id, name)`,
+  using the `ON CONFLICT ... DO UPDATE SET name = EXCLUDED.name RETURNING *`
+  idiom rather than `DO NOTHING`, since the latter returns zero rows on the
+  conflict path instead of the existing row.
+- **`queries/page_tags.sql`**: `AddPageTag`
+  (`ON CONFLICT (page_id, tag_id) DO NOTHING` — an AI tag colliding with an
+  existing manual one, or vice versa, is a no-op, never an error),
+  `ListPageTags`.
+- **`queries/ai_jobs.sql`**: `CreateAIJob`, `GetAIJobByCaptureID`,
+  `ClaimDueAIJobs` (no readiness join needed — a row's mere existence already
+  implies `reader_text` is set, joins `pages` too since tags need
+  `page_id`/`user_id`, not just `capture_id`), `SetCaptureAI`, `MarkAIJobDone`,
+  `RetryAIJob`, `FailAIJob`.
+- **`internal/readability`**: `commitDone` now also calls `CreateAIJob` in the
+  same transaction as marking itself done — the one and only place an `ai_jobs`
+  row ever gets created, expressing the readability→AI dependency as "when does
+  the row get created" rather than a claim-time join.
+- **`internal/ai`** (new package): `Runner` — same `RunOnce`/`processOne`/
+  `commitDone`/`handleFailure`/`backoff` shape as `internal/screenshot`/
+  `internal/readability`, but never touches `internal/sidecar` at all (a plain
+  HTTP client, no browser). Uses the official `openai-go` SDK
+  (`option.WithBaseURL` supports pointing it at any compatible server cleanly;
+  matches this backend's existing precedent of official SDKs — `aws-sdk-go-v2`
+  for R2 — over the Worker/JS side's deliberate zero-dependency approach). Two
+  separate chat completion calls per capture (summarize, then generate tags)
+  rather than one combined prompt — simpler prompts, no dependency on a model
+  reliably producing one specific combined structure; a failure in either
+  discards an already-successful result from the same attempt rather than
+  partially committing (accepted, low-stakes waste, not an oversight — see the
+  package's own `processOne` doc). Tag parsing is a lenient comma-separated-list
+  split, not JSON or any structured-output feature, since support for those
+  varies significantly across compatible servers. `reader_text` is truncated to
+  `ai_max_input_chars` per call (default 24,000, ~6k tokens by the common
+  ~4-chars-per-token rule of thumb -- raised from an initial, too-conservative
+  12,000 after review, and made configurable rather than staying a single fixed
+  number, since the right value genuinely differs between a large-context hosted
+  model and a constrained local one).
+- **`internal/config`**: `ai_base_url`/`ai_api_key`/`ai_model`/
+  `ai_worker_concurrency` (default 2, more conservative than
+  screenshot/readability's default 3 — hosted APIs often rate-limit, and many
+  local single-GPU model servers can't meaningfully parallelize inference
+  against one loaded model anyway)/`ai_max_attempts`/
+  `ai_request_timeout_seconds` (default 300 — much longer than the sidecar jobs'
+  fixed 60s, per the tolerance for slow local-model completions). No
+  `ai_enabled` boolean: an empty `ai_base_url` is what disables AI enrichment
+  entirely.
+- **`cmd/agent.go`**: constructs `*ai.Runner` only if `cfg.AIBaseURL != ""`;
+  `runLocalCycle` takes it as a possibly-nil parameter and simply skips it
+  otherwise.
+
+### Testing
+
+`internal/ai`'s tests run against real Postgres, but a **fake**
+OpenAI-compatible HTTP server (`net/http/httptest`), not a real LLM — a
+departure from `internal/screenshot`/`internal/readability`'s "no mocks, real
+backing service" convention. Reasoning: a real local model would make these
+tests slow, heavy (an actual model download/load), and non-deterministic enough
+that they could only ever assert "got some non-empty text back" — far weaker
+than what's actually worth testing here. What this package owns and could have
+bugs in is request/response handling, retry bookkeeping, and tag parsing, all of
+which a fake server exercises precisely without depending on any model's actual
+output quality. The fake server distinguishes the summarize vs. tag-generation
+call by checking which system prompt came through, and simulates a failure
+deterministically via a sentinel string in the user content rather than needing
+a second server or base URL. Coverage: a full enrichment (summary + tags + job
+done), a tag colliding with a pre-existing manual one being a silent no-op,
+stale-job reclaim, one failure not blocking the batch, permanent failure after
+max attempts, and a no-op with nothing due — plus pure unit tests for `backoff`
+and `parseTags`.

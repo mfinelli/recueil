@@ -32,6 +32,7 @@ import (
 
 	"github.com/go-chi/httplog/v2"
 
+	"github.com/mfinelli/recueil/internal/ai"
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/db"
@@ -179,6 +180,29 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("creating readability runner: %w", err)
 	}
 
+	// Unlike screenshotRunner/readabilityRunner, aiRunner may be nil:
+	// an empty AIBaseURL is how AI enrichment is toggled off entirely,
+	// and runLocalCycle below checks for that explicitly rather than
+	// constructing a Runner pointed at nothing.
+	var aiRunner *ai.Runner
+	if cfg.AIBaseURL != "" {
+		aiRunner, err = ai.New(&ai.Params{
+			Pool:           pool,
+			Queries:        queries,
+			BaseURL:        cfg.AIBaseURL,
+			APIKey:         cfg.AIAPIKey,
+			Model:          cfg.AIModel,
+			Concurrency:    cfg.AIWorkerConcurrency,
+			MaxAttempts:    cfg.AIMaxAttempts,
+			RequestTimeout: time.Duration(cfg.AIRequestTimeoutSeconds) * time.Second,
+			MaxInputChars:  cfg.AIMaxInputChars,
+			Logger:         logger.Logger,
+		})
+		if err != nil {
+			return fmt.Errorf("creating ai runner: %w", err)
+		}
+	}
+
 	workerInterval := time.Duration(cfg.AgentWorkerPollIntervalSeconds) * time.Second
 	localInterval := time.Duration(cfg.AgentLocalPollIntervalSeconds) * time.Second
 	log.Printf("recueil agent started, worker poll interval: %s, local poll interval: %s",
@@ -188,7 +212,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// for their first tick -- otherwise a freshly-deployed agent sits
 	// idle for a full interval before doing anything.
 	runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
-	runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, logger.Logger)
+	runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 
 	workerTicker := time.NewTicker(workerInterval)
 	defer workerTicker.Stop()
@@ -212,7 +236,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			// since each is just another case in the same select.
 			runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
 		case <-localTicker.C:
-			runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, logger.Logger)
+			runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 		case <-cmd.Context().Done():
 			log.Println("shutting down...")
 			return nil
@@ -241,12 +265,19 @@ func runWorkerCycle(ctx context.Context, ingester *ingest.Ingester, syncer *mirr
 // Postgres instance -- the screenshot job, the readability job, and the
 // AI enrichment job -- all on the same faster schedule
 // (AgentLocalPollIntervalSeconds), since none of them have any
-// Worker/free-tier request budget to respect.
-func runLocalCycle(ctx context.Context, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, logger *slog.Logger) {
+// Worker/free-tier request budget to respect. aiRunner may be nil (AI
+// enrichment disabled entirely, via an empty AIBaseURL), in which case
+// this cycle simply skips it -- not an error, just nothing to run.
+func runLocalCycle(ctx context.Context, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, logger *slog.Logger) {
 	if err := screenshotRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: screenshot cycle failed", "error", err)
 	}
 	if err := readabilityRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: readability cycle failed", "error", err)
+	}
+	if aiRunner != nil {
+		if err := aiRunner.RunOnce(ctx); err != nil {
+			logger.ErrorContext(ctx, "agent: ai enrichment cycle failed", "error", err)
+		}
 	}
 }

@@ -77,6 +77,13 @@ func init() {
 		"sidecar_render_host",
 		"readability_worker_concurrency",
 		"readability_max_attempts",
+		"ai_base_url",
+		"ai_api_key",
+		"ai_model",
+		"ai_worker_concurrency",
+		"ai_max_attempts",
+		"ai_request_timeout_seconds",
+		"ai_max_input_chars",
 		"screenshot_worker_concurrency",
 		"screenshot_max_attempts",
 	)
