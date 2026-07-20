@@ -40,11 +40,10 @@ services:
   # kept here even though a fully-dockerized deployment (agent running as a
   # container on this same compose network) never needs it: in local dev and
   # testing we run the binary directly on the host machine, not in docker, so
-  # it has to be reachable from outside the compose network too.
-  #
-  # TODO: The operator-facing compose documentation should show this service
-  # *without* the published port for that reason: an all-in-docker deployment
-  # should keep this off the host entirely.
+  # it has to be reachable from outside the compose network too. See the
+  # README's "production" section for the operator-facing compose example,
+  # which drops the published port and extra_hosts entry for exactly that
+  # reason.
   #
   # extra_hosts' host-gateway alias is what lets *this* container
   # connect back out to the agent process listening on the host itself
