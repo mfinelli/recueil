@@ -448,7 +448,7 @@ func parseLimitOffset(r *http.Request) (limit, offset int32) {
 		}
 	}
 	if v := r.URL.Query().Get("offset"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+		if n, err := strconv.ParseInt(v, 10, 32); err == nil && n >= 0 {
 			offset = int32(n)
 		}
 	}
