@@ -63,20 +63,83 @@ type Config struct {
 	R2AccessKeyID     string `mapstructure:"r2_access_key_id"`
 	R2AccessKeySecret string `mapstructure:"r2_access_key_secret"`
 
-	// AgentPollIntervalSeconds is how often `recueil agent` runs one
-	// ingestion + mirror-sync cycle. A plain int (seconds), not a
-	// time.Duration string like "2m": viper/mapstructure's default
-	// Unmarshal may or may not include the string-to-duration decode
-	// hook depending on version, and this project has no way to verify
-	// that locally -- an int sidesteps the question entirely rather than
-	// depending on unverified behavior.
-	AgentPollIntervalSeconds int `mapstructure:"agent_poll_interval_seconds"`
+	// AgentWorkerPollIntervalSeconds and AgentLocalPollIntervalSeconds are
+	// both plain ints (seconds), not time.Duration strings like "2m".
+	//
+	// AgentWorkerPollIntervalSeconds is how often `recueil agent` polls
+	// the Cloudflare Worker: pulling pending captures (ingestion) and
+	// pushing the D1 bookmark-list mirror sync. A separate,
+	// longer-by-default schedule from AgentLocalPollIntervalSeconds --
+	// the Worker is meant to run comfortably within Cloudflare's free
+	// tier, and polling it as often as the purely-local Postgres jobs
+	// below would burn through that budget for no real benefit (a
+	// pending capture or bookmark change sitting an extra few minutes
+	// before being picked up is a non-issue; the free tier's request
+	// budget is the actual constraint worth respecting).
+	AgentWorkerPollIntervalSeconds int `mapstructure:"agent_worker_poll_interval_seconds"`
+
+	// AgentLocalPollIntervalSeconds is how often `recueil agent` runs the
+	// jobs that only ever touch its own Postgres instance: the screenshot
+	// job, the readability job, and the AI enrichment job. No
+	// Worker/free-tier request budget applies to any of these, so this
+	// can run much more often than AgentWorkerPollIntervalSeconds without
+	// cost, which is the whole reason these are two separate schedules
+	// rather than one shared one: a freshly-ingested capture shouldn't
+	// have to wait for the (deliberately slow) Worker-facing interval
+	// just because it happens to share a ticker with it.
+	AgentLocalPollIntervalSeconds int `mapstructure:"agent_local_poll_interval_seconds"`
+
+	// ScreenshotSidecarURL is where the agent connects to drive the
+	// shared headless-Chrome sidecar via chromedp's RemoteAllocator -- an
+	// http(s) base URL, not a raw ws:// one: chromedp's own detectURL
+	// fetches /json/version itself and swaps in the real
+	// webSocketDebuggerUrl, so this package never has to. Two real
+	// deployments need two different values here, which is exactly
+	// why this is operator config rather than a hardcoded constant:
+	// "http://chromedp:9222" when both the agent and the sidecar run
+	// inside the same compose network, or "http://127.0.0.1:9222" when
+	// the agent binary runs directly on the operator's own machine
+	// against the sidecar's published host port (compose.yaml's
+	// documented local-dev shape -- see its own comment on why the
+	// published port stays even though the all-in-docker deployment
+	// doesn't need it).
+	ScreenshotSidecarURL string `mapstructure:"screenshot_sidecar_url"`
+
+	// ScreenshotRenderHost is the hostname the sidecar container should
+	// use to reach *back* into the agent's own ephemeral per-job HTML
+	// render server (internal/screenshot) -- separate from
+	// ScreenshotSidecarURL, which is the opposite direction (agent ->
+	// sidecar). The render server always binds every interface
+	// (0.0.0.0) internally; this is only what hostname gets embedded in
+	// the URL handed to the sidecar for it to fetch that HTML back.
+	// "chromedp"'s own compose service name works when both run in the
+	// same compose network; "host.docker.internal" (see compose.yaml's
+	// extra_hosts) is what a sidecar-in-docker/agent-on-host local-dev
+	// setup needs instead, since the agent process in that shape isn't
+	// reachable at any compose service name at all.
+	ScreenshotRenderHost string `mapstructure:"screenshot_render_host"`
+
+	// ScreenshotWorkerConcurrency bounds how many tabs the screenshot
+	// runner opens at once against the shared sidecar ("a small worker
+	// pool (e.g. 2-3 concurrent tabs), appropriate for modest
+	// self-hosted hardware").
+	ScreenshotWorkerConcurrency int `mapstructure:"screenshot_worker_concurrency"`
+
+	// ScreenshotMaxAttempts bounds the retry/backoff loop: once a
+	// screenshot_jobs row has failed this many times, it's marked
+	// 'failed' permanently rather than retried again.
+	ScreenshotMaxAttempts int `mapstructure:"screenshot_max_attempts"`
 }
 
 func init() {
 	viper.SetDefault("listen_addr", ":8080")
 	viper.SetDefault("session_cookie_secure", true)
-	viper.SetDefault("agent_poll_interval_seconds", 120)
+	viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
+	viper.SetDefault("agent_local_poll_interval_seconds", 300)
+	viper.SetDefault("screenshot_sidecar_url", "http://127.0.0.1:9222")
+	viper.SetDefault("screenshot_render_host", "127.0.0.1")
+	viper.SetDefault("screenshot_worker_concurrency", 3)
+	viper.SetDefault("screenshot_max_attempts", 3)
 }
 
 func Load() (Config, error) {

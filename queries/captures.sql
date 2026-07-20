@@ -33,8 +33,9 @@
 INSERT INTO captures (
   page_id, source_capture_id, source, raw_url, title,
   html_path, html_compressed_size_bytes, html_uncompressed_size_bytes,
-  content_hash, captured_at, language, favicon_path
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+  content_hash, captured_at, language, favicon_path, favicon_size_bytes,
+  favicon_hash
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 ON CONFLICT (source_capture_id) DO UPDATE SET
 source_capture_id = EXCLUDED.source_capture_id, updated_at = NOW()
 RETURNING *, (xmax = 0) AS inserted;

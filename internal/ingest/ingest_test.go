@@ -21,8 +21,11 @@ package ingest_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -251,7 +254,8 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 		},
 	}
 
-	store := archive.New(t.TempDir())
+	root := t.TempDir()
+	store := archive.New(root)
 	ing := ingest.New(ingest.Params{
 		Pool:     pool,
 		Queries:  queries,
@@ -266,13 +270,15 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 	var (
 		htmlPath           string
 		captureFaviconPath pgtype.Text
+		faviconSizeBytes   pgtype.Int4
+		faviconHash        pgtype.Text
 		pageFaviconPath    pgtype.Text
 	)
 	err := pool.QueryRow(ctx, `
-		SELECT c.html_path, c.favicon_path, p.favicon_path
+		SELECT c.html_path, c.favicon_path, c.favicon_size_bytes, c.favicon_hash, p.favicon_path
 		FROM captures c JOIN pages p ON p.id = c.page_id
 		WHERE c.raw_url = $1`, "https://example.com/has-favicon").Scan(
-		&htmlPath, &captureFaviconPath, &pageFaviconPath)
+		&htmlPath, &captureFaviconPath, &faviconSizeBytes, &faviconHash, &pageFaviconPath)
 	require.NoError(t, err)
 
 	require.True(t, captureFaviconPath.Valid)
@@ -292,6 +298,23 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 	roundTripped, err := io.ReadAll(reader)
 	require.NoError(t, err)
 	assert.Equal(t, favicon, roundTripped)
+
+	// favicon_size_bytes should reflect the actual on-disk (compressed,
+	// since svg gets zstd'd) size, not len(favicon) -- see
+	// archive.WriteAsset's own doc for why those two can differ.
+	require.True(t, faviconSizeBytes.Valid)
+	info, err := os.Stat(filepath.Join(root, captureFaviconPath.String))
+	require.NoError(t, err)
+	assert.Equal(t, info.Size(), int64(faviconSizeBytes.Int32))
+
+	// favicon_hash is recorded as its own column (migration 00009), not
+	// only ever implicit in the filename -- confirm it's both a real
+	// sha256 of the original bytes and consistent with the filename
+	// archive.WriteAsset actually chose.
+	require.True(t, faviconHash.Valid)
+	wantHash := sha256.Sum256(favicon)
+	assert.Equal(t, hex.EncodeToString(wantHash[:]), faviconHash.String)
+	assert.Contains(t, captureFaviconPath.String, faviconHash.String)
 
 	// Cleaned up from R2 alongside the HTML object, same crash-recovery
 	// ordering (disk write and Postgres commit both already durable by

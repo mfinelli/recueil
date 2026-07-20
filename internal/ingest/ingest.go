@@ -258,8 +258,10 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 	// capture -- an unreachable or malformed favicon object is a cosmetic
 	// loss, not a reason to lose an otherwise-good HTML capture.
 	var faviconPath string
+	var faviconSizeBytes int32
+	var faviconHash string
 	if pc.R2KeyFavicon != nil && *pc.R2KeyFavicon != "" {
-		faviconPath = ing.captureFavicon(ctx, pc, contentHash)
+		faviconPath, faviconSizeBytes, faviconHash = ing.captureFavicon(ctx, pc, contentHash)
 	}
 
 	captureID, inserted, err := ing.writeToPostgres(ctx, pc, &writeInput{
@@ -272,6 +274,8 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 		capturedAt:            capturedAt,
 		language:              language,
 		faviconPath:           faviconPath,
+		faviconSizeBytes:      faviconSizeBytes,
+		faviconHash:           faviconHash,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("writing to postgres: %w", err)
@@ -287,25 +291,28 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 // captureFavicon pulls the favicon object from R2 (if the extension
 // actually uploaded one), stores it alongside the HTML in the same capture
 // directory (see internal/archive's package doc for why it's keyed by its
-// own content hash, not htmlHash), and returns the resulting relative path
-// -- or "" if anything goes wrong, having already logged why. Never
+// own content hash, not htmlHash), and returns the resulting relative path,
+// its on-disk size, and its own content hash (the same hash already used
+// as its filename -- see migration 00009's own doc for why it's also
+// stored as a column rather than only ever implicit in the path) -- or
+// ("", 0, "") if anything goes wrong, having already logged why. Never
 // returns an error: a favicon is cosmetic, and a broken/unreachable one is
 // not a reason to fail an otherwise-good capture.
-func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htmlHash string) string {
+func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htmlHash string) (faviconPath string, writtenSize int32, faviconHash string) {
 	key := *pc.R2KeyFavicon
 
 	body, err := ing.r2.Get(ctx, key)
 	if err != nil {
 		ing.logger.WarnContext(ctx, "ingest: failed to pull favicon from R2, continuing without one",
 			"capture_id", pc.ID, "r2_key_favicon", key, "error", err)
-		return ""
+		return "", 0, ""
 	}
 	data, err := io.ReadAll(body)
 	_ = body.Close()
 	if err != nil {
 		ing.logger.WarnContext(ctx, "ingest: failed to read favicon blob, continuing without one",
 			"capture_id", pc.ID, "r2_key_favicon", key, "error", err)
-		return ""
+		return "", 0, ""
 	}
 
 	// The favicon's extension is carried in the R2 key itself
@@ -316,25 +323,35 @@ func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htm
 	if ext == "" {
 		ing.logger.WarnContext(ctx, "ingest: favicon r2 key has no extension, continuing without one",
 			"capture_id", pc.ID, "r2_key_favicon", key)
-		return ""
+		return "", 0, ""
 	}
 
 	sum := sha256.Sum256(data)
-	faviconHash := hex.EncodeToString(sum[:])
+	faviconHash = hex.EncodeToString(sum[:])
 
 	// Only SVG (text-based) gets zstd'd -- see internal/archive's
 	// WriteAsset doc for why already-compressed binary formats (png, ico)
 	// aren't worth it.
 	compress := ext == "svg"
 
-	faviconPath, err := ing.store.WriteAsset(htmlHash, faviconHash, ext, data, compress)
+	faviconPath, writtenSizeRaw, err := ing.store.WriteAsset(htmlHash, faviconHash, ext, data, compress)
 	if err != nil {
 		ing.logger.WarnContext(ctx, "ingest: failed to write favicon to local archive, continuing without one",
 			"capture_id", pc.ID, "error", err)
-		return ""
+		return "", 0, ""
+	}
+	if writtenSizeRaw > math.MaxInt32 {
+		// A multi-gigabyte favicon is absurd on its face -- treat it the
+		// same as any other favicon failure (cosmetic loss, not worth
+		// failing the capture over) rather than overflowing the int32
+		// column or silently truncating a bogus value into it.
+		ing.logger.WarnContext(ctx, "ingest: favicon size exceeds int32 range, continuing without one",
+			"capture_id", pc.ID, "written_size", writtenSize)
+		return "", 0, ""
 	}
 
-	return faviconPath
+	writtenSize = int32(writtenSizeRaw)
+	return faviconPath, writtenSize, faviconHash
 }
 
 type writeInput struct {
@@ -347,6 +364,8 @@ type writeInput struct {
 	capturedAt            time.Time
 	language              string
 	faviconPath           string
+	faviconSizeBytes      int32
+	faviconHash           string
 }
 
 // writeToPostgres performs the page upsert, idempotent capture insert, and
@@ -387,6 +406,8 @@ func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in
 		CapturedAt:                pgtype.Timestamptz{Time: in.capturedAt, Valid: true},
 		Language:                  in.language,
 		FaviconPath:               textOrNull(in.faviconPath),
+		FaviconSizeBytes:          int32OrNull(in.faviconSizeBytes, in.faviconPath != ""),
+		FaviconHash:               textOrNull(in.faviconHash),
 	}
 	capture, err := ing.insertCaptureWithCollisionHandling(ctx, qtx, &captureParams)
 	if err != nil {
@@ -501,4 +522,13 @@ func parseD1Timestamp(s string) (time.Time, error) {
 
 func textOrNull(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: s != ""}
+}
+
+// int32OrNull wraps an int32 size value as valid only when present has
+// been established independently (faviconPath != "") rather than
+// inferring presence from the value itself -- a genuinely zero-byte
+// favicon (valid, if unusual) shouldn't be indistinguishable from "no
+// favicon at all" the way testing v == 0 alone would make it.
+func int32OrNull(v int32, present bool) pgtype.Int4 {
+	return pgtype.Int4{Int32: v, Valid: present}
 }

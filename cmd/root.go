@@ -71,7 +71,12 @@ func init() {
 		"r2_bucket_name",
 		"r2_access_key_id",
 		"r2_access_key_secret",
-		"agent_poll_interval_seconds",
+		"agent_worker_poll_interval_seconds",
+		"agent_local_poll_interval_seconds",
+		"screenshot_sidecar_url",
+		"screenshot_render_host",
+		"screenshot_worker_concurrency",
+		"screenshot_max_attempts",
 	)
 }
 

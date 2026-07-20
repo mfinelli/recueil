@@ -24,11 +24,13 @@ CREATE TABLE screenshot_jobs (
   next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
   CONSTRAINT screenshot_jobs_pkey PRIMARY KEY (id),
   CONSTRAINT screenshot_jobs_capture_id_fkey FOREIGN KEY (capture_id)
     REFERENCES captures(id) ON DELETE CASCADE,
-  CONSTRAINT screenshot_jobs_status_check CHECK (status IN ('pending', 'done', 'failed'))
+  CONSTRAINT screenshot_jobs_status_check
+    CHECK (status IN ('pending', 'processing', 'done', 'failed'))
 );
 
 CREATE INDEX idx_screenshot_jobs_capture_id ON screenshot_jobs(capture_id);

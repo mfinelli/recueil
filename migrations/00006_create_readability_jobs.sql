@@ -26,11 +26,13 @@ CREATE TABLE readability_jobs (
   next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
   CONSTRAINT readability_jobs_pkey PRIMARY KEY (id),
   CONSTRAINT readability_jobs_capture_id_fkey FOREIGN KEY (capture_id)
     REFERENCES captures(id) ON DELETE CASCADE,
-  CONSTRAINT readability_jobs_status_check CHECK (status IN ('pending', 'done', 'failed'))
+  CONSTRAINT readability_jobs_status_check
+    CHECK (status IN ('pending', 'processing', 'done', 'failed'))
 );
 
 CREATE INDEX idx_readability_jobs_capture_id ON readability_jobs(capture_id);

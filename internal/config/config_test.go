@@ -77,7 +77,12 @@ func TestLoad(t *testing.T) {
 			check: func(t *testing.T, cfg Config) {
 				assert.Equal(t, ":8080", cfg.ListenAddr)
 				assert.True(t, cfg.SessionCookieSecure)
-				assert.Equal(t, 120, cfg.AgentPollIntervalSeconds)
+				assert.Equal(t, 300, cfg.AgentWorkerPollIntervalSeconds)
+				assert.Equal(t, 30, cfg.AgentLocalPollIntervalSeconds)
+				assert.Equal(t, "http://127.0.0.1:9222", cfg.ScreenshotSidecarURL)
+				assert.Equal(t, "127.0.0.1", cfg.ScreenshotRenderHost)
+				assert.Equal(t, 3, cfg.ScreenshotWorkerConcurrency)
+				assert.Equal(t, 3, cfg.ScreenshotMaxAttempts)
 			},
 		},
 		{
@@ -86,12 +91,14 @@ func TestLoad(t *testing.T) {
 				allRequiredSet()
 				viper.Set("listen_addr", ":9090")
 				viper.Set("session_cookie_secure", false)
-				viper.Set("agent_poll_interval_seconds", 30)
+				viper.Set("agent_worker_poll_interval_seconds", 600)
+				viper.Set("agent_local_poll_interval_seconds", 10)
 			},
 			check: func(t *testing.T, cfg Config) {
 				assert.Equal(t, ":9090", cfg.ListenAddr)
 				assert.False(t, cfg.SessionCookieSecure)
-				assert.Equal(t, 30, cfg.AgentPollIntervalSeconds)
+				assert.Equal(t, 600, cfg.AgentWorkerPollIntervalSeconds)
+				assert.Equal(t, 10, cfg.AgentLocalPollIntervalSeconds)
 			},
 		},
 		{
@@ -147,7 +154,12 @@ func TestLoad(t *testing.T) {
 			viper.Reset()
 			viper.SetDefault("listen_addr", ":8080")
 			viper.SetDefault("session_cookie_secure", true)
-			viper.SetDefault("agent_poll_interval_seconds", 120)
+			viper.SetDefault("agent_worker_poll_interval_seconds", 300)
+			viper.SetDefault("agent_local_poll_interval_seconds", 30)
+			viper.SetDefault("screenshot_sidecar_url", "http://127.0.0.1:9222")
+			viper.SetDefault("screenshot_render_host", "127.0.0.1")
+			viper.SetDefault("screenshot_worker_concurrency", 3)
+			viper.SetDefault("screenshot_max_attempts", 3)
 			tt.setup()
 
 			cfg, err := Load()
