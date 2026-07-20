@@ -45,6 +45,7 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/dbtest"
 	"github.com/mfinelli/recueil/internal/screenshot"
+	"github.com/mfinelli/recueil/internal/sidecar"
 )
 
 // testSidecarURL matches compose.yaml's published chromedp port, the
@@ -56,7 +57,7 @@ const testSidecarURL = "http://127.0.0.1:9222"
 // process directly on the host (per compose.yaml's own documented local-dev
 // shape), while chromedp runs in its own container -- so the sidecar reaching
 // back into this process's ephemeral render server needs the same
-// host.docker.internal path config's screenshot_render_host doc describes for
+// host.docker.internal path config's sidecar_render_host doc describes for
 // exactly this split, not the "agent and sidecar share a network namespace"
 // case "127.0.0.1" would actually be correct for. Backed by compose.yaml's
 // chromedp service's own extra_hosts entry on Linux; Docker Desktop
@@ -69,21 +70,34 @@ const testHTML = `<!doctype html>
 <body><h1>Hello, screenshot</h1></body>
 </html>`
 
-func newRunner(t *testing.T, pool *pgxpool.Pool, store *archive.Store, sidecarURL string, maxAttempts int) *screenshot.Runner {
+// newRunner constructs a fresh *sidecar.Sidecar (real reachability
+// ping and all -- see internal/sidecar's own tests for that behavior in
+// isolation) and a Runner on top of it. Each test gets its own Sidecar
+// rather than sharing one across tests, trading a little redundant
+// dial/ping overhead for full test isolation -- consistent with every
+// other test in this suite calling dbtest.Setup/Reset fresh rather than
+// sharing state.
+func newRunner(t *testing.T, pool *pgxpool.Pool, store *archive.Store, maxAttempts int) *screenshot.Runner {
 	t.Helper()
+
+	sc, err := sidecar.New(&sidecar.Params{
+		SidecarURL: testSidecarURL,
+		RenderHost: testRenderHost,
+		Logger:     slog.Default(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sc.Close() })
 
 	r, err := screenshot.New(&screenshot.Params{
 		Pool:        pool,
 		Queries:     db.New(pool),
 		Store:       store,
-		SidecarURL:  sidecarURL,
-		RenderHost:  testRenderHost,
+		Sidecar:     sc,
 		Concurrency: 2,
 		MaxAttempts: maxAttempts,
 		Logger:      slog.Default(),
 	})
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = r.Close() })
 
 	return r
 }
@@ -147,27 +161,6 @@ func newDueScreenshotJob(t *testing.T, pool *pgxpool.Pool, store *archive.Store)
 	return capture, job
 }
 
-func TestNew_FailsIfSidecarUnreachable(t *testing.T) {
-	pool := dbtest.Setup(t)
-	dbtest.Reset(t, pool)
-	store := archive.New(t.TempDir())
-
-	// Port 1 is a privileged port nothing is listening on in any CI or
-	// dev environment -- connection refused comes back essentially
-	// immediately, so this doesn't need to wait out sidecarPingTimeout.
-	_, err := screenshot.New(&screenshot.Params{
-		Pool:        pool,
-		Queries:     db.New(pool),
-		Store:       store,
-		SidecarURL:  "http://127.0.0.1:1",
-		RenderHost:  testRenderHost,
-		Concurrency: 2,
-		MaxAttempts: 3,
-		Logger:      slog.Default(),
-	})
-	require.Error(t, err, "New should fail loudly at startup rather than silently retrying every job forever")
-}
-
 func TestRunner_RunOnce_ReclaimsStaleProcessingJob(t *testing.T) {
 	pool := dbtest.Setup(t)
 	dbtest.Reset(t, pool)
@@ -184,7 +177,7 @@ func TestRunner_RunOnce_ReclaimsStaleProcessingJob(t *testing.T) {
 		job.ID)
 	require.NoError(t, err)
 
-	r := newRunner(t, pool, store, testSidecarURL, 3)
+	r := newRunner(t, pool, store, 3)
 
 	require.NoError(t, r.RunOnce(context.Background()))
 
@@ -201,7 +194,7 @@ func TestRunner_RunOnce_RendersScreenshotForDueJob(t *testing.T) {
 
 	capture, _ := newDueScreenshotJob(t, pool, store)
 
-	r := newRunner(t, pool, store, testSidecarURL, 3)
+	r := newRunner(t, pool, store, 3)
 
 	require.NoError(t, r.RunOnce(context.Background()))
 
@@ -254,7 +247,7 @@ func TestRunner_RunOnce_OneFailureDoesNotBlockTheRestOfTheBatch(t *testing.T) {
 		"UPDATE captures SET html_path = 'does/not/exist.html.zst' WHERE id = $1", brokenCapture.ID)
 	require.NoError(t, err)
 
-	r := newRunner(t, pool, store, testSidecarURL, 3)
+	r := newRunner(t, pool, store, 3)
 
 	require.NoError(t, r.RunOnce(context.Background()))
 
@@ -285,7 +278,7 @@ func TestRunner_RunOnce_FailsPermanentlyAfterMaxAttempts(t *testing.T) {
 	// maxAttempts=1: the very first failure already exhausts the
 	// budget, so this test doesn't need to fast-forward
 	// next_attempt_at or call RunOnce more than once to reach 'failed'.
-	r := newRunner(t, pool, store, testSidecarURL, 1)
+	r := newRunner(t, pool, store, 1)
 
 	require.NoError(t, r.RunOnce(context.Background()))
 
@@ -302,7 +295,7 @@ func TestRunner_RunOnce_NoDueJobsIsANoOp(t *testing.T) {
 	dbtest.Reset(t, pool)
 	store := archive.New(t.TempDir())
 
-	r := newRunner(t, pool, store, testSidecarURL, 3)
+	r := newRunner(t, pool, store, 3)
 
 	assert.NoError(t, r.RunOnce(context.Background()))
 }

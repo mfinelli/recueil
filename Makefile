@@ -30,6 +30,8 @@ endif
 
 GITSHA ?= $(shell $(GIT) rev-parse --short HEAD)
 
+READABILITY_PACKAGE := node_modules/@mozilla/readability/package.json
+
 all: recueil
 
 clean:
@@ -42,7 +44,8 @@ recueil: $(SOURCES) internal/db/db.go
 		-ldflags "-s -w -linkmode=external \
 			-X main.commit=$(GITSHA) \
 			-X main.date=$(shell $(DATE) --utc --iso-8601=seconds) \
-			-X main.version=$(shell $(JQ) -r .version package.json)" \
+			-X main.version=$(shell $(JQ) -r .version package.json) \
+			-X main.readabilityVersion=$(shell $(JQ) -r .version $(READABILITY_PACKAGE))" \
 		main.go
 
 internal/db/db.go: $(MIGRATIONS) $(QUERIES) sqlc.yaml

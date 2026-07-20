@@ -47,7 +47,7 @@ services:
   #
   # extra_hosts' host-gateway alias is what lets *this* container
   # connect back out to the agent process listening on the host itself
-  # (config's screenshot_render_host) when the agent isn't running in
+  # (config's sidecar_render_host) when the agent isn't running in
   # compose at all -- needed on Linux; Docker Desktop (macOS/Windows)
   # resolves host.docker.internal without it, but the alias is harmless
   # there too.

@@ -73,8 +73,10 @@ func init() {
 		"r2_access_key_secret",
 		"agent_worker_poll_interval_seconds",
 		"agent_local_poll_interval_seconds",
-		"screenshot_sidecar_url",
-		"screenshot_render_host",
+		"sidecar_url",
+		"sidecar_render_host",
+		"readability_worker_concurrency",
+		"readability_max_attempts",
 		"screenshot_worker_concurrency",
 		"screenshot_max_attempts",
 	)

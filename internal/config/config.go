@@ -89,8 +89,8 @@ type Config struct {
 	// just because it happens to share a ticker with it.
 	AgentLocalPollIntervalSeconds int `mapstructure:"agent_local_poll_interval_seconds"`
 
-	// ScreenshotSidecarURL is where the agent connects to drive the
-	// shared headless-Chrome sidecar via chromedp's RemoteAllocator -- an
+	// SidecarURL is where the agent connects to drive the shared
+	// headless-Chrome sidecar via chromedp's RemoteAllocator -- an
 	// http(s) base URL, not a raw ws:// one: chromedp's own detectURL
 	// fetches /json/version itself and swaps in the real
 	// webSocketDebuggerUrl, so this package never has to. Two real
@@ -102,22 +102,23 @@ type Config struct {
 	// against the sidecar's published host port (compose.yaml's
 	// documented local-dev shape -- see its own comment on why the
 	// published port stays even though the all-in-docker deployment
-	// doesn't need it).
-	ScreenshotSidecarURL string `mapstructure:"screenshot_sidecar_url"`
+	// doesn't need it). One connection, shared by both the screenshot
+	// and readability jobs (internal/sidecar).
+	SidecarURL string `mapstructure:"sidecar_url"`
 
-	// ScreenshotRenderHost is the hostname the sidecar container should
+	// SidecarRenderHost is the hostname the sidecar container should
 	// use to reach *back* into the agent's own ephemeral per-job HTML
-	// render server (internal/screenshot) -- separate from
-	// ScreenshotSidecarURL, which is the opposite direction (agent ->
-	// sidecar). The render server always binds every interface
-	// (0.0.0.0) internally; this is only what hostname gets embedded in
-	// the URL handed to the sidecar for it to fetch that HTML back.
-	// "chromedp"'s own compose service name works when both run in the
-	// same compose network; "host.docker.internal" (see compose.yaml's
-	// extra_hosts) is what a sidecar-in-docker/agent-on-host local-dev
-	// setup needs instead, since the agent process in that shape isn't
-	// reachable at any compose service name at all.
-	ScreenshotRenderHost string `mapstructure:"screenshot_render_host"`
+	// render server (internal/sidecar) -- separate from SidecarURL,
+	// which is the opposite direction (agent -> sidecar). The render
+	// server always binds every interface (0.0.0.0) internally; this
+	// is only what hostname gets embedded in the URL handed to the
+	// sidecar for it to fetch that HTML back. "chromedp"'s own compose
+	// service name works when both run in the same compose network;
+	// "host.docker.internal" (see compose.yaml's extra_hosts) is what
+	// a sidecar-in-docker/agent-on-host local-dev setup needs instead,
+	// since the agent process in that shape isn't reachable at any
+	// compose service name at all.
+	SidecarRenderHost string `mapstructure:"sidecar_render_host"`
 
 	// ScreenshotWorkerConcurrency bounds how many tabs the screenshot
 	// runner opens at once against the shared sidecar ("a small worker
@@ -129,6 +130,12 @@ type Config struct {
 	// screenshot_jobs row has failed this many times, it's marked
 	// 'failed' permanently rather than retried again.
 	ScreenshotMaxAttempts int `mapstructure:"screenshot_max_attempts"`
+
+	// ReadabilityWorkerConcurrency and ReadabilityMaxAttempts are the
+	// readability job's own counterparts to the screenshot job's
+	// above.
+	ReadabilityWorkerConcurrency int `mapstructure:"readability_worker_concurrency"`
+	ReadabilityMaxAttempts       int `mapstructure:"readability_max_attempts"`
 }
 
 func init() {
@@ -136,10 +143,12 @@ func init() {
 	viper.SetDefault("session_cookie_secure", true)
 	viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
 	viper.SetDefault("agent_local_poll_interval_seconds", 300)
-	viper.SetDefault("screenshot_sidecar_url", "http://127.0.0.1:9222")
-	viper.SetDefault("screenshot_render_host", "127.0.0.1")
+	viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")
+	viper.SetDefault("sidecar_render_host", "127.0.0.1")
 	viper.SetDefault("screenshot_worker_concurrency", 3)
 	viper.SetDefault("screenshot_max_attempts", 3)
+	viper.SetDefault("readability_worker_concurrency", 3)
+	viper.SetDefault("readability_max_attempts", 3)
 }
 
 func Load() (Config, error) {

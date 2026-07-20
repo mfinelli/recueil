@@ -34,7 +34,7 @@ no `ports:` published for `chromedp`/`chromedp-proxy` at all (nothing outside
 this Compose network ever needs to reach them, since `agent` is on the same
 network now), and no `extra_hosts` entry (that was specifically for reaching a
 `recueil agent` process running directly on the host's own machine, which isn't
-the case here -- `screenshot_render_host` points at the `agent` service's own
+the case here -- `sidecar_render_host` points at the `agent` service's own
 Compose DNS name instead).
 
 ```yaml
@@ -112,12 +112,12 @@ services:
     environment:
       <<: *recueil-env
       # Both directions of the sidecar connection use this service's own
-      # Compose DNS name -- agent -> sidecar (screenshot_sidecar_url) and
-      # sidecar -> agent's ephemeral render server (screenshot_render_host)
+      # Compose DNS name -- agent -> sidecar (sidecar_url) and
+      # sidecar -> agent's ephemeral render server (sidecar_render_host)
       # are different connections, but "chromedp"/"agent" resolve correctly
       # either way since everything's on the same Compose network here.
-      SCREENSHOT_SIDECAR_URL: "http://chromedp:9222"
-      SCREENSHOT_RENDER_HOST: "agent"
+      SIDECAR_URL: "http://chromedp:9222"
+      SIDECAR_RENDER_HOST: "agent"
     volumes:
       # Same volume, same path, as `server` above -- the agent writes
       # captures/screenshots/favicons here; the server reads them back out.

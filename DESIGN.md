@@ -1564,13 +1564,13 @@ the render finishes (success or failure). This needed a config field on each
 side of the connection, since the two directions have genuinely different
 reachability answers:
 
-- `screenshot_sidecar_url` — the agent's own outbound address for the sidecar
-  (agent → sidecar). `http://chromedp:9222` when both run in the same compose
-  network; `http://127.0.0.1:9222` when the agent binary runs directly on the
-  operator's own machine against the sidecar's published host port — see
-  compose.yaml's own comment on why that port stays published even though an
-  all-in-docker deployment doesn't need it.
-- `screenshot_render_host` — the hostname the _sidecar_ should use to reach back
+- `sidecar_url` — the agent's own outbound address for the sidecar (agent →
+  sidecar). `http://chromedp:9222` when both run in the same compose network;
+  `http://127.0.0.1:9222` when the agent binary runs directly on the operator's
+  own machine against the sidecar's published host port — see compose.yaml's own
+  comment on why that port stays published even though an all-in-docker
+  deployment doesn't need it.
+- `sidecar_render_host` — the hostname the _sidecar_ should use to reach back
   into the agent's render server (sidecar → agent), the opposite direction.
   `chromedp`'s own compose service name works when both run in the same network
   (there is no agent-side published port to configure here, since the render
@@ -1745,6 +1745,68 @@ plainly rather than assuming away.
 - `pending_captures.r2_key_readable` (D1) is **removed** entirely — no client
   will ever populate it going forward, since no client extracts or uploads
   reader text anymore.
+
+### Implementation
+
+Built as `internal/readability`, same `RunOnce`-shaped callable unit as
+`internal/screenshot`, on the same faster, Postgres-only agent ticker
+(`agent_local_poll_interval_seconds`). Claiming, retry/backoff, and the atomic
+`FOR UPDATE SKIP LOCKED` claim-and-mark-`processing` shape are all identical in
+spirit to `internal/screenshot`'s own (`ClaimDueReadabilityJobs` mirrors
+`ClaimDueScreenshotJobs` exactly, just against `readability_jobs`).
+
+**§6's "whether to actually combine them into one job/one page-load" is resolved
+the same way here as it was on the screenshot side: they stay two independent
+runners** — but sharing the underlying sidecar _connection_ turned out to be a
+separate, and better, question than sharing a _page load_. `internal/sidecar`
+was factored out of what was originally `internal/screenshot`'s own private
+plumbing (one `chromedp.RemoteAllocator` connection, one ephemeral HTML render
+server) specifically because both jobs needed near-identical infrastructure with
+nothing but "what happens once a tab is loaded" actually differing between them.
+`cmd/agent.go` now constructs one `*sidecar.Sidecar` and hands it to both
+Runners — a `RemoteAllocator` connection is designed to have many tabs opened
+against it concurrently, which is exactly what two independent worker pools
+drawing from the same connection amounts to, so there's no real benefit to each
+job holding its own separate connection to the same sidecar process. This also
+simplified `cmd/agent.go` itself: one `Close()` call site instead of one per
+job, and `sidecar_url`/`sidecar_render_host` (renamed from their original
+`screenshot_`-prefixed names now that they're no longer that job's alone) are
+each set once, not duplicated per job.
+
+What `internal/sidecar` deliberately does _not_ own: retry/backoff/claim
+bookkeeping. `screenshot_jobs` and `readability_jobs` are sqlc-generated as
+separate Go types even though structurally identical, and forcing them through a
+shared interface (or Go generics) for what's ultimately a few dozen lines of
+already-well-tested bookkeeping each was judged not worth the abstraction cost —
+the two `backoff()` functions are simply duplicated, byte-for-byte, rather than
+shared.
+
+**Readability.js itself is threaded in via `Params`, not embedded by
+`internal/readability` at all.** `main.go` embeds
+`node_modules/@mozilla/readability/Readability.js` directly via `go:embed` — a
+sibling of `main.go` at the repo root, unlike `internal/urlnorm`'s
+`clearurls-rules` git submodule, which has to be vendored _inside_ that package
+specifically because `go:embed` can't cross package-directory boundaries. Since
+`node_modules/@mozilla/readability` is already inside `go:embed`'s reach from
+`main.go`'s own location, no copy-into-an-internal- package build step was
+needed at all. The embedded source and the installed package's own version
+(`node_modules/@mozilla/readability/package.json`'s `.version`, injected via the
+same `ldflags`-from-`package.json` mechanism the Makefile already used for
+`main.version`) are assigned to `cmd.ReadabilityJS`/`cmd.ReadabilityVersion` in
+`main.go`, mirroring exactly how
+`cmd.PostgresMigrationsFS`/`cmd.Commit`/`cmd.Date`/`cmd.Version` already worked
+— not a new pattern, the existing one applied to a second embedded asset.
+`cmd/agent.go` reads those two vars when constructing `readability.Runner`, and
+that Runner injects `Params.Source` as-is into each loaded page via
+`chromedp.Evaluate`: the real, unmodified upstream `Readability.js` is a plain
+global-scope script already (its one `module.exports` line is a no-op inside a
+browser page, guarded by `typeof module === "object"`), so no bundler step was
+needed either.
+
+`Params.Version` is empty outside of `make`-built binaries (`go test` doesn't go
+through the Makefile's `ldflags`), in which case `readability_version` is stored
+as `NULL` rather than an empty string — a real, deliberate distinction
+(`pgtype.Text{Valid: r.version != ""}`), not an oversight.
 
 ---
 
@@ -3133,13 +3195,13 @@ What remains open is purely implementation-phase, not architectural:
   would need. See §6's "Implementation (Phase 7)" subsection for the
   ephemeral-render-server design this needed (the sidecar has no filesystem
   access to the agent's local archive), the two new, direction-specific config
-  values it introduced (`screenshot_sidecar_url`, `screenshot_render_host`), and
-  its "Revised after a first review pass" subsection for what changed after
-  initial review (fixed-viewport screenshots, atomic multi-claimant job
-  claiming, and — resolving the per-job scheduling cadence question this bullet
-  used to leave open — two independent agent tickers: a slower Worker-facing one
-  and a faster Postgres-only one). Still open: the readability and AI jobs
-  themselves, which this same phase builds next.
+  values it introduced (`sidecar_url`, `sidecar_render_host`), and its "Revised
+  after a first review pass" subsection for what changed after initial review
+  (fixed-viewport screenshots, atomic multi-claimant job claiming, and —
+  resolving the per-job scheduling cadence question this bullet used to leave
+  open — two independent agent tickers: a slower Worker-facing one and a faster
+  Postgres-only one). Still open: the readability and AI jobs themselves, which
+  this same phase builds next.
 - **Resolved this round: every piece of the original five-step extension plan
   (pairing, capture, upload, queue-driven capture, bookmark sync — §3h–§3j) is
   now built and confirmed working end to end**, including two mid-phase design

@@ -1215,10 +1215,10 @@ order; only the first is done so far.
   added to the required-config list — an unreachable or unconfigured sidecar
   degrades to "no thumbnail, retried later," never a startup failure, matching
   this whole feature's optional-by-design status.
-  `screenshot_sidecar_url`/`screenshot_render_host` are two different directions
-  of the same connection (agent→sidecar vs. sidecar→agent) and need genuinely
-  different values depending on deployment shape; see DESIGN.md §6 for the
-  concrete local-dev-vs-all-docker cases this covers.
+  `sidecar_url`/`sidecar_render_host` are two different directions of the same
+  connection (agent→sidecar vs. sidecar→agent) and need genuinely different
+  values depending on deployment shape; see DESIGN.md §6 for the concrete
+  local-dev-vs-all-docker cases this covers.
 - **`compose.yaml`**: a new `chromedp` service (`chromedp/headless-shell`,
   `shm_size: 2gb`) in both the `local` and `test` profiles. Its host port stays
   published (`127.0.0.1:9222:9222`) — a real difference from what the eventual
@@ -1309,14 +1309,101 @@ reasoned through:
   `--remote-debugging-address=0.0.0.0` is silently forced back to `127.0.0.1` in
   Chromium's own source — a non-configurable security decision (unrestricted
   network access to the DevTools protocol is a full remote-control vector), not
-  a bug and not something any flag works around. This meant
-  `screenshot_sidecar_url` was never actually reachable — not from the host via
-  the published port, and, worse, not from another container on the same compose
-  network either, meaning this would have equally broken a fully-dockerized
-  production deployment, not just local dev. **Fix**: `compose.yaml`'s
-  `chromedp` service now runs Chromium's real listener on an internal-only port
-  (9223); a new `chromedp-proxy` service (`alpine/socat`, sharing `chromedp`'s
-  network namespace via `network_mode: "service:chromedp"`) bridges the
+  a bug and not something any flag works around. This meant `sidecar_url` was
+  never actually reachable — not from the host via the published port, and,
+  worse, not from another container on the same compose network either, meaning
+  this would have equally broken a fully-dockerized production deployment, not
+  just local dev. **Fix**: `compose.yaml`'s `chromedp` service now runs
+  Chromium's real listener on an internal-only port (9223); a new
+  `chromedp-proxy` service (`alpine/socat`, sharing `chromedp`'s network
+  namespace via `network_mode: "service:chromedp"`) bridges the
   externally-reachable 9222 to it with a plain TCP forward. Nothing in Go or
-  `internal/config` changed — `screenshot_sidecar_url` still targets port 9222
-  either way, now transparently proxied rather than hitting Chromium directly.
+  `internal/config` changed — `sidecar_url` still targets port 9222 either way,
+  now transparently proxied rather than hitting Chromium directly.
+
+## Phase 7 continued: the readability job, and `internal/sidecar`
+
+Built next, per Phase 7's stated order (screenshot, then readability, then AI
+enrichment). Two decisions made before writing any code, both implemented as
+decided:
+
+1. **Extract the plumbing `internal/screenshot` and `internal/readability` both
+   need (the `chromedp` allocator connection, the ephemeral render server) into
+   a shared `internal/sidecar` package**, refactoring the already-working
+   `internal/screenshot` to use it, rather than duplicating that infrastructure
+   a second time. What stays duplicated instead: the retry/backoff/claim
+   bookkeeping, since `screenshot_jobs` and `readability_jobs` are separate
+   sqlc-generated Go types and the actual duplication is small (a few dozen
+   lines each) — see DESIGN.md §6a's own "Implementation" section for the fuller
+   reasoning either way.
+2. **Readability.js itself is threaded through `main.go`, not vendored into
+   `internal/readability` via a Makefile copy step.** `main.go` embeds
+   `node_modules/@mozilla/readability/Readability.js` directly (already within
+   `go:embed`'s reach from the repo root) and assigns it to `cmd.ReadabilityJS`,
+   mirroring exactly how `PostgresMigrationsFS`/ `Commit`/`Date`/`Version`
+   already flow from `main.go` into `cmd`. No new vendoring pattern, no new
+   `.gitignore` entry, no generated file to keep in sync.
+
+### What exists now
+
+- **`internal/sidecar`** (new package): `Sidecar.New` pings the sidecar at
+  startup (same fail-loudly reasoning as the original `screenshot.Runner`),
+  starts the ephemeral render server, dials the `RemoteAllocator`.
+  `Sidecar.NewTab(htmlData, timeout)` registers HTML and hands back a ready tab
+  context + URL — never calls `chromedp.Run` itself, since a shared package
+  can't know whether a caller needs e.g. a fixed viewport applied before
+  `Navigate`. `Sidecar.Close()` is the only close call site `cmd/agent.go` needs
+  now, for both jobs.
+- **`internal/screenshot`** refactored: `Runner` no longer holds a listener,
+  server, or allocator context directly, no longer has a `Close()`, and `Params`
+  takes a `*sidecar.Sidecar` instead of `SidecarURL`/`RenderHost`. Behavior
+  otherwise unchanged; its existing tests were updated for the new construction
+  shape, not rewritten.
+- **`internal/readability`** (new package): same `RunOnce`/`processOne`/
+  `commitDone`/`handleFailure`/`backoff` shape as `internal/screenshot`.
+  `render` does two `chromedp.Evaluate` calls against a `sidecar.NewTab`-
+  provided tab: inject `Source` (defining the global `Readability` constructor),
+  then run `new Readability(document.cloneNode(true)).parse()` and bind the JSON
+  result into a `*article` (a pointer, specifically so a JSON `null` —
+  Readability's own signal that a page isn't extractable — correctly leaves it
+  `nil` rather than silently unmarshaling into a zero-value struct). Only
+  `textContent` is persisted (`reader_text`); the rest of `parse()`'s output
+  (`title`, `byline`, `excerpt`, etc.) is decoded but not yet used anywhere.
+- **`queries/readability_jobs.sql`**: `ClaimDueReadabilityJobs`,
+  `GetReadabilityJobByCaptureID`, `SetCaptureReadability`,
+  `MarkReadabilityJobDone`, `RetryReadabilityJob`, `FailReadabilityJob` —
+  alongside the `CreateReadabilityJob` insert that already existed.
+  `SetCaptureReadability` overwrites `reader_text`/`reader_text_hash`/
+  `readability_version` in place (no history kept, per DESIGN.md §6a);
+  `captures.reader_text_tsv` (a generated column) recomputes automatically as
+  part of that same `UPDATE`.
+- **`main.go`**: new
+  `//go:embed node_modules/@mozilla/readability/ Readability.js` and a
+  `readabilityVersion` var (ldflags-injected), both assigned into the new
+  `cmd.ReadabilityJS`/`cmd.ReadabilityVersion` vars (declared alongside the
+  existing `Commit`/`Date`/`Version`/migrations-FS ones in `cmd/server.go`).
+- **`internal/config`**: `screenshot_sidecar_url`/`screenshot_render_host`
+  renamed to `sidecar_url`/`sidecar_render_host` (no longer screenshot-only, now
+  that the connection is shared) — a real breaking rename, judged worth it over
+  keeping a screenshot-specific name that would actively mislead once a second
+  job depends on the same config. New
+  `readability_worker_concurrency`/`readability_max_attempts`, mirroring the
+  screenshot job's own pair exactly.
+- **`cmd/agent.go`**: constructs one `*sidecar.Sidecar`, then both
+  `screenshot.Runner` and `readability.Runner` on top of it; `runLocalCycle` now
+  runs both `RunOnce` calls on the shared local ticker.
+
+### Testing
+
+`internal/sidecar` gets its own tests against the real sidecar (a startup
+reachability failure, and a `NewTab` round-trip confirming served HTML is
+actually fetchable and that `cleanup` actually tears things down).
+`internal/readability`'s tests are the same shape as `internal/screenshot`'s
+(real Postgres, real chromedp, real vendored `Readability.js` read directly off
+disk via a relative path — skipped with a clear message if `node_modules` isn't
+present rather than failing confusingly), plus one specific to this package:
+confirming an empty `Version` is stored as `NULL`, not an empty string. The test
+HTML is intentionally more than a one-liner — Readability's own heuristics judge
+very short pages "not extractable" and return `null`, which would make every
+test fail at the extraction step itself rather than testing anything this
+package's own logic is responsible for.

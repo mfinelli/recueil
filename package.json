@@ -14,6 +14,9 @@
     "test": "vitest run",
     "types": "tsc -p terraform/tsconfig.json"
   },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0"
+  },
   "devDependencies": {
     "@aws-crypto/sha256-js": "^5.2.0",
     "@cloudflare/vitest-pool-workers": "^0.18.3",

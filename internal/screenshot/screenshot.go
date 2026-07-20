@@ -18,17 +18,23 @@
 
 // Package screenshot is the async screenshot/thumbnail job: render a
 // capture's already-stored, already-inlined HTML through the shared
-// headless-Chrome sidecar and store the resulting fixed-viewport PNG
-// alongside it -- a uniform size by design, not a full (variably-tall) page
-// capture, so the dashboard can display thumbnails in a consistent grid
-// rather than wildly different aspect ratios per capture. Built as a callable
-// unit (RunOnce), same shape as internal/ingest, with no scheduler of its own
-// -- cmd/agent.go's ticker drives it.
+// headless-Chrome sidecar (internal/sidecar) and store the resulting
+// fixed-viewport PNG alongside it -- a uniform size by design, not a
+// full (variably-tall) page capture, so the dashboard can display
+// thumbnails in a consistent grid rather than wildly different aspect
+// ratios per capture. Built as a callable unit (RunOnce), same shape as
+// internal/ingest, with no scheduler of its own -- cmd/agent.go's ticker
+// drives it.
 //
-// Independent of internal's readability job even though both run through the
-// same sidecar and could, in principle, share a single page load: giving us
+// Independent of internal/readability even though both run through the
+// same sidecar and share its connection (internal/sidecar.Sidecar is
+// constructed once by cmd/agent.go and handed to both): giving us
 // independent failure modes, independent retry/backoff, no reason for a
-// Readability.js upgrade's re-extraction to force a redundant re-screenshot.
+// Readability.js upgrade's re-extraction to force a redundant
+// re-screenshot. See internal/sidecar's own package doc for exactly
+// what's shared between the two (the connection and render server) and
+// what isn't (everything from here down: claiming, retry/backoff, and
+// what actually happens once a tab is loaded).
 //
 // Claiming due jobs (ClaimDueScreenshotJobs) uses FOR UPDATE SKIP LOCKED
 // and an atomic claim-and-mark-processing update, even though today's
@@ -42,32 +48,16 @@
 // own 15-minute claim timeout already uses. Bounded concurrency *within* one
 // RunOnce call is separately plain Go concurrency (a semaphore-bounded worker
 // pool over one already-claimed batch), not itself a database-level concern.
-//
-// # Serving HTML to the sidecar
-//
-// The sidecar is a separate process -- often a separate container --
-// with no filesystem access to the agent's local archive, so a job's
-// decompressed HTML is served over a tiny ephemeral HTTP server this
-// package runs for the lifetime of the Runner, one random-token path per
-// in-flight render. See Params' SidecarURL/RenderHost doc (mirrored in
-// internal/config) for how the two different deployment shapes (sidecar
-// and agent in the same compose network vs. agent running directly on
-// the operator's own machine) each configure reachability.
 package screenshot
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
-	"net"
-	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -77,6 +67,7 @@ import (
 
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/sidecar"
 )
 
 // defaultBatchLimit bounds how many jobs a single RunOnce call claims --
@@ -120,10 +111,6 @@ const (
 	maxBackoff  = 30 * time.Minute
 )
 
-// sidecarPingTimeout bounds New's one-shot startup reachability check --
-// see pingSidecar's own doc.
-const sidecarPingTimeout = 5 * time.Second
-
 // Params are Runner's dependencies, all required except Logger. Grouped
 // into a struct for the same reason as internal/ingest.Params: enough
 // fields that positional arguments would be a real mistake risk.
@@ -132,19 +119,12 @@ type Params struct {
 	Queries *db.Queries
 	Store   *archive.Store
 
-	// SidecarURL is the agent's own outbound address for the shared
-	// headless-Chrome sidecar (config's screenshot_sidecar_url) -- an
-	// http(s) base URL, not a raw ws:// one: chromedp.NewRemoteAllocator
-	// fetches /json/version itself and swaps in the real
-	// webSocketDebuggerUrl, so this package never has to.
-	SidecarURL string
-
-	// RenderHost is the hostname the sidecar should use to reach back
-	// into this Runner's own ephemeral render server (config's
-	// screenshot_render_host) -- the opposite direction from
-	// SidecarURL. See the package doc and internal/config's own doc
-	// comment for the two deployment shapes this needs to cover.
-	RenderHost string
+	// Sidecar is the shared headless-Chrome connection + render server
+	// (internal/sidecar) -- constructed once by cmd/agent.go and handed
+	// to both this package and internal/readability, not owned by
+	// either. Runner never closes it; that's cmd/agent.go's job, at
+	// shutdown.
+	Sidecar *sidecar.Sidecar
 
 	// Concurrency bounds how many tabs are open against the sidecar at
 	// once (config's screenshot_worker_concurrency). Values below 1 are
@@ -160,47 +140,24 @@ type Params struct {
 	Logger *slog.Logger
 }
 
-// Runner holds a long-lived connection to the sidecar (one
-// RemoteAllocator, reused across every job -- opening a new tab per job
-// rather than cold-starting a browser process each time, and a long-lived
-// ephemeral HTTP server for serving HTML to it. Both are real OS resources,
-// unlike internal/ingest.Ingester or mirror.Syncer, which is why -- unlike
-// either of those -- this type has a Close.
+// Runner has no OS resources of its own to close -- everything that
+// does (the sidecar connection, the render server) lives in the shared
+// *sidecar.Sidecar it holds a reference to, owned and closed by
+// cmd/agent.go instead.
 type Runner struct {
 	pool        *pgxpool.Pool
 	queries     *db.Queries
 	store       *archive.Store
-	renderHost  string
+	sidecar     *sidecar.Sidecar
 	concurrency int
 	maxAttempts int
 	logger      *slog.Logger
-
-	allocCancel context.CancelFunc
-	allocCtx    context.Context
-
-	listener net.Listener
-	server   *http.Server
-
-	mu      sync.Mutex
-	pending map[string][]byte
 }
 
-// New pings the sidecar once to confirm it's actually reachable, then
-// starts the Runner's ephemeral render server and dials the sidecar for
-// real. The caller is responsible for calling Close when done (typically
-// via defer at the same call site cmd/agent.go already closes its
-// Postgres pool from).
-//
-// Failing loudly here (rather than lazily discovering an unreachable
-// sidecar on the first job's render call) is deliberate: it's what lets
-// an orchestrator's restart-until-healthy policy -- Docker Compose's
-// restart policy, systemd's Restart=on-failure, a Kubernetes liveness
-// probe, whatever the deployment uses -- actually do its job. Without
-// this, a misconfigured or not-yet-ready sidecar would leave the agent
-// process running indefinitely with every screenshot job silently
-// failing and retrying forever, instead of the process itself exiting
-// non-zero so something notices and restarts it once the sidecar catches
-// up.
+// New validates Params and returns a Runner. Never fails itself --
+// unlike sidecar.New, there's no I/O here -- but still returns an error
+// to leave room for future validation without an API-breaking signature
+// change, and for symmetry with the rest of this codebase's constructors.
 func New(p *Params) (*Runner, error) {
 	logger := p.Logger
 	if logger == nil {
@@ -215,76 +172,15 @@ func New(p *Params) (*Runner, error) {
 		maxAttempts = 1
 	}
 
-	if err := pingSidecar(p.SidecarURL); err != nil {
-		return nil, fmt.Errorf("screenshot: sidecar not reachable at startup: %w", err)
-	}
-
-	// Bound to every interface: this is a container-to-container (or
-	// container-to-host) connection, entirely separate from whatever
-	// hostname RenderHost tells the *sidecar* to use to reach back in.
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
-		return nil, fmt.Errorf("screenshot: starting render server listener: %w", err)
-	}
-
-	r := &Runner{
+	return &Runner{
 		pool:        p.Pool,
 		queries:     p.Queries,
 		store:       p.Store,
-		renderHost:  p.RenderHost,
+		sidecar:     p.Sidecar,
 		concurrency: concurrency,
 		maxAttempts: maxAttempts,
 		logger:      logger,
-		listener:    ln,
-		pending:     make(map[string][]byte),
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", r.handleRender)
-	r.server = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
-	go func() {
-		if err := r.server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("screenshot: render server stopped unexpectedly", "error", err)
-		}
-	}()
-
-	// Intentionally parented on context.Background(), not any per-call
-	// ctx passed to RunOnce: this connection is meant to outlive any
-	// single RunOnce cycle, same lifetime as the Runner itself, torn
-	// down only by an explicit Close.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), p.SidecarURL)
-	r.allocCtx = allocCtx
-	r.allocCancel = allocCancel
-
-	return r, nil
-}
-
-// pingSidecar performs one bounded-time HTTP GET against the sidecar's
-// /json/version endpoint -- the same endpoint chromedp's own
-// RemoteAllocator uses internally to discover the real
-// webSocketDebuggerUrl -- purely to confirm something's actually
-// listening and answering there before New commits to starting the
-// render server and dialing for real.
-func pingSidecar(sidecarURL string) error {
-	client := http.Client{Timeout: sidecarPingTimeout}
-
-	resp, err := client.Get(strings.TrimRight(sidecarURL, "/") + "/json/version")
-	if err != nil {
-		return fmt.Errorf("GET /json/version: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET /json/version: unexpected status %d", resp.StatusCode)
-	}
-	return nil
-}
-
-// Close tears down the sidecar connection and the render server. Safe to
-// call once, at shutdown.
-func (r *Runner) Close() error {
-	r.allocCancel()
-	return r.server.Close()
+	}, nil
 }
 
 // RunOnce claims one bounded batch of due screenshot_jobs rows and
@@ -458,21 +354,13 @@ func backoff(attempts int32) time.Duration {
 	return d
 }
 
-// render serves htmlData to the sidecar over the ephemeral render
-// server and returns a fixed-viewportWidth x viewportHeight PNG
-// screenshot of it -- CaptureScreenshot (the current viewport only), not
-// FullScreenshot (the entire scrollable page): see the package doc for why
-// uniform dimensions matter here.
+// render serves htmlData to the sidecar and returns a fixed-viewportWidth
+// x viewportHeight PNG screenshot of it -- CaptureScreenshot (the current
+// viewport only), not FullScreenshot (the entire scrollable page): see
+// the package doc for why uniform dimensions matter here.
 func (r *Runner) render(ctx context.Context, htmlData []byte) ([]byte, error) {
-	token, cleanup := r.registerHTML(htmlData)
+	tabCtx, url, cleanup := r.sidecar.NewTab(htmlData, renderTimeout)
 	defer cleanup()
-
-	tabCtx, cancelTab := chromedp.NewContext(r.allocCtx)
-	defer cancelTab()
-	tabCtx, cancelTimeout := context.WithTimeout(tabCtx, renderTimeout)
-	defer cancelTimeout()
-
-	url := fmt.Sprintf("%s/%s", r.baseURL(), token)
 
 	var buf []byte
 	err := chromedp.Run(tabCtx,
@@ -485,53 +373,4 @@ func (r *Runner) render(ctx context.Context, htmlData []byte) ([]byte, error) {
 	}
 
 	return buf, nil
-}
-
-// baseURL is the http address the sidecar should navigate to for this
-// Runner's render server, combining the configured, deployment-specific
-// RenderHost with the port the ephemeral listener actually got assigned
-// -- never configured directly (see Params.RenderHost's doc for why the
-// port doesn't need to be).
-func (r *Runner) baseURL() string {
-	port := r.listener.Addr().(*net.TCPAddr).Port
-	return fmt.Sprintf("http://%s:%d", r.renderHost, port)
-}
-
-// registerHTML makes htmlData servable at a fresh random-token path and
-// returns a cleanup func that removes it again. Called once per render,
-// so a stuck/never-fetched job (the sidecar crashing mid-render, say)
-// leaks at most one entry until this same job is retried and the
-// original token is simply never looked up again -- not indefinitely,
-// since cleanup still runs via defer in render regardless of whether
-// the fetch ever actually happened.
-func (r *Runner) registerHTML(htmlData []byte) (token string, cleanup func()) {
-	buf := make([]byte, 16)
-	_, _ = rand.Read(buf)
-	token = hex.EncodeToString(buf)
-
-	r.mu.Lock()
-	r.pending[token] = htmlData
-	r.mu.Unlock()
-
-	return token, func() {
-		r.mu.Lock()
-		delete(r.pending, token)
-		r.mu.Unlock()
-	}
-}
-
-func (r *Runner) handleRender(w http.ResponseWriter, req *http.Request) {
-	token := strings.TrimPrefix(req.URL.Path, "/")
-
-	r.mu.Lock()
-	data, ok := r.pending[token]
-	r.mu.Unlock()
-
-	if !ok {
-		http.NotFound(w, req)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
 }

@@ -31,6 +31,10 @@ var postgresMigrationsFS embed.FS
 //go:embed terraform/migrations/*.sql
 var d1MigrationsFS embed.FS
 
+//go:embed node_modules/@mozilla/readability/Readability.js
+var readabilityJS string
+var readabilityVersion string
+
 var commit string
 var date string
 var version string
@@ -41,6 +45,8 @@ func main() {
 	cmd.Version = version
 	cmd.PostgresMigrationsFS = postgresMigrationsFS
 	cmd.D1MigrationsFS = d1MigrationsFS
+	cmd.ReadabilityJS = readabilityJS
+	cmd.ReadabilityVersion = readabilityVersion
 
 	if r := cmd.Execute(); r != 0 {
 		os.Exit(r)

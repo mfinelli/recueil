@@ -38,8 +38,15 @@ import (
 	"github.com/mfinelli/recueil/internal/ingest"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/r2"
+	"github.com/mfinelli/recueil/internal/readability"
 	"github.com/mfinelli/recueil/internal/screenshot"
+	"github.com/mfinelli/recueil/internal/sidecar"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+)
+
+var (
+	ReadabilityJS      string
+	ReadabilityVersion string
 )
 
 // agentCmd is Recueil's background job runner, split across two
@@ -125,16 +132,30 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Client:  mirrorClient,
 	})
 
-	// Unlike ingester/syncer, screenshotRunner owns two live resources of
-	// its own (the sidecar's RemoteAllocator connection and its
-	// ephemeral render-server listener -- see internal/screenshot's
-	// package doc), so it needs an explicit Close alongside the pool's.
+	// The one shared headless-Chrome connection + ephemeral render
+	// server (internal/sidecar) both the screenshot and readability
+	// Runners open tabs against -- constructed once, here, since it's
+	// the only thing between them with real OS resources to close.
+	// Neither Runner owns or closes it themselves.
+	sc, err := sidecar.New(&sidecar.Params{
+		SidecarURL: cfg.SidecarURL,
+		RenderHost: cfg.SidecarRenderHost,
+		Logger:     logger.Logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating sidecar connection: %w", err)
+	}
+	defer func() {
+		if err := sc.Close(); err != nil {
+			logger.Logger.Error("agent: failed to close sidecar connection cleanly", "error", err)
+		}
+	}()
+
 	screenshotRunner, err := screenshot.New(&screenshot.Params{
 		Pool:        pool,
 		Queries:     queries,
 		Store:       archive.New(cfg.ArchiveDir),
-		SidecarURL:  cfg.ScreenshotSidecarURL,
-		RenderHost:  cfg.ScreenshotRenderHost,
+		Sidecar:     sc,
 		Concurrency: cfg.ScreenshotWorkerConcurrency,
 		MaxAttempts: cfg.ScreenshotMaxAttempts,
 		Logger:      logger.Logger,
@@ -142,11 +163,21 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("creating screenshot runner: %w", err)
 	}
-	defer func() {
-		if err := screenshotRunner.Close(); err != nil {
-			logger.Logger.Error("agent: failed to close screenshot runner cleanly", "error", err)
-		}
-	}()
+
+	readabilityRunner, err := readability.New(&readability.Params{
+		Pool:        pool,
+		Queries:     queries,
+		Store:       archive.New(cfg.ArchiveDir),
+		Sidecar:     sc,
+		Source:      ReadabilityJS,
+		Version:     ReadabilityVersion,
+		Concurrency: cfg.ReadabilityWorkerConcurrency,
+		MaxAttempts: cfg.ReadabilityMaxAttempts,
+		Logger:      logger.Logger,
+	})
+	if err != nil {
+		return fmt.Errorf("creating readability runner: %w", err)
+	}
 
 	workerInterval := time.Duration(cfg.AgentWorkerPollIntervalSeconds) * time.Second
 	localInterval := time.Duration(cfg.AgentLocalPollIntervalSeconds) * time.Second
@@ -157,7 +188,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// for their first tick -- otherwise a freshly-deployed agent sits
 	// idle for a full interval before doing anything.
 	runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
-	runLocalCycle(cmd.Context(), screenshotRunner, logger.Logger)
+	runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, logger.Logger)
 
 	workerTicker := time.NewTicker(workerInterval)
 	defer workerTicker.Stop()
@@ -181,7 +212,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			// since each is just another case in the same select.
 			runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
 		case <-localTicker.C:
-			runLocalCycle(cmd.Context(), screenshotRunner, logger.Logger)
+			runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, logger.Logger)
 		case <-cmd.Context().Done():
 			log.Println("shutting down...")
 			return nil
@@ -207,11 +238,15 @@ func runWorkerCycle(ctx context.Context, ingester *ingest.Ingester, syncer *mirr
 }
 
 // runLocalCycle runs the jobs that only ever touch this process's own
-// Postgres instance the screenshot job, readability and AI enrichment on the
-// same faster schedule (AgentLocalPollIntervalSeconds), since none of them
-// have any Worker/free-tier request budget to respect.
-func runLocalCycle(ctx context.Context, screenshotRunner *screenshot.Runner, logger *slog.Logger) {
+// Postgres instance -- the screenshot job, the readability job, and the
+// AI enrichment job -- all on the same faster schedule
+// (AgentLocalPollIntervalSeconds), since none of them have any
+// Worker/free-tier request budget to respect.
+func runLocalCycle(ctx context.Context, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, logger *slog.Logger) {
 	if err := screenshotRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: screenshot cycle failed", "error", err)
+	}
+	if err := readabilityRunner.RunOnce(ctx); err != nil {
+		logger.ErrorContext(ctx, "agent: readability cycle failed", "error", err)
 	}
 }
