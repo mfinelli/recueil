@@ -41,6 +41,59 @@ RETURNING *;
 -- name: GetPageByID :one
 SELECT * FROM pages WHERE id = $1;
 
+-- name: GetPageByIDForUser :one
+-- The dashboard-facing counterpart to GetPageByID: scoped by user_id so a
+-- caller can't fetch another user's page by guessing/incrementing an id.
+-- GetPageByID itself is left as-is (unscoped) because its one existing
+-- caller (internal/ai's tests) uses it specifically to discover a page's
+-- *own* user_id in the first place -- requiring user_id as an input there
+-- would be circular.
+SELECT * FROM pages WHERE id = $1 AND user_id = $2;
+
+-- name: ListPages :many
+-- Plain, unfiltered library browsing -- most recently captured first.
+-- COUNT(*) OVER() rides along so the dashboard gets a total for
+-- pagination without a second round-trip; Postgres computes window
+-- functions before LIMIT/OFFSET slicing, so this is the count of the
+-- full matching set, not just the returned page.
+SELECT pages.*, COUNT(*) OVER() AS total_count
+FROM pages
+WHERE user_id = sqlc.arg(user_id)
+ORDER BY latest_capture_at DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: SearchPages :many
+-- Full-text search: a page matches if ANY of its captures' reader_text
+-- matches (not just the latest) -- version history means the content
+-- someone remembers and is searching for might only exist in an older
+-- capture, and it should still surface the page. DISTINCT ON (pages.id)
+-- collapses multi-capture matches to one row per page, keeping the
+-- highest-ranked capture's score (the ORDER BY inside the CTE controls
+-- which row DISTINCT ON keeps); the outer query then re-sorts the
+-- deduplicated set by that score, since DISTINCT ON's own ORDER BY
+-- requirement (id first) doesn't leave the result in rank order.
+-- plainto_tsquery uses the 'simple' config deliberately, not each
+-- capture's own detected language: the query terms are the user's
+-- input, not document content, and simple config avoids second-guessing
+-- what language *they're* typing in.
+WITH ranked AS (
+  SELECT DISTINCT ON (pages.id) pages.*,
+    ts_rank(captures.reader_text_tsv, plainto_tsquery('simple', sqlc.arg(query)::text)) AS rank
+  FROM pages
+  JOIN captures ON captures.page_id = pages.id
+  WHERE pages.user_id = sqlc.arg(user_id)
+    AND captures.reader_text_tsv @@ plainto_tsquery('simple', sqlc.arg(query)::text)
+  ORDER BY pages.id, rank DESC
+)
+SELECT *, COUNT(*) OVER() AS total_count FROM ranked
+ORDER BY rank DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: SetPageExcludedFromMirror :one
+UPDATE pages SET excluded_from_mirror = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
 -- name: GetPagesUpdatedSince :many
 -- Powers the D1 bookmark-list mirror's incremental sync
 -- (internal/mirror): pages changed since the last successfully-pushed

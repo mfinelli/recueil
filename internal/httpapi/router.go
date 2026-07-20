@@ -19,8 +19,9 @@
 // Package httpapi is the dashboard-facing HTTP API: registration, login,
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
 // /api/auth/me, session-protected pairing-token management
-// (view/regenerate/revoke), and session-protected Manage Devices
-// (list/revoke, member-vs-admin scoped -- see resolveTargetUserID).
+// (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
+// member-vs-admin scoped -- see resolveTargetUserID), and session-protected
+// library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}).
 // Routed via chi, with auth.RequireSession used as ordinary chi
 // middleware (no httpapi-specific auth plumbing of its own); RequireAdmin
 // exists in internal/auth but isn't used here yet -- Manage Devices'
@@ -105,6 +106,9 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pairing-token", s.RevokePairingToken)
 			r.Get("/devices", s.ListDevices)
 			r.Delete("/devices/{id}", s.RevokeDevice)
+			r.Get("/pages", s.ListPages)
+			r.Get("/pages/{id}", s.GetPage)
+			r.Patch("/pages/{id}", s.PatchPage)
 		})
 	})
 

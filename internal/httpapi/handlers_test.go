@@ -678,6 +678,191 @@ func TestRevokeDevice(t *testing.T) {
 	})
 }
 
+func TestListPages(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("plain listing returns only the caller's pages, most recent first, with a total", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		dbtest.CreatePage(t, pool, other.ID, "https://example.com/not-mine")
+		dbtest.CreatePage(t, pool, user.ID, "https://example.com/a")
+		dbtest.CreatePage(t, pool, user.ID, "https://example.com/b")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Pages []struct {
+				NormalizedURL string `json:"normalized_url"`
+			} `json:"pages"`
+			Total int64 `json:"total"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.EqualValues(t, 2, got.Total)
+		require.Len(t, got.Pages, 2)
+	})
+
+	t.Run("q= searches reader_text across a page's captures", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/searchable")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		dbtest.SetCaptureReaderText(t, pool, capture.ID, "a very particular sentence about narwhals")
+
+		unrelated := dbtest.CreatePage(t, pool, user.ID, "https://example.com/unrelated")
+		unrelatedCapture := dbtest.CreateCapture(t, pool, unrelated.ID)
+		dbtest.SetCaptureReaderText(t, pool, unrelatedCapture.ID, "something about baking bread")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages?q=narwhals", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Pages []struct {
+				ID int64 `json:"id"`
+			} `json:"pages"`
+			Total int64 `json:"total"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Pages, 1)
+		assert.Equal(t, page.ID, got.Pages[0].ID)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/pages")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestGetPage(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("returns the page plus its capture history, most recent first", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/history")
+		older := dbtest.CreateCapture(t, pool, page.ID)
+		time.Sleep(10 * time.Millisecond) // ensure a distinct captured_at ordering
+		newer := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ID       int64 `json:"id"`
+			Captures []struct {
+				ID int64 `json:"id"`
+			} `json:"captures"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, page.ID, got.ID)
+		require.Len(t, got.Captures, 2)
+		assert.Equal(t, newer.ID, got.Captures[0].ID, "most recently captured must come first")
+		assert.Equal(t, older.ID, got.Captures[1].ID)
+	})
+
+	t.Run("another user's page returns 404, not their data", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-yours")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a nonexistent id returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/9999999", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a non-numeric id returns 400", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/not-a-number", cookie)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+}
+
+func TestPatchPage(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("toggles excluded_from_mirror for the owner", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/toggle")
+		require.False(t, page.ExcludedFromMirror)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/pages/%d", page.ID),
+			strings.NewReader(`{"excluded_from_mirror":true}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ExcludedFromMirror bool `json:"excluded_from_mirror"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.True(t, got.ExcludedFromMirror)
+	})
+
+	t.Run("another user's page returns 404, not a silent no-op success", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-patchable")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/pages/%d", page.ID),
+			strings.NewReader(`{"excluded_from_mirror":true}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("missing excluded_from_mirror returns 400", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/missing-field")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/pages/%d", page.ID),
+			strings.NewReader(`{}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+}
+
 func TestPairingToken(t *testing.T) {
 	pool := dbtest.Setup(t)
 

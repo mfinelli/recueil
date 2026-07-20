@@ -43,6 +43,13 @@ RETURNING *, (xmax = 0) AS inserted;
 -- name: GetCaptureByID :one
 SELECT * FROM captures WHERE id = $1;
 
+-- name: ListCapturesByPage :many
+-- Version history for a page's detail view -- most recent first. Not
+-- scoped by user_id (captures has no such column); the caller is
+-- responsible for having already verified page ownership via
+-- pages.GetPageByIDForUser before calling this with that page's id.
+SELECT * FROM captures WHERE page_id = $1 ORDER BY captured_at DESC;
+
 -- name: GetCaptureBySourceCaptureID :one
 -- The pre-check that must happen before ever touching R2: if a row already
 -- exists here, an earlier attempt already committed this capture to Postgres,

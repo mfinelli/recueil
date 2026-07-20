@@ -24,6 +24,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -421,6 +422,231 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// defaultPageLimit/maxPageLimit bound ?limit= for /api/pages: a sane
+// default for the library view, and a ceiling that's generous for a
+// personal/family archive without letting a runaway value force one
+// query to return everything at once.
+const (
+	defaultPageLimit = 50
+	maxPageLimit     = 200
+)
+
+func parseLimitOffset(r *http.Request) (limit, offset int32) {
+	limit = defaultPageLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxPageLimit {
+			limit = int32(n)
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = int32(n)
+		}
+	}
+	return limit, offset
+}
+
+// textOrNil converts a pgtype.Text into the *string shape the dashboard's
+// JSON responses use -- nil rather than an empty string for a genuinely
+// NULL column, matching how the frontend should treat "no title" /
+// "no favicon" differently from "title is the empty string."
+func textOrNil(t pgtype.Text) *string {
+	if !t.Valid {
+		return nil
+	}
+	return &t.String
+}
+
+type pageResponse struct {
+	ID                 int64     `json:"id"`
+	NormalizedURL      string    `json:"normalized_url"`
+	Title              *string   `json:"title"`
+	LatestCaptureAt    time.Time `json:"latest_capture_at"`
+	ExcludedFromMirror bool      `json:"excluded_from_mirror"`
+	FaviconPath        *string   `json:"favicon_path"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+func pageResponseFromPage(p db.Page) pageResponse {
+	return pageResponse{
+		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
+		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
+		FaviconPath: textOrNil(p.FaviconPath), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
+	}
+}
+
+func pageResponseFromListRow(p db.ListPagesRow) pageResponse {
+	return pageResponse{
+		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
+		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
+		FaviconPath: textOrNil(p.FaviconPath), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
+	}
+}
+
+func pageResponseFromSearchRow(p db.SearchPagesRow) pageResponse {
+	return pageResponse{
+		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
+		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
+		FaviconPath: textOrNil(p.FaviconPath), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
+	}
+}
+
+type pageListResponse struct {
+	Pages []pageResponse `json:"pages"`
+	Total int64          `json:"total"`
+}
+
+// GET /api/pages: library browsing. ?q= triggers full-text search
+// (matches if any of a page's captures' reader_text matches, not just
+// the latest -- see queries/pages.sql's SearchPages); without it, plain
+// listing ordered by latest_capture_at. ?limit=/?offset= paginate
+// (default 50, max 200); the response's total reflects the full matching
+// set regardless of the current page.
+func (s *Server) ListPages(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	limit, offset := parseLimitOffset(r)
+	ctx := r.Context()
+
+	resp := pageListResponse{Pages: []pageResponse{}}
+
+	if q := r.URL.Query().Get("q"); q != "" {
+		rows, err := s.Queries.SearchPages(ctx, db.SearchPagesParams{
+			UserID: user.ID, Query: q, Limit: limit, Offset: offset,
+		})
+		if err != nil {
+			log.Printf("warning: failed to search pages for user %d: %v", user.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		for _, row := range rows {
+			resp.Total = row.TotalCount
+			resp.Pages = append(resp.Pages, pageResponseFromSearchRow(row))
+		}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	rows, err := s.Queries.ListPages(ctx, db.ListPagesParams{UserID: user.ID, Limit: limit, Offset: offset})
+	if err != nil {
+		log.Printf("warning: failed to list pages for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	for _, row := range rows {
+		resp.Total = row.TotalCount
+		resp.Pages = append(resp.Pages, pageResponseFromListRow(row))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type captureSummaryResponse struct {
+	ID                        int64     `json:"id"`
+	Source                    string    `json:"source"`
+	RawURL                    string    `json:"raw_url"`
+	Title                     *string   `json:"title"`
+	ThumbnailPath             *string   `json:"thumbnail_path"`
+	Language                  string    `json:"language"`
+	HTMLCompressedSizeBytes   int32     `json:"html_compressed_size_bytes"`
+	HTMLUncompressedSizeBytes int32     `json:"html_uncompressed_size_bytes"`
+	CapturedAt                time.Time `json:"captured_at"`
+}
+
+// pageDetailResponse embeds pageResponse so its fields flatten into the
+// same top-level JSON object as "captures" -- the page detail view's
+// natural shape is "the page, plus its history," not a nested "page"
+// envelope key.
+type pageDetailResponse struct {
+	pageResponse
+	Captures []captureSummaryResponse `json:"captures"`
+}
+
+// GET /api/pages/{id}: page detail plus full capture (version) history,
+// most recent first. Deliberately a summary per capture, not the full
+// row -- reader_text/ai_summary are large and belong to a future
+// GET /api/captures/{id} detail endpoint, not this list.
+func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	captures, err := s.Queries.ListCapturesByPage(ctx, page.ID)
+	if err != nil {
+		log.Printf("warning: failed to list captures for page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	resp := pageDetailResponse{pageResponse: pageResponseFromPage(page), Captures: []captureSummaryResponse{}}
+	for _, c := range captures {
+		resp.Captures = append(resp.Captures, captureSummaryResponse{
+			ID: c.ID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
+			ThumbnailPath: textOrNil(c.ThumbnailPath), Language: c.Language,
+			HTMLCompressedSizeBytes: c.HtmlCompressedSizeBytes, HTMLUncompressedSizeBytes: c.HtmlUncompressedSizeBytes,
+			CapturedAt: c.CapturedAt.Time,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type patchPageRequest struct {
+	ExcludedFromMirror *bool `json:"excluded_from_mirror"`
+}
+
+// PATCH /api/pages/{id}: currently only supports toggling
+// excluded_from_mirror. A pointer field distinguishes "not provided"
+// from an explicit false, so more patchable fields can be added later
+// without changing this request shape.
+func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	req, err := decodeJSON[patchPageRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ExcludedFromMirror == nil {
+		writeError(w, http.StatusBadRequest, "excluded_from_mirror is required")
+		return
+	}
+
+	page, err := s.Queries.SetPageExcludedFromMirror(r.Context(), db.SetPageExcludedFromMirrorParams{
+		ExcludedFromMirror: *req.ExcludedFromMirror, ID: id, UserID: user.ID,
+	})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, pageResponseFromPage(page))
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.User) {
