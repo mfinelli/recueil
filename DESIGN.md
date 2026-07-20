@@ -1225,7 +1225,13 @@ path to read or mutate it. Three pieces are needed:
    directly (it has no bearer token or service secret of its own); it calls the
    backend, which makes the outbound authenticated call to the Worker and
    returns the result. This keeps the backend the single place that holds the
-   service secret. **Not yet built** — depends on the dashboard existing.
+   service secret. **Built in Phase 6** as `internal/devices`
+   (`GET /api/devices`, `DELETE /api/devices/{id}`) — a small package of its own
+   rather than folding into `internal/mirror` or `internal/deviceapi`: it
+   authenticates as the backend itself (the service secret), same credential
+   tier as `mirror` and `internal/ingest.WorkerClient`, which is a different
+   actor from `internal/deviceapi`'s paired-device bearer token, so it doesn't
+   belong there either.
 3. **Authorization scope, decided as:** a member can list/revoke only their own
    devices; an admin can list/revoke _any_ user's devices (useful for responding
    to a compromised account without waiting on that user). The Worker endpoints
@@ -2473,14 +2479,27 @@ CREATE TABLE page_tags (
 -- than a closure table: simpler writes, and at this project's scale a
 -- recursive CTE for "this collection and all descendants" is fast enough
 -- that a closure table's extra write-complexity isn't justified.
+--
+-- Uniqueness is per (user_id, parent_id, name), but that can't be a
+-- single UNIQUE table constraint: parent_id is nullable for top-level
+-- collections, and Postgres treats NULL as distinct from itself in a
+-- unique constraint, so a plain UNIQUE(user_id, parent_id, name) would
+-- silently allow two top-level collections named the same thing. Two
+-- partial unique indexes instead (implemented in Phase 6, replacing an
+-- earlier revision of this section that had the single-constraint bug
+-- above) -- one per case, since each is a normal (non-NULL) unique check
+-- within its own partition.
 CREATE TABLE collections (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
   parent_id BIGINT REFERENCES collections(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (user_id, parent_id, name)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE UNIQUE INDEX collections_user_id_name_top_level_key
+  ON collections(user_id, name) WHERE parent_id IS NULL;
+CREATE UNIQUE INDEX collections_user_id_parent_id_name_key
+  ON collections(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
 CREATE INDEX idx_collections_parent ON collections(parent_id);
 
 -- A page may be in zero, one, or many collections. Deleting a collection
@@ -2788,6 +2807,13 @@ recueil/
 │   │                             # terraform/worker/migrations/*.sql and
 │   │                             # passes it in, same pattern as pgmigrate
 │   ├── mirror/                 # pushes the credential mirror to the Worker
+│   ├── devices/                 # backend's service-secret-authenticated
+│   │                              # client for the Manage Devices Worker
+│   │                              # endpoints (GET/DELETE /internal/tokens)
+│   │                              # -- added Phase 6; same credential tier
+│   │                              # as mirror/ and ingest.WorkerClient, a
+│   │                              # different actor from deviceapi/'s
+│   │                              # paired-device bearer token
 │   └── httpapi/                # dashboard-facing HTTP handlers + chi router;
 │                                  # also mounts /info, /ping, /health
 │                                  # (unauthenticated — §13a) on the same router
@@ -2803,17 +2829,25 @@ recueil/
 ├── queries/                    # sqlc source .sql query files
 ├── sqlc.yaml
 ├── src/                     # Svelte dashboard source
+├── index.html                # Vite entry point
 ├── Dockerfile
 ├── go.mod
-├── package.json             # root: dashboard's Vite/Svelte deps, plus
-│                               # Worker test/lint devDependencies (vitest,
-│                               # @cloudflare/vitest-pool-workers, eslint) —
-│                               # the Worker directory has no package.json
-│                               # of its own; see §13a
-├── vite.config.js
+├── package.json             # root: the Svelte dashboard's own package
+│                               # (Svelte/Vite/sass/svelte-check/
+│                               # svelte-spa-router deps) plus repo-wide
+│                               # shared tooling (eslint, prettier, vitest,
+│                               # typescript) — NOT the Worker's own deps;
+│                               # see §13a
+├── vite.config.ts
+├── svelte.config.js          # exports vitePreprocess() so svelte-check
+│                               # understands SCSS the same way Vite does
+├── tsconfig.json              # dashboard's own TS config (src/**, plus
+│                               # vite.config.ts/svelte.config.js)
 ├── vitest.config.js          # root-level; covers Worker tests now, expected
 │                               # to grow a Svelte-scoped project (§13a)
-├── eslint.config.js           # root-level; same per-directory-scoping plan
+├── eslint.config.js           # root-level; per-directory-scoping (§13a) —
+│                               # now covers the dashboard's src/**/*.svelte
+│                               # and src/**/*.ts too, not just the Worker
 ├── Makefile                   # test-db-up/test-db-down/test — the same
 │                                 # commands drive docker-compose.test.yml
 │                                 # locally and in CI (§13a)
@@ -2821,39 +2855,62 @@ recueil/
 │                                 # distinct port + tmpfs, separate from the
 │                                 # dev database below
 │
-├── extension/                # WebExtension, own package.json (needs bundling
-│   ├── src/                    # to pull in vendored SingleFile capture code
-│   ├── manifest.json            # and a WebExtension polyfill — no longer
-│   └── package.json             # Readability.js; see §3a/§6a)
-│
-├── terraform/                  # OpenTofu module
+├── terraform/                  # OpenTofu module AND the Worker's own source
+│   │                              # -- flat, not nested under a worker/
+│   │                              # subdirectory (an earlier revision of
+│   │                              # this tree assumed one; the Worker's
+│   │                              # source lives directly alongside the
+│   │                              # OpenTofu config that deploys it)
 │   ├── main.tf                   # includes random_password for the
 │   │                                # backend↔Worker service secret (§5a) and
 │   │                                # a cloudflare_api_token scoped to D1:Edit
 │   │                                # for the backend's migration runner (§5b)
 │   ├── variables.tf
 │   ├── outputs.tf
-│   ├── worker/                   # plain JS, no build step for deployment —
-│   │   ├── index.js                # local test/lint tooling doesn't change that
-│   │   ├── migrations/            # D1 schema — applied by the backend (§5b),
-│   │   │   │                        # not by wrangler
-│   │   │   ├── 0000_schema_migrations.sql
-│   │   │   └── 0001_users.sql
-│   │   ├── tests/                 # @cloudflare/vitest-pool-workers — real
-│   │   │   │                        # simulated D1 via Miniflare, not mocks
-│   │   │   ├── apply-migrations.js
-│   │   │   ├── fetch.test.js
-│   │   │   └── handleUserMirror.test.js
-│   │   └── tsconfig.json          # @ts-check/JSDoc type-checking, index.js only
-│   └── pwa/                      # static share-target PWA, no build step
-│       ├── index.html
-│       └── manifest.json
+│   ├── versions.tf
+│   ├── waf.tf                    # Browser Integrity Check bypass ruleset
+│   │                                # for backend→Worker service-secret
+│   │                                # traffic (§5c)
+│   ├── README.md
+│   ├── index.js                  # plain JS, no build step for deployment —
+│   │                                # local test/lint tooling doesn't change
+│   │                                # that
+│   ├── package.json              # Worker's own devDependencies (wrangler,
+│   │                                # @cloudflare/*, @aws-crypto/*,
+│   │                                # @smithy/*) — added Phase 6, makes
+│   │                                # terraform/ a pnpm workspace member;
+│   │                                # see §13a for why ESLint/Vitest
+│   │                                # themselves stay root-level regardless
+│   ├── tsconfig.json              # @ts-check/JSDoc type-checking, index.js only
+│   ├── migrations/                # D1 schema — applied by the backend (§5b),
+│   │   │                            # not by wrangler
+│   │   ├── 0000_schema_migrations.sql
+│   │   └── 0001_users.sql
+│   └── tests/                     # @cloudflare/vitest-pool-workers — real
+│       │                            # simulated D1 via Miniflare, not mocks
+│       ├── apply-migrations.js
+│       ├── fetch.test.js
+│       └── handleUserMirror.test.js
+├── pwa/                          # static share-target PWA, no build step --
+│   ├── index.html                  # not yet built (see IMPLEMENTATION.md's
+│   └── manifest.json               # "On the horizon") -- top-level, not
+│                                      # nested under terraform/ as an earlier
+│                                      # revision of this tree had it: static
+│                                      # PWA files aren't a Terraform/Worker
+│                                      # concern the way index.js is
 │
-├── website/                      # Zola site — self-contained, own layout
-│   ├── config.toml
+├── extension/                # WebExtension, own package.json (needs bundling
+│   ├── src/                    # to pull in vendored SingleFile capture code
+│   ├── manifest.json            # and a WebExtension polyfill — no longer
+│   └── package.json             # Readability.js; see §3a/§6a)
+│
+├── www/                          # Zola site — self-contained, own layout
+│   │                                # (named www/, not website/ as an
+│   │                                # earlier revision of this tree had it)
+│   ├── zola.toml
 │   ├── content/
 │   ├── templates/
-│   └── static/
+│   └── sass/
 │
 ├── pnpm-workspace.yaml
 ├── docker-compose.yml            # backend + postgres + screenshot sidecar
@@ -2870,14 +2927,19 @@ testing/migration setup as actually implemented, plus the root-level
 directly in `cmd/`, confirming they share `go.mod`/the single binary cleanly —
 not a separate `cmd/cli/` subdirectory as an earlier revision of this tree
 assumed, before the `main.go`/`cobra` restructure had actually produced
-`server.go`/`agent.go` as the pattern to follow.
+`server.go`/`agent.go` as the pattern to follow. Phase 6 additionally corrected
+several other places where this tree had drifted from reality (some from before
+this project's own working sessions had reality to check it against): the
+Worker's source living flat in `terraform/`, not nested under a `worker/`
+subdirectory; the marketing site's actual directory name (`www/`, not
+`website/`); and `terraform/package.json`'s existence, per §13a.
 
 ### Notes on specific decisions
 
 (Unchanged from v1 — see original rationale for Go-at-root, CLI sharing the
 server's Go module, the dashboard's build output being embedded via `go:embed`,
 the Worker/PWA's no-build-step requirement, the extension's own
-directory/bundler, and `website/`'s self-containment.)
+directory/bundler, and `www/`'s self-containment.)
 
 ### 13a. Implementation Stack & Tooling
 
@@ -3079,9 +3141,10 @@ README that can drift out of sync with the architecture decisions around it.
   config file per component. The Worker's own `index.js` needs
   `globals.serviceworker` (for `Request`/`Response`/`URL`/`fetch`/`crypto`, none
   of which are standard Node or browser globals as far as ESLint's built-in
-  knowledge goes); its test files additionally need `globals.vitest`. The same
-  file is expected to grow a Svelte-dashboard-scoped block later rather than
-  needing a file of its own.
+  knowledge goes); its test files additionally need `globals.vitest`. Phase 6
+  added the expected Svelte-dashboard-scoped block to this same file (`.svelte`/
+  dashboard `.ts` globs, `typescript-eslint` + `eslint-plugin-svelte`) rather
+  than a separate config file, as planned here.
 - **Testing:** `@cloudflare/vitest-pool-workers` — runs test files inside the
   real `workerd` runtime (not a Node-side approximation of it), with Miniflare
   providing a real local D1 database. The same `migrations/*.sql` files that
@@ -3094,11 +3157,56 @@ README that can drift out of sync with the architecture decisions around it.
   exist — each project scoped to its own runtime/environment (`workerd` for the
   Worker, presumably `jsdom` or similar for Svelte component tests), never mixed
   within one project.
-- Both the ESLint and Vitest devDependencies live in the root `package.json` —
-  the Worker's own directory has no `package.json` of its own and isn't a pnpm
-  workspace member. The "no build step" constraint is about what ships to
-  Cloudflare on deploy; it was never a constraint on what local tooling is
-  allowed to exist for development and CI.
+- **Dependency ownership vs. tooling orchestration are separate concerns.**
+  `terraform/package.json` (added in Phase 6) holds the Worker's own
+  dependencies (`wrangler`, `@cloudflare/*`, `@aws-crypto/*`, `@smithy/*`) and
+  makes `terraform/` a pnpm workspace member, mirroring `extension/`'s existing
+  pattern (its own `package.json` for `esbuild`/`web-ext`/`crx3`, but no
+  `eslint.config.js`/`vitest.config.js` of its own). ESLint and Vitest
+  themselves, though, stay root-level and package-agnostic — they orchestrate
+  across every workspace member (Worker, extension, and now the dashboard's own
+  `src/`) via per-directory `files` globs / per-project scoping rather than each
+  package running its own separate lint/test invocation. Root `package.json` is,
+  correspondingly, the Svelte dashboard's own package (its `dependencies`/
+  `devDependencies` are Svelte/Vite/dashboard-specific), not a shared dumping
+  ground for every package's deps — an earlier revision of this section had that
+  backwards. The "no build step" constraint is about what ships to Cloudflare on
+  deploy; it was never a constraint on what local tooling (including a
+  `package.json` purely for devDependencies) is allowed to exist for development
+  and CI.
+
+**Svelte Dashboard:**
+
+- **Svelte 5 (runes), Vite, TypeScript, SCSS** — a real build step, unlike the
+  Worker/PWA: `go:embed`-ing the built `dist/` output into the Go binary means
+  nothing about the "no build step" constraint applies here (that constraint is
+  specifically about what ships to Cloudflare on deploy). SCSS support comes
+  from `@sveltejs/vite-plugin-svelte`'s own `vitePreprocess()` (exported via
+  `svelte.config.js`, so `svelte-check` sees the same preprocessing Vite itself
+  uses) — not the separate `svelte-preprocess` package, which the modern
+  Vite-plugin-Svelte toolchain has made redundant for the common TS/SCSS case.
+- **Routing:** `svelte-spa-router` — a small client-side router, not SvelteKit.
+  SvelteKit's file-based routing/server-route/loader machinery would mostly go
+  unused here: the session model is already a same-origin
+  `httpOnly`/`SameSite=Lax` cookie (§5) checked via ordinary chi middleware, so
+  there's no SSR or server-side data-loading need SvelteKit's extra layer would
+  actually earn its keep for.
+- **Dev workflow:** `pnpm dev` runs Vite's own dev server, whose config proxies
+  `/api` to the Go backend (default `http://localhost:8080`, matching
+  `listen_addr`'s own default) so the dashboard doesn't need a full Go rebuild
+  on every frontend change. `dist/` is gitignored, not committed — built via
+  CI/the Makefile like any other generated output, same convention as
+  `internal/db/`.
+- **Capture HTML delivery** (`GET /api/captures/{id}/html`) prefers passing
+  through the archive's own on-disk zstd compression untouched
+  (`Content-Encoding: zstd`) when the client's `Accept-Encoding` says it can
+  handle it, rather than decompressing server-side just to maybe recompress.
+  Otherwise it decompresses and leans on `middleware.Compress`'s existing
+  gzip/deflate negotiation (its allowed-types list includes `text/html`
+  specifically for this) rather than hand-rolling a second compression path —
+  verified against chi's own `compress.go` source that it steps aside correctly
+  once `Content-Encoding` is already set, so the two paths can't double-compress
+  each other.
 
 This section is expected to keep growing as the extension, dashboard, and CLI
 are built out.
@@ -3283,3 +3391,20 @@ What remains open is purely implementation-phase, not architectural:
   options page, considered and declined for now after actually using the popup
   during testing — everything stays there unless/until there are enough settings
   that it stops making sense to.
+- **Resolved this round (Phase 6): the Manage Devices dashboard screen's third
+  piece — the backend API passthrough — is built** (`internal/devices`,
+  `GET`/`DELETE /api/devices[/{id}]`), closing out §5's Manage Devices section
+  entirely (all three pieces now built). Role-based auth gets exercised for the
+  first time beyond login, per this phase's original brief, but not as a
+  route-level `RequireAdmin` gate: member-vs-admin scoping happens per-request
+  inside the handlers themselves (`resolveTargetUserID` in `internal/httpapi`),
+  since a member and an admin hit the exact same routes with different allowed
+  `?user_id=` values — an all-or-nothing route gate doesn't fit that shape. Also
+  fixed a real bug in §10's previously-documented `collections` schema, caught
+  while building its migration: a single `UNIQUE(user_id, parent_id, name)`
+  constraint doesn't actually enforce anything for top-level collections, since
+  Postgres treats a NULL `parent_id` as distinct from itself — replaced with two
+  partial unique indexes (see §10). The rest of Phase 6's dashboard-facing
+  read/write API (library browsing/search, capture detail/HTML
+  streaming/language correction, tags, collections CRUD) is also built; see
+  IMPLEMENTATION.md for the full route table and remaining Svelte-side work.

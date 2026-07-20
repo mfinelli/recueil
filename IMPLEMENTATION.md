@@ -1183,7 +1183,7 @@ Full test coverage added (`captures.test.js`, plus a routing test in
 `fetch.test.js`), run against real Miniflare D1 the same way the rest of this
 suite is — all 177 tests across the Worker suite pass.
 
-## Phase 7 (Screenshot Job) — in progress
+## Phase 7 (Screenshot Job)
 
 Phase 6 (the dashboard) is being skipped for now, on the reasoning that Phase
 7's work makes it a more complete dashboard once it does get built. Phase 7
@@ -1523,3 +1523,192 @@ signal than a raw pending count, since some pending jobs at any given moment is
 normal; a _growing_ age is what actually indicates something stuck).
 Deliberately absent, not zero, for a job type with nothing currently pending —
 asserted directly in `internal/metrics/metrics_test.go`.
+
+## Phase 6 (Dashboard) — in progress
+
+Deferred until after Phase 7 specifically so it could be built against a more
+complete backend in one go, per the original phase-ordering note; folds in Phase
+8 (Manage Devices) since that screen naturally slots in once the dashboard has
+basic shape. Two halves so far: the Svelte project skeleton itself, and the
+backend read/write API surface every dashboard screen will call. No actual
+dashboard screens exist yet beyond two placeholder routes proving the skeleton
+works end to end — that's the next piece of this phase.
+
+### Svelte project skeleton
+
+- **Plain Svelte 5 (runes) + Vite + TypeScript + SCSS**, not SvelteKit — the
+  session model is already a same-origin cookie (§5), so there's no SSR/
+  server-loader need SvelteKit's extra layer would earn its keep for. Routing
+  via `svelte-spa-router`, a small client-side router rather than file-based
+  conventions. `svelte.config.js` exports `vitePreprocess()` (from
+  `@sveltejs/vite-plugin-svelte` itself, not the separate `svelte-preprocess`
+  package) so `svelte-check` understands SCSS the same way Vite does.
+- **Root `package.json` is now the dashboard's own package** — `src/` lives
+  directly at the repo root. This meant reorganizing the pnpm workspace:
+  `terraform/package.json` is new, holding the Worker's own devDependencies
+  (`wrangler`, `@cloudflare/*`, `@aws-crypto/*`, `@smithy/*`) and making
+  `terraform/` a pnpm workspace member, mirroring `extension/`'s existing
+  isolation pattern. `eslint.config.js`/`vitest.config.js` stay root-level
+  regardless — shared orchestration across every package was already the
+  documented plan (DESIGN.md §13a) and didn't need to change, only which
+  `package.json` owns which dependencies. `jsdom` moved from root to
+  `extension/package.json` (its actual owner; was only in root incidentally).
+- **Dev workflow:** `vite.config.ts` proxies `/api` to `http://localhost:8080`
+  (matching `listen_addr`'s default) so `pnpm dev` doesn't need a Go rebuild per
+  change.
+- Skeleton content is intentionally minimal: `src/App.svelte` wires
+  `svelte-spa-router` to two placeholder routes (`Login`, `Library`), each using
+  `<style lang="scss">` to prove the TS+SCSS pipeline actually works, not just
+  that it's configured. `src/app.scss`'s token set is explicitly copy-pasted
+  from the extension popup's own CSS as a placeholder — reconciling it against
+  the marketing site's ledger/brass/stamp palette into a real dashboard design
+  system is a separate, not-yet-started pass.
+- Verified: `pnpm build`, `svelte-check`,
+  `pnpm run --filter=@recueil/terraform types`, `eslint` (extended with
+  `typescript-eslint`/`eslint-plugin-svelte` for `.ts`/`.svelte`), and the full
+  pre-existing 301-test Worker/extension suite all still pass after the reorg.
+
+### Collections: migration + queries
+
+`collections`/`page_collections` were fully specified in DESIGN.md §10 but had
+no migration — unlike `tags`/`page_tags`, which landed early during Phase 7.
+Built this phase (`migrations/00009_create_collections.sql`,
+`queries/collections.sql`, `queries/page_collections.sql`):
+
+- `CreateCollection` is a plain `INSERT`, not an upsert like `UpsertTag`/
+  `UpsertPage` — collections are created by explicit user action through the
+  dashboard, not derived from ingestion, so a duplicate name should surface as a
+  real conflict for the caller to turn into a 409, not silently merge.
+- `RenameCollection`/`DeleteCollection` check both `id` and `user_id` in their
+  `WHERE` clause (same belt-and-suspenders pattern as the D1 token-revoke
+  cross-check) — a caller bug passing the wrong id can't touch another user's
+  collection.
+- `ListCollectionsByUser` returns a flat list; the dashboard reconstructs the
+  tree client-side from `(id, parent_id)`, no recursive CTE needed for a
+  full-user listing.
+
+### Manage Devices backend (`internal/devices`)
+
+New package, not folded into `internal/mirror` or `internal/deviceapi` — see
+DESIGN.md's updated Manage Devices section and the package's own doc comment for
+the full reasoning (it authenticates as the backend itself via the service
+secret, same credential tier as `mirror`/`ingest.WorkerClient`, a different
+actor from `deviceapi`'s paired-device bearer token).
+
+- `Client.ListTokens`/`RevokeToken` against the Worker's existing
+  `GET`/`DELETE /internal/tokens` endpoints (built back in Phase 2, per
+  DESIGN.md — this phase only needed the backend-side client and passthrough).
+  `ErrNotFound` sentinel on the Worker's 404.
+- **`parseD1NativeTimestamp`**: `tokens.created_at`/`last_used_at` are written
+  by the Worker's own raw SQL (`CURRENT_TIMESTAMP`), which is SQLite-native
+  format (`"2006-01-02 15:04:05"`, always UTC, no `T`/offset) — not RFC 3339
+  like `internal/ingest`'s own `parseD1Timestamp` (which parses timestamps a
+  _device_ generates client-side). A different source, a different format;
+  reusing the wrong helper would have silently failed to parse or misread the
+  time.
+- `internal/httpapi`: `GET /api/devices`, `DELETE /api/devices/{id}`.
+  `resolveTargetUserID` implements DESIGN.md's member-vs-admin scoping (member:
+  self only; admin: any `?user_id=`, defaulting to self) as a per-request check
+  inside the handlers, not a route-level `RequireAdmin` gate — both roles hit
+  the identical routes with different allowed parameter values, which doesn't
+  fit an all-or-nothing gate.
+- `cmd/server.go` constructs
+  `devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)` alongside the
+  existing `mirror.NewClient` call, same config values, both pointed at the one
+  real Worker deployment.
+
+### Pages/captures: library browsing, search, detail, HTML, language correction
+
+- **`ListPages`/`SearchPages`** (`queries/pages.sql`) both carry a
+  `COUNT(*) OVER()` window column so the dashboard gets a pagination total
+  without a second round-trip — Postgres computes window functions before
+  `LIMIT`/`OFFSET` slicing, so it's the full matching-set count, not just the
+  returned page. `SearchPages` matches if _any_ capture of a page matches
+  (`DISTINCT ON (pages.id)`, ranked by `ts_rank`), not just the latest — version
+  history means the remembered content might only live in an older capture.
+  `plainto_tsquery` uses the `'simple'` config (query terms are the user's
+  input, not document content). Pagination is plain `LIMIT`/`OFFSET`, not keyset
+  — simpler params, and drift-under-concurrent- insert isn't a real concern at
+  this project's scale.
+- **`GetPageByIDForUser`/`GetCaptureByIDForUser`** are new, user-scoped
+  counterparts to the existing unscoped `GetPageByID`/`GetCaptureByID` — those
+  two are left alone rather than changed in place, since their one existing
+  caller (`internal/ai`'s tests) uses them specifically to discover a row's
+  _own_ `user_id` in the first place, which a required `user_id` parameter would
+  make circular. `GetCaptureByIDForUser` joins through `pages` for the ownership
+  check, since `captures` has no `user_id` column of its own.
+- **`GetPage` (page detail)** returns the page, its full capture history
+  (`ListCapturesByPage`, most recent first, summarized — not the full row;
+  `reader_text`/`ai_summary` are large and belong to capture detail instead),
+  its tags (`ListPageTags`), and its collection memberships
+  (`ListPageCollections`), all flattened into one JSON object via an embedded
+  `pageResponse` struct rather than a nested envelope.
+- **`GetCapture` (capture detail)** returns the full row including
+  `reader_text`/`ai_summary`.
+- **`GetCaptureHTML`**: the archived HTML is already zstd-compressed on disk. If
+  the client's `Accept-Encoding` includes `zstd`, streams those bytes completely
+  unmodified via a new `archive.Store.OpenRaw` (no decompression) —
+  `Content-Encoding: zstd` set directly. Otherwise streams the decompressed HTML
+  and lets the router's own `middleware.Compress` (now includes `text/html` in
+  its allowed types) gzip it if the client asked for gzip instead. Verified
+  directly against chi's real `compress.go` source (not just its docs) that
+  `WriteHeader` steps aside the moment `Content-Encoding` is already set on the
+  response, so the zstd path can't get double-compressed by the same middleware
+  handling the gzip fallback.
+- **`PatchCaptureLanguage`**: manual correction (DESIGN.md §10).
+  `reader_text_tsv` recomputes automatically as part of the same `UPDATE` —
+  already an established, documented fact in this codebase
+  (`SetCaptureReadability`'s own comment), not something newly assumed here. An
+  invalid `regconfig` value surfaces as a real Postgres error from the `UPDATE`
+  itself (the cast performs a `pg_ts_config` catalog lookup), so no separate
+  pre-validation query is needed.
+- **`ListTextSearchConfigs`** (`GET /api/text-search-configs`), backing the
+  correction dropdown: a plain query against the raw pool, not sqlc-generated —
+  confirmed directly (not assumed) that adding a `pg_ts_config` query to
+  `queries/*.sql` and running `sqlc generate` against it fails with
+  `relation "pg_ts_config" does not exist`, since sqlc's schema analysis only
+  knows our own migrations, not Postgres's built-in system catalogs. Same
+  reasoning `internal/ingest`'s own `languageConfigExists` already documents for
+  itself; `Server` picked up a `Pool *pgxpool.Pool` field for this one handler's
+  sake.
+- New `dbtest` fixtures: `CreatePage`, `CreateCapture` (via the real
+  `InsertCaptureIdempotent`/`UpsertPage` paths, not bespoke inserts),
+  `SetCaptureReaderText`, `CreateCaptureWithHTML` (writes real content through a
+  caller-supplied `archive.Store` for tests needing actual on-disk HTML, e.g.
+  `GetCaptureHTML`'s zstd/gzip streaming). `newTestServer`'s signature wasn't
+  changed to expose its internal `archive.Store` (it has ~40 other call sites
+  that don't care); a separate `newTestServerWithStore` helper covers the
+  handful of tests that do.
+
+### Tags/collections routes
+
+Mostly wiring — the collections queries already existed from earlier this phase,
+and only two tag queries were missing (`ListTags`, `RemovePageTag`;
+`queries/tags.sql` previously only had `UpsertTag`, `page_tags.sql` only
+`AddPageTag`/`ListPageTags`).
+
+- `GET /api/tags`, `POST`/`DELETE /api/pages/{id}/tags[/{tagId}]` — adding a tag
+  upserts by name (`UpsertTag`) then links it with `source: "manual"`, matching
+  the source value a person applying a tag through the dashboard should carry
+  (distinct from the AI enrichment job's own tags).
+- Full collections CRUD under `/api/collections`, plus
+  `GET /api/collections/{id}/pages` and page↔collection membership under
+  `/api/pages/{id}/collections`. `CreateCollection`'s optional `parent_id` is
+  verified to belong to the calling user before use — the FK itself has no
+  `user_id` check, so without this a request could nest a new collection under
+  another user's collection id.
+- `GetPage`'s response was extended to include `tags`/`collections` as part of
+  this work, since both queries already existed and page detail was otherwise
+  missing them — a stale comment on that handler (still saying reader_text/
+  ai_summary belonged to a "future" capture detail endpoint) was also fixed;
+  that future arrived the round before this one.
+
+### Still ahead
+
+The actual Svelte screens against this now-complete route table: library
+browsing/search UI, page/capture detail + reader view, tag/collection management
+UI, the Manage Devices screen, and the login/setup flow the skeleton's
+placeholder routes stand in for. Then `go:embed` wiring once there's something
+real to embed, and the dashboard's actual visual design system (reconciling the
+extension's neutral paper/ink surface against the marketing site's
+ledger/brass/stamp accents — flagged during planning but deferred for now).
