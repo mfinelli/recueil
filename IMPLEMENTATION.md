@@ -1042,7 +1042,7 @@ rather than functional-only styling.
 
 ### Queue-driven capture
 
-Built as two isolated steps, tested separately, per Mario's own preference for
+Built as two isolated steps, tested separately, per ours own preference for
 incremental delivery: the list-refresh-and-badge half first, then the actual
 claim flow and completion-routing change on top. Ended up simpler on the backend
 side than expected — `POST /queue/:id/claim` and its 404/409/410 distinctions
@@ -1183,3 +1183,140 @@ scoped to a queue item."
 Full test coverage added (`captures.test.js`, plus a routing test in
 `fetch.test.js`), run against real Miniflare D1 the same way the rest of this
 suite is — all 177 tests across the Worker suite pass.
+
+## Phase 7 (Screenshot Job) — in progress
+
+Phase 6 (the dashboard) is being skipped for now, on the reasoning that Phase
+7's work makes it a more complete dashboard once it does get built. Phase 7
+itself is three pieces — screenshot job, readability job, AI job — built in that
+order; only the first is done so far.
+
+### What exists now
+
+- **`queries/screenshot_jobs.sql`**: `ClaimDueScreenshotJobs`,
+  `GetScreenshotJobByCaptureID`, `SetCaptureThumbnail`, `MarkScreenshotJobDone`,
+  `RetryScreenshotJob`, `FailScreenshotJob` — alongside the
+  `CreateScreenshotJob` insert that already existed from Phase 3½'s ingestion
+  work.
+- **`internal/screenshot`**: the `Runner` — a long-lived `chromedp`
+  `RemoteAllocator` connection to the shared sidecar, plus a long-lived
+  ephemeral HTTP server (see DESIGN.md §6's "Implementation (Phase 7)" for why
+  that exists instead of `file://`). `RunOnce` claims a bounded batch of due
+  jobs and processes them with a `screenshot_worker_concurrency`-bounded worker
+  pool; each job opens the capture's already-decompressed HTML at a fresh
+  random-token URL, takes a full-page PNG screenshot, hashes and stores it via
+  `archive.Store.WriteAsset` (keyed by the _screenshot's_ own hash, not the
+  capture's — same reasoning archive.go's package doc already gives for
+  favicons), and commits `captures.thumbnail_path` + the job's `done` status in
+  one transaction. Failure hands off to exponential backoff
+  (`30s * 2^(attempts-1)`, capped at 30 minutes) up to `screenshot_max_attempts`
+  (default 3) before marking the job `failed` permanently.
+- **`internal/config`**: four new fields, all with defaults, explicitly _not_
+  added to the required-config list — an unreachable or unconfigured sidecar
+  degrades to "no thumbnail, retried later," never a startup failure, matching
+  this whole feature's optional-by-design status.
+  `screenshot_sidecar_url`/`screenshot_render_host` are two different directions
+  of the same connection (agent→sidecar vs. sidecar→agent) and need genuinely
+  different values depending on deployment shape; see DESIGN.md §6 for the
+  concrete local-dev-vs-all-docker cases this covers.
+- **`compose.yaml`**: a new `chromedp` service (`chromedp/headless-shell`,
+  `shm_size: 2gb`) in both the `local` and `test` profiles. Its host port stays
+  published (`127.0.0.1:9222:9222`) — a real difference from what the eventual
+  operator-facing deployment docs should show, since we run the agent binary
+  directly during development rather than as a container on the same compose
+  network, and needs to reach the sidecar from outside it.
+  `extra_hosts: host.docker.internal:host-gateway` is what lets the sidecar
+  container reach back out to that host-side agent process in turn (needed on
+  Linux; a no-op, not a conflict, on Docker Desktop).
+- **`cmd/agent.go`**: `screenshot.Runner` constructed alongside the existing
+  `Ingester`/`Syncer`, with its own `defer Close()` (it's the first of these
+  three to hold live OS resources — the sidecar connection and the render
+  server's listener — that need explicit teardown, unlike `Ingester`/`Syncer`
+  themselves). `runAgentCycle` now runs all three passes sequentially on the
+  same shared tick.
+
+### Testing
+
+`internal/screenshot`'s tests run against real Postgres (`internal/dbtest`)
+_and_ the real `chromedp` sidecar (compose's new `test`-profile service) — no
+mocked CDP client, extending this project's existing "no mocks for DB-touching
+code" convention to the sidecar for the same reason: a hand-rolled fake would
+just re-test this package's own assumptions about chromedp, not chromedp itself.
+Coverage so far: a happy-path render (asserted all the way down to the stored
+file's actual PNG magic bytes, not just "no error"), one failure not blocking
+the rest of a batch, permanent failure once `max_attempts` is exhausted, and a
+no-due-jobs no-op. `backoff` itself (pure, unexported) gets its own table-driven
+unit test in an internal (`package screenshot`) test file — the one exception to
+this project's external-test-package default, per its own stated testing
+convention.
+
+### Round 2: review feedback and the resulting changes
+
+A first review pass (before any of this had run against real Postgres/Chrome)
+caught several things worth fixing before, not after, first real use:
+
+- Fixed viewport (`chromedp.CaptureScreenshot` + `EmulateViewport(1280, 800)`)
+  replaced `chromedp.FullScreenshot` — full-page screenshots directly
+  contradicted the "uniform thumbnails for the dashboard" reason this job exists
+  on the backend at all.
+- `Runner.New` now pings the sidecar's `/json/version` once at startup and fails
+  loudly if it's unreachable, so a restart-until-healthy orchestrator policy
+  actually has something to act on.
+- `ListDueScreenshotJobs` became `ClaimDueScreenshotJobs`: a real atomic
+  `FOR UPDATE SKIP LOCKED` claim (new migration `00007` adds a `'processing'`
+  status + `claimed_at` to both `screenshot_jobs` and `readability_jobs`, plus a
+  15-minute stale-reclaim, matching the D1 queue's own number), ahead of
+  actually needing multi-process safety — future-proofing for a
+  horizontally-scaled or hosted deployment, not solving a problem that exists
+  today.
+- `cmd/agent.go` now runs two independent tickers instead of one:
+  `agent_worker_poll_interval_seconds` (default 300s, everything touching the
+  Cloudflare Worker/D1) and `agent_local_poll_interval_seconds` (default 30s,
+  Postgres-only jobs) — the old single `agent_poll_interval_seconds` is gone.
+  This is what lets the Worker stay comfortably inside Cloudflare's free tier
+  without also slowing down how quickly a freshly-ingested capture gets its
+  screenshot.
+- New migration `00008` adds `captures.thumbnail_size_bytes` and
+  `captures.favicon_size_bytes` (both nullable); `archive.Store.WriteAsset` now
+  returns the actual on-disk size instead of discarding it, threaded through
+  both this job and `internal/ingest`'s favicon handling.
+
+### Round 3: asset hashes and a non-root sidecar
+
+- **`favicon_hash`/`thumbnail_hash`** (new migration `00009`): both already
+  keyed by their own sha256 hash as their on-disk filename (see
+  `internal/archive`'s package doc), but a filename is an implementation detail
+  — recording the hash as its own column is what a future integrity-check
+  command needs (hash everything actually on disk, compare against what was
+  recorded at write time, independent of whatever naming scheme is current).
+  Sha256 throughout, not a faster algorithm for these smaller assets: the
+  performance difference is irrelevant at this scale (small files, hashed once,
+  async), and a second algorithm would only cost a future verify command the
+  need to track which column uses which. `archive.Store.WriteAsset`'s
+  already-computed hash is now threaded through `internal/ingest`'s favicon
+  handling and `internal/screenshot`'s thumbnail handling into
+  `InsertCaptureIdempotent`/`SetCaptureThumbnail` rather than only ever living
+  in the returned path string.
+
+### Round 4: first real run against Docker — two genuine bugs found
+
+The first attempt at `just compose test` failed outright, surfacing two
+unrelated problems, both fixed once actually run for real rather than only
+reasoned through:
+
+- **Chromium's DevTools port turned out to be permanently loopback-only, full
+  stop.** Since Chromium M113/M114, an all-zeros
+  `--remote-debugging-address=0.0.0.0` is silently forced back to `127.0.0.1` in
+  Chromium's own source — a non-configurable security decision (unrestricted
+  network access to the DevTools protocol is a full remote-control vector), not
+  a bug and not something any flag works around. This meant
+  `screenshot_sidecar_url` was never actually reachable — not from the host via
+  the published port, and, worse, not from another container on the same compose
+  network either, meaning this would have equally broken a fully-dockerized
+  production deployment, not just local dev. **Fix**: `compose.yaml`'s
+  `chromedp` service now runs Chromium's real listener on an internal-only port
+  (9223); a new `chromedp-proxy` service (`alpine/socat`, sharing `chromedp`'s
+  network namespace via `network_mode: "service:chromedp"`) bridges the
+  externally-reachable 9222 to it with a plain TCP forward. Nothing in Go or
+  `internal/config` changed — `screenshot_sidecar_url` still targets port 9222
+  either way, now transparently proxied rather than hitting Chromium directly.

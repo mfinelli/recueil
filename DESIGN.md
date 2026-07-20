@@ -1525,15 +1525,143 @@ Because the screenshot is no longer produced client-side and never touches R2:
   earlier revision but never actually given a schema entry; that gap is closed
   here.
 
+### Implementation (Phase 7)
+
+Built as `internal/screenshot`, a `RunOnce`-shaped callable unit with no
+scheduler of its own, same as `internal/ingest` — `cmd/agent.go` drives it on
+its own faster, Postgres-only ticker (`agent_local_poll_interval_seconds`),
+separate from the slower ticker ingestion and the mirror sync share
+(`agent_worker_poll_interval_seconds`) — see "Two independent agent schedules"
+below.
+
+**Resolved: two independent runners, not a combined page-load.** §6a's "whether
+to actually combine them ... is an implementation-phase decision, not resolved
+here" is now resolved in favor of staying independent — simpler, and the
+scheduling optimization it gives up (one page load serving both a pending
+screenshot job and a pending readability job for the same capture) was judged
+not worth the added coordination complexity for what's still a modest-scale,
+self-hosted workload.
+
+**Claiming due jobs: atomic, `FOR UPDATE SKIP LOCKED`.**
+`ClaimDueScreenshotJobs` selects and claims the batch in one statement — see
+"Atomic multi-claimant claiming" below for the full reasoning (today's
+single-ticker, single-process agent doesn't strictly need the locking, but
+building it in now means a future horizontally-scaled or hosted deployment needs
+no changes to this package at all). Bounded concurrency _within_ one `RunOnce`
+call is separately plain Go concurrency — a semaphore-bounded worker pool over
+the one already-claimed batch (config's `screenshot_worker_concurrency`, default
+3, matching this section's own "2-3 concurrent tabs" guidance).
+
+**Serving HTML to the sidecar: an ephemeral HTTP server, not `file://`.** The
+sidecar is a separate process — usually a separate container — with no
+filesystem access to the agent's local archive, so `file://` was ruled out in
+favor of the "brief ephemeral local HTTP server" alternative this section
+already named as an option. `internal/screenshot.Runner` runs one long-lived
+HTTP server (bound to every interface) for its own lifetime; each render
+registers that job's already-decompressed HTML bytes at a fresh random-token
+path, hands the sidecar a URL pointing back at itself, and unregisters it once
+the render finishes (success or failure). This needed a config field on each
+side of the connection, since the two directions have genuinely different
+reachability answers:
+
+- `screenshot_sidecar_url` — the agent's own outbound address for the sidecar
+  (agent → sidecar). `http://chromedp:9222` when both run in the same compose
+  network; `http://127.0.0.1:9222` when the agent binary runs directly on the
+  operator's own machine against the sidecar's published host port — see
+  compose.yaml's own comment on why that port stays published even though an
+  all-in-docker deployment doesn't need it.
+- `screenshot_render_host` — the hostname the _sidecar_ should use to reach back
+  into the agent's render server (sidecar → agent), the opposite direction.
+  `chromedp`'s own compose service name works when both run in the same network
+  (there is no agent-side published port to configure here, since the render
+  server's port is assigned dynamically and embedded in the per-job URL at
+  runtime — nothing for the operator to pin); the local-dev split shape (sidecar
+  in Docker, agent on the host) instead needs `host.docker.internal`, which is
+  why compose.yaml's `chromedp` service carries an explicit
+  `extra_hosts: host.docker.internal:host-gateway` (needed on Linux; harmless,
+  and unnecessary, on Docker Desktop).
+
+**Retry/backoff**: exponential, `30s * 2^(attempts-1)` capped at 30 minutes,
+bounded by `screenshot_max_attempts` (default 3) before the job moves to
+`failed` permanently — the concrete numbers this section's original "bounded
+retry with backoff" left unspecified.
+
+**Testing**: `internal/screenshot`'s tests run against a real Postgres (via
+`internal/dbtest`, same as every other DB-touching package) _and_ a real
+`chromedp` sidecar (`compose.yaml`'s `chromedp` service, `test` profile) rather
+than a mocked CDP client — consistent with this project's standing "no mocks for
+DB-touching code" convention, extended here to "no mocks for sidecar-touching
+code" for the same reason: a hand-rolled fake CDP implementation would just be
+re-testing this package's own assumptions about chromedp's behavior, not
+chromedp itself.
+
+**Revised after a first review pass**, before this had run for real:
+
+- **Fixed viewport, not full-page.** §6's own "Design" subsection already says
+  this job exists on the backend specifically for _consistent, full-page-quality
+  thumbnails_ — but "full-page" and "consistent" turn out to be in tension: a
+  full-page (variable-height) screenshot means every capture gets a different
+  aspect ratio, which is the opposite of consistent once there's an actual grid
+  of thumbnails to look at. Resolved in favor of `chromedp.CaptureScreenshot`
+  (current viewport only) against a fixed `chromedp.EmulateViewport(1280, 800)`,
+  not `chromedp.FullScreenshot` (the entire scrollable page). Uniform
+  dimensions, not maximal content, is the actual goal.
+- **Startup reachability check.** `Runner.New` now does one bounded-time
+  `GET /json/version` against the sidecar before creating any resources, and
+  fails loudly if it doesn't answer — rather than starting up "successfully" and
+  then having every single job fail against an unreachable sidecar forever. This
+  is what lets an orchestrator's restart-until-healthy policy (Docker Compose's
+  restart policy, systemd's `Restart=on-failure`, etc.) actually do its job. A
+  **container-level** Docker healthcheck on the `chromedp` service itself was
+  considered too, but ruled out once confirmed (not just suspected) that the
+  `headless-shell` image has neither `curl` nor `wget` — there's no `CMD-SHELL`
+  worth writing. This startup check is the only reachability signal this project
+  has, and arguably the more useful one anyway: it's written from the actual
+  consumer's perspective (can _our_ code reach it), not a generic
+  container-level probe.
+- **Atomic multi-claimant claiming, ahead of actually needing it.**
+  `ClaimDueScreenshotJobs` now does `FOR UPDATE SKIP LOCKED` plus an atomic
+  claim-and-mark-`processing` update (new migration: a `'processing'` status and
+  `claimed_at` column on both `screenshot_jobs` and `readability_jobs`), rather
+  than the plain unlocked `SELECT` the first version shipped with. Today's
+  single-ticker, single-process agent never actually needs the locking — but
+  building it in now means a future horizontally-scaled or hosted deployment (a
+  paid SaaS tier, say) needs zero changes to this package when that day comes,
+  rather than a retrofit. A `'processing'` job whose claimant crashed mid-render
+  becomes reclaimable again after 15 minutes (`claimStaleTimeout`), the same
+  number the D1 queue's own claim-visibility timeout already uses (§8) rather
+  than inventing a second one for the same underlying question.
+- **`renderTimeout` raised from 30s to 60s** — more headroom for a large,
+  fully-inlined SingleFile capture without changing anything else about the
+  design.
+- **Two independent agent schedules, not one shared ticker.** `cmd/agent.go` now
+  runs `AgentWorkerPollIntervalSeconds` (default 300s) for everything that talks
+  to the Cloudflare Worker (ingestion, the D1 mirror sync) and
+  `AgentLocalPollIntervalSeconds` (default 30s) for everything that only touches
+  this process's own Postgres (the screenshot job today; readability and AI
+  enrichment will join it on the same schedule). This is what makes "runs
+  comfortably on Cloudflare's free tier" and "picks up new captures quickly"
+  both true at once, rather than trading one off against the other on a single
+  shared interval — see §15.
+- **`thumbnail_size_bytes`/`favicon_size_bytes`.** Two new nullable columns on
+  `captures`, mirroring `html_compressed_size_bytes`'s own "so the dashboard can
+  surface real numbers" reasoning for the two other on-disk assets a capture can
+  have. `archive.Store.WriteAsset` now returns the actual on-disk
+  (post-compression) byte count instead of discarding it, so both this job and
+  ingestion's favicon handling record a real number rather than each re-deriving
+  (and risking silently getting wrong for the compressed case) an approximation
+  from `len(data)`.
+
 ### Tradeoff, stated explicitly
 
 This adds a real piece of self-hosting weight — an extra container, its memory
 overhead, and one more moving part — compared to the originally proposed
 `chrome.tabs.captureVisibleTab` approach in the extension. In exchange it
 removes the extension's dependency on the user's current scroll/viewport state
-entirely and produces consistent, full-page-quality thumbnails server-side.
-Given Compose already orchestrates Postgres, this was judged worth the added
-weight.
+entirely and produces consistent, uniform-dimension thumbnails server-side (a
+fixed viewport — see "Implementation (Phase 7)" above for why that ended up
+being the right call over a full-page capture). Given Compose already
+orchestrates Postgres, this was judged worth the added weight.
 
 A cross-browser (Firefox) equivalent was considered and rejected: Firefox
 doesn't speak the Chrome DevTools Protocol, so there's no chromedp-equivalent
@@ -2996,6 +3124,22 @@ What remains open is purely implementation-phase, not architectural:
   §6's "Design" subsection for the reasoning (independent failure modes;
   re-extraction after a Readability.js upgrade shouldn't force a redundant
   re-screenshot).
+- **Resolved this round (Phase 7): the screenshot job is built** —
+  `internal/screenshot`, wired into `cmd/agent.go`. This also resolves §6's own
+  "whether to actually combine [screenshot and readability] into one job/one
+  page-load ... is an implementation-phase decision, not resolved here": they
+  stay two fully independent runners, not a shared page-load, judged simpler for
+  a modest-scale self-hosted workload than the coordination a combined scheduler
+  would need. See §6's "Implementation (Phase 7)" subsection for the
+  ephemeral-render-server design this needed (the sidecar has no filesystem
+  access to the agent's local archive), the two new, direction-specific config
+  values it introduced (`screenshot_sidecar_url`, `screenshot_render_host`), and
+  its "Revised after a first review pass" subsection for what changed after
+  initial review (fixed-viewport screenshots, atomic multi-claimant job
+  claiming, and — resolving the per-job scheduling cadence question this bullet
+  used to leave open — two independent agent tickers: a slower Worker-facing one
+  and a faster Postgres-only one). Still open: the readability and AI jobs
+  themselves, which this same phase builds next.
 - **Resolved this round: every piece of the original five-step extension plan
   (pairing, capture, upload, queue-driven capture, bookmark sync — §3h–§3j) is
   now built and confirmed working end to end**, including two mid-phase design
