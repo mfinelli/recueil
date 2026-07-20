@@ -181,14 +181,8 @@ func New(p *Params) (*Runner, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	concurrency := p.Concurrency
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	maxAttempts := p.MaxAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
+	concurrency := max(p.Concurrency, 1)
+	maxAttempts := max(p.MaxAttempts, 1)
 
 	return &Runner{
 		pool:        p.Pool,

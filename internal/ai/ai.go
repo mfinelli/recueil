@@ -179,14 +179,8 @@ func New(p *Params) (*Runner, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	concurrency := p.Concurrency
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	maxAttempts := p.MaxAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
+	concurrency := max(p.Concurrency, 1)
+	maxAttempts := max(p.MaxAttempts, 1)
 	requestTimeout := p.RequestTimeout
 	if requestTimeout <= 0 {
 		requestTimeout = 5 * time.Minute
@@ -350,7 +344,7 @@ func parseTags(response string) []string {
 	seen := make(map[string]struct{})
 	var tags []string
 
-	for _, part := range strings.Split(response, ",") {
+	for part := range strings.SplitSeq(response, ",") {
 		tag := strings.ToLower(strings.TrimSpace(part))
 		tag = strings.Trim(tag, ".\"'")
 		if tag == "" {
