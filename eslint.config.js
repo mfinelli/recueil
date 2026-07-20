@@ -43,6 +43,21 @@ export default [
     },
   },
   {
+    // eslint-plugin-svelte's own base config (svelte:base:setup-for-svelte-script)
+    // already routes *.svelte.ts through svelte-eslint-parser -- necessary for
+    // Svelte 5 runes in a plain module -- but doesn't tell it which parser to
+    // use for the TS content itself, unlike its .svelte handling above. Without
+    // this, TS syntax in a .svelte.ts file fails to parse entirely.
+    files: ["src/**/*.svelte.ts"],
+    languageOptions: {
+      parser: svelteParser,
+      parserOptions: {
+        parser: tseslint.parser,
+      },
+      globals: { ...globals.browser },
+    },
+  },
+  {
     files: ["vite.config.ts", "svelte.config.js"],
     languageOptions: {
       globals: { ...globals.node },

@@ -101,6 +101,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 	r.Route("/api", func(r chi.Router) {
 		r.Use(middleware.AllowContentType("application/json"))
 
+		r.Get("/setup-status", s.SetupStatus)
 		r.Post("/setup", s.Setup)
 		r.Post("/auth/register", s.Register)
 		r.Post("/auth/login", s.Login)

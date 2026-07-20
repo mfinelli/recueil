@@ -187,6 +187,31 @@ func deleteUserByUsername(t *testing.T, pool *pgxpool.Pool, username string) {
 
 const unreachable = "http://127.0.0.1:1" // reserved/unroutable; connections fail fast
 
+func TestSetupStatus(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool) // needs a genuinely empty table to start, same as TestSetup
+
+	t.Run("needs_setup is true with no users, false once one exists", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+
+		resp, err := http.Get(server.URL + "/api/setup-status")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		var got struct {
+			NeedsSetup bool `json:"needs_setup"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.True(t, got.NeedsSetup)
+
+		dbtest.CreateUser(t, pool, "admin")
+
+		resp2, err := http.Get(server.URL + "/api/setup-status")
+		require.NoError(t, err)
+		require.NoError(t, json.NewDecoder(resp2.Body).Decode(&got))
+		assert.False(t, got.NeedsSetup)
+	})
+}
+
 func TestSetup(t *testing.T) {
 	pool := dbtest.Setup(t)
 	dbtest.Reset(t, pool) // Setup's "already completed" check needs a genuinely empty table to start

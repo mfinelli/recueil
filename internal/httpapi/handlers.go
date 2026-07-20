@@ -75,6 +75,25 @@ type pairingTokenResponse struct {
 	PairingToken string `json:"pairing_token"`
 }
 
+type setupStatusResponse struct {
+	NeedsSetup bool `json:"needs_setup"`
+}
+
+// GET /api/setup-status: unauthenticated -- lets the dashboard's first load
+// distinguish "show the setup screen" from "show the login screen" without
+// guessing or having to attempt POST /api/setup speculatively just to read
+// its 409. Deliberately doesn't leak anything beyond the boolean (not a
+// username, not a count) -- an unauthenticated endpoint has no other reason
+// to exist here.
+func (s *Server) SetupStatus(w http.ResponseWriter, r *http.Request) {
+	count, err := s.Queries.CountUsers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, setupStatusResponse{NeedsSetup: count == 0})
+}
+
 // POST /api/setup: creates the first admin account, gated by the bootstrap
 // token printed to the backend's logs on startup. The token is
 // consumed only if CreateUser actually succeeds (see auth.BootstrapTokenHolder.Use),

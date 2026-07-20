@@ -18,6 +18,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <script lang="ts">
   import Router from "svelte-spa-router";
   import routes from "./lib/routes";
+  import { sessionReady } from "./lib/session.svelte";
 </script>
 
-<Router {routes} />
+{#await sessionReady}
+  <main class="boot">
+    <p>Loading…</p>
+  </main>
+{:then}
+  <Router {routes} />
+{/await}
+
+<style lang="scss">
+  .boot {
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    color: var(--ink-muted);
+  }
+</style>

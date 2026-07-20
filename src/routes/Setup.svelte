@@ -15,25 +15,37 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
+<!-- First-run: creates the one admin account, gated by the bootstrap token
+     printed to the backend's own logs on startup (not emailed, not shown
+     anywhere in the UI -- the operator has to go look). Only reachable at
+     all when GET /api/setup-status says needs_setup (see lib/routes.ts's
+     requireSetup guard); once an account exists this route redirects away
+     regardless of what's typed into the URL bar. -->
 <script lang="ts">
   import { push } from "svelte-spa-router";
   import { session } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
 
+  let bootstrapToken = $state("");
   let username = $state("");
   let password = $state("");
+  let confirmPassword = $state("");
   let submitting = $state(false);
   let error = $state<string | null>(null);
 
   async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
+    if (password !== confirmPassword) {
+      error = "passwords do not match";
+      return;
+    }
     error = null;
     submitting = true;
     try {
-      await session.login(username, password);
+      await session.completeSetup(bootstrapToken, username, password);
       await push("/");
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "login failed";
+      error = err instanceof ApiError ? err.message : "setup failed";
     } finally {
       submitting = false;
     }
@@ -43,6 +55,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <main class="screen">
   <form class="card" onsubmit={handleSubmit}>
     <h1>recueil</h1>
+    <p class="sub">Create the first admin account to get started.</p>
+
+    <label for="bootstrap-token">Bootstrap token</label>
+    <input
+      id="bootstrap-token"
+      type="text"
+      autocomplete="off"
+      bind:value={bootstrapToken}
+      required
+      disabled={submitting}
+    />
+    <p class="hint">Printed to the backend's logs on startup.</p>
 
     <label for="username">Username</label>
     <input id="username" type="text" autocomplete="username" bind:value={username} required disabled={submitting} />
@@ -51,8 +75,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <input
       id="password"
       type="password"
-      autocomplete="current-password"
+      autocomplete="new-password"
       bind:value={password}
+      required
+      disabled={submitting}
+    />
+
+    <label for="confirm-password">Confirm password</label>
+    <input
+      id="confirm-password"
+      type="password"
+      autocomplete="new-password"
+      bind:value={confirmPassword}
       required
       disabled={submitting}
     />
@@ -61,7 +95,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <p class="error" role="alert">{error}</p>
     {/if}
 
-    <button type="submit" disabled={submitting}>{submitting ? "Signing in…" : "Sign in"}</button>
+    <button type="submit" disabled={submitting}>{submitting ? "Creating…" : "Create admin account"}</button>
   </form>
 </main>
 
@@ -86,7 +120,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   h1 {
+    margin: 0;
+  }
+
+  .sub {
     margin: 0 0 1rem;
+    color: var(--ink-muted);
   }
 
   label {
@@ -101,6 +140,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     background: var(--paper);
     color: var(--ink);
     font: inherit;
+  }
+
+  .hint {
+    margin: 0 0 0.5rem;
+    font-size: 0.75rem;
+    color: var(--ink-muted);
   }
 
   .error {

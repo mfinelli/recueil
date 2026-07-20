@@ -16,16 +16,61 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Placeholder route table -- just enough to prove svelte-spa-router wiring
-// end to end. Real routes (library, page detail, tags, collections, manage
-// devices, ...) land as those screens get built.
-import type { RouteDefinition } from "svelte-spa-router";
+// Route guards, not a route-level auth wrapper component: svelte-spa-router
+// runs a route's `conditions` before rendering it, so a failing condition
+// never mounts the guarded component at all. Each condition here also does
+// its own push() redirect on failure -- more direct than routing every
+// failure through the Router's onConditionsFailed callback and a userData
+// dictionary to decide where to send it, for only three routes.
+//
+// Conditions don't need to await sessionReady themselves: App.svelte
+// already awaits it before the Router ever mounts, so by the time any
+// condition here runs, session.user/needsSetup already reflect reality.
+import {
+  push,
+  type RouteDefinition,
+  type RoutePrecondition,
+} from "svelte-spa-router";
+import wrap from "svelte-spa-router/wrap";
+import { session } from "./session.svelte";
+import Setup from "../routes/Setup.svelte";
 import Login from "../routes/Login.svelte";
 import Library from "../routes/Library.svelte";
 
-const routes: RouteDefinition = {
-  "/login": Login,
-  "/": Library,
+const requireSetup: RoutePrecondition = () => {
+  if (session.needsSetup) return true;
+  push(session.user ? "/" : "/login");
+  return false;
 };
+
+const requireGuest: RoutePrecondition = () => {
+  if (session.needsSetup) {
+    push("/setup");
+    return false;
+  }
+  if (session.user) {
+    push("/");
+    return false;
+  }
+  return true;
+};
+
+const requireAuth: RoutePrecondition = () => {
+  if (session.needsSetup) {
+    push("/setup");
+    return false;
+  }
+  if (!session.user) {
+    push("/login");
+    return false;
+  }
+  return true;
+};
+
+const routes: RouteDefinition = new Map([
+  ["/setup", wrap({ component: Setup, conditions: [requireSetup] })],
+  ["/login", wrap({ component: Login, conditions: [requireGuest] })],
+  ["/", wrap({ component: Library, conditions: [requireAuth] })],
+]);
 
 export default routes;
