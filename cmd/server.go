@@ -37,6 +37,7 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
+	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/d1migrate"
@@ -109,7 +110,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
-	server := httpapi.NewServer(queries, mirrorClient, devicesClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
+	store := archive.New(cfg.ArchiveDir)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
 	router, err := httpapi.NewRouter(server, pool, queries, logger, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,

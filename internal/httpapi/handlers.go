@@ -21,13 +21,18 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
@@ -36,6 +41,8 @@ import (
 
 type Server struct {
 	Queries      *db.Queries
+	Pool         *pgxpool.Pool
+	Store        *archive.Store
 	Mirror       *mirror.Client
 	Devices      *devices.Client
 	Bootstrap    *auth.BootstrapTokenHolder
@@ -43,8 +50,8 @@ type Server struct {
 	PairingKey   auth.PairingKey
 }
 
-func NewServer(q *db.Queries, m *mirror.Client, d *devices.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey) *Server {
-	return &Server{Queries: q, Mirror: m, Devices: d, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey}
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey) *Server {
+	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey}
 }
 
 type credentials struct {
@@ -647,6 +654,218 @@ func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, pageResponseFromPage(page))
+}
+
+type captureDetailResponse struct {
+	ID                        int64     `json:"id"`
+	PageID                    int64     `json:"page_id"`
+	Source                    string    `json:"source"`
+	RawURL                    string    `json:"raw_url"`
+	Title                     *string   `json:"title"`
+	ThumbnailPath             *string   `json:"thumbnail_path"`
+	FaviconPath               *string   `json:"favicon_path"`
+	ReaderText                *string   `json:"reader_text"`
+	AISummary                 *string   `json:"ai_summary"`
+	AIModel                   *string   `json:"ai_model"`
+	Language                  string    `json:"language"`
+	HTMLCompressedSizeBytes   int32     `json:"html_compressed_size_bytes"`
+	HTMLUncompressedSizeBytes int32     `json:"html_uncompressed_size_bytes"`
+	CapturedAt                time.Time `json:"captured_at"`
+	CreatedAt                 time.Time `json:"created_at"`
+	UpdatedAt                 time.Time `json:"updated_at"`
+}
+
+func captureDetailResponseFromCapture(c db.Capture) captureDetailResponse {
+	return captureDetailResponse{
+		ID: c.ID, PageID: c.PageID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
+		ThumbnailPath: textOrNil(c.ThumbnailPath), FaviconPath: textOrNil(c.FaviconPath),
+		ReaderText: textOrNil(c.ReaderText), AISummary: textOrNil(c.AiSummary), AIModel: textOrNil(c.AiModel),
+		Language: c.Language, HTMLCompressedSizeBytes: c.HtmlCompressedSizeBytes, HTMLUncompressedSizeBytes: c.HtmlUncompressedSizeBytes,
+		CapturedAt: c.CapturedAt.Time, CreatedAt: c.CreatedAt.Time, UpdatedAt: c.UpdatedAt.Time,
+	}
+}
+
+// GET /api/captures/{id}: full capture detail including reader_text and
+// AI summary -- the heavier fields GetPage's own capture-history list
+// deliberately omits (see captureSummaryResponse).
+func (s *Server) GetCapture(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+
+	capture, err := s.Queries.GetCaptureByIDForUser(r.Context(), db.GetCaptureByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(capture))
+}
+
+// acceptsZstd does an exact-token check against Accept-Encoding --
+// deliberately stricter than chi's own middleware.Compress, which just
+// does a substring Contains match (verified against its real source).
+// That looseness is a reasonable tradeoff for chi's generic gzip/deflate
+// negotiation, but this is the one place recueil hand-rolls its own
+// Content-Encoding decision, so it can afford to be exact.
+func acceptsZstd(r *http.Request) bool {
+	for _, enc := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		if strings.TrimSpace(strings.ToLower(enc)) == "zstd" {
+			return true
+		}
+	}
+	return false
+}
+
+// GET /api/captures/{id}/html: streams the archived HTML. The HTML is
+// already stored zstd-compressed on disk (internal/archive); if the
+// client's own Accept-Encoding says it can handle zstd, this streams
+// those bytes completely unmodified (Content-Encoding: zstd) rather than
+// decompressing just to maybe recompress. Otherwise it streams the
+// decompressed HTML and leans on the router's own middleware.Compress
+// (whose allowed types now include text/html) to gzip it if the client
+// asked for gzip instead -- verified against chi's real source that its
+// WriteHeader steps aside the moment Content-Encoding is already set, so
+// there's no risk of double-compressing the zstd path.
+func (s *Server) GetCaptureHTML(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+
+	capture, err := s.Queries.GetCaptureByIDForUser(r.Context(), db.GetCaptureByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	w.Header().Set("Vary", "Accept-Encoding")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if acceptsZstd(r) {
+		reader, err := s.Store.OpenRaw(capture.HtmlPath)
+		if err != nil {
+			log.Printf("warning: failed to open raw html for capture %d: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		defer func() { _ = reader.Close() }()
+
+		w.Header().Set("Content-Encoding", "zstd")
+		w.Header().Set("Content-Length", strconv.FormatInt(int64(capture.HtmlCompressedSizeBytes), 10))
+		w.WriteHeader(http.StatusOK)
+		if _, err := io.Copy(w, reader); err != nil {
+			log.Printf("warning: failed streaming raw html for capture %d: %v", id, err)
+		}
+		return
+	}
+
+	reader, err := s.Store.Open(capture.HtmlPath)
+	if err != nil {
+		log.Printf("warning: failed to open html for capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer func() { _ = reader.Close() }()
+
+	w.Header().Set("Content-Length", strconv.FormatInt(int64(capture.HtmlUncompressedSizeBytes), 10))
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, reader); err != nil {
+		log.Printf("warning: failed streaming html for capture %d: %v", id, err)
+	}
+}
+
+type patchCaptureLanguageRequest struct {
+	Language string `json:"language"`
+}
+
+// PATCH /api/captures/{id}/language: manual language correction. An invalid
+// text-search-config name surfaces as a real Postgres error from the UPDATE
+// itself -- a regconfig cast performs a pg_ts_config catalog lookup -- so
+// there's no need to pre-validate here. ListTextSearchConfigs is a separate
+// concern (populating the dashboard's dropdown of valid values), not a
+// prerequisite for this endpoint trusting Postgres's own validation.
+func (s *Server) PatchCaptureLanguage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+	req, err := decodeJSON[patchCaptureLanguageRequest](r)
+	if err != nil || req.Language == "" {
+		writeError(w, http.StatusBadRequest, "language is required")
+		return
+	}
+
+	capture, err := s.Queries.SetCaptureLanguage(r.Context(), db.SetCaptureLanguageParams{
+		Language: req.Language, ID: id, UserID: user.ID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "capture not found")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid language")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(capture))
+}
+
+// GET /api/text-search-configs: the valid values for
+// PATCH /api/captures/{id}/language's dashboard dropdown -- this
+// specific running Postgres instance's own pg_ts_config catalog, not a
+// hardcoded list (which configs are actually available depends on the
+// Postgres version). A plain query against the raw pool, not a
+// sqlc-generated one -- same reasoning internal/ingest's own
+// languageConfigExists already documents: sqlc's schema analysis only
+// knows about tables defined in our own migrations, not Postgres's
+// built-in system catalogs, so a query referencing pg_ts_config doesn't
+// fit its normal model.
+func (s *Server) ListTextSearchConfigs(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.Pool.Query(r.Context(), "SELECT cfgname FROM pg_ts_config ORDER BY cfgname")
+	if err != nil {
+		log.Printf("warning: failed to list text search configs: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer rows.Close()
+
+	configs := []string{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			log.Printf("warning: failed to scan text search config: %v", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		configs = append(configs, name)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("warning: failed iterating text search configs: %v", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string][]string{"languages": configs})
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.User) {

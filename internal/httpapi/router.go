@@ -20,8 +20,11 @@
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
 // /api/auth/me, session-protected pairing-token management
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
-// member-vs-admin scoped -- see resolveTargetUserID), and session-protected
-// library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}).
+// member-vs-admin scoped -- see resolveTargetUserID), session-protected
+// library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}), and
+// session-protected capture detail/HTML/language correction
+// (GET /api/captures/{id}, GET /api/captures/{id}/html,
+// PATCH /api/captures/{id}/language, GET /api/text-search-configs).
 // Routed via chi, with auth.RequireSession used as ordinary chi
 // middleware (no httpapi-specific auth plumbing of its own); RequireAdmin
 // exists in internal/auth but isn't used here yet -- Manage Devices'
@@ -32,10 +35,11 @@
 //
 // This package holds request validation and wiring only; the actual work
 // happens in internal/auth (passwords, sessions, the bootstrap holder),
-// internal/db (Postgres), internal/mirror (pushing the credential mirror
-// to the Worker), and internal/devices (the Manage Devices Worker calls).
-// The device-facing / Worker-facing API surface (queue, presigned R2
-// URLs, /internal/tokens itself) isn't part of this package.
+// internal/db (Postgres), internal/archive (reading archived HTML off
+// disk), internal/mirror (pushing the credential mirror to the Worker),
+// and internal/devices (the Manage Devices Worker calls). The
+// device-facing / Worker-facing API surface (queue, presigned R2 URLs,
+// /internal/tokens itself) isn't part of this package.
 package httpapi
 
 import (
@@ -69,7 +73,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 	r.Use(middleware.CleanPath)
 	r.Use(middleware.RequestSize(1 << 20)) // 1MB cap on request bodies
 	r.Use(middleware.Timeout(30 * time.Second))
-	r.Use(middleware.Compress(5, "application/json", "text/plain"))
+	r.Use(middleware.Compress(5, "application/json", "text/plain", "text/html"))
 	r.Use(middleware.GetHead)
 
 	hc := healthcheck.Config{
@@ -109,6 +113,10 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)
+			r.Get("/captures/{id}", s.GetCapture)
+			r.Get("/captures/{id}/html", s.GetCaptureHTML)
+			r.Patch("/captures/{id}/language", s.PatchCaptureLanguage)
+			r.Get("/text-search-configs", s.ListTextSearchConfigs)
 		})
 	})
 

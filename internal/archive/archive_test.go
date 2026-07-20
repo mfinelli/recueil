@@ -50,6 +50,32 @@ func TestStore_WriteHTMLAndOpen_RoundTrip(t *testing.T) {
 	assert.Equal(t, original, got)
 }
 
+func TestStore_OpenRaw_ReturnsCompressedBytesUnmodified(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	original := []byte(strings.Repeat("<html><body>hello world</body></html>", 1000))
+	relPath, compressedSize, err := store.WriteHTML("capture-abc-123", original)
+	require.NoError(t, err)
+
+	reader, err := store.OpenRaw(relPath)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Len(t, got, int(compressedSize), "OpenRaw must not decompress -- the caller asked for raw bytes")
+	assert.NotEqual(t, original, got, "sanity check: the raw bytes must actually be the compressed form, not accidentally identical to the input")
+}
+
+func TestStore_OpenRaw_NonexistentPath(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	_, err := store.OpenRaw("does/not/exist.html.zst")
+	require.Error(t, err)
+}
+
 func TestStore_WriteHTML_CompressesRepetitiveContent(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)

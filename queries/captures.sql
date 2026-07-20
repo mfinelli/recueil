@@ -43,6 +43,27 @@ RETURNING *, (xmax = 0) AS inserted;
 -- name: GetCaptureByID :one
 SELECT * FROM captures WHERE id = $1;
 
+-- name: GetCaptureByIDForUser :one
+-- The dashboard-facing counterpart to GetCaptureByID: captures has no
+-- user_id of its own, so ownership is checked via a join through pages
+-- (same reasoning as pages.GetPageByIDForUser -- a caller shouldn't be
+-- able to fetch another user's capture by guessing/incrementing an id).
+SELECT captures.* FROM captures
+JOIN pages ON pages.id = captures.page_id
+WHERE captures.id = $1 AND pages.user_id = $2;
+
+-- name: SetCaptureLanguage :one
+-- Manual language correction: reader_text_tsv recomputes automatically as
+-- part of this same UPDATE, same as readability_jobs.sql's
+-- SetCaptureReadability -- it's a generated column, not separately settable,
+-- so there's nothing extra to do here to keep search results consistent with
+-- the corrected language. Ownership checked via the same pages join as
+-- GetCaptureByIDForUser.
+UPDATE captures SET language = $1, updated_at = NOW()
+FROM pages
+WHERE captures.page_id = pages.id AND captures.id = $2 AND pages.user_id = $3
+RETURNING captures.*;
+
 -- name: ListCapturesByPage :many
 -- Version history for a page's detail view -- most recent first. Not
 -- scoped by user_id (captures has no such column); the caller is

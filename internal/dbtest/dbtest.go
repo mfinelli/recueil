@@ -44,6 +44,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 )
@@ -197,6 +198,41 @@ func CreateCapture(t *testing.T, pool *pgxpool.Pool, pageID int64) db.Capture {
 		HtmlCompressedSizeBytes:   100,
 		HtmlUncompressedSizeBytes: 500,
 		ContentHash:               "test-hash-" + randomSuffix(t),
+		CapturedAt:                pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		Language:                  "simple",
+	})
+	require.NoError(t, err)
+
+	capture, err := q.GetCaptureByID(ctx, inserted.ID)
+	require.NoError(t, err)
+	return capture
+}
+
+// CreateCaptureWithHTML is CreateCapture's twin for tests that need the
+// capture's html_path to point at real, readable content (e.g.
+// GetCaptureHTML's zstd/gzip streaming) rather than the placeholder path
+// CreateCapture uses -- it writes htmlContent through store.WriteHTML
+// first (the same call ingestion itself makes) and uses the real
+// resulting path/sizes for the row, instead of a bespoke insert.
+func CreateCaptureWithHTML(t *testing.T, pool *pgxpool.Pool, store *archive.Store, pageID int64, htmlContent []byte) db.Capture {
+	t.Helper()
+	ctx := context.Background()
+	q := db.New(pool)
+
+	contentHash := "test-hash-" + randomSuffix(t)
+	relPath, compressedSize, err := store.WriteHTML(contentHash, htmlContent)
+	require.NoError(t, err)
+
+	inserted, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+		PageID:                    pageID,
+		SourceCaptureID:           pgtype.Text{String: "test-source-capture-" + randomSuffix(t), Valid: true},
+		Source:                    "extension",
+		RawUrl:                    "https://example.com/test-" + randomSuffix(t),
+		Title:                     pgtype.Text{String: "Test Capture", Valid: true},
+		HtmlPath:                  relPath,
+		HtmlCompressedSizeBytes:   int32(compressedSize),
+		HtmlUncompressedSizeBytes: int32(len(htmlContent)),
+		ContentHash:               contentHash,
 		CapturedAt:                pgtype.Timestamptz{Time: time.Now(), Valid: true},
 		Language:                  "simple",
 	})

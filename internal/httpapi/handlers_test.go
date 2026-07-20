@@ -19,6 +19,7 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -35,9 +36,11 @@ import (
 	"github.com/go-chi/httplog/v2"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/dbtest"
@@ -70,19 +73,22 @@ func testPairingKey(t *testing.T) auth.PairingKey {
 // calls; mirror's PushUser failures are logged, not blocking, so this is
 // safe -- devices.Client calls, on the other hand, are directly awaited
 // by ListDevices/RevokeDevice, so a test exercising those needs a real
-// mock server, not the unreachable address), and a fresh bootstrap
-// token. One shared URL for both clients mirrors production, where
-// they're both pointed at the same real Worker deployment
-// (cfg.WorkerURL).
+// mock server, not the unreachable address), an archive.Store rooted at
+// a fresh t.TempDir() (empty; tests exercising capture HTML content
+// write into it themselves via internal/archive directly, same as
+// production would), and a fresh bootstrap token. One shared URL for
+// both Worker clients mirrors production, where they're both pointed at
+// the same real Worker deployment (cfg.WorkerURL).
 func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *httptest.Server, rawBootstrapToken string) {
 	t.Helper()
 	q := db.New(pool)
 	m := mirror.NewClient(mirrorURL, "test-secret")
 	d := devices.NewClient(mirrorURL, "test-secret")
+	store := archive.New(t.TempDir())
 	bootstrap, rawToken, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, m, d, bootstrap, false, testPairingKey(t))
+	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{})
@@ -91,6 +97,31 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	t.Cleanup(srv.Close)
 
 	return srv, rawToken
+}
+
+// newTestServerWithStore is newTestServer's twin for the handful of tests
+// that need real on-disk archive content (GetCaptureHTML) rather than
+// just a capture row -- newTestServer itself doesn't expose its internal
+// Store, and changing its signature to return one would touch every one
+// of its ~40 other call sites for a need only this one test area has.
+func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (*httptest.Server, *archive.Store) {
+	t.Helper()
+	q := db.New(pool)
+	m := mirror.NewClient(mirrorURL, "test-secret")
+	d := devices.NewClient(mirrorURL, "test-secret")
+	store := archive.New(t.TempDir())
+	bootstrap, _, err := auth.NewBootstrapTokenHolder()
+	require.NoError(t, err)
+
+	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
+	logger := httplog.NewLogger("recueil-test")
+	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{})
+	require.NoError(t, err)
+	srv := httptest.NewServer(r)
+	t.Cleanup(srv.Close)
+
+	return srv, store
 }
 
 // newMirrorServer is a mock Worker: records every request path it receives
@@ -860,6 +891,233 @@ func TestPatchPage(t *testing.T) {
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+}
+
+func TestGetCapture(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("returns full capture detail including reader_text for the owner", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/detail")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		dbtest.SetCaptureReaderText(t, pool, capture.ID, "the full article text")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ID         int64  `json:"id"`
+			ReaderText string `json:"reader_text"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, capture.ID, got.ID)
+		assert.Equal(t, "the full article text", got.ReaderText)
+	})
+
+	t.Run("another user's capture returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-yours-capture")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a non-numeric id returns 400", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/captures/not-a-number", cookie)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/captures/1")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestGetCaptureHTML(t *testing.T) {
+	pool := dbtest.Setup(t)
+	htmlContent := []byte(strings.Repeat("<html><body>hello world</body></html>", 500))
+
+	t.Run("without Accept-Encoding: zstd, streams plain decompressed HTML", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/html-plain")
+		server, store := newTestServerWithStore(t, pool, unreachable)
+		capture := dbtest.CreateCaptureWithHTML(t, pool, store, page.ID, htmlContent)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodGet, server.URL+fmt.Sprintf("/api/captures/%d/html", capture.ID), http.NoBody)
+		require.NoError(t, err)
+		req.AddCookie(cookie)
+		// Explicitly refuse compression so this test asserts the plain
+		// path, not whichever encoding the default transport happens to
+		// negotiate.
+		req.Header.Set("Accept-Encoding", "identity")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Empty(t, resp.Header.Get("Content-Encoding"))
+		assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+
+		got, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, htmlContent, got)
+	})
+
+	t.Run("with Accept-Encoding: zstd, streams the raw compressed bytes unmodified", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/html-zstd")
+		server, store := newTestServerWithStore(t, pool, unreachable)
+		capture := dbtest.CreateCaptureWithHTML(t, pool, store, page.ID, htmlContent)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodGet, server.URL+fmt.Sprintf("/api/captures/%d/html", capture.ID), http.NoBody)
+		require.NoError(t, err)
+		req.AddCookie(cookie)
+		req.Header.Set("Accept-Encoding", "zstd")
+		// Go's http.Transport auto-negotiates/decodes gzip unless a
+		// caller sets its own Accept-Encoding, which we just did --
+		// but it can still choose to transparently decode other
+		// encodings it doesn't recognize, so read the raw bytes off
+		// the wire via a Transport with compression fully disabled.
+		client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "zstd", resp.Header.Get("Content-Encoding"))
+
+		rawGot, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.NotEqual(t, htmlContent, rawGot, "sanity check: response body must actually be compressed, not accidentally plain")
+
+		decoder, err := zstd.NewReader(bytes.NewReader(rawGot))
+		require.NoError(t, err)
+		defer decoder.Close()
+		decoded, err := io.ReadAll(decoder)
+		require.NoError(t, err)
+		assert.Equal(t, htmlContent, decoded)
+	})
+
+	t.Run("another user's capture returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/html-not-yours")
+		server, store := newTestServerWithStore(t, pool, unreachable)
+		capture := dbtest.CreateCaptureWithHTML(t, pool, store, page.ID, htmlContent)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d/html", capture.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestPatchCaptureLanguage(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("updates the language for the owner", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/lang")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		require.Equal(t, "simple", capture.Language)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/captures/%d/language", capture.ID),
+			strings.NewReader(`{"language":"english"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Language string `json:"language"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, "english", got.Language)
+	})
+
+	t.Run("an invalid language name returns 400, not a raw 500", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/lang-invalid")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/captures/%d/language", capture.ID),
+			strings.NewReader(`{"language":"not-a-real-config"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("another user's capture returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/lang-not-yours")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/captures/%d/language", capture.ID),
+			strings.NewReader(`{"language":"english"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestListTextSearchConfigs(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("returns the running Postgres instance's real pg_ts_config catalog", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/text-search-configs", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Languages []string `json:"languages"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Contains(t, got.Languages, "english")
+		assert.Contains(t, got.Languages, "simple")
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/text-search-configs")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 }
 
