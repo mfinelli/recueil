@@ -8,28 +8,33 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "vite build",
     "check": "prettier --check .",
+    "dev": "vite",
     "fmt": "prettier --write .",
     "lint": "eslint",
     "test": "vitest run",
-    "types": "tsc -p terraform/tsconfig.json"
+    "types": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@mozilla/readability": "^0.6.0"
+    "@mozilla/readability": "^0.6.0",
+    "svelte-spa-router": "^5.1.1"
   },
   "devDependencies": {
-    "@aws-crypto/sha256-js": "^5.2.0",
-    "@cloudflare/vitest-pool-workers": "^0.18.3",
-    "@cloudflare/workers-types": "^5.20260708.1",
     "@eslint/js": "^10.0.1",
-    "@smithy/protocol-http": "^5.5.7",
-    "@smithy/signature-v4": "^5.6.3",
-    "eslint": "^10.6.0",
+    "@sveltejs/vite-plugin-svelte": "^7.2.0",
+    "eslint": "^10.7.0",
+    "eslint-plugin-svelte": "^3.20.0",
     "globals": "^17.7.0",
-    "jsdom": "^29.1.1",
-    "prettier": "^3.9.4",
+    "prettier": "^3.9.5",
+    "sass": "^1.101.0",
+    "svelte": "^5.56.4",
+    "svelte-check": "^4.7.2",
+    "svelte-eslint-parser": "^1.8.0",
     "typescript": "^6.0.3",
+    "typescript-eslint": "^8.63.0",
+    "vite": "^8.1.4",
     "vitest": "^4.1.10",
-    "wrangler": "^4.109.0"
+    "wrangler": "^4.110.0"
   }
 }

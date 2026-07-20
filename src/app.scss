@@ -1,0 +1,65 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// PLACEHOLDER token set, carried over as-is from the extension popup
+// (extension/src/popup/popup.css) purely so the skeleton has *something*
+// to render with. Not a design decision -- the real dashboard token system
+// (reconciling this against the marketing site's ledger/brass/stamp
+// palette) is a deliberately separate pass, not part of Phase 6's
+// scaffolding step.
+:root {
+  --ink: #2b2924;
+  --ink-muted: #746c5c;
+  --paper: #f2ede1;
+  --paper-raised: #fdfbf6;
+  --rule: #ddd2b8;
+  --accent: #8a3223;
+  --accent-success: #3c5c3a;
+  --focus: #4a6b8a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ece5d4;
+    --ink-muted: #a89c86;
+    --paper: #1d1b17;
+    --paper-raised: #29261f;
+    --rule: #40392d;
+    --accent: #d17b64;
+    --accent-success: #8bb385;
+    --focus: #7fa8c9;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}

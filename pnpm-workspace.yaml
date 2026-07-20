@@ -3,9 +3,11 @@ minimumReleaseAge: 10080 # 1 week
 nodeLinker: hoisted
 
 allowBuilds:
+  "@parcel/watcher": true
   esbuild: true
   sharp: true
   workerd: true
 
 packages:
   - extension
+  - terraform

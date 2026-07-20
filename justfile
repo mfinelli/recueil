@@ -36,6 +36,7 @@ lint:
   pnpm run lint
   pnpm run types
   pnpm run --filter=@recueil/extension types
+  pnpm run --filter=@recueil/terraform types
 
 serve:
   make all
