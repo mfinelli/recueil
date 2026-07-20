@@ -41,6 +41,7 @@ import (
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/d1migrate"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
@@ -107,7 +108,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
-	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
+	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+	server := httpapi.NewServer(queries, mirrorClient, devicesClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
 	router, err := httpapi.NewRouter(server, pool, queries, logger, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,

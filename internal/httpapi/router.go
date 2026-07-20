@@ -18,17 +18,23 @@
 
 // Package httpapi is the dashboard-facing HTTP API: registration, login,
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
-// /api/auth/me, and session-protected pairing-token management
-// (view/regenerate/revoke). Routed via chi, with
-// auth.RequireSession/RequireAdmin used as ordinary chi middleware (no
-// httpapi-specific auth plumbing of its own).
+// /api/auth/me, session-protected pairing-token management
+// (view/regenerate/revoke), and session-protected Manage Devices
+// (list/revoke, member-vs-admin scoped -- see resolveTargetUserID).
+// Routed via chi, with auth.RequireSession used as ordinary chi
+// middleware (no httpapi-specific auth plumbing of its own); RequireAdmin
+// exists in internal/auth but isn't used here yet -- Manage Devices'
+// admin-vs-member scoping happens inside the handlers themselves
+// (per-request, since a member and an admin hit the *same* routes with
+// different allowed ?user_id= values), not as an all-or-nothing
+// route-level gate.
 //
 // This package holds request validation and wiring only; the actual work
 // happens in internal/auth (passwords, sessions, the bootstrap holder),
-// internal/db (Postgres), and internal/mirror (pushing the credential
-// mirror to the Worker). The device-facing / Worker-facing API surface
-// (queue, presigned R2 URLs, /internal/tokens)
-// isn't part of this package.
+// internal/db (Postgres), internal/mirror (pushing the credential mirror
+// to the Worker), and internal/devices (the Manage Devices Worker calls).
+// The device-facing / Worker-facing API surface (queue, presigned R2
+// URLs, /internal/tokens itself) isn't part of this package.
 package httpapi
 
 import (
@@ -97,6 +103,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/pairing-token", s.GetPairingToken)
 			r.Post("/pairing-token/regenerate", s.RegeneratePairingToken)
 			r.Delete("/pairing-token", s.RevokePairingToken)
+			r.Get("/devices", s.ListDevices)
+			r.Delete("/devices/{id}", s.RevokeDevice)
 		})
 	})
 
