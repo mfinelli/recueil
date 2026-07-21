@@ -845,7 +845,7 @@ func (s *Server) GetCapture(w http.ResponseWriter, r *http.Request) {
 // negotiation, but this is the one place recueil hand-rolls its own
 // Content-Encoding decision, so it can afford to be exact.
 func acceptsZstd(r *http.Request) bool {
-	for _, enc := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+	for enc := range strings.SplitSeq(r.Header.Get("Accept-Encoding"), ",") {
 		if strings.TrimSpace(strings.ToLower(enc)) == "zstd" {
 			return true
 		}
