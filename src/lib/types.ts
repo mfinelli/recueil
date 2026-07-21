@@ -67,3 +67,30 @@ export interface PageDetail extends Page {
   tags: PageTag[];
   collections: PageCollection[];
 }
+
+// POST /api/pages/{id}/tags' response -- lighter than PageTag: the backend
+// hardcodes source: "manual" for anything added through this endpoint
+// (see internal/httpapi's AddPageTag), so it isn't part of the response at
+// all; the caller already knows what it just set.
+export interface TagCreated {
+  id: number;
+  name: string;
+}
+
+// GET /api/collections' own item shape -- structurally close to
+// PageCollection but with created_at, since that's a full collection
+// row, not the lighter per-page membership view.
+export interface Collection {
+  id: number;
+  parent_id: number | null;
+  name: string;
+  created_at: string;
+}
+
+export interface CollectionListResponse {
+  collections: Collection[];
+}
+
+export interface TextSearchConfigsResponse {
+  languages: string[];
+}

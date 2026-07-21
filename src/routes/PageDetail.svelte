@@ -15,43 +15,81 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
-<!-- Display only in this pass: capture (version) history, tags, and
-     collection memberships are all read-only here. Editing any of them
-     (adding/removing a tag or collection, the excluded_from_mirror
-     toggle, the language-correction endpoint) is a later round's work --
-     all three GET-side pieces already exist server-side, this just
-     doesn't call the write endpoints yet.
+<!-- Now the full read/write loop: tag add/remove, collection add/remove,
+     the excluded_from_mirror toggle, and per-capture language correction
+     all call their real backend endpoints. All of page/collections/
+     languageOptions are updated optimistically from each write's own
+     response rather than refetching the whole page afterward -- a normal
+     tradeoff for a single-user personal tool, not something defended
+     against concurrent-editor conflicts.
 
-     Capture rows link straight to GET /api/captures/{id}/html (a real
-     backend URL, opened in a new tab) rather than through the SPA --
-     there's no in-app reader view built yet, and the browser already
-     knows how to render an HTML document on its own. -->
+     Capture rows still link straight to GET /api/captures/{id}/html (a
+     real backend URL, opened in a new tab) rather than through the SPA --
+     there's still no in-app reader view. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
-  import type { PageDetail } from "../lib/types";
+  import type {
+    PageDetail,
+    CaptureSummary,
+    TagCreated,
+    Collection,
+    CollectionListResponse,
+    TextSearchConfigsResponse,
+  } from "../lib/types";
 
   let { params }: { params: { id: string } } = $props();
 
   let page = $state<PageDetail | null>(null);
   let loading = $state(true);
-  let error = $state<string | null>(null);
+  let loadError = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
+
+  // Supplementary metadata for the write-action UI (the "add to
+  // collection" picker's options, the language-correction dropdown's
+  // valid values) -- fetched alongside the page itself, but best-effort:
+  // a failure here shouldn't block viewing the page, just leave the
+  // relevant picker with no/fewer options.
+  let allCollections = $state<Collection[]>([]);
+  let languageOptions = $state<string[]>([]);
+
+  let tagInput = $state("");
+  let addingTag = $state(false);
+  let selectedCollectionId = $state("");
+  let addingToCollection = $state(false);
+  let togglingMirror = $state(false);
+  let savingLanguageFor = $state<number | null>(null);
 
   $effect(() => {
     const id = params.id;
     loading = true;
-    error = null;
+    loadError = null;
+    actionError = null;
     page = null;
-    apiJSON<PageDetail>(`/pages/${id}`)
-      .then((res) => {
-        page = res;
-      })
-      .catch((err: unknown) => {
-        error = err instanceof ApiError ? err.message : "failed to load page";
-      })
-      .finally(() => {
-        loading = false;
-      });
+
+    Promise.allSettled([
+      apiJSON<PageDetail>(`/pages/${id}`),
+      apiJSON<CollectionListResponse>("/collections"),
+      apiJSON<TextSearchConfigsResponse>("/text-search-configs"),
+    ]).then(([pageResult, collectionsResult, languagesResult]) => {
+      if (pageResult.status === "fulfilled") {
+        page = pageResult.value;
+      } else {
+        loadError =
+          pageResult.reason instanceof ApiError
+            ? pageResult.reason.message
+            : "failed to load page";
+      }
+      allCollections =
+        collectionsResult.status === "fulfilled"
+          ? collectionsResult.value.collections
+          : [];
+      languageOptions =
+        languagesResult.status === "fulfilled"
+          ? languagesResult.value.languages
+          : [];
+      loading = false;
+    });
   });
 
   function formatDateTime(iso: string): string {
@@ -69,6 +107,141 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
     return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
+
+  async function addTag(event: SubmitEvent) {
+    event.preventDefault();
+    const name = tagInput.trim();
+    if (!name || !page) return;
+    addingTag = true;
+    actionError = null;
+    try {
+      const created = await apiJSON<TagCreated>(`/pages/${page.id}/tags`, {
+        method: "POST",
+        body: { name },
+      });
+      // source: "manual" isn't in the response -- the backend hardcodes
+      // it for anything added through this endpoint, so there's nothing
+      // to read it from; see TagCreated's own comment.
+      page.tags = [
+        ...page.tags,
+        { id: created.id, name: created.name, source: "manual" as const },
+      ].sort((a, b) => a.name.localeCompare(b.name));
+      tagInput = "";
+    } catch (err) {
+      actionError = err instanceof ApiError ? err.message : "failed to add tag";
+    } finally {
+      addingTag = false;
+    }
+  }
+
+  async function removeTag(tagId: number) {
+    if (!page) return;
+    actionError = null;
+    try {
+      await apiJSON(`/pages/${page.id}/tags/${tagId}`, { method: "DELETE" });
+      page.tags = page.tags.filter((t) => t.id !== tagId);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : "failed to remove tag";
+    }
+  }
+
+  async function addToCollection(event: SubmitEvent) {
+    event.preventDefault();
+    if (!page || selectedCollectionId === "") return;
+    const collectionId = Number(selectedCollectionId);
+    const collection = allCollections.find((c) => c.id === collectionId);
+    if (!collection) return;
+
+    addingToCollection = true;
+    actionError = null;
+    try {
+      await apiJSON(`/pages/${page.id}/collections`, {
+        method: "POST",
+        body: { collection_id: collectionId },
+      });
+      page.collections = [
+        ...page.collections,
+        {
+          id: collection.id,
+          name: collection.name,
+          parent_id: collection.parent_id,
+        },
+      ].sort((a, b) => a.name.localeCompare(b.name));
+      selectedCollectionId = "";
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : "failed to add to collection";
+    } finally {
+      addingToCollection = false;
+    }
+  }
+
+  async function removeFromCollection(collectionId: number) {
+    if (!page) return;
+    actionError = null;
+    try {
+      await apiJSON(`/pages/${page.id}/collections/${collectionId}`, {
+        method: "DELETE",
+      });
+      page.collections = page.collections.filter((c) => c.id !== collectionId);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : "failed to remove from collection";
+    }
+  }
+
+  // Collections this page isn't already in -- what the picker should
+  // actually offer, rather than letting someone "add" a membership that
+  // already exists.
+  function availableCollections(p: PageDetail): Collection[] {
+    const memberIds = new Set(p.collections.map((c) => c.id));
+    return allCollections.filter((c) => !memberIds.has(c.id));
+  }
+
+  async function toggleExcludedFromMirror() {
+    if (!page) return;
+    togglingMirror = true;
+    actionError = null;
+    const next = !page.excluded_from_mirror;
+    try {
+      await apiJSON(`/pages/${page.id}`, {
+        method: "PATCH",
+        body: { excluded_from_mirror: next },
+      });
+      page.excluded_from_mirror = next;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : "failed to update mirror setting";
+    } finally {
+      togglingMirror = false;
+    }
+  }
+
+  async function updateCaptureLanguage(
+    capture: CaptureSummary,
+    newLanguage: string,
+  ) {
+    if (newLanguage === capture.language) return;
+    savingLanguageFor = capture.id;
+    actionError = null;
+    try {
+      await apiJSON(`/captures/${capture.id}/language`, {
+        method: "PATCH",
+        body: { language: newLanguage },
+      });
+      capture.language = newLanguage;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : "failed to update language";
+    } finally {
+      savingLanguageFor = null;
+    }
+  }
 </script>
 
 <main class="screen">
@@ -76,8 +249,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   {#if loading}
     <p class="status">Loading…</p>
-  {:else if error}
-    <p class="status error" role="alert">{error}</p>
+  {:else if loadError}
+    <p class="status error" role="alert">{loadError}</p>
   {:else if page}
     <h1>{page.title ?? page.normalized_url}</h1>
     <a
@@ -87,19 +260,83 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       rel="noreferrer">{page.normalized_url}</a
     >
 
-    {#if page.tags.length > 0}
-      <ul class="tags">
-        {#each page.tags as tag (tag.id)}
-          <li>{tag.name}</li>
-        {/each}
-      </ul>
+    {#if actionError}
+      <p class="status error" role="alert">{actionError}</p>
     {/if}
 
-    {#if page.collections.length > 0}
-      <p class="collections">
-        In: {page.collections.map((c) => c.name).join(", ")}
-      </p>
-    {/if}
+    <label class="mirror-toggle">
+      <input
+        type="checkbox"
+        checked={page.excluded_from_mirror}
+        disabled={togglingMirror}
+        onchange={toggleExcludedFromMirror}
+      />
+      Exclude from bookmark-list mirror
+    </label>
+
+    <section>
+      <h2>Tags</h2>
+      <ul class="chips">
+        {#each page.tags as tag (tag.id)}
+          <li>
+            {tag.name}
+            <button
+              type="button"
+              class="remove"
+              aria-label={`Remove tag ${tag.name}`}
+              onclick={() => removeTag(tag.id)}>&times;</button
+            >
+          </li>
+        {/each}
+      </ul>
+      <form class="inline-form" onsubmit={addTag}>
+        <input
+          type="text"
+          placeholder="Add a tag…"
+          bind:value={tagInput}
+          disabled={addingTag}
+        />
+        <button type="submit" disabled={addingTag || !tagInput.trim()}
+          >Add</button
+        >
+      </form>
+    </section>
+
+    <section>
+      <h2>Collections</h2>
+      <ul class="chips">
+        {#each page.collections as collection (collection.id)}
+          <li>
+            {collection.name}
+            <button
+              type="button"
+              class="remove"
+              aria-label={`Remove from ${collection.name}`}
+              onclick={() => removeFromCollection(collection.id)}
+              >&times;</button
+            >
+          </li>
+        {/each}
+      </ul>
+      {#if availableCollections(page).length > 0}
+        <form class="inline-form" onsubmit={addToCollection}>
+          <select
+            bind:value={selectedCollectionId}
+            disabled={addingToCollection}
+          >
+            <option value="">Add to a collection…</option>
+            {#each availableCollections(page) as collection (collection.id)}
+              <option value={collection.id}>{collection.name}</option>
+            {/each}
+          </select>
+          <button
+            type="submit"
+            disabled={addingToCollection || selectedCollectionId === ""}
+            >Add</button
+          >
+        </form>
+      {/if}
+    </section>
 
     <h2>Captures</h2>
     <ul class="captures">
@@ -119,6 +356,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               )}</span
             >
           </a>
+          {#if languageOptions.length > 0}
+            <label class="language-picker">
+              Language
+              <select
+                value={capture.language}
+                disabled={savingLanguageFor === capture.id}
+                onchange={(e) =>
+                  updateCaptureLanguage(capture, e.currentTarget.value)}
+              >
+                {#each languageOptions as lang (lang)}
+                  <option value={lang}>{lang}</option>
+                {/each}
+              </select>
+            </label>
+          {/if}
         </li>
       {/each}
     </ul>
@@ -164,16 +416,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     word-break: break-all;
   }
 
-  .tags {
+  .mirror-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.875rem;
+    color: var(--ink-muted);
+  }
+
+  section {
+    margin-bottom: 1.5rem;
+  }
+
+  h2 {
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .chips {
     display: flex;
     flex-wrap: wrap;
     gap: 0.375rem;
     list-style: none;
-    margin: 0 0 0.75rem;
+    margin: 0 0 0.5rem;
     padding: 0;
 
     li {
-      padding: 0.125rem 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+      padding: 0.125rem 0.375rem 0.125rem 0.625rem;
       border-radius: 999px;
       background: var(--paper-raised);
       border: 1px solid var(--rule);
@@ -181,15 +454,50 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  .collections {
-    margin: 0 0 1.5rem;
+  .remove {
+    padding: 0 0.25rem;
+    border: none;
+    background: none;
     color: var(--ink-muted);
+    font-size: 0.9375rem;
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--accent);
+    }
+  }
+
+  .inline-form {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  input[type="text"],
+  select {
+    padding: 0.375rem 0.5rem;
+    border: 1px solid var(--rule);
+    border-radius: 0.25rem;
+    background: var(--paper);
+    color: var(--ink);
+    font: inherit;
     font-size: 0.875rem;
   }
 
-  h2 {
-    font-size: 1rem;
-    margin-bottom: 0.5rem;
+  button {
+    padding: 0.375rem 0.75rem;
+    border: 1px solid var(--rule);
+    border-radius: 0.25rem;
+    background: var(--paper-raised);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.875rem;
+    cursor: pointer;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
   }
 
   .captures {
@@ -200,26 +508,41 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .captures li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.625rem 0.25rem;
     border-bottom: 1px solid var(--rule);
   }
 
   .captures a {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
     gap: 1rem;
-    padding: 0.625rem 0.25rem;
+    flex: 1;
+    min-width: 0;
     text-decoration: none;
     color: inherit;
-
-    &:hover {
-      background: var(--paper-raised);
-    }
   }
 
   .meta {
     color: var(--ink-muted);
     font-size: 0.8125rem;
     white-space: nowrap;
+  }
+
+  .language-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+
+    select {
+      padding: 0.125rem 0.25rem;
+      font-size: 0.75rem;
+    }
   }
 </style>
