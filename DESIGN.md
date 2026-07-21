@@ -3208,6 +3208,31 @@ README that can drift out of sync with the architecture decisions around it.
   once `Content-Encoding` is already set, so the two paths can't double-compress
   each other.
 
+- **API client:** hand-rolled (`src/lib/api.ts`), not generated — there's no
+  OpenAPI spec on the Go side to generate from, so response types
+  (`src/lib/types.ts`) are manually kept in sync with `internal/httpapi`'s own
+  response DTOs. A real, disclosed sync point (unlike `sqlc`'s automated
+  Postgres↔Go one), judged acceptable while the API surface stays the size it
+  currently is.
+- **Session/auth:** Svelte 5 runes-based state (`src/lib/session.svelte.ts`),
+  bootstrapped once via a module-level `sessionReady` promise that `App.svelte`
+  awaits before ever mounting the router — route guards (`svelte-spa-router`'s
+  `wrap({conditions})`) don't need their own "have we checked session state yet"
+  handling as a result. `GET /auth/me` and the new `GET /api/setup-status`
+  (unauthenticated, closing a real gap: there was no way to distinguish "show
+  Setup" from "show Login" on first load) run via `Promise.allSettled`, not
+  `Promise.all` — one failing shouldn't strand the app on the loading screen
+  forever.
+- **Favicon/thumbnail delivery** (`GET /api/pages/{id}/favicon`,
+  `GET /api/pages/{id}/thumbnail`): unlike capture HTML, no content-negotiation
+  dance — small already-binary images, not worth it. Deliberately no
+  `Cache-Control` either: both URLs are page-identity- addressed, not
+  content-addressed, so a later re-capture changing the favicon/thumbnail
+  shouldn't risk being masked by a stale browser cache. Thumbnails aren't a
+  denormalized `pages` column the way `favicon_path` is (they're written async
+  by the screenshot job well after ingestion, not at `UpsertPage` time), so the
+  thumbnail endpoint resolves the latest capture fresh per request instead.
+
 This section is expected to keep growing as the extension, dashboard, and CLI
 are built out.
 
@@ -3408,3 +3433,18 @@ What remains open is purely implementation-phase, not architectural:
   read/write API (library browsing/search, capture detail/HTML
   streaming/language correction, tags, collections CRUD) is also built; see
   IMPLEMENTATION.md for the full route table and remaining Svelte-side work.
+- **Resolved this round (Phase 6, continued): the dashboard's first real screens
+  are built** — Setup/Login (with the session-state and route-guard plumbing
+  behind them), Library (list and grid views, search, pagination), and
+  PageDetail (display-only: capture history, tags, collections). Two small
+  backend additions came out of actually building against the API rather than
+  just designing it: `GET /api/setup-status` (there was no way for the frontend
+  to tell "needs setup" from "needs login" on first load without one) and
+  `GET /api/pages/{id}/favicon`/`GET /api/pages/{id}/thumbnail` (the response
+  DTOs already carried `favicon_path`/`thumbnail_path`, but nothing ever served
+  the actual bytes). Also closed a real gap in the toolchain itself, not the
+  app: Prettier had never actually been checking `.svelte` files — it has no
+  built-in parser for them and silently skips what it can't parse rather than
+  erroring, so CI's `pnpm run check` had been a false pass on every `.svelte`
+  file since the skeleton. See §13a's Svelte Dashboard subsection and
+  IMPLEMENTATION.md for the details.

@@ -1703,12 +1703,80 @@ and only two tag queries were missing (`ListTags`, `RemovePageTag`;
   ai_summary belonged to a "future" capture detail endpoint) was also fixed;
   that future arrived the round before this one.
 
+### Auth screens: session store, route guards, Setup/Login
+
+- **`GET /api/setup-status`** (new, unauthenticated, `{"needs_setup": bool}` via
+  `CountUsers`) — closes a real gap raised during planning: there was no way for
+  the frontend to distinguish "show Setup" from "show Login" on first load
+  without it (`POST /api/setup` only reveals "already done" via a 409 after the
+  fact).
+- **`src/lib/api.ts`**: the hand-rolled client (`apiFetch`/`apiJSON`/
+  `ApiError`) confirmed during planning, given the current API surface size.
+  `src/lib/types.ts` hand-mirrors the Go response DTOs — a manual sync point,
+  flagged explicitly in both files' own comments, unlike `sqlc`'s automated
+  Postgres↔Go sync.
+- **`src/lib/session.svelte.ts`**: Svelte 5 runes-based session state (`user`,
+  `needsSetup`). A `sessionReady` promise is kicked off at module load (not from
+  a component's `onMount`) so `App.svelte` can await it once, before the
+  `Router` ever mounts — no route guard needs its own "have we checked yet"
+  bookkeeping. `GET /auth/me` and `GET /setup-status` run via
+  `Promise.allSettled`, not `Promise.all` — a network failure on either
+  shouldn't leave `sessionReady` permanently rejected and the app stuck on the
+  loading screen forever.
+- **`src/lib/routes.ts`**: `svelte-spa-router` guards via `wrap({conditions})`.
+  Each condition (`requireSetup`/`requireGuest`/`requireAuth`) does its own
+  `push()` redirect on failure directly, rather than centralizing through the
+  `Router`'s `onConditionsFailed` callback plus a `userData` dictionary — judged
+  simpler for only three routes.
+- `Setup.svelte`/`Login.svelte` replaced with real forms; `Library.svelte`
+  gained a working sign-out to prove the whole loop (Setup/Login → session →
+  guarded route → logout) end to end, not just that routing itself works.
+
+### Library + PageDetail screens
+
+- **`Library.svelte`**: real listing/search against `GET /api/pages` (debounced
+  `?q=`), `Previous`/`Next` pagination using the backend's window-function
+  `total`. List and Grid view modes, persisted to `localStorage`.
+- **`PageDetail.svelte`** (new): page metadata, tags, collection memberships,
+  and full capture history — display-only in this pass; the write endpoints
+  (tag/collection editing, the mirror-exclusion toggle, language correction) all
+  already exist server-side but have no UI calling them yet. Capture rows link
+  straight to `GET /api/captures/{id}/html` in a new tab rather than through the
+  SPA — there's no in-app reader view built, and the browser already knows how
+  to render an HTML document on its own.
+
+### Favicon/thumbnail endpoints
+
+Real gap noticed while building Library/PageDetail, not planned ahead of time:
+`favicon_path`/`thumbnail_path` were already in the API responses with no route
+that actually served the bytes.
+
+- **`GetLatestCaptureByPage`** (new query): thumbnails aren't denormalized onto
+  `pages` the way `favicon_path` is — `favicon_path` is set at `UpsertPage` time
+  directly from the _ingesting_ capture, while thumbnails are written async by
+  the screenshot job well after ingestion completes — so
+  `GET /api/pages/{id}/thumbnail` resolves the latest capture fresh on every
+  request instead of needing a schema change plus touching
+  `internal/screenshot`.
+- **`GET /api/pages/{id}/favicon`, `GET /api/pages/{id}/thumbnail`**, both
+  through a shared `serveAsset` helper. No zstd/gzip content-negotiation dance
+  like `GetCaptureHTML` — small binary images already, not worth the complexity.
+  `Content-Type` inferred from the stored file extension
+  (`contentTypeForAsset`), careful about a trailing `.zst` since `filepath.Ext`
+  only ever returns the _last_ extension (`"favicon.svg.zst"` → `.zst`, not
+  `.svg`, unless stripped first). Deliberately no `Cache-Control` — these URLs
+  are page-identity-addressed, not content-addressed, so caching them long-lived
+  risks serving a stale icon/thumbnail after a later re-capture changes what the
+  URL resolves to.
+
 ### Still ahead
 
-The actual Svelte screens against this now-complete route table: library
-browsing/search UI, page/capture detail + reader view, tag/collection management
-UI, the Manage Devices screen, and the login/setup flow the skeleton's
-placeholder routes stand in for. Then `go:embed` wiring once there's something
-real to embed, and the dashboard's actual visual design system (reconciling the
-extension's neutral paper/ink surface against the marketing site's
-ledger/brass/stamp accents — flagged during planning but deferred for now).
+Write actions against screens that already display their own data read-only:
+tag/collection editing, the `excluded_from_mirror` toggle, and language
+correction on `PageDetail`. The Manage Devices screen (the backend's been ready
+since earlier this phase). A real in-app reader view, rather than linking out to
+the raw archived HTML. Then `go:embed` wiring once the screen set feels
+reasonably complete, and the dashboard's actual visual design system
+(reconciling the extension's neutral paper/ink surface against the marketing
+site's ledger/brass/stamp accents — flagged during planning, still deliberately
+deferred).
