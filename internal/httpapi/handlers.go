@@ -511,9 +511,9 @@ func (s *Server) ListPages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		for _, row := range rows {
-			resp.Total = row.TotalCount
-			resp.Pages = append(resp.Pages, pageResponseFromSearchRow(&row))
+		for i := range rows {
+			resp.Total = rows[i].TotalCount
+			resp.Pages = append(resp.Pages, pageResponseFromSearchRow(&rows[i]))
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -525,9 +525,9 @@ func (s *Server) ListPages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	for _, row := range rows {
-		resp.Total = row.TotalCount
-		resp.Pages = append(resp.Pages, pageResponseFromListRow(&row))
+	for i := range rows {
+		resp.Total = rows[i].TotalCount
+		resp.Pages = append(resp.Pages, pageResponseFromListRow(&rows[i]))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -615,7 +615,8 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
 	}
-	for _, c := range captures {
+	for i := range captures {
+		c := &captures[i]
 		resp.Captures = append(resp.Captures, captureSummaryResponse{
 			ID: c.ID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
 			ThumbnailPath: textOrNil(c.ThumbnailPath), Language: c.Language,
@@ -1289,8 +1290,8 @@ func (s *Server) ListCollectionPages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := make([]pageResponse, 0, len(pages))
-	for _, p := range pages {
-		resp = append(resp, pageResponseFromPage(&p))
+	for i := range pages {
+		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
 	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
 }

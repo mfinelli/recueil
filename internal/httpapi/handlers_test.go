@@ -601,7 +601,7 @@ func registerAndGetSessionCookie(t *testing.T, pool *pgxpool.Pool, server *httpt
 // need a specific role (dbtest.CreateUser's "member"/"admin" param),
 // unlike registerAndGetSessionCookie which only ever produces members via
 // the real self-service /api/auth/register flow.
-func sessionCookieFor(t *testing.T, pool *pgxpool.Pool, user db.User) *http.Cookie {
+func sessionCookieFor(t *testing.T, pool *pgxpool.Pool, user *db.User) *http.Cookie {
 	t.Helper()
 	raw, hash, err := auth.GenerateSessionToken()
 	require.NoError(t, err)
@@ -666,7 +666,7 @@ func TestListDevices(t *testing.T) {
 			member.ID: {{"id": float64(1), "device_name": "laptop", "device_type": "extension", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, member)
+		cookie := sessionCookieFor(t, pool, &member)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/devices", cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -690,7 +690,7 @@ func TestListDevices(t *testing.T) {
 			other.ID: {{"id": float64(2), "device_name": "phone", "device_type": "pwa", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, admin)
+		cookie := sessionCookieFor(t, pool, &admin)
 
 		// Passing another user's id shouldn't change anything -- this
 		// still returns the admin's own devices, not other's. Cross-user
@@ -729,7 +729,7 @@ func TestRevokeDevice(t *testing.T) {
 			member.ID: {{"id": float64(5), "device_name": "laptop", "device_type": "extension", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, member)
+		cookie := sessionCookieFor(t, pool, &member)
 
 		resp := requestWithCookie(t, server, http.MethodDelete, "/api/devices/5", cookie)
 		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
@@ -742,7 +742,7 @@ func TestRevokeDevice(t *testing.T) {
 			other.ID: {{"id": float64(9), "device_name": "laptop", "device_type": "extension", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, member)
+		cookie := sessionCookieFor(t, pool, &member)
 
 		// No ?user_id= at all -- the member's own id is used, which
 		// doesn't own token 9, so the Worker's own cross-check is what
@@ -755,7 +755,7 @@ func TestRevokeDevice(t *testing.T) {
 		member := dbtest.CreateUser(t, pool, "member")
 		workerServer := newDeviceWorkerServer(t, map[int64][]map[string]any{})
 		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, member)
+		cookie := sessionCookieFor(t, pool, &member)
 
 		resp := requestWithCookie(t, server, http.MethodDelete, "/api/devices/999", cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -768,7 +768,7 @@ func TestRevokeDevice(t *testing.T) {
 			other.ID: {{"id": float64(3), "device_name": "cli", "device_type": "cli", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, admin)
+		cookie := sessionCookieFor(t, pool, &admin)
 
 		// Cross-user device management was reconsidered and removed --
 		// the ?user_id= is simply ignored now, so this resolves to the
@@ -800,7 +800,7 @@ func TestListPages(t *testing.T) {
 		dbtest.CreatePage(t, pool, user.ID, "https://example.com/b")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages", cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -827,7 +827,7 @@ func TestListPages(t *testing.T) {
 		dbtest.SetCaptureReaderText(t, pool, unrelatedCapture.ID, "something about baking bread")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages?q=narwhals", cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -862,7 +862,7 @@ func TestGetPage(t *testing.T) {
 		newer := dbtest.CreateCapture(t, pool, page.ID)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -886,7 +886,7 @@ func TestGetPage(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-yours")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -895,7 +895,7 @@ func TestGetPage(t *testing.T) {
 	t.Run("a nonexistent id returns 404", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/9999999", cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -904,7 +904,7 @@ func TestGetPage(t *testing.T) {
 	t.Run("a non-numeric id returns 400", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/not-a-number", cookie)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -920,7 +920,7 @@ func TestPatchPage(t *testing.T) {
 		require.False(t, page.ExcludedFromMirror)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/pages/%d", page.ID),
 			strings.NewReader(`{"excluded_from_mirror":true}`))
@@ -944,7 +944,7 @@ func TestPatchPage(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-patchable")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/pages/%d", page.ID),
 			strings.NewReader(`{"excluded_from_mirror":true}`))
@@ -961,7 +961,7 @@ func TestPatchPage(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/missing-field")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/pages/%d", page.ID),
 			strings.NewReader(`{}`))
@@ -984,7 +984,7 @@ func TestGetCapture(t *testing.T) {
 		dbtest.SetCaptureReaderText(t, pool, capture.ID, "the full article text")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1005,7 +1005,7 @@ func TestGetCapture(t *testing.T) {
 		capture := dbtest.CreateCapture(t, pool, page.ID)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1014,7 +1014,7 @@ func TestGetCapture(t *testing.T) {
 	t.Run("a non-numeric id returns 400", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/captures/not-a-number", cookie)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -1037,7 +1037,7 @@ func TestGetCaptureHTML(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/html-plain")
 		server, store := newTestServerWithStore(t, pool, unreachable)
 		capture := dbtest.CreateCaptureWithHTML(t, pool, store, page.ID, htmlContent)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodGet, server.URL+fmt.Sprintf("/api/captures/%d/html", capture.ID), http.NoBody)
 		require.NoError(t, err)
@@ -1065,7 +1065,7 @@ func TestGetCaptureHTML(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/html-zstd")
 		server, store := newTestServerWithStore(t, pool, unreachable)
 		capture := dbtest.CreateCaptureWithHTML(t, pool, store, page.ID, htmlContent)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodGet, server.URL+fmt.Sprintf("/api/captures/%d/html", capture.ID), http.NoBody)
 		require.NoError(t, err)
@@ -1103,7 +1103,7 @@ func TestGetCaptureHTML(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/html-not-yours")
 		server, store := newTestServerWithStore(t, pool, unreachable)
 		capture := dbtest.CreateCaptureWithHTML(t, pool, store, page.ID, htmlContent)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d/html", capture.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1120,7 +1120,7 @@ func TestPatchCaptureLanguage(t *testing.T) {
 		require.Equal(t, "simple", capture.Language)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/captures/%d/language", capture.ID),
 			strings.NewReader(`{"language":"english"}`))
@@ -1144,7 +1144,7 @@ func TestPatchCaptureLanguage(t *testing.T) {
 		capture := dbtest.CreateCapture(t, pool, page.ID)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/captures/%d/language", capture.ID),
 			strings.NewReader(`{"language":"not-a-real-config"}`))
@@ -1163,7 +1163,7 @@ func TestPatchCaptureLanguage(t *testing.T) {
 		capture := dbtest.CreateCapture(t, pool, page.ID)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/captures/%d/language", capture.ID),
 			strings.NewReader(`{"language":"english"}`))
@@ -1182,7 +1182,7 @@ func TestListTextSearchConfigs(t *testing.T) {
 	t.Run("returns the running Postgres instance's real pg_ts_config catalog", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/text-search-configs", cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1218,7 +1218,7 @@ func TestListTags(t *testing.T) {
 		require.NoError(t, err)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/tags", cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -1243,7 +1243,7 @@ func TestAddAndRemovePageTag(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/tag-me")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/tags", page.ID),
 			strings.NewReader(`{"name":"recipes"}`))
@@ -1291,7 +1291,7 @@ func TestAddAndRemovePageTag(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-your-tag-target")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/tags", page.ID),
 			strings.NewReader(`{"name":"recipes"}`))
@@ -1310,7 +1310,7 @@ func TestCollectionsCRUD(t *testing.T) {
 	t.Run("create, list, rename, delete a top-level collection", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		createReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections",
 			strings.NewReader(`{"name":"Reading List"}`))
@@ -1364,7 +1364,7 @@ func TestCollectionsCRUD(t *testing.T) {
 	t.Run("a duplicate top-level name returns 409", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		body := `{"name":"Duplicate"}`
 
@@ -1395,7 +1395,7 @@ func TestCollectionsCRUD(t *testing.T) {
 		require.NoError(t, err)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		body := fmt.Sprintf(`{"name":"Sneaky","parent_id":%d}`, otherCollection.ID)
 		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections", strings.NewReader(body))
@@ -1417,7 +1417,7 @@ func TestCollectionsCRUD(t *testing.T) {
 		require.NoError(t, err)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		renameReq, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/collections/%d", collection.ID),
 			strings.NewReader(`{"name":"Hijacked"}`))
@@ -1446,7 +1446,7 @@ func TestPageCollectionMembership(t *testing.T) {
 		require.NoError(t, err)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		addReq, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/collections", page.ID),
 			strings.NewReader(fmt.Sprintf(`{"collection_id":%d}`, collection.ID)))
@@ -1501,7 +1501,7 @@ func TestPageCollectionMembership(t *testing.T) {
 		require.NoError(t, err)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/collections", page.ID),
 			strings.NewReader(fmt.Sprintf(`{"collection_id":%d}`, theirCollection.ID)))
@@ -1534,7 +1534,7 @@ func TestGetPageFavicon(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/favicon", page.ID), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "image/svg+xml", resp.Header.Get("Content-Type"))
@@ -1549,7 +1549,7 @@ func TestGetPageFavicon(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-favicon")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/favicon", page.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1561,7 +1561,7 @@ func TestGetPageFavicon(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/favicon-not-yours")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/favicon", page.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1585,7 +1585,7 @@ func TestGetPageThumbnail(t *testing.T) {
 			"UPDATE captures SET thumbnail_path = $1 WHERE id = $2", relPath, capture.ID)
 		require.NoError(t, err)
 
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
@@ -1601,7 +1601,7 @@ func TestGetPageThumbnail(t *testing.T) {
 		dbtest.CreateCapture(t, pool, page.ID)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1612,7 +1612,7 @@ func TestGetPageThumbnail(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-captures")
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, user)
+		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -1625,7 +1625,7 @@ func TestGetPageThumbnail(t *testing.T) {
 		dbtest.CreateCapture(t, pool, page.ID)
 
 		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, requester)
+		cookie := sessionCookieFor(t, pool, &requester)
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
