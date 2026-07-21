@@ -1524,15 +1524,16 @@ normal; a _growing_ age is what actually indicates something stuck).
 Deliberately absent, not zero, for a job type with nothing currently pending —
 asserted directly in `internal/metrics/metrics_test.go`.
 
-## Phase 6 (Dashboard) — in progress
+## Phase 6 (Dashboard)
 
 Deferred until after Phase 7 specifically so it could be built against a more
 complete backend in one go, per the original phase-ordering note; folds in Phase
 8 (Manage Devices) since that screen naturally slots in once the dashboard has
-basic shape. Two halves so far: the Svelte project skeleton itself, and the
-backend read/write API surface every dashboard screen will call. No actual
-dashboard screens exist yet beyond two placeholder routes proving the skeleton
-works end to end — that's the next piece of this phase.
+basic shape. Built in the order: the Svelte project skeleton, the backend
+read/write API surface every screen calls, then the screens themselves
+(Setup/Login, Library, PageDetail, Collections, Devices, the reader view), and
+finally the dashboard embedded into the single Go binary. See the closing
+subsection below for exactly what's done and what's deliberately still open.
 
 ### Svelte project skeleton
 
@@ -1820,11 +1821,35 @@ that actually served the bytes.
   untouched (it already takes an arbitrary `userID` per call), so nothing about
   this reversal narrows what that future command can do.
 
-### Still ahead
+### Reader view, `go:embed` wiring, and closing out this phase
 
-A real in-app reader view, rather than linking out to the raw archived HTML. The
-operator-only CLI device-revoke command noted above. Then `go:embed` wiring once
-the screen set feels reasonably complete, and the dashboard's actual visual
-design system (reconciling the extension's neutral paper/ink surface against the
-marketing site's ledger/brass/stamp accents — flagged during planning, still
-deferred).
+- **`GetCaptureHTML` gained a defensive
+  `Content-Security-Policy: script-src 'none'`** on the archived-HTML response.
+  Not the primary control — the extension's SingleFile capture already runs with
+  `blockScripts: true` (see `extension/src/capture-inject/bundle-entry.js`,
+  checked directly, not assumed) — but that response is served same-origin with
+  the dashboard, so anything that ever did slip through would otherwise run with
+  access to the logged-in session's cookies. Costs nothing to close outright.
+  Covered by test assertions on both the plain and zstd-compressed response
+  paths.
+- **`CaptureReader.svelte`** (new, `/captures/:id`): title, capture date, AI
+  summary when present, and `reader_text` rendered as plain text
+  (`white-space: pre-wrap`, no `{@html}`, no guessed paragraph-splitting) —
+  confirmed against `internal/readability`'s own source that `reader_text` is
+  Readability.js's `textContent` field specifically, never its `content` (HTML)
+  field, so there's no injection risk to design around. `PageDetail`'s capture
+  rows now route here instead of opening the raw HTML directly; the raw HTML
+  itself is still just a plain new-tab link (now living inside the reader view)
+  — settled during planning: an iframe would mean fighting sizing/scrolling for
+  a page that's a full, self-contained snapshot of someone else's layout, for
+  little benefit over a new tab, which gets native zoom/find-in-page/the whole
+  viewport for free.
+
+This closes out Phase 6's core scope: Setup/Login, Library (list/grid, search,
+pagination), PageDetail (full read/write loop), Collections management, Devices
+(pairing token + paired-device list), the reader view, and the dashboard
+embedded into the single Go binary. Two things remain open: the operator-only
+CLI device-revoke command (§5, point 3 — `internal/devices.Client` is already
+shaped for it), and the dashboard's actual visual design system (reconciling the
+extension's neutral paper/ink surface against the marketing site's
+ledger/brass/stamp accents) — both explicitly punted to a separate session.

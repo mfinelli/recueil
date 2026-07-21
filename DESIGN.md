@@ -3276,6 +3276,17 @@ README that can drift out of sync with the architecture decisions around it.
   its whole subtree, per §10) surfaces a `confirm()` naming the actual
   descendant count before proceeding, rather than a silent or generic warning.
 
+- **In-app reader view, not an iframed archived-HTML view.** Settled during
+  planning: the archived HTML is a full, self-contained snapshot of the original
+  page's own layout/CSS/images, and an iframe would mean fighting
+  sizing/scrolling for the whole viewing session for little benefit over a plain
+  new tab, which gets native zoom/find-in-page/the full viewport for free.
+  `reader_text` gets the in-app treatment instead — nothing to sanitize, safe to
+  render directly. The archived-HTML endpoint itself also picked up a defensive
+  `Content-Security-Policy: script-src 'none'` regardless (belt-and-suspenders
+  on top of the extension's own `blockScripts: true` capture setting, since the
+  response is served same-origin with the dashboard).
+
 This section is expected to keep growing as the extension, dashboard, and CLI
 are built out.
 
