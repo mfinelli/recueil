@@ -146,34 +146,70 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  async function linkPageToCollection(collection: Collection) {
+    if (!page) return;
+    await apiJSON(`/pages/${page.id}/collections`, {
+      method: "POST",
+      body: { collection_id: collection.id },
+    });
+    page.collections = [
+      ...page.collections,
+      {
+        id: collection.id,
+        name: collection.name,
+        parent_id: collection.parent_id,
+      },
+    ].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
   async function addToCollection(event: SubmitEvent) {
     event.preventDefault();
     if (!page || selectedCollectionId === "") return;
-    const collectionId = Number(selectedCollectionId);
-    const collection = allCollections.find((c) => c.id === collectionId);
+    const collection = allCollections.find(
+      (c) => c.id === Number(selectedCollectionId),
+    );
     if (!collection) return;
 
     addingToCollection = true;
     actionError = null;
     try {
-      await apiJSON(`/pages/${page.id}/collections`, {
-        method: "POST",
-        body: { collection_id: collectionId },
-      });
-      page.collections = [
-        ...page.collections,
-        {
-          id: collection.id,
-          name: collection.name,
-          parent_id: collection.parent_id,
-        },
-      ].sort((a, b) => a.name.localeCompare(b.name));
+      await linkPageToCollection(collection);
       selectedCollectionId = "";
     } catch (err) {
       actionError =
         err instanceof ApiError ? err.message : "failed to add to collection";
     } finally {
       addingToCollection = false;
+    }
+  }
+
+  let newCollectionName = $state("");
+  let creatingCollection = $state(false);
+
+  // Top-level only for now -- no parent picker. There's nowhere in the
+  // dashboard yet to browse/manage the collection tree itself (this is
+  // the closest thing to one so far: create-a-collection-while-adding-a-
+  // page-to-it), so nesting from here would be choosing a parent blind.
+  async function createAndAddCollection(event: SubmitEvent) {
+    event.preventDefault();
+    const name = newCollectionName.trim();
+    if (!name || !page) return;
+
+    creatingCollection = true;
+    actionError = null;
+    try {
+      const created = await apiJSON<Collection>("/collections", {
+        method: "POST",
+        body: { name },
+      });
+      allCollections = [...allCollections, created];
+      await linkPageToCollection(created);
+      newCollectionName = "";
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : "failed to create collection";
+    } finally {
+      creatingCollection = false;
     }
   }
 
@@ -278,8 +314,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <h2>Tags</h2>
       <ul class="chips">
         {#each page.tags as tag (tag.id)}
-          <li>
+          <li class:ai={tag.source === "ai"}>
             {tag.name}
+            {#if tag.source === "ai"}
+              <span class="source-label">AI</span>
+            {/if}
             <button
               type="button"
               class="remove"
@@ -336,6 +375,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           >
         </form>
       {/if}
+      <form class="inline-form" onsubmit={createAndAddCollection}>
+        <input
+          type="text"
+          placeholder="Or create a new collection…"
+          bind:value={newCollectionName}
+          disabled={creatingCollection}
+        />
+        <button
+          type="submit"
+          disabled={creatingCollection || !newCollectionName.trim()}
+          >Create &amp; add</button
+        >
+      </form>
     </section>
 
     <h2>Captures</h2>
@@ -451,7 +503,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       background: var(--paper-raised);
       border: 1px solid var(--rule);
       font-size: 0.75rem;
+
+      // Minimal AI/manual distinction for now (existing tokens only, no
+      // new color) -- a real visual treatment is a styling-pass concern,
+      // not this one.
+      &.ai {
+        border-style: dashed;
+      }
     }
+  }
+
+  .source-label {
+    color: var(--ink-muted);
+    font-size: 0.625rem;
+    letter-spacing: 0.03em;
   }
 
   .remove {
