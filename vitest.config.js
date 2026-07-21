@@ -17,6 +17,7 @@
  */
 
 import { defineConfig } from "vitest/config";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 import {
   cloudflareTest,
   readD1Migrations,
@@ -62,6 +63,26 @@ export default defineConfig(async () => {
             name: "extension",
             environment: "jsdom",
             include: ["extension/tests/**/*.test.js"],
+          },
+        },
+        {
+          // The dashboard's own logic tests (src/lib/*.test.ts) -- NOT
+          // component-rendering tests yet, just the plain TS/runes logic
+          // underneath the screens: the API client, session/auth state,
+          // and route guards.
+          plugins: [svelte()],
+          resolve: {
+            // Without this, Svelte resolves to its server/SSR runtime
+            // under plain Node, where $state is an inert one-shot value
+            // container, not a live reactive signal -- session.svelte.ts's
+            // tests would then silently test something that isn't the
+            // real reactive behavior at all, not fail loudly.
+            conditions: ["browser"],
+          },
+          test: {
+            name: "dashboard",
+            environment: "jsdom",
+            include: ["src/**/*.test.ts"],
           },
         },
       ],

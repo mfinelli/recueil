@@ -38,13 +38,13 @@ import Login from "../routes/Login.svelte";
 import Library from "../routes/Library.svelte";
 import PageDetail from "../routes/PageDetail.svelte";
 
-const requireSetup: RoutePrecondition = () => {
+export const requireSetup: RoutePrecondition = () => {
   if (session.needsSetup) return true;
   push(session.user ? "/" : "/login");
   return false;
 };
 
-const requireGuest: RoutePrecondition = () => {
+export const requireGuest: RoutePrecondition = () => {
   if (session.needsSetup) {
     push("/setup");
     return false;
@@ -56,7 +56,7 @@ const requireGuest: RoutePrecondition = () => {
   return true;
 };
 
-const requireAuth: RoutePrecondition = () => {
+export const requireAuth: RoutePrecondition = () => {
   if (session.needsSetup) {
     push("/setup");
     return false;
