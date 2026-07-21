@@ -202,6 +202,24 @@ func writeCompressed(w io.Writer, data []byte) error {
 	return nil
 }
 
+// OpenRaw returns a reader for a path previously returned by WriteHTML or
+// WriteAsset, same as Open, but never decompresses -- even for a ".zst"
+// path, the caller gets the compressed bytes exactly as stored. For a
+// caller that can pass compressed bytes straight through to its own
+// consumer (e.g. an HTTP handler whose client advertised
+// Accept-Encoding: zstd and can set Content-Encoding: zstd on the
+// response instead of paying a decompress-then-maybe-recompress cost).
+// The caller must Close the returned ReadCloser.
+func (s *Store) OpenRaw(relPath string) (io.ReadCloser, error) {
+	absPath := filepath.Join(s.root, relPath)
+
+	f, err := os.Open(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("archive: opening %q: %w", relPath, err)
+	}
+	return f, nil
+}
+
 // Open returns a reader for a path previously returned by WriteHTML or
 // WriteAsset (or any path relative to the Store's root laid out the same
 // way). Transparently decompresses when relPath ends in ".zst" and returns

@@ -66,6 +66,7 @@ jobs:
       - run: pnpm run lint
       - run: go mod download
       - run: "[[ -z $(go fmt ./...) ]]"
+      - run: pnpm run build
       - run: make
       - run: go test -race -p 1 -v ./...
       - run: go vet ./...
@@ -74,11 +75,12 @@ jobs:
       - uses: dominikh/staticcheck-action@v1
         with:
           install-go: false
-      - run: >-
+      - run: |
           # TODO: remove true https://github.com/WebReflection/flatted/pull/101
-          go-critic check -checkGenerated=false -checkTests=true -enableAll
+          go-critic check -checkGenerated=false -checkTests=true -enableAll \
           ./... || true
       - run: errcheck -ignoregenerated ./...
+      - run: pnpm run --filter=@recueil/terraform types
       - run: pnpm run --filter=@recueil/extension types
       - run: pnpm run package
         working-directory: extension

@@ -16,16 +16,27 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
--- name: UpsertTag :one
--- Get-or-create by (user_id, name) -- same shape as pages.UpsertPage's own
--- get-or-create. The DO UPDATE (rather than DO NOTHING) is deliberate: a
--- plain ON CONFLICT DO NOTHING RETURNING * returns zero rows on the
--- conflict path, not the existing row -- the standard workaround is a
--- harmless no-op self-update, which is what this is (there's no other
--- column worth actually changing here).
-INSERT INTO tags (user_id, name) VALUES ($1, $2)
-ON CONFLICT (user_id, name) DO UPDATE SET name = EXCLUDED.name
-RETURNING *;
+import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
--- name: ListTags :many
-SELECT * FROM tags WHERE user_id = $1 ORDER BY name;
+// Build output goes to dist/, embedded into the Go binary via go:embed.
+//
+// Dev workflow: `pnpm dev` runs Vite's own dev server; the proxy below
+// forwards /api (and its cookies) to the Go backend so `recueil server`
+// doesn't need rebuilding on every frontend change. Adjust the target if
+// your local backend listens somewhere other than the default.
+export default defineConfig({
+  plugins: [svelte()],
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    outDir: "dist",
+    emptyOutDir: true,
+  },
+});

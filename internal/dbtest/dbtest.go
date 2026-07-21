@@ -37,12 +37,14 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 )
@@ -157,6 +159,104 @@ func CreateSession(t *testing.T, pool *pgxpool.Pool, params db.CreateSessionPara
 	session, err := db.New(pool).CreateSession(context.Background(), params)
 	require.NoError(t, err)
 	return session
+}
+
+// CreatePage inserts a page for userID via the real UpsertPage query
+// (get-or-create), not a bespoke INSERT -- exercising the same path
+// ingestion itself uses. No separate cleanup: cascades away with the
+// owning user via CreateUser's cleanup.
+func CreatePage(t *testing.T, pool *pgxpool.Pool, userID int64, normalizedURL string) db.Page {
+	t.Helper()
+	page, err := db.New(pool).UpsertPage(context.Background(), db.UpsertPageParams{
+		UserID:          userID,
+		NormalizedUrl:   normalizedURL,
+		Title:           pgtype.Text{String: "Test Page", Valid: true},
+		LatestCaptureAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+	})
+	require.NoError(t, err)
+	return page
+}
+
+// CreateCapture inserts a capture for pageID via the real
+// InsertCaptureIdempotent query, then re-fetches the full row (that query
+// only returns the columns ingestion itself needs, not reader_text/etc.,
+// so a plain GetCaptureByID after insert is simpler than duplicating its
+// column list here). No separate cleanup: cascades away with the owning
+// page/user.
+func CreateCapture(t *testing.T, pool *pgxpool.Pool, pageID int64) db.Capture {
+	t.Helper()
+	ctx := context.Background()
+	q := db.New(pool)
+
+	inserted, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+		PageID:                    pageID,
+		SourceCaptureID:           pgtype.Text{String: "test-source-capture-" + randomSuffix(t), Valid: true},
+		Source:                    "extension",
+		RawUrl:                    "https://example.com/test-" + randomSuffix(t),
+		Title:                     pgtype.Text{String: "Test Capture", Valid: true},
+		HtmlPath:                  "test/path.html.zst",
+		HtmlCompressedSizeBytes:   100,
+		HtmlUncompressedSizeBytes: 500,
+		ContentHash:               "test-hash-" + randomSuffix(t),
+		CapturedAt:                pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		Language:                  "simple",
+	})
+	require.NoError(t, err)
+
+	capture, err := q.GetCaptureByID(ctx, inserted.ID)
+	require.NoError(t, err)
+	return capture
+}
+
+// CreateCaptureWithHTML is CreateCapture's twin for tests that need the
+// capture's html_path to point at real, readable content (e.g.
+// GetCaptureHTML's zstd/gzip streaming) rather than the placeholder path
+// CreateCapture uses -- it writes htmlContent through store.WriteHTML
+// first (the same call ingestion itself makes) and uses the real
+// resulting path/sizes for the row, instead of a bespoke insert.
+func CreateCaptureWithHTML(t *testing.T, pool *pgxpool.Pool, store *archive.Store, pageID int64, htmlContent []byte) db.Capture {
+	t.Helper()
+	ctx := context.Background()
+	q := db.New(pool)
+
+	contentHash := "test-hash-" + randomSuffix(t)
+	relPath, compressedSize, err := store.WriteHTML(contentHash, htmlContent)
+	require.NoError(t, err)
+
+	inserted, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+		PageID:                    pageID,
+		SourceCaptureID:           pgtype.Text{String: "test-source-capture-" + randomSuffix(t), Valid: true},
+		Source:                    "extension",
+		RawUrl:                    "https://example.com/test-" + randomSuffix(t),
+		Title:                     pgtype.Text{String: "Test Capture", Valid: true},
+		HtmlPath:                  relPath,
+		HtmlCompressedSizeBytes:   int32(compressedSize),
+		HtmlUncompressedSizeBytes: int32(len(htmlContent)),
+		ContentHash:               contentHash,
+		CapturedAt:                pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		Language:                  "simple",
+	})
+	require.NoError(t, err)
+
+	capture, err := q.GetCaptureByID(ctx, inserted.ID)
+	require.NoError(t, err)
+	return capture
+}
+
+// SetCaptureReaderText populates a capture's reader_text (and therefore
+// its FTS index, reader_text_tsv, which recomputes automatically as a
+// generated column) via the real SetCaptureReadability query -- for tests
+// exercising full-text search, which needs actual indexed content, not
+// just a bare capture row.
+func SetCaptureReaderText(t *testing.T, pool *pgxpool.Pool, captureID int64, readerText string) {
+	t.Helper()
+	err := db.New(pool).SetCaptureReadability(context.Background(), db.SetCaptureReadabilityParams{
+		ID:                 captureID,
+		ReaderText:         pgtype.Text{String: readerText, Valid: true},
+		ReaderTextHash:     pgtype.Text{String: "test-reader-text-hash", Valid: true},
+		ReadabilityVersion: pgtype.Text{String: "test", Valid: true},
+	})
+	require.NoError(t, err)
 }
 
 // TODO: we should switch to faker or similar

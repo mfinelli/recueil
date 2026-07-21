@@ -35,6 +35,15 @@ var d1MigrationsFS embed.FS
 var readabilityJS string
 var readabilityVersion string
 
+// all: prefix, not a plain "dist/*" -- go:embed's default pattern
+// excludes files/directories starting with "." or "_", which a real Vite
+// build doesn't produce, but is a needless foot-gun to leave unhandled if
+// that ever changes (a hashed asset filename starting with "_" isn't
+// something Vite is contractually forbidden from ever generating).
+//
+//go:embed all:dist
+var dashboardFS embed.FS
+
 var commit string
 var date string
 var version string
@@ -47,6 +56,7 @@ func main() {
 	cmd.D1MigrationsFS = d1MigrationsFS
 	cmd.ReadabilityJS = readabilityJS
 	cmd.ReadabilityVersion = readabilityVersion
+	cmd.DashboardFS = dashboardFS
 
 	if r := cmd.Execute(); r != 0 {
 		os.Exit(r)

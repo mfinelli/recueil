@@ -37,10 +37,12 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
+	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/d1migrate"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
@@ -49,6 +51,7 @@ import (
 var (
 	PostgresMigrationsFS embed.FS
 	D1MigrationsFS       embed.FS
+	DashboardFS          embed.FS
 
 	Commit  string
 	Date    string
@@ -107,12 +110,23 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
-	server := httpapi.NewServer(queries, mirrorClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
+	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+	store := archive.New(cfg.ArchiveDir)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
+
+	dashboard, err := fs.Sub(DashboardFS, "dist")
+	if err != nil {
+		return fmt.Errorf("preparing embedded dashboard: %w", err)
+	}
+	if _, err := fs.Stat(dashboard, "index.html"); err != nil {
+		return fmt.Errorf("preparing embedded dashboard: %w", err)
+	}
+
 	router, err := httpapi.NewRouter(server, pool, queries, logger, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,
 		BuildDate: Date,
-	})
+	}, dashboard)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}

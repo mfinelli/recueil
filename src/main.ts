@@ -16,16 +16,13 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
--- name: UpsertTag :one
--- Get-or-create by (user_id, name) -- same shape as pages.UpsertPage's own
--- get-or-create. The DO UPDATE (rather than DO NOTHING) is deliberate: a
--- plain ON CONFLICT DO NOTHING RETURNING * returns zero rows on the
--- conflict path, not the existing row -- the standard workaround is a
--- harmless no-op self-update, which is what this is (there's no other
--- column worth actually changing here).
-INSERT INTO tags (user_id, name) VALUES ($1, $2)
-ON CONFLICT (user_id, name) DO UPDATE SET name = EXCLUDED.name
-RETURNING *;
+import { mount } from "svelte";
+import App from "./App.svelte";
+import "./app.scss";
 
--- name: ListTags :many
-SELECT * FROM tags WHERE user_id = $1 ORDER BY name;
+const target = document.getElementById("app");
+if (!target) {
+  throw new Error("missing #app mount point");
+}
+
+export default mount(App, { target });

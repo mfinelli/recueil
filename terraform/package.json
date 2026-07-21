@@ -1,0 +1,21 @@
+{
+  "name": "@recueil/terraform",
+  "version": "1.0.0",
+  "description": "recueil Cloudflare Worker: device auth, queue, R2 presign, bookmark-list mirror",
+  "homepage": "https://github.com/mfinelli/recueil",
+  "author": "Mario Finelli",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "types": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@cloudflare/workers-types": "^5.20260713.1",
+    "@smithy/protocol-http": "^5.5.8",
+    "@smithy/signature-v4": "^5.6.4",
+    "typescript": "^6.0.3"
+  }
+}

@@ -28,3 +28,6 @@ FROM page_tags
 JOIN tags ON tags.id = page_tags.tag_id
 WHERE page_tags.page_id = $1
 ORDER BY tags.name;
+
+-- name: RemovePageTag :exec
+DELETE FROM page_tags WHERE page_id = $1 AND tag_id = $2;
