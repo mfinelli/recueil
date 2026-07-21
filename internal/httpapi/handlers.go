@@ -364,7 +364,7 @@ func (s *Server) RevokePairingToken(w http.ResponseWriter, r *http.Request) {
 // all). ok is false for a member explicitly requesting someone else's
 // user_id (403) or a malformed user_id value (400) -- the caller
 // distinguishes the two via badRequest.
-func resolveTargetUserID(r *http.Request, user db.User) (target int64, ok bool, badRequest bool) {
+func resolveTargetUserID(r *http.Request, user *db.User) (target int64, ok, badRequest bool) {
 	raw := r.URL.Query().Get("user_id")
 	if raw == "" {
 		return user.ID, true, false
@@ -392,7 +392,7 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetUserID, ok, badRequest := resolveTargetUserID(r, user)
+	targetUserID, ok, badRequest := resolveTargetUserID(r, &user)
 	if badRequest {
 		writeError(w, http.StatusBadRequest, "invalid user_id")
 		return
@@ -422,7 +422,7 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetUserID, ok, badRequest := resolveTargetUserID(r, user)
+	targetUserID, ok, badRequest := resolveTargetUserID(r, &user)
 	if badRequest {
 		writeError(w, http.StatusBadRequest, "invalid user_id")
 		return
@@ -497,7 +497,7 @@ type pageResponse struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-func pageResponseFromPage(p db.Page) pageResponse {
+func pageResponseFromPage(p *db.Page) pageResponse {
 	return pageResponse{
 		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
 		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
@@ -505,7 +505,7 @@ func pageResponseFromPage(p db.Page) pageResponse {
 	}
 }
 
-func pageResponseFromListRow(p db.ListPagesRow) pageResponse {
+func pageResponseFromListRow(p *db.ListPagesRow) pageResponse {
 	return pageResponse{
 		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
 		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
@@ -513,7 +513,7 @@ func pageResponseFromListRow(p db.ListPagesRow) pageResponse {
 	}
 }
 
-func pageResponseFromSearchRow(p db.SearchPagesRow) pageResponse {
+func pageResponseFromSearchRow(p *db.SearchPagesRow) pageResponse {
 	return pageResponse{
 		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
 		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
@@ -554,7 +554,7 @@ func (s *Server) ListPages(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, row := range rows {
 			resp.Total = row.TotalCount
-			resp.Pages = append(resp.Pages, pageResponseFromSearchRow(row))
+			resp.Pages = append(resp.Pages, pageResponseFromSearchRow(&row))
 		}
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -568,7 +568,7 @@ func (s *Server) ListPages(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, row := range rows {
 		resp.Total = row.TotalCount
-		resp.Pages = append(resp.Pages, pageResponseFromListRow(row))
+		resp.Pages = append(resp.Pages, pageResponseFromListRow(&row))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -651,7 +651,7 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := pageDetailResponse{
-		pageResponse: pageResponseFromPage(page),
+		pageResponse: pageResponseFromPage(&page),
 		Captures:     []captureSummaryResponse{},
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
@@ -822,7 +822,7 @@ func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, pageResponseFromPage(page))
+	writeJSON(w, http.StatusOK, pageResponseFromPage(&page))
 }
 
 type captureDetailResponse struct {
@@ -844,7 +844,7 @@ type captureDetailResponse struct {
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
-func captureDetailResponseFromCapture(c db.Capture) captureDetailResponse {
+func captureDetailResponseFromCapture(c *db.Capture) captureDetailResponse {
 	return captureDetailResponse{
 		ID: c.ID, PageID: c.PageID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
 		ThumbnailPath: textOrNil(c.ThumbnailPath), FaviconPath: textOrNil(c.FaviconPath),
@@ -875,7 +875,7 @@ func (s *Server) GetCapture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(capture))
+	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(&capture))
 }
 
 // acceptsZstd does an exact-token check against Accept-Encoding --
@@ -996,7 +996,7 @@ func (s *Server) PatchCaptureLanguage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(capture))
+	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(&capture))
 }
 
 // GET /api/text-search-configs: the valid values for
@@ -1162,7 +1162,7 @@ type collectionResponse struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func collectionResponseFromCollection(c db.Collection) collectionResponse {
+func collectionResponseFromCollection(c *db.Collection) collectionResponse {
 	return collectionResponse{ID: c.ID, ParentID: int8OrNil(c.ParentID), Name: c.Name, CreatedAt: c.CreatedAt.Time}
 }
 
@@ -1183,7 +1183,7 @@ func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]collectionResponse, 0, len(rows))
 	for _, c := range rows {
-		resp = append(resp, collectionResponseFromCollection(c))
+		resp = append(resp, collectionResponseFromCollection(&c))
 	}
 	writeJSON(w, http.StatusOK, map[string][]collectionResponse{"collections": resp})
 }
@@ -1229,7 +1229,7 @@ func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, collectionResponseFromCollection(collection))
+	writeJSON(w, http.StatusCreated, collectionResponseFromCollection(&collection))
 }
 
 type renameCollectionRequest struct {
@@ -1264,7 +1264,7 @@ func (s *Server) RenameCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, collectionResponseFromCollection(collection))
+	writeJSON(w, http.StatusOK, collectionResponseFromCollection(&collection))
 }
 
 // DELETE /api/collections/{id}: cascades to child collections and
@@ -1322,7 +1322,7 @@ func (s *Server) ListCollectionPages(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]pageResponse, 0, len(pages))
 	for _, p := range pages {
-		resp = append(resp, pageResponseFromPage(p))
+		resp = append(resp, pageResponseFromPage(&p))
 	}
 	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
 }
