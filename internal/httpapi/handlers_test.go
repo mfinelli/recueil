@@ -617,27 +617,22 @@ func TestListDevices(t *testing.T) {
 		assert.Equal(t, "laptop", got.Devices[0].DeviceName)
 	})
 
-	t.Run("a member requesting another user's devices via user_id gets 403", func(t *testing.T) {
-		member := dbtest.CreateUser(t, pool, "member")
-		other := dbtest.CreateUser(t, pool, "member")
-		workerServer := newDeviceWorkerServer(t, map[int64][]map[string]any{})
-		server, _ := newTestServer(t, pool, workerServer.URL)
-		cookie := sessionCookieFor(t, pool, member)
-
-		resp := requestWithCookie(t, server, http.MethodGet,
-			fmt.Sprintf("/api/devices?user_id=%d", other.ID), cookie)
-		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
-	})
-
-	t.Run("an admin can list another user's devices via user_id", func(t *testing.T) {
+	t.Run("?user_id= is ignored -- always self-scoped, even for an admin", func(t *testing.T) {
 		admin := dbtest.CreateUser(t, pool, "admin")
 		other := dbtest.CreateUser(t, pool, "member")
 		workerServer := newDeviceWorkerServer(t, map[int64][]map[string]any{
+			admin.ID: {{"id": float64(1), "device_name": "admin-laptop", "device_type": "extension", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 			other.ID: {{"id": float64(2), "device_name": "phone", "device_type": "pwa", "created_at": "2026-06-01 12:00:00", "last_used_at": nil}},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
 		cookie := sessionCookieFor(t, pool, admin)
 
+		// Passing another user's id shouldn't change anything -- this
+		// still returns the admin's own devices, not other's. Cross-user
+		// device management was reconsidered and removed; the admin
+		// role has no special reach here at all, only an eventual
+		// operator-only CLI command will (see ListDevices' own doc
+		// comment).
 		resp := requestWithCookie(t, server, http.MethodGet,
 			fmt.Sprintf("/api/devices?user_id=%d", other.ID), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -649,7 +644,7 @@ func TestListDevices(t *testing.T) {
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		require.Len(t, got.Devices, 1)
-		assert.Equal(t, "phone", got.Devices[0].DeviceName)
+		assert.Equal(t, "admin-laptop", got.Devices[0].DeviceName)
 	})
 
 	t.Run("without a session cookie returns 401", func(t *testing.T) {
@@ -657,15 +652,6 @@ func TestListDevices(t *testing.T) {
 		resp, err := http.Get(server.URL + "/api/devices")
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-	})
-
-	t.Run("a malformed user_id returns 400", func(t *testing.T) {
-		member := dbtest.CreateUser(t, pool, "member")
-		server, _ := newTestServer(t, pool, unreachable)
-		cookie := sessionCookieFor(t, pool, member)
-
-		resp := requestWithCookie(t, server, http.MethodGet, "/api/devices?user_id=not-a-number", cookie)
-		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 }
 
@@ -694,8 +680,8 @@ func TestRevokeDevice(t *testing.T) {
 		cookie := sessionCookieFor(t, pool, member)
 
 		// No ?user_id= at all -- the member's own id is used, which
-		// doesn't own token 9, so the Worker's own cross-check (not
-		// just resolveTargetUserID) is what actually blocks this.
+		// doesn't own token 9, so the Worker's own cross-check is what
+		// actually blocks this.
 		resp := requestWithCookie(t, server, http.MethodDelete, "/api/devices/9", cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
@@ -710,7 +696,7 @@ func TestRevokeDevice(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
-	t.Run("an admin can revoke another user's device via user_id", func(t *testing.T) {
+	t.Run("?user_id= is ignored -- an admin cannot revoke another user's device via it", func(t *testing.T) {
 		admin := dbtest.CreateUser(t, pool, "admin")
 		other := dbtest.CreateUser(t, pool, "member")
 		workerServer := newDeviceWorkerServer(t, map[int64][]map[string]any{
@@ -719,9 +705,13 @@ func TestRevokeDevice(t *testing.T) {
 		server, _ := newTestServer(t, pool, workerServer.URL)
 		cookie := sessionCookieFor(t, pool, admin)
 
+		// Cross-user device management was reconsidered and removed --
+		// the ?user_id= is simply ignored now, so this resolves to the
+		// admin's own (nonexistent) device 3 and 404s, exactly as it
+		// would for any other user attempting the same request.
 		resp := requestWithCookie(t, server,
 			http.MethodDelete, fmt.Sprintf("/api/devices/3?user_id=%d", other.ID), cookie)
-		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
 	t.Run("without a session cookie returns 401", func(t *testing.T) {

@@ -1798,11 +1798,33 @@ that actually served the bytes.
   `routes.test.ts`), full suite now 326 (was 301). Scoped to logic only, not
   component rendering (`@testing-library/svelte`) — a separate, later decision.
 
+### Devices screen: pairing token surfaced, Manage Devices built, then admin cross-user reconsidered and removed
+
+- **`src/routes/Devices.svelte`** (new): pairing token and paired devices on one
+  screen, since they're the two halves of the same story (get a device paired,
+  then see/revoke what's paired). The pairing token is shown plainly and stays
+  viewable, not shown-once-then-hashed — DESIGN.md's §5 pairing-token section
+  already specified this as the deliberate choice for this specific credential
+  (unlike a session or bearer token, losing it would otherwise force an unwanted
+  regenerate), it just hadn't been built yet. Regenerate/ revoke on the token,
+  revoke per-device, copy-to-clipboard, all against endpoints that had existed
+  since Phase 2 (pairing token) and earlier this phase (devices) with no UI
+  calling them until now.
+- **Admin cross-user device management, reconsidered and removed.** The original
+  design (and this phase's first pass at `internal/httpapi`) let an admin
+  list/revoke _any_ user's devices via `?user_id=`. Reasoning: cross-user access
+  management isn't a session-authenticated web capability in this app, matching
+  the precedent user creation itself already set (CLI-only, not a dashboard
+  feature). An operator-only CLI command for the rare lost-device case is
+  planned for a later phase, not built yet; `internal/devices.Client` was left
+  untouched (it already takes an arbitrary `userID` per call), so nothing about
+  this reversal narrows what that future command can do.
+
 ### Still ahead
 
-The Manage Devices screen (the backend's been ready since earlier this phase). A
-real in-app reader view, rather than linking out to the raw archived HTML. Then
-`go:embed` wiring once the screen set feels reasonably complete, and the
-dashboard's actual visual design system (reconciling the extension's neutral
-paper/ink surface against the marketing site's ledger/brass/stamp accents —
-flagged during planning, still deferred).
+A real in-app reader view, rather than linking out to the raw archived HTML. The
+operator-only CLI device-revoke command noted above. Then `go:embed` wiring once
+the screen set feels reasonably complete, and the dashboard's actual visual
+design system (reconciling the extension's neutral paper/ink surface against the
+marketing site's ledger/brass/stamp accents — flagged during planning, still
+deferred).

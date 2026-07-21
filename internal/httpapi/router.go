@@ -20,7 +20,8 @@
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
 // /api/auth/me, session-protected pairing-token management
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
-// member-vs-admin scoped -- see resolveTargetUserID), session-protected
+// strictly self-scoped -- see ListDevices' own doc comment for why
+// cross-user device management isn't a web capability here), session-protected
 // library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}),
 // session-protected capture detail/HTML/language correction
 // (GET /api/captures/{id}, GET /api/captures/{id}/html,
@@ -30,12 +31,10 @@
 // /api/collections, and page<->collection membership under
 // /api/pages/{id}/collections).
 // Routed via chi, with auth.RequireSession used as ordinary chi
-// middleware (no httpapi-specific auth plumbing of its own); RequireAdmin
-// exists in internal/auth but isn't used here yet -- Manage Devices'
-// admin-vs-member scoping happens inside the handlers themselves
-// (per-request, since a member and an admin hit the *same* routes with
-// different allowed ?user_id= values), not as an all-or-nothing
-// route-level gate.
+// middleware (no httpapi-specific auth plumbing of its own). RequireAdmin
+// exists in internal/auth but isn't used here -- there's currently no
+// dashboard capability that operates on another user's data at all,
+// mirroring how user creation itself is CLI-only, not a dashboard feature.
 //
 // This package holds request validation and wiring only; the actual work
 // happens in internal/auth (passwords, sessions, the bootstrap holder),

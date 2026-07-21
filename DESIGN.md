@@ -1232,11 +1232,27 @@ path to read or mutate it. Three pieces are needed:
    tier as `mirror` and `internal/ingest.WorkerClient`, which is a different
    actor from `internal/deviceapi`'s paired-device bearer token, so it doesn't
    belong there either.
-3. **Authorization scope, decided as:** a member can list/revoke only their own
-   devices; an admin can list/revoke _any_ user's devices (useful for responding
-   to a compromised account without waiting on that user). The Worker endpoints
-   themselves don't need to know about roles — the backend enforces this scoping
-   before making the outbound call, based on the dashboard session's role.
+3. **Authorization scope: reconsidered from the original plan.** The original
+   design let an admin list/revoke _any_ user's devices from the dashboard
+   (useful, in principle, for responding to a compromised account without
+   waiting on that user). **Reversed in Phase 6** once actually built: managing
+   _another account's_ access is deliberately not a session-authenticated web
+   capability in this app, the same reasoning that already keeps user creation
+   itself CLI-only (`recueil user create`) rather than a dashboard feature —
+   reaching into another user's access shouldn't be one browser session away.
+   `GET /api/devices`/`DELETE /api/devices/{id}` are now strictly self-scoped
+   for every role, no exceptions; `resolveTargetUserID` and its `?user_id=`
+   handling were removed from `internal/httpapi` entirely. An **operator-only
+   CLI escape hatch** for the rare lost-device case (the person who deployed the
+   instance, not merely an admin account within it, handling it directly against
+   Postgres/D1) is planned for a future phase, not built yet —
+   `internal/devices.Client` already takes an arbitrary `userID` per call, which
+   is exactly what that command will need, so nothing about this reversal
+   narrows what's available to build it later. The Worker's own `?user_id=`
+   parameter on `DELETE /internal/tokens/:id` (point 1 above) stays exactly as
+   it was — it's still real defense-in-depth against a backend-side bug passing
+   the wrong id pair, independent of whether the caller is the dashboard or a
+   future CLI command.
 
 One behavior worth documenting rather than treating as a bug: revocation is
 **not** a live push to the device. A revoked extension/PWA/CLI will keep working

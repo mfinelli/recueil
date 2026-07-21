@@ -357,34 +357,12 @@ func (s *Server) RevokePairingToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// resolveTargetUserID decides whose devices a request is allowed to act
-// on: a member can only ever target themselves; an admin may target any user
-// via ?user_id=, defaulting to themselves when omitted (so the same admin
-// account viewing their own devices doesn't need the query param at
-// all). ok is false for a member explicitly requesting someone else's
-// user_id (403) or a malformed user_id value (400) -- the caller
-// distinguishes the two via badRequest.
-func resolveTargetUserID(r *http.Request, user *db.User) (target int64, ok, badRequest bool) {
-	raw := r.URL.Query().Get("user_id")
-	if raw == "" {
-		return user.ID, true, false
-	}
-	requested, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, false, true
-	}
-	if user.Role != "admin" && requested != user.ID {
-		return 0, false, false
-	}
-	return requested, true, false
-}
-
 type deviceListResponse struct {
 	Devices []devices.Token `json:"devices"`
 }
 
-// GET /api/devices: lists the target user's paired devices (see
-// resolveTargetUserID for the member-vs-admin ?user_id= scoping).
+// GET /api/devices: lists the calling user's own paired devices. Always
+// self-scoped.
 func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -392,19 +370,9 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targetUserID, ok, badRequest := resolveTargetUserID(r, &user)
-	if badRequest {
-		writeError(w, http.StatusBadRequest, "invalid user_id")
-		return
-	}
-	if !ok {
-		writeError(w, http.StatusForbidden, "cannot view another user's devices")
-		return
-	}
-
-	tokens, err := s.Devices.ListTokens(r.Context(), targetUserID)
+	tokens, err := s.Devices.ListTokens(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list devices for user %d: %v", targetUserID, err)
+		log.Printf("warning: failed to list devices for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -412,23 +380,14 @@ func (s *Server) ListDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, deviceListResponse{Devices: tokens})
 }
 
-// DELETE /api/devices/{id}: revokes one device (see resolveTargetUserID
-// for the member-vs-admin ?user_id= scoping). This is not a live push --
-// the device keeps working until its next request to the Worker.
+// DELETE /api/devices/{id}: revokes one of the calling user's own
+// devices. Always self-scoped, same reasoning as ListDevices above. Not a
+// live push -- the device keeps working until its next request to the
+// Worker.
 func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
-	targetUserID, ok, badRequest := resolveTargetUserID(r, &user)
-	if badRequest {
-		writeError(w, http.StatusBadRequest, "invalid user_id")
-		return
-	}
-	if !ok {
-		writeError(w, http.StatusForbidden, "cannot revoke another user's device")
 		return
 	}
 
@@ -438,12 +397,12 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Devices.RevokeToken(r.Context(), targetUserID, tokenID); err != nil {
+	if err := s.Devices.RevokeToken(r.Context(), user.ID, tokenID); err != nil {
 		if errors.Is(err, devices.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "device not found")
 			return
 		}
-		log.Printf("warning: failed to revoke device %d for user %d: %v", tokenID, targetUserID, err)
+		log.Printf("warning: failed to revoke device %d for user %d: %v", tokenID, user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
