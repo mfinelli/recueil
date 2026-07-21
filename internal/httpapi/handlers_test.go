@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/go-chi/httplog/v2"
@@ -91,7 +92,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{})
+	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
 	require.NoError(t, err)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -116,7 +117,7 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{})
+	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
 	require.NoError(t, err)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
@@ -186,6 +187,70 @@ func deleteUserByUsername(t *testing.T, pool *pgxpool.Pool, username string) {
 }
 
 const unreachable = "http://127.0.0.1:1" // reserved/unroutable; connections fail fast
+
+func TestNewRouter_DashboardSPA(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	// A real fs.FS (testing/fstest.MapFS), not a hand-rolled fake --
+	// consistent with this project's general preference for exercising
+	// real implementations over mocks wherever practical.
+	dashboard := fstest.MapFS{
+		"index.html":       &fstest.MapFile{Data: []byte("<html>shell</html>")},
+		"assets/app.js":    &fstest.MapFile{Data: []byte("console.log('hi')")},
+		"assets/app.js.gz": &fstest.MapFile{Data: []byte("not actually gzipped, just a distinct file")},
+	}
+
+	q := db.New(pool)
+	m := mirror.NewClient(unreachable, "test-secret")
+	d := devices.NewClient(unreachable, "test-secret")
+	store := archive.New(t.TempDir())
+	bootstrap, _, err := auth.NewBootstrapTokenHolder()
+	require.NoError(t, err)
+	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
+	logger := httplog.NewLogger("recueil-test")
+	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
+	require.NoError(t, err)
+	server := httptest.NewServer(r)
+	t.Cleanup(server.Close)
+
+	t.Run("serves index.html at the root", func(t *testing.T) {
+		resp, err := http.Get(server.URL + "/")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "<html>shell</html>", string(body))
+	})
+
+	t.Run("serves a real built asset directly, not the index.html fallback", func(t *testing.T) {
+		resp, err := http.Get(server.URL + "/assets/app.js")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "console.log('hi')", string(body))
+	})
+
+	t.Run("falls back to index.html for a client-side route that isn't a real file", func(t *testing.T) {
+		resp, err := http.Get(server.URL + "/pages/5")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "svelte-spa-router's own client-side routing needs the shell, not a 404")
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "<html>shell</html>", string(body))
+	})
+
+	t.Run("/api routes still take priority over the dashboard catch-all", func(t *testing.T) {
+		resp, err := http.Get(server.URL + "/api/auth/me")
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		// Unauthenticated: a real API 401 from the auth middleware, not
+		// the dashboard's index.html served as a false-positive 200.
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
 
 func TestSetupStatus(t *testing.T) {
 	pool := dbtest.Setup(t)

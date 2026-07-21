@@ -27,6 +27,9 @@ WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml /app/
 RUN pnpm install --frozen-lockfile
+COPY index.html vite.config.ts svelte.config.js tsconfig.json /app/
+COPY src /app/src
+RUN pnpm run build
 
 FROM golang:1.26.5-alpine AS buildgo
 ARG GITSHA
@@ -34,6 +37,7 @@ WORKDIR /app
 RUN apk add coreutils gawk gcc git jq make musl-dev
 COPY --from=gotools /go/bin/sqlc /usr/local/bin/sqlc
 COPY --from=buildjs /app/node_modules /app/node_modules
+COPY --from=buildjs /app/dist /app/dist
 COPY . /app/
 RUN make internal/db/db.go
 RUN go mod vendor
@@ -49,6 +53,8 @@ LABEL org.opencontainers.image.licenses=AGPL-3.0-or-later
 RUN addgroup -S recueil && adduser -S recueil -G recueil
 COPY --from=source /app /usr/src/recueil
 COPY --from=buildgo /app/vendor /usr/src/recueil/vendor
+COPY --from=buildjs /app/node_modules /usr/src/recueil/node_modules
+COPY --from=buildjs /app/dist /usr/src/recueil/dist
 COPY --from=buildgo /app/internal/db /usr/src/recueil/internal/db
 COPY --from=buildgo /app/recueil /usr/bin/
 USER recueil

@@ -51,6 +51,7 @@ import (
 var (
 	PostgresMigrationsFS embed.FS
 	D1MigrationsFS       embed.FS
+	DashboardFS          embed.FS
 
 	Commit  string
 	Date    string
@@ -112,11 +113,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
 	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
+
+	dashboard, err := fs.Sub(DashboardFS, "dist")
+	if err != nil {
+		return fmt.Errorf("preparing embedded dashboard: %w", err)
+	}
+	if _, err := fs.Stat(dashboard, "index.html"); err != nil {
+		return fmt.Errorf("preparing embedded dashboard: %w", err)
+	}
+
 	router, err := httpapi.NewRouter(server, pool, queries, logger, httpapi.BuildInfo{
 		Version:   Version,
 		GitSHA:    Commit,
 		BuildDate: Date,
-	})
+	}, dashboard)
 	if err != nil {
 		return fmt.Errorf("creating router: %w", err)
 	}

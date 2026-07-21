@@ -43,12 +43,22 @@
 // and internal/devices (the Manage Devices Worker calls). The
 // device-facing / Worker-facing API surface (queue, presigned R2 URLs,
 // /internal/tokens itself) isn't part of this package.
+//
+// NewRouter's dashboard parameter is the embedded Svelte build's dist/
+// directory (see main.go's go:embed directive and cmd/server.go, which
+// treats a missing/incomplete embed as a fatal startup error, the same
+// as the Postgres/D1 migrations). Router-level code still tolerates a
+// nil dashboard (skips registering the catch-all entirely) purely so
+// this package's own tests -- which never exercise dashboard-serving --
+// don't need to construct a real one just to call NewRouter.
 package httpapi
 
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -69,14 +79,15 @@ type BuildInfo struct {
 	BuildDate string
 }
 
-func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Logger, build BuildInfo) (http.Handler, error) {
+func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Logger, build BuildInfo, dashboard fs.FS) (http.Handler, error) {
 	r := chi.NewRouter()
 
 	r.Use(httplog.RequestLogger(logger, []string{}))
 	r.Use(middleware.CleanPath)
 	r.Use(middleware.RequestSize(1 << 20)) // 1MB cap on request bodies
 	r.Use(middleware.Timeout(30 * time.Second))
-	r.Use(middleware.Compress(5, "application/json", "text/plain", "text/html"))
+	r.Use(middleware.Compress(5, "application/json", "text/plain", "text/html",
+		"text/javascript", "application/javascript", "text/css", "image/svg+xml"))
 	r.Use(middleware.GetHead)
 
 	hc := healthcheck.Config{
@@ -136,5 +147,38 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 		})
 	})
 
+	// dashboard is nil only in this package's own tests (which never
+	// exercise dashboard-serving); cmd/server.go always supplies a real
+	// one in production, failing startup otherwise. chi resolves the
+	// more specific /api, /info, /ping, /health, /metrics routes above
+	// regardless of where this wildcard is registered -- its own
+	// radix-tree matching, not registration order, is what keeps this
+	// from ever shadowing them -- but it's still registered last here
+	// for readability.
+	if dashboard != nil {
+		r.Get("/*", spaHandler(dashboard))
+	}
+
 	return r, nil
+}
+
+// spaHandler serves the embedded dashboard build, falling back to
+// index.html for any path that isn't a real file in it. That fallback is
+// what makes svelte-spa-router's client-side routes (e.g. /pages/5) work
+// on a real browser refresh or a direct link, not just on in-app
+// navigation -- those paths only exist client-side, never as actual
+// files in the Vite build.
+func spaHandler(dashboard fs.FS) http.HandlerFunc {
+	fileServer := http.FileServerFS(dashboard)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		if _, err := fs.Stat(dashboard, path); err != nil {
+			r = r.Clone(r.Context())
+			r.URL.Path = "/"
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
