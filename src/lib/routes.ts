@@ -38,6 +38,7 @@ import Login from "../routes/Login.svelte";
 import Library from "../routes/Library.svelte";
 import PageDetail from "../routes/PageDetail.svelte";
 import Collections from "../routes/Collections.svelte";
+import Devices from "../routes/Devices.svelte";
 
 export const requireSetup: RoutePrecondition = () => {
   if (session.needsSetup) return true;
@@ -75,6 +76,7 @@ const routes: RouteDefinition = new Map([
   ["/", wrap({ component: Library, conditions: [requireAuth] })],
   ["/pages/:id", wrap({ component: PageDetail, conditions: [requireAuth] })],
   ["/collections", wrap({ component: Collections, conditions: [requireAuth] })],
+  ["/devices", wrap({ component: Devices, conditions: [requireAuth] })],
 ]);
 
 export default routes;

@@ -94,3 +94,21 @@ export interface CollectionListResponse {
 export interface TextSearchConfigsResponse {
   languages: string[];
 }
+
+// GET /api/devices' item shape. last_used_at is null for a device that's
+// never made an authenticated request yet (paired but not yet used).
+export interface Device {
+  id: number;
+  device_name: string;
+  device_type: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface DeviceListResponse {
+  devices: Device[];
+}
+
+export interface PairingTokenResponse {
+  pairing_token: string;
+}
