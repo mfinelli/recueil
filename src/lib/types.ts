@@ -153,3 +153,23 @@ export interface QueueItem {
 export interface QueueItemListResponse {
   items: QueueItem[];
 }
+
+// GET /api/jobs' item shape -- one combined shape for all three job
+// kinds (screenshot/readability/AI), same as internal/httpapi's own
+// failedJob DTO. id is a plain job-table integer PK, unlike QueueItem's
+// client-generated UUID.
+export interface FailedJob {
+  id: number;
+  page_id: number;
+  url: string;
+  title: string | null;
+  attempts: number;
+  error: string | null;
+  completed_at: string | null;
+}
+
+export interface FailedJobsResponse {
+  screenshot_jobs: FailedJob[];
+  readability_jobs: FailedJob[];
+  ai_jobs: FailedJob[];
+}

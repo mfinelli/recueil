@@ -996,6 +996,197 @@ func TestRetryQueueItem(t *testing.T) {
 	})
 }
 
+// seedFailedJob inserts a 'failed' row directly into one of the three job
+// tables (screenshot_jobs/readability_jobs/ai_jobs -- all three share the
+// same shape, see queries/*_jobs.sql), returning its id. table is always a
+// fixed string literal at call sites, never request-derived, so building
+// the query with fmt.Sprintf here carries no injection risk.
+func seedFailedJob(t *testing.T, pool *pgxpool.Pool, table string, captureID int64, attempts int32, errMsg string) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(),
+		fmt.Sprintf(`INSERT INTO %s (capture_id, status, attempts, error, completed_at)
+		             VALUES ($1, 'failed', $2, $3, NOW()) RETURNING id`, table),
+		captureID, attempts, errMsg,
+	).Scan(&id)
+	require.NoError(t, err)
+	return id
+}
+
+func TestListFailedJobs(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("lists the calling user's own failed jobs, grouped by kind", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/page")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		seedFailedJob(t, pool, "screenshot_jobs", capture.ID, 3, "render timeout")
+		seedFailedJob(t, pool, "readability_jobs", capture.ID, 3, "extraction failed")
+		seedFailedJob(t, pool, "ai_jobs", capture.ID, 3, "model unavailable")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/jobs", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ScreenshotJobs  []struct{ URL string } `json:"screenshot_jobs"`
+			ReadabilityJobs []struct{ URL string } `json:"readability_jobs"`
+			AIJobs          []struct{ URL string } `json:"ai_jobs"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.ScreenshotJobs, 1)
+		require.Len(t, got.ReadabilityJobs, 1)
+		require.Len(t, got.AIJobs, 1)
+		assert.Equal(t, capture.RawUrl, got.ScreenshotJobs[0].URL)
+		assert.Equal(t, capture.RawUrl, got.ReadabilityJobs[0].URL)
+		assert.Equal(t, capture.RawUrl, got.AIJobs[0].URL)
+	})
+
+	t.Run("excludes another user's failed jobs", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		otherPage := dbtest.CreatePage(t, pool, other.ID, "https://example.com/other")
+		otherCapture := dbtest.CreateCapture(t, pool, otherPage.ID)
+		seedFailedJob(t, pool, "screenshot_jobs", otherCapture.ID, 3, "render timeout")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/jobs", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ScreenshotJobs []struct{ URL string } `json:"screenshot_jobs"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Empty(t, got.ScreenshotJobs)
+	})
+
+	t.Run("excludes pending/processing/done jobs, only failed", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/notfailed")
+		_ = dbtest.CreateCapture(t, pool, page.ID)
+		// CreateCapture's own ingestion-adjacent fixtures don't create job
+		// rows automatically (unlike real ingestion) -- there's simply no
+		// screenshot_jobs row for this capture at all, which is the
+		// "never failed" case this asserts against.
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/jobs", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ScreenshotJobs []struct{ URL string } `json:"screenshot_jobs"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Empty(t, got.ScreenshotJobs)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/jobs")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestRetryJob(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	for _, kind := range []string{"screenshot", "readability", "ai"} {
+		table := kind + "_jobs"
+		t.Run(kind+": a member can retry their own failed job", func(t *testing.T) {
+			member := dbtest.CreateUser(t, pool, "member")
+			page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/"+kind)
+			capture := dbtest.CreateCapture(t, pool, page.ID)
+			jobID := seedFailedJob(t, pool, table, capture.ID, 3, "boom")
+
+			server, _ := newTestServer(t, pool, unreachable)
+			cookie := sessionCookieFor(t, pool, &member)
+
+			resp := requestWithCookie(t, server, http.MethodPost,
+				fmt.Sprintf("/api/jobs/%s/%d/retry", kind, jobID), cookie)
+			assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+			var status string
+			var attempts int32
+			err := pool.QueryRow(context.Background(),
+				fmt.Sprintf("SELECT status, attempts FROM %s WHERE id = $1", table), jobID,
+			).Scan(&status, &attempts)
+			require.NoError(t, err)
+			assert.Equal(t, "pending", status)
+			// attempts is deliberately left untouched by a manual retry --
+			// see ManualRetry*JobForUser's own doc comment.
+			assert.Equal(t, int32(3), attempts)
+		})
+
+		t.Run(kind+": a member cannot retry another user's job even by guessing the id", func(t *testing.T) {
+			member := dbtest.CreateUser(t, pool, "member")
+			other := dbtest.CreateUser(t, pool, "member")
+			otherPage := dbtest.CreatePage(t, pool, other.ID, "https://example.com/other-"+kind)
+			otherCapture := dbtest.CreateCapture(t, pool, otherPage.ID)
+			jobID := seedFailedJob(t, pool, table, otherCapture.ID, 3, "boom")
+
+			server, _ := newTestServer(t, pool, unreachable)
+			cookie := sessionCookieFor(t, pool, &member)
+
+			resp := requestWithCookie(t, server, http.MethodPost,
+				fmt.Sprintf("/api/jobs/%s/%d/retry", kind, jobID), cookie)
+			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		})
+
+		t.Run(kind+": retrying a job that isn't failed returns 404", func(t *testing.T) {
+			member := dbtest.CreateUser(t, pool, "member")
+			page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/notfailed-"+kind)
+			capture := dbtest.CreateCapture(t, pool, page.ID)
+			var jobID int64
+			err := pool.QueryRow(context.Background(),
+				fmt.Sprintf("INSERT INTO %s (capture_id, status) VALUES ($1, 'pending') RETURNING id", table),
+				capture.ID,
+			).Scan(&jobID)
+			require.NoError(t, err)
+
+			server, _ := newTestServer(t, pool, unreachable)
+			cookie := sessionCookieFor(t, pool, &member)
+
+			resp := requestWithCookie(t, server, http.MethodPost,
+				fmt.Sprintf("/api/jobs/%s/%d/retry", kind, jobID), cookie)
+			assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		})
+	}
+
+	t.Run("retrying a nonexistent job returns 404", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodPost, "/api/jobs/screenshot/999999/retry", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("an unrecognized kind returns 400", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodPost, "/api/jobs/bogus/1/retry", cookie)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/jobs/screenshot/1/retry", http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
 func TestListPages(t *testing.T) {
 	pool := dbtest.Setup(t)
 

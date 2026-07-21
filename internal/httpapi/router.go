@@ -24,8 +24,11 @@
 // cross-user device management isn't a web capability here),
 // session-protected failed-queue-item review/retry (GET /api/queue-items,
 // POST /api/queue-items/{id}/retry, also strictly self-scoped, same
-// reasoning), session-protected library browsing/search (GET /api/pages,
-// GET/PATCH /api/pages/{id}), session-protected capture detail/HTML/language
+// reasoning), session-protected failed-job review/retry (GET /api/jobs,
+// POST /api/jobs/{kind}/{id}/retry for the screenshot/readability/AI
+// enrichment jobs -- {kind} one of "screenshot"/"readability"/"ai" -- also
+// strictly self-scoped, same reasoning), session-protected library
+// browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}), session-protected capture detail/HTML/language
 // correction (GET /api/captures/{id}, GET /api/captures/{id}/html,
 // PATCH /api/captures/{id}/language, GET /api/text-search-configs), and
 // session-protected tags/collections (GET /api/tags,
@@ -130,6 +133,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/devices/{id}", s.RevokeDevice)
 			r.Get("/queue-items", s.ListFailedQueueItems)
 			r.Post("/queue-items/{id}/retry", s.RetryQueueItem)
+			r.Get("/jobs", s.ListFailedJobs)
+			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)

@@ -92,3 +92,45 @@ WHERE id = $1;
 UPDATE screenshot_jobs
 SET status = 'failed', attempts = $2, error = $3, completed_at = NOW()
 WHERE id = $1;
+
+-- name: ListFailedScreenshotJobsForUser :many
+-- Backs the dashboard's Queue screen (internal/httpapi's ListFailedJobs):
+-- joins through captures/pages the same way GetCaptureByIDForUser does, so
+-- a user only ever sees their own failed jobs. raw_url/title come from
+-- captures, not pages -- the specific capture that failed, not whatever
+-- the page's own (possibly different, possibly later) denormalized title
+-- happens to be right now.
+SELECT screenshot_jobs.id, screenshot_jobs.attempts, screenshot_jobs.error,
+       screenshot_jobs.completed_at, captures.page_id, captures.raw_url,
+       captures.title
+FROM screenshot_jobs
+JOIN captures ON captures.id = screenshot_jobs.capture_id
+JOIN pages ON pages.id = captures.page_id
+WHERE screenshot_jobs.status = 'failed' AND pages.user_id = $1
+ORDER BY screenshot_jobs.completed_at ASC;
+
+-- name: ManualRetryScreenshotJobForUser :one
+-- User-initiated retry from the dashboard, distinct from RetryScreenshotJob
+-- above (the automatic backoff loop's own self-call): resets straight back
+-- to 'pending' with next_attempt_at cleared, so ClaimDueScreenshotJobs
+-- picks it up on its very next poll rather than waiting out a backoff
+-- window that no longer means anything. Deliberately does NOT touch
+-- attempts -- a manual retry doesn't grant a fresh budget, it spends the
+-- next one: if this attempt fails too, internal/screenshot's own
+-- handleFailure computes attempts+1 >= MaxAttempts exactly as it would for
+-- any other attempt and fails permanently again, exactly one more try, not
+-- an unbounded reset-and-retry loop. WHERE status = 'failed' guards
+-- against retrying a job the backend already has mid-flight (:one, so a
+-- zero-row result --no matching failed job owned by this user -- is
+-- distinguishable from a successful retry by the caller checking
+-- pgx.ErrNoRows, the same pattern already used elsewhere for an
+-- ownership-scoped update).
+UPDATE screenshot_jobs
+SET status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL
+FROM captures, pages
+WHERE screenshot_jobs.id = $1
+  AND screenshot_jobs.status = 'failed'
+  AND captures.id = screenshot_jobs.capture_id
+  AND pages.id = captures.page_id
+  AND pages.user_id = $2
+RETURNING screenshot_jobs.id;

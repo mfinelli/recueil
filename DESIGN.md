@@ -1893,12 +1893,41 @@ ALTER TABLE ai_jobs ADD COLUMN next_attempt_at TIMESTAMPTZ;
 On failure: increment `attempts`; if under a small max (e.g. 3), set `status`
 back to `pending` with `next_attempt_at` pushed out (simple exponential
 backoff); once attempts are exhausted, mark `status = 'failed'` permanently with
-`error` preserved. The dashboard surfaces failed jobs as a small badge on the
-capture with a manual retry action — no dead-letter queue is needed given this
-is optional and low-stakes; the failed row itself serves that purpose.
+`error` preserved. **Built (Phase 9), landed differently than originally planned
+here:** rather than a per-capture badge on the capture detail view, failed jobs
+across all three of screenshot/readability/AI surface together on the
+dashboard's Queue screen (§8's `queue_items` retry UI, extended to cover these
+too) — one place for everything currently stuck, not scattered badges per
+capture. `error` is shown on its own line there, not folded into attempts/timing
+metadata: which provider error occurred (e.g. rate-limited vs. some other
+failure) is often the most actionable thing on the screen. No dead-letter queue
+is needed given this is optional and low-stakes; the failed row itself serves
+that purpose.
 
 The same `attempts`/`next_attempt_at`/bounded-retry shape is reused for the
 screenshot job in §6.
+
+### Manual retry (Phase 9)
+
+- `GET /api/jobs` (all three of `screenshot_jobs`/`readability_jobs`/`ai_jobs`,
+  self-scoped, grouped under their own response keys) and
+  `POST /api/jobs/{kind}/{id}/retry` (`{kind}` one of
+  `screenshot`/`readability`/`ai`; a single dispatching handler rather than
+  three near-identical ones, since only the query called differs).
+- Unlike `queue_items`' manual retry (§8), no flag column is needed: these three
+  tables are only ever claimed by the backend's own
+  `ClaimDueScreenshotJobs`/`ClaimDueReadabilityJobs`/`ClaimDueAIJobs` (no device
+  races another actor for them), so a retry can just reset the row directly —
+  `status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL`
+  — and the backend's own next poll picks it up.
+- **Deliberately does not reset `attempts`.** A manual retry doesn't grant a
+  fresh budget; it spends the next one. If it fails again, `handleFailure`'s
+  existing `attempts+1 >= MaxAttempts` check fires exactly as it would for any
+  other attempt and the job goes back to permanently `failed` — one more try,
+  not an unbounded reset-and-retry loop.
+- A readability job that succeeds on retry still creates its `ai_jobs` row in
+  the same transaction as any other successful completion — nothing needed to
+  special-case "this was a retry" for that cascade to keep working.
 
 ### Implementation
 

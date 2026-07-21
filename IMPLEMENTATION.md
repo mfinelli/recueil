@@ -1900,6 +1900,45 @@ retry? a separate/longer expiry?) — resolved this round: surface with manual
 retry, keep failed items forever otherwise (low expected volume at this
 project's scale; can revisit if that stops holding).
 
+### Failed screenshot/readability/AI jobs: same idea, extended, combined into Queue
+
+Prompted by a direct follow-up question after the queue-items work above: these
+three job tables (`screenshot_jobs`, `readability_jobs`, `ai_jobs`) all already
+had automatic bounded retry with exponential backoff
+(`internal/{screenshot,readability,ai}`, from Phase 7), and DESIGN.md's AI
+section had originally envisioned "the dashboard surfaces failed jobs as a small
+badge on the capture with a manual retry action" — never actually built. Checked
+before starting: the API exposed zero job status at all (`GetCaptureByIDForUser`
+was a bare `SELECT captures.*`, no join to any job table), so a
+`null ai_summary` was indistinguishable between "still processing," "permanently
+failed," and "will never exist" (readability failed, so `ai_jobs` was never
+created — see below).
+
+- **Combined into the Queue screen** — one place for everything currently stuck,
+  not scattered across `PageDetail`. `Queue.svelte` gained a second section
+  ("Failed to process") alongside the existing queue-items one ("Failed to
+  capture"), rendering all three job kinds through a shared Svelte 5
+  `{#snippet}` rather than tripling near-identical markup. Each row links to
+  `/pages/{page_id}` (`svelte-spa-router`'s `link` action) since, unlike a queue
+  item, these already have a real page to show.
+- **No flag column needed here, unlike `queue_items.manual_retry`.** These three
+  tables are only ever claimed by the backend's own
+  `ClaimDueScreenshotJobs`/`ClaimDueReadabilityJobs`/`ClaimDueAIJobs` — no
+  device races another actor for them — so a retry can reset the row directly
+  and the backend's own next poll picks it up immediately, no "flag it now,
+  something else claims it eventually" indirection required.
+- **Your call: a manual retry does not reset `attempts`** — it spends the next
+  one rather than granting a fresh budget. This required no new logic at all:
+  leaving `attempts` at its already-terminal value means
+  `internal/{screenshot,readability,ai}`'s existing `handleFailure` (computes
+  `attempts+1 >= MaxAttempts`) naturally permanently re-fails the job after
+  exactly one more attempt if it fails again, with zero special-casing for "this
+  was a manual retry" anywhere in the job-processing code.
+- A capture whose readability extraction permanently failed still never gets an
+  `ai_jobs` row at all (unchanged, cascade already worked this way) — it
+  surfaces under Readability in the Queue screen, not AI, until that's retried;
+  nothing needed to change about the cascade itself for this to keep being true.
+
 ### What's left
 
 Not touched this round, still open from earlier phases: the operator-only CLI
