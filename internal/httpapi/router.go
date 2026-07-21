@@ -118,6 +118,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)
+			r.Get("/pages/{id}/favicon", s.GetPageFavicon)
+			r.Get("/pages/{id}/thumbnail", s.GetPageThumbnail)
 			r.Get("/captures/{id}", s.GetCapture)
 			r.Get("/captures/{id}/html", s.GetCaptureHTML)
 			r.Patch("/captures/{id}/language", s.PatchCaptureLanguage)

@@ -71,6 +71,16 @@ RETURNING captures.*;
 -- pages.GetPageByIDForUser before calling this with that page's id.
 SELECT * FROM captures WHERE page_id = $1 ORDER BY captured_at DESC;
 
+-- name: GetLatestCaptureByPage :one
+-- Used to resolve "this page's thumbnail" (GET /api/pages/{id}/thumbnail):
+-- pages, unlike favicon_path, has no denormalized thumbnail column of its
+-- own (thumbnails are written async by the screenshot job well after
+-- ingestion, not at UpsertPage time the way favicon_path is), so the
+-- latest capture's own thumbnail_path is looked up fresh on each request
+-- rather than kept in sync on pages. Same ownership-scoping caveat as
+-- ListCapturesByPage above.
+SELECT * FROM captures WHERE page_id = $1 ORDER BY captured_at DESC LIMIT 1;
+
 -- name: GetCaptureBySourceCaptureID :one
 -- The pre-check that must happen before ever touching R2: if a row already
 -- exists here, an earlier attempt already committed this capture to Postgres,

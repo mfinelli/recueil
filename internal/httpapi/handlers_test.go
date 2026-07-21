@@ -1457,6 +1457,124 @@ func TestPageCollectionMembership(t *testing.T) {
 	})
 }
 
+func TestGetPageFavicon(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("serves the page's favicon with the right content type", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, store := newTestServerWithStore(t, pool, unreachable)
+
+		faviconBytes := []byte("<svg>fake favicon</svg>")
+		relPath, _, err := store.WriteAsset("test-html-hash", "test-favicon-hash", "svg", faviconBytes, true)
+		require.NoError(t, err)
+
+		q := db.New(pool)
+		page, err := q.UpsertPage(context.Background(), db.UpsertPageParams{
+			UserID: user.ID, NormalizedUrl: "https://example.com/has-favicon",
+			Title:           pgtype.Text{String: "Has Favicon", Valid: true},
+			LatestCaptureAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+			FaviconPath:     pgtype.Text{String: relPath, Valid: true},
+		})
+		require.NoError(t, err)
+
+		cookie := sessionCookieFor(t, pool, user)
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/favicon", page.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "image/svg+xml", resp.Header.Get("Content-Type"))
+
+		got, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, faviconBytes, got, "must be decompressed, not the raw zstd bytes")
+	})
+
+	t.Run("a page with no favicon returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-favicon")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/favicon", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("another user's page returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/favicon-not-yours")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/favicon", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestGetPageThumbnail(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("serves the latest capture's thumbnail with the right content type", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/has-thumbnail")
+		server, store := newTestServerWithStore(t, pool, unreachable)
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		thumbnailBytes := []byte("fake png bytes")
+		relPath, _, err := store.WriteAsset("test-html-hash-2", "test-thumb-hash", "png", thumbnailBytes, false)
+		require.NoError(t, err)
+
+		_, err = pool.Exec(context.Background(),
+			"UPDATE captures SET thumbnail_path = $1 WHERE id = $2", relPath, capture.ID)
+		require.NoError(t, err)
+
+		cookie := sessionCookieFor(t, pool, user)
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "image/png", resp.Header.Get("Content-Type"))
+
+		got, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, thumbnailBytes, got)
+	})
+
+	t.Run("a capture with no thumbnail yet returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-thumbnail-yet")
+		dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a page with no captures at all returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-captures")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("another user's page returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/thumbnail-not-yours")
+		dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, requester)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d/thumbnail", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
 func TestPairingToken(t *testing.T) {
 	pool := dbtest.Setup(t)
 

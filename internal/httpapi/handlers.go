@@ -24,6 +24,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -670,6 +671,118 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// serveAsset streams a small binary asset (favicon, thumbnail) off disk.
+// Unlike GetCaptureHTML, no zstd/gzip content-negotiation dance -- these
+// are already-binary images (PNG/ICO) or small enough SVGs that the same
+// passthrough-compression treatment full HTML documents get isn't worth
+// the complexity here. Store.Open already transparently decompresses a
+// ".zst"-suffixed path (SVG favicons) and passes non-".zst" paths
+// (PNG/ICO favicons, all thumbnails) through unmodified, so this doesn't
+// need to know or care which case it's in.
+func (s *Server) serveAsset(w http.ResponseWriter, relPath string) {
+	reader, err := s.Store.Open(relPath)
+	if err != nil {
+		log.Printf("warning: failed to open asset %q: %v", relPath, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer func() { _ = reader.Close() }()
+
+	w.Header().Set("Content-Type", contentTypeForAsset(relPath))
+	if _, err := io.Copy(w, reader); err != nil {
+		log.Printf("warning: failed streaming asset %q: %v", relPath, err)
+	}
+}
+
+// contentTypeForAsset infers a Content-Type from an asset's stored file
+// extension. Strips a trailing ".zst" first -- filepath.Ext only ever
+// returns the *last* extension, which for "favicon.svg.zst" is ".zst",
+// not the ".svg" that actually determines the decompressed content's
+// real type.
+func contentTypeForAsset(relPath string) string {
+	trimmed := strings.TrimSuffix(relPath, ".zst")
+	switch strings.ToLower(filepath.Ext(trimmed)) {
+	case ".svg":
+		return "image/svg+xml"
+	case ".png":
+		return "image/png"
+	case ".ico":
+		return "image/x-icon"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// GET /api/pages/{id}/favicon: pages.favicon_path is denormalized from
+// the latest capture at ingestion time (UpsertPage), so this is a direct
+// read, not a join. No Cache-Control: this URL is page-identity-addressed,
+// not content-addressed -- a later re-capture with a different favicon
+// changes what this same URL resolves to, so caching it long-lived risks
+// serving a stale icon.
+func (s *Server) GetPageFavicon(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+
+	page, err := s.Queries.GetPageByIDForUser(r.Context(), db.GetPageByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	if !page.FaviconPath.Valid {
+		writeError(w, http.StatusNotFound, "no favicon")
+		return
+	}
+
+	s.serveAsset(w, page.FaviconPath.String)
+}
+
+// GET /api/pages/{id}/thumbnail: resolves the page's most recent
+// capture's thumbnail (see GetLatestCaptureByPage's own doc comment for
+// why this isn't a denormalized pages column the way favicon_path is).
+// A capture with no thumbnail yet (screenshot job hasn't run, or
+// genuinely failed) 404s the same as a page with no captures at all --
+// the dashboard's grid view falls back to a placeholder either way, so
+// there's no need to distinguish the two cases in the response.
+func (s *Server) GetPageThumbnail(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	capture, err := s.Queries.GetLatestCaptureByPage(ctx, page.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no captures")
+		return
+	}
+	if !capture.ThumbnailPath.Valid {
+		writeError(w, http.StatusNotFound, "no thumbnail")
+		return
+	}
+
+	s.serveAsset(w, capture.ThumbnailPath.String)
 }
 
 type patchPageRequest struct {
