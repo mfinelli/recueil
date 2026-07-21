@@ -882,6 +882,15 @@ func (s *Server) GetCaptureHTML(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Vary", "Accept-Encoding")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// Defense-in-depth, not the primary control: the extension's SingleFile
+	// capture already runs with blockScripts: true (see
+	// extension/src/capture-inject/bundle-entry.js), so archived HTML
+	// shouldn't contain live scripts at all. But this is served
+	// same-origin with the dashboard -- if anything ever did slip
+	// through (a SingleFile edge case, a future config change), it would
+	// otherwise run with access to the logged-in session's cookies and
+	// could call the API as the user. Costs nothing to block outright.
+	w.Header().Set("Content-Security-Policy", "script-src 'none'")
 
 	if acceptsZstd(r) {
 		reader, err := s.Store.OpenRaw(capture.HtmlPath)

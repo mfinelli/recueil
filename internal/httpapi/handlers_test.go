@@ -988,6 +988,7 @@ func TestGetCaptureHTML(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Empty(t, resp.Header.Get("Content-Encoding"))
 		assert.Contains(t, resp.Header.Get("Content-Type"), "text/html")
+		assert.Equal(t, "script-src 'none'", resp.Header.Get("Content-Security-Policy"))
 
 		got, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
@@ -1017,6 +1018,7 @@ func TestGetCaptureHTML(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "zstd", resp.Header.Get("Content-Encoding"))
+		assert.Equal(t, "script-src 'none'", resp.Header.Get("Content-Security-Policy"))
 
 		rawGot, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)

@@ -23,9 +23,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      tradeoff for a single-user personal tool, not something defended
      against concurrent-editor conflicts.
 
-     Capture rows still link straight to GET /api/captures/{id}/html (a
-     real backend URL, opened in a new tab) rather than through the SPA --
-     there's still no in-app reader view. -->
+     Capture rows now link to the in-app reader view (/captures/{id}) --
+     the raw archived HTML itself still opens as a plain new-tab link, but
+     from inside that reader view now, not directly from this list. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
@@ -396,11 +396,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <ul class="captures">
       {#each page.captures as capture (capture.id)}
         <li>
-          <a
-            href={`/api/captures/${capture.id}/html`}
-            target="_blank"
-            rel="noreferrer"
-          >
+          <a href={`/captures/${capture.id}`} use:link>
             <span class="captured-at"
               >{formatDateTime(capture.captured_at)}</span
             >

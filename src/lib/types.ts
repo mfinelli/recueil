@@ -47,6 +47,32 @@ export interface CaptureSummary {
   captured_at: string;
 }
 
+// GET /api/captures/{id} -- the full row, including reader_text/ai_summary
+// that CaptureSummary deliberately omits (see internal/httpapi's own
+// GetPage doc comment: those belong to capture detail, not the page
+// detail's capture-history list). reader_text is plain extracted text
+// (Readability.js's textContent, not its HTML content field), so it's always
+// safe to render directly, no HTML-injection risk from third-party page
+// content.
+export interface CaptureDetail {
+  id: number;
+  page_id: number;
+  source: string;
+  raw_url: string;
+  title: string | null;
+  thumbnail_path: string | null;
+  favicon_path: string | null;
+  reader_text: string | null;
+  ai_summary: string | null;
+  ai_model: string | null;
+  language: string;
+  html_compressed_size_bytes: number;
+  html_uncompressed_size_bytes: number;
+  captured_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface PageTag {
   id: number;
   name: string;
