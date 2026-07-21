@@ -1242,17 +1242,22 @@ path to read or mutate it. Three pieces are needed:
    reaching into another user's access shouldn't be one browser session away.
    `GET /api/devices`/`DELETE /api/devices/{id}` are now strictly self-scoped
    for every role, no exceptions; `resolveTargetUserID` and its `?user_id=`
-   handling were removed from `internal/httpapi` entirely. An **operator-only
-   CLI escape hatch** for the rare lost-device case (the person who deployed the
-   instance, not merely an admin account within it, handling it directly against
-   Postgres/D1) is planned for a future phase, not built yet —
-   `internal/devices.Client` already takes an arbitrary `userID` per call, which
-   is exactly what that command will need, so nothing about this reversal
-   narrows what's available to build it later. The Worker's own `?user_id=`
-   parameter on `DELETE /internal/tokens/:id` (point 1 above) stays exactly as
-   it was — it's still real defense-in-depth against a backend-side bug passing
-   the wrong id pair, independent of whether the caller is the dashboard or a
-   future CLI command.
+   handling were removed from `internal/httpapi` entirely. **Built (Phase 9):**
+   `recueil device list <username>` and
+   `recueil device revoke <username> <device-id>` (`cmd/device.go`) are the
+   operator-only CLI escape hatch this point originally just planned for — the
+   person who deployed the instance, not merely an admin account within it,
+   handling the rare lost-device case directly. Postgres is only ever consulted
+   to resolve a username into the user id `internal/devices.Client`'s calls need
+   (exactly the arbitrary `userID`-per-call shape this client already had,
+   unused until now); the actual list/revoke still goes through the same Worker
+   client the dashboard's own handlers use, not a separate path. `revoke` lists
+   first rather than revoking blind, so a wrong device id fails with a clear "no
+   such device" before ever reaching the Worker, and a successful run reports
+   which device it revoked by name. The Worker's own `?user_id=` parameter on
+   `DELETE /internal/tokens/:id` (point 1 above) stays exactly as it was — it's
+   still real defense-in-depth against a backend-side bug passing the wrong id
+   pair, independent of whether the caller is the dashboard or this CLI command.
 
 One behavior worth documenting rather than treating as a bug: revocation is
 **not** a live push to the device. A revoked extension/PWA/CLI will keep working

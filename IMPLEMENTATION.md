@@ -2007,11 +2007,40 @@ and there's no way to test one in this environment either. The deliverable is a
 documented recipe in the root `README.md`'s new "clients" section (same "drop it
 in as a reminder" treatment the Docker Compose config already gets).
 
+### CLI device-revoke command
+
+The operator-only escape hatch DESIGN.md §5 (point 3) planned for but never
+built, once the dashboard's own Manage Devices screen was reversed to strictly
+self-scoped in Phase 6 (an admin can't reach into another user's devices from
+the browser at all). `cmd/device.go`: `recueil device list <username>` and
+`recueil device revoke <username> <device-id>`, structured exactly like
+`cmd/user.go`'s existing commands — same config-load/pool-connect boilerplate,
+same `queries.GetUserByUsername` + wrap-the-error pattern for resolving a
+username, no special-casing `pgx.ErrNoRows` into a nicer message the way nothing
+else in `cmd/` does either. Postgres is only ever touched to resolve that
+username into a user id; the actual list/revoke goes through
+`internal/devices.Client`, the same Worker client the dashboard's own
+`ListDevices`/`RevokeDevice` handlers already use — this command doesn't add a
+new path to the Worker, it's a different caller of the existing one.
+
+`revoke` lists the user's devices first rather than revoking blind: a wrong
+device id fails immediately with a clear "no device with id N for user X" before
+ever making a request to the Worker (rather than surfacing as
+`devices.ErrNotFound` after the fact with no context), and a successful run
+reports which device it revoked by name and type, not just an id number typed
+back at the operator. `list` output goes through `text/tabwriter` — no prior
+convention for tabular CLI output existed anywhere in `cmd/` to match, so this
+introduces one (ID/DEVICE NAME/TYPE/PAIRED/LAST USED columns, `never` for a
+device that's been paired but not yet used). No tests added, consistent with
+`cmd/`'s existing state: no file in this package has a test today
+(`runUserCreate`/`runUserResync`/`runUserResetPassword` included), so this
+doesn't introduce a gap relative to its siblings.
+
 ### What's left
 
-Not touched this round, still open from earlier phases: the operator-only CLI
-device-revoke command, the dashboard's visual design system (now explicitly
-touching four surfaces instead of three), extension Safari packaging, the
-extension popup's visual design pass, and the README backup recipe DESIGN.md §14
-calls for (the resync command from earlier this round is the restore-time repair
-step; the backup-_taking_ side itself still has no example recipe written down).
+Not touched this round, still open from earlier phases: the dashboard's visual
+design system (now explicitly touching four surfaces instead of three),
+extension Safari packaging, the extension popup's visual design pass, and the
+README backup recipe DESIGN.md §14 calls for (the resync command from earlier
+this round is the restore-time repair step; the backup-_taking_ side itself
+still has no example recipe written down).
