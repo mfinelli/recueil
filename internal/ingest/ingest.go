@@ -49,7 +49,7 @@ import (
 
 // defaultBatchLimit bounds how many captures a single RunOnce call
 // processes -- matches the Worker's own GET /internal/pending-captures
-// default limit (terraform/index.js), so a single poll cycle's work is
+// default limit (terraform/worker/index.js), so a single poll cycle's work is
 // naturally bounded without RunOnce needing its own separate cap.
 const defaultBatchLimit = 50
 
@@ -317,7 +317,7 @@ func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htm
 
 	// The favicon's extension is carried in the R2 key itself
 	// (pending/{userId}/{captureId}/favicon.{ext} -- see
-	// terraform/index.js's faviconObjectKey), the same way the HTML
+	// terraform/worker/index.js's faviconObjectKey), the same way the HTML
 	// object's ".html" suffix is implicit rather than a separate field.
 	ext := strings.TrimPrefix(filepath.Ext(key), ".")
 	if ext == "" {

@@ -652,7 +652,7 @@ func sessionCookieFor(t *testing.T, pool *pgxpool.Pool, user *db.User) *http.Coo
 // newDeviceWorkerServer is a mock Worker implementing just enough of
 // GET/POST /internal/tokens for the Manage Devices tests: an in-memory
 // map of userID -> tokens, checking X-Service-Key and user_id the same
-// way the real Worker handler does (see terraform/index.js).
+// way the real Worker handler does (see terraform/worker/index.js).
 func newDeviceWorkerServer(t *testing.T, tokensByUser map[int64][]map[string]any) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

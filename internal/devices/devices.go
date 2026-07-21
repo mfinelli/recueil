@@ -53,14 +53,14 @@ const userAgent = "recueil/1.0"
 // ErrNotFound is returned by RevokeToken when the Worker's DELETE
 // responds 404 -- either the token id doesn't exist, or it exists but
 // doesn't belong to the given userID. The Worker's own handler treats
-// both cases identically (see terraform/index.js's handleRevokeToken),
+// both cases identically (see terraform/worker/index.js's handleRevokeToken),
 // so this package does too; internal/httpapi maps this to a 404 for the
 // dashboard rather than trying to distinguish "gone" from "never yours."
 var ErrNotFound = errors.New("devices: token not found")
 
 // Token is one paired device, as returned by GET /internal/tokens.
 // Excludes token_hash -- the Worker's own SELECT never fetches it either
-// (see terraform/index.js), so there's nothing to leak here even in
+// (see terraform/worker/index.js), so there's nothing to leak here even in
 // principle. Doubles as this package's JSON wire type for internal/httpapi's
 // own /api/devices response: there's no sensitive field to strip the way
 // userResponse strips db.User's password_hash, so a separate DTO isn't
@@ -150,7 +150,7 @@ func (c *Client) ListTokens(ctx context.Context, userID int64) ([]Token, error) 
 
 // RevokeToken deletes one device's bearer token, scoped by both tokenID
 // and userID -- the same belt-and-suspenders the Worker's own handler
-// documents itself (see terraform/index.js's handleRevokeToken): a
+// documents itself (see terraform/worker/index.js's handleRevokeToken): a
 // mismatched pair deletes nothing rather than someone else's device.
 // Returns ErrNotFound on the Worker's 404.
 func (c *Client) RevokeToken(ctx context.Context, userID, tokenID int64) error {
@@ -184,7 +184,7 @@ func (c *Client) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 // which parses RFC 3339 strings a *device* generates client-side (e.g.
 // captured_at) -- tokens.created_at and tokens.last_used_at are instead
 // written by the Worker's own SQL (`CURRENT_TIMESTAMP`,
-// `DEFAULT CURRENT_TIMESTAMP`; see terraform/index.js), which is
+// `DEFAULT CURRENT_TIMESTAMP`; see terraform/worker/index.js), which is
 // SQLite-native, not RFC 3339, and would fail to parse with that helper's
 // layouts.
 func parseD1NativeTimestamp(s string) (time.Time, error) {

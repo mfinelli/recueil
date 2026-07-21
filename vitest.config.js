@@ -24,7 +24,7 @@ import {
 } from "@cloudflare/vitest-pool-workers";
 
 export default defineConfig(async () => {
-  const migrations = await readD1Migrations("./terraform/migrations");
+  const migrations = await readD1Migrations("./terraform/worker/migrations");
 
   return {
     test: {
@@ -32,7 +32,7 @@ export default defineConfig(async () => {
         {
           plugins: [
             cloudflareTest({
-              main: "terraform/index.js",
+              main: "terraform/worker/index.js",
               miniflare: {
                 // NOTE: keep in sync with version defined in terraform
                 compatibilityDate: "2026-07-08",
@@ -54,8 +54,8 @@ export default defineConfig(async () => {
           ],
           test: {
             name: "worker",
-            include: ["terraform/tests/**/*.test.js"],
-            setupFiles: ["terraform/tests/apply-migrations.js"],
+            include: ["terraform/worker/tests/**/*.test.js"],
+            setupFiles: ["terraform/worker/tests/apply-migrations.js"],
           },
         },
         {

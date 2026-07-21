@@ -64,7 +64,7 @@ export default [
     },
   },
   {
-    files: ["terraform/index.js"],
+    files: ["terraform/worker/index.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
@@ -72,11 +72,27 @@ export default [
     },
   },
   {
-    files: ["terraform/tests/**/*.js"],
+    files: ["terraform/worker/tests/**/*.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
       globals: { ...globals.serviceworker, ...globals.vitest },
+    },
+  },
+  {
+    files: ["terraform/pwa/app.js", "terraform/pwa/token.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.browser },
+    },
+  },
+  {
+    files: ["terraform/pwa/sw.js"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.serviceworker },
     },
   },
   {

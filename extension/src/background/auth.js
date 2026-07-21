@@ -18,7 +18,7 @@
 
 // Pairing exchanges a one-time pairing token (generated on the recueil
 // dashboard, out of scope of this extension) for a long-lived device
-// bearer token -- see terraform/index.js's handlePair for the exact
+// bearer token -- see terraform/worker/index.js's handlePair for the exact
 // contract this is written against: POST {pairing_token, device_name,
 // device_type} -> {token, device_id, device_name, device_type}.
 //

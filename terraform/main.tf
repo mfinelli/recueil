@@ -42,9 +42,25 @@ resource "cloudflare_r2_bucket" "capture_buffer" {
 resource "cloudflare_workers_script" "worker" {
   account_id     = var.account_id
   script_name    = "${var.name_prefix}-recueil"
-  content_file   = "${path.module}/index.js"
+  content_file   = "${path.module}/worker/index.js"
   main_module    = "index.js"
-  content_sha256 = filesha256("${path.module}/index.js")
+  content_sha256 = filesha256("${path.module}/worker/index.js")
+
+  # Static assets (the share-sheet PWA -- pwa/) served directly by this
+  # same Worker/script, rather than a separate Cloudflare Pages project:
+  # one `terraform apply` for the whole Cloudflare side, no second deploy
+  # step (Pages still requires a `wrangler pages deploy` even once the
+  # project itself exists), and no new moving part to keep in sync with
+  # this module. Static files are matched first by path; anything that
+  # doesn't match a real file under pwa/ (every API route this Worker
+  # handles: /pair, /queue, /internal/*, etc.) falls through to the
+  # fetch handler in index.js untouched -- this is the provider's own
+  # default (`run_worker_first` unset), not something this module
+  # overrides, since the PWA's own file names never collide with any
+  # API path.
+  assets = {
+    directory = "${path.module}/pwa"
+  }
 
   # Bump periodically; pinned rather than computed dynamically since
   # Terraform has no "today" primitive worth adding a data source for.

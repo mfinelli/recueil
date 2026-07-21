@@ -51,7 +51,7 @@ const userAgent = "recueil/1.0"
 // either the item id doesn't exist, it doesn't belong to the given
 // userID, or it's not currently in the 'failed' state (the Worker
 // collapses all three into one 404 rather than distinguishing them; see
-// terraform/index.js's handleRetryQueueItem doc comment for why no
+// terraform/worker/index.js's handleRetryQueueItem doc comment for why no
 // 409/410 split is worth making here, unlike the device-claim endpoint).
 var ErrNotFound = errors.New("queueitems: item not found or not retryable")
 
@@ -139,7 +139,7 @@ func (c *Client) ListFailed(ctx context.Context, userID int64) ([]Item, error) {
 
 // Retry flags one failed item for another device claim attempt, scoped by
 // both itemID and userID -- the same belt-and-suspenders the Worker's own
-// handler documents itself (see terraform/index.js's
+// handler documents itself (see terraform/worker/index.js's
 // handleRetryQueueItem): a mismatched pair flags nothing rather than
 // someone else's item. Returns ErrNotFound on the Worker's 404 (which
 // also covers "not currently failed" -- see ErrNotFound's own doc

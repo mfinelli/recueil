@@ -1,0 +1,93 @@
+<!--
+recueil: self-hosted webpage bookmarker and archiver
+Copyright © 2026 Mario Finelli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+<!-- A one-time utility, not itself a client: unlike index.html, this page
+     never stores anything in localStorage and never registers a service
+     worker -- it exists purely to hand a raw bearer token to a human, for
+     pasting into somewhere that can't run POST /pair itself (an iOS
+     Shortcut's own static Authorization header field -- see the README's
+     "clients" section). Fixed to device_type "shortcut" since that's the
+     one thing this page is for; the PWA's own self-pairing flow
+     (index.html) covers everything that can call /pair on its own
+     behalf. -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Recueil — Get a device token</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#8a3223" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <section data-view="form">
+        <h1>Get a device token</h1>
+        <p class="tagline">
+          For clients that can't pair themselves — like an iOS Shortcut, which
+          has no way to run the pairing exchange on its own.
+        </p>
+        <p class="hint">
+          Paste the pairing token from your dashboard's Devices screen. This
+          page exchanges it for a bearer token and shows it to you once — it
+          isn't saved anywhere by this page, so copy it before you leave.
+        </p>
+        <form id="token-form">
+          <div id="token-status" role="alert"></div>
+          <label for="pairing-token">Pairing token</label>
+          <input
+            type="password"
+            id="pairing-token"
+            name="pairing-token"
+            autocomplete="off"
+            required
+          />
+          <label for="device-name">Name this device</label>
+          <input
+            type="text"
+            id="device-name"
+            name="device-name"
+            placeholder="iPhone Shortcut"
+            autocomplete="off"
+            required
+          />
+          <button type="submit" class="primary" id="token-submit">
+            Get token
+          </button>
+        </form>
+      </section>
+
+      <section data-view="result" hidden>
+        <h1>Device token</h1>
+        <p class="hint">
+          Paste this into your Shortcut's Authorization header, as
+          <code>Bearer &lt;token&gt;</code> — see the README for the exact
+          steps. It won't be shown again; if you lose it, come back here and
+          generate a new one (this doesn't invalidate the old one, so revoke it
+          from the dashboard's Devices screen afterward if you don't want both
+          around).
+        </p>
+        <div class="token-row">
+          <code class="token" id="token-value"></code>
+          <button type="button" id="copy-button">Copy</button>
+        </div>
+      </section>
+    </main>
+    <script src="token.js"></script>
+  </body>
+</html>

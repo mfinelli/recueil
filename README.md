@@ -128,6 +128,73 @@ volumes:
   recueil-archive:
 ```
 
+## clients
+
+Beyond the desktop browser extension (paired via the dashboard's Devices screen,
+same as everything below), two thin remote-enqueue clients are served straight
+off the same Cloudflare Worker the terraform module provisions -- neither needs
+its own deploy step.
+
+### Share-sheet PWA (Android, and anywhere else that supports Web Share Target)
+
+Visit the Worker's own URL (the `worker_url` terraform output) on your phone and
+add it to your home screen. The first launch asks for a pairing token (same
+Devices screen as the extension) and a name for the device; after that, sharing
+a page to it from any app enqueues the URL, no separate app install needed.
+There's no "Worker URL" field to fill in here -- the page is served by the same
+Worker it talks to, so pairing and enqueuing are both same-origin requests.
+
+### iOS Shortcut
+
+Apple Shortcuts aren't plain-text source -- they're built and exported through
+the Shortcuts app itself, so there's no file in this repo to install directly.
+This is the recipe for building one by hand.
+
+The one real wrinkle, worth calling out up front: **a pairing token and a device
+bearer token are not the same thing.** Pairing tokens (from the dashboard's
+Devices screen) are exchanged once for a bearer token (`POST /pair`), and it's
+the bearer token that actually authenticates `POST /queue` afterward. A Shortcut
+has no way to run that exchange itself -- but it doesn't need to: a Shortcut's
+own action fields (like a static `Authorization` header value) persist as part
+of the shortcut's own definition once you type them in, the same as any other
+hardcoded setting, so this only needs **one** shortcut, not two. The one extra
+step is getting the bearer token in the first place, since it's not something
+you'd otherwise see anywhere:
+
+1. On any device, visit `https://<worker_url>/token.html` -- a small page served
+   by the same Worker, built for exactly this: paste in a pairing token and a
+   name for the device, and it exchanges it for a bearer token and displays it
+   once (it isn't saved anywhere by that page itself -- copy it before
+   navigating away). It shows up afterward in the dashboard's Devices screen
+   like any other paired device, so it can be revoked independently later
+   without affecting anything else.
+2. Copy that token.
+
+**"Recueil: Save Page"** (enable **Show in Share Sheet**, accepting URLs and
+Safari web pages, in the shortcut's own settings):
+
+1. **Get Current Date**, formatted as Unix time, combined with **Random Number**
+   (0-999999) into one **Text** step (e.g.
+   `Save-{Formatted Date}-{Random Number}`) -- Shortcuts has no built-in UUID
+   generator, and `POST /queue` needs some client-generated, reasonably-unique
+   `id` for each enqueue (see `terraform/worker/index.js`'s `handleEnqueue`); it
+   only needs to be unique enough to not collide with another enqueue in the
+   same second, not an actual UUID.
+2. **Get Contents of URL** -- URL: `https://<worker_url>/queue`, method POST,
+   headers `Content-Type: application/json` and
+   `Authorization: Bearer <paste the token from step 1 above>`, request body
+   (JSON): `{"id": <generated id>, "url": <Shortcut Input>}`.
+3. **Show Notification** -- e.g. "Saved to Recueil".
+
+Two things worth knowing about this approach: the token lives in plain text
+inside the shortcut's own saved configuration (viewable if you open the shortcut
+to edit it, same exposure any other client's stored credential has -- don't
+export or share this particular shortcut with anyone), and Shortcuts'
+`Get Contents of URL` treats the request as successful once it gets _any_ HTTP
+response, including a 401 (a revoked or expired token) or a 500 -- it won't
+surface that as a failure on its own. If enqueues silently stop landing, revisit
+`token.html` for a fresh token and update the header.
+
 ## development
 
 This repo uses a git submodule (`internal/urlnorm/clearurls-rules`, a pinned

@@ -1155,7 +1155,7 @@ CREATE TABLE tokens (
   token_hash TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
-  device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli'
+  device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli' | 'shortcut'
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_used_at TEXT
 ) STRICT;
@@ -2680,7 +2680,7 @@ CREATE TABLE tokens (
   token_hash TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
-  device_type TEXT NOT NULL,        -- 'extension' | 'pwa' | 'cli'
+  device_type TEXT NOT NULL,        -- 'extension' | 'pwa' | 'cli' | 'shortcut'
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_used_at TEXT
 ) STRICT;
@@ -2769,18 +2769,18 @@ writes to `schema_migrations`.
 
 ## 11. Components Summary
 
-| Component                 | Tech                                                                                                    | Reachability required                                              | Responsibility                                                                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                               | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6a), upload to R2                                                                  |
-| Share-sheet PWA           | Static site, Cloudflare Pages                                                                           | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
-| iOS Shortcut              | Apple Shortcuts                                                                                         | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
-| CLI                       | Small script/binary                                                                                     | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
-| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
-| D1                        | Cloudflare D1 (SQLite)                                                                                  | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
-| R2                        | Cloudflare R2                                                                                           | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
-| Backend                   | Go + Postgres, Docker Compose                                                                           | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
-| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                            | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6) and Readability extractions (§6a)                                                      |
-| Dashboard                 | Svelte                                                                                                  | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
+| Component                 | Tech                                                                                                                                                                           | Reachability required                                              | Responsibility                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                                                                                                      | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6a), upload to R2                                                                  |
+| Share-sheet PWA           | Static site, served as Cloudflare Workers static assets bound to the same Worker below (Phase 9 — see §13's own note on the reversal from a separate Cloudflare Pages project) | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
+| iOS Shortcut              | Apple Shortcuts                                                                                                                                                                | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
+| CLI                       | Small script/binary                                                                                                                                                            | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
+| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting                                                                        | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
+| D1                        | Cloudflare D1 (SQLite)                                                                                                                                                         | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
+| R2                        | Cloudflare R2                                                                                                                                                                  | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
+| Backend                   | Go + Postgres, Docker Compose                                                                                                                                                  | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
+| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                                                                                                   | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6) and Readability extractions (§6a)                                                      |
+| Dashboard                 | Svelte                                                                                                                                                                         | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
 
 ---
 
@@ -2791,12 +2791,13 @@ writes to `schema_migrations`.
   the local archive directory both use **bind mounts** (not named volumes) so an
   external backup tool can snapshot them directly from the host (see §14).
 - **Cloudflare side**: Terraform/OpenTofu module in the public repo,
-  provisioning D1, R2, the Worker (and its routes/bindings), the Cloudflare
-  Pages project for the share-sheet PWA, a `random_password` resource for the
-  backend↔Worker service secret (§5a), and a `cloudflare_api_token` resource
-  scoped to `D1:Edit` on the D1 database for the backend's migration runner
-  (§5b) — both output as `sensitive`, to be copied into the backend's `.env`
-  after `terraform apply`.
+  provisioning D1, R2, the Worker (and its routes/bindings, plus the share-sheet
+  PWA's static files bound to that same Worker as of Phase 9 — see §13's own
+  note on why this isn't a separate Cloudflare Pages project), a
+  `random_password` resource for the backend↔Worker service secret (§5a), and a
+  `cloudflare_api_token` resource scoped to `D1:Edit` on the D1 database for the
+  backend's migration runner (§5b) — both output as `sensitive`, to be copied
+  into the backend's `.env` after `terraform apply`.
 - **Networking**: the repo takes no position on how the backend/dashboard is
   exposed beyond the local machine — that's a deployment-time decision left to
   the operator (LAN-only, reverse proxy, VPN, tunnel, etc.). The core archiving
@@ -2921,12 +2922,20 @@ recueil/
 │                                 # distinct port + tmpfs, separate from the
 │                                 # dev database below
 │
-├── terraform/                  # OpenTofu module AND the Worker's own source
-│   │                              # -- flat, not nested under a worker/
-│   │                              # subdirectory (an earlier revision of
-│   │                              # this tree assumed one; the Worker's
-│   │                              # source lives directly alongside the
-│   │                              # OpenTofu config that deploys it)
+├── terraform/                  # OpenTofu module, the Worker's own source, AND
+│   │                              # the share-sheet PWA's static files --
+│   │                              # reversed from an earlier revision of this
+│   │                              # tree, which kept the Worker's source flat
+│   │                              # alongside the OpenTofu config and put pwa/
+│   │                              # at the repo root: once the PWA started
+│   │                              # deploying as static assets bound to this
+│   │                              # same cloudflare_workers_script resource
+│   │                              # (Phase 9) rather than a separate
+│   │                              # Cloudflare Pages project, both needed to
+│   │                              # live somewhere `path.module`-relative, so
+│   │                              # the Worker's own source moved into its own
+│   │                              # worker/ subdirectory and pwa/ became its
+│   │                              # sibling
 │   ├── main.tf                   # includes random_password for the
 │   │                                # backend↔Worker service secret (§5a) and
 │   │                                # a cloudflare_api_token scoped to D1:Edit
@@ -2938,33 +2947,66 @@ recueil/
 │   │                                # for backend→Worker service-secret
 │   │                                # traffic (§5c)
 │   ├── README.md
-│   ├── index.js                  # plain JS, no build step for deployment —
-│   │                                # local test/lint tooling doesn't change
-│   │                                # that
-│   ├── package.json              # Worker's own devDependencies (wrangler,
-│   │                                # @cloudflare/*, @aws-crypto/*,
-│   │                                # @smithy/*) — added Phase 6, makes
-│   │                                # terraform/ a pnpm workspace member;
-│   │                                # see §13a for why ESLint/Vitest
-│   │                                # themselves stay root-level regardless
-│   ├── tsconfig.json              # @ts-check/JSDoc type-checking, index.js only
-│   ├── migrations/                # D1 schema — applied by the backend (§5b),
-│   │   │                            # not by wrangler
-│   │   ├── 0000_schema_migrations.sql
-│   │   └── 0001_users.sql
-│   └── tests/                     # @cloudflare/vitest-pool-workers — real
-│       │                            # simulated D1 via Miniflare, not mocks
-│       ├── apply-migrations.js
-│       ├── fetch.test.js
-│       └── handleUserMirror.test.js
-├── pwa/                          # static share-target PWA, no build step --
-│   ├── index.html                  # not yet built (see IMPLEMENTATION.md's
-│   └── manifest.json               # "On the horizon") -- top-level, not
-│                                      # nested under terraform/ as an earlier
-│                                      # revision of this tree had it: static
-│                                      # PWA files aren't a Terraform/Worker
-│                                      # concern the way index.js is
-│
+│   ├── worker/                   # plain JS, no build step for deployment —
+│   │   │                            # local test/lint tooling doesn't change
+│   │   │                            # that
+│   │   ├── index.js
+│   │   ├── package.json          # Worker's own devDependencies (wrangler,
+│   │   │                            # @cloudflare/*, @aws-crypto/*,
+│   │   │                            # @smithy/*) — added Phase 6, makes
+│   │   │                            # terraform/worker/ a pnpm workspace
+│   │   │                            # member; see §13a for why ESLint/Vitest
+│   │   │                            # themselves stay root-level regardless
+│   │   ├── tsconfig.json          # @ts-check/JSDoc type-checking, index.js only
+│   │   ├── migrations/            # D1 schema — applied by the backend (§5b),
+│   │   │   │                        # not by wrangler
+│   │   │   ├── 0000_schema_migrations.sql
+│   │   │   └── 0001_users.sql
+│   │   └── tests/                 # @cloudflare/vitest-pool-workers — real
+│   │       │                        # simulated D1 via Miniflare, not mocks
+│   │       ├── apply-migrations.js
+│   │       ├── fetch.test.js
+│   │       └── handleUserMirror.test.js
+│   └── pwa/                       # static share-target PWA (Phase 9), no
+│       │                            # build step, no dependencies — same
+│       │                            # "no build step" constraint as worker/,
+│       │                            # for the same reason (deploys as plain
+│       │                            # static files, not a build artifact).
+│       │                            # Served by main.tf's
+│       │                            # cloudflare_workers_script `assets`
+│       │                            # block, alongside worker/'s own
+│       │                            # content_file — one terraform apply for
+│       │                            # the whole Cloudflare side, not a
+│       │                            # separate Pages project + separate
+│       │                            # `wrangler pages deploy` step
+│       ├── index.html
+│       ├── style.css               # reuses src/app.scss's exact token
+│       │                              # values (extension/dashboard/PWA all
+│       │                              # share them today) rather than a new
+│       │                              # palette -- full reconciliation
+│       │                              # against the marketing site's own
+│       │                              # ledger/brass/stamp palette is still
+│       │                              # the separate, still-deferred
+│       │                              # "dashboard visual design system"
+│       │                              # item (§15)
+│       ├── app.js                  # pairs and enqueues same-origin (no
+│       │                              # Worker URL field anywhere in this
+│       │                              # app -- it's served by the Worker it
+│       │                              # talks to)
+│       ├── sw.js                   # minimal: satisfies installability,
+│       │                              # cache-first for the app shell only
+│       ├── manifest.json           # Web Share Target (GET, url/text/title)
+│       ├── icon.svg
+│       ├── token.html               # standalone (own token.js, no service
+│       │                              # worker) -- exchanges a pairing token
+│       │                              # for a bearer token and displays it
+│       │                              # once, for pasting into a client that
+│       │                              # can't run POST /pair itself (the
+│       │                              # iOS Shortcut recipe below); not
+│       │                              # part of app.js's own pair/enqueue
+│       │                              # flow, and saves nothing itself
+│       └── token.js
+
 ├── extension/                # WebExtension, own package.json (needs bundling
 │   ├── src/                    # to pull in vendored SingleFile capture code
 │   ├── manifest.json            # and a WebExtension polyfill — no longer

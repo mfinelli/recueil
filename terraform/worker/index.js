@@ -139,7 +139,7 @@ async function authenticateDevice(request, env, ctx) {
 //
 // R2's S3-compatible endpoint accepts SigV4 exactly like S3 does, with
 // region "auto" and service "s3" (Cloudflare's R2 API docs). This
-// implementation is verified two ways in terraform/tests/r2-presign.test.js:
+// implementation is verified two ways in terraform/worker/tests/r2-presign.test.js:
 // against AWS's own published presigned-URL worked example, and against
 // the official @smithy/signature-v4 signer (the library aws-sdk-js v3
 // itself uses) for arbitrary R2-shaped requests -- a test-only dependency,
@@ -283,7 +283,7 @@ export function encodePath(path) {
  *
  * Two genuinely distinct mechanisms are in play here, worth not
  * conflating (a real point of confusion working this out -- see
- * terraform/tests/r2-presign.test.js and the PresignParams doc above):
+ * terraform/worker/tests/r2-presign.test.js and the PresignParams doc above):
  * - The SigV4 "payload hash" slot (the last line of the canonical
  *   request) is a *signing* input, not a content-integrity check. R2's
  *   own documented presigned-URL examples leave it as the literal string
@@ -532,7 +532,7 @@ export async function handleUserMirror(request, env) {
   return new Response(null, { status: 204 });
 }
 
-const DEVICE_TYPES = new Set(["extension", "pwa", "cli"]);
+const DEVICE_TYPES = new Set(["extension", "pwa", "cli", "shortcut"]);
 
 /**
  * POST /pair: exchanges a pairing token for a device bearer token.

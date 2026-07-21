@@ -127,6 +127,30 @@ describe("handlePair", () => {
     expect(response.status).toBe(400);
   });
 
+  it('accepts device_type "shortcut" (the iOS Shortcut client)', async () => {
+    const userId = await seedUser("rcl_pair_test-token-shortcut");
+
+    const response = await handlePair(
+      pairRequest({
+        pairing_token: "rcl_pair_test-token-shortcut",
+        device_name: "iPhone",
+        device_type: "shortcut",
+      }),
+      env,
+    );
+    expect(response.status).toBe(201);
+
+    const body = await response.json();
+    expect(body.device_type).toBe("shortcut");
+
+    const row = await env.DB.prepare(
+      "SELECT user_id, device_type FROM tokens WHERE id = ?",
+    )
+      .bind(body.device_id)
+      .first();
+    expect(row).toEqual({ user_id: userId, device_type: "shortcut" });
+  });
+
   it("the same pairing token can issue multiple independent device bearer tokens", async () => {
     const userId = await seedUser("rcl_pair_test-token-multi");
 

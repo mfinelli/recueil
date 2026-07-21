@@ -1939,12 +1939,79 @@ created — see below).
   surfaces under Readability in the Queue screen, not AI, until that's retried;
   nothing needed to change about the cascade itself for this to keep being true.
 
+### Share-sheet PWA and iOS Shortcut (both thin remaining clients)
+
+**Repo restructure first, prompted by how the PWA needed to deploy:**
+`terraform/index.js`/`migrations/`/`tests/`/`package.json`/`tsconfig.json` moved
+into a new `terraform/worker/` subdirectory, with `terraform/pwa/` as its new
+sibling — a reversal of the original repo-layout plan (which explicitly kept the
+Worker's source flat alongside the `.tf` files and put `pwa/` at the repo root,
+arguing static PWA files weren't a Terraform/Worker concern). They are now: both
+directories need to be `path.module`-relative for `cloudflare_workers_script`'s
+`content_file` and `assets.directory` arguments to reach them from `main.tf`.
+
+**Hosting decision, reversed from DESIGN.md's original plan:**
+`cloudflare_pages_project` (the Terraform resource DESIGN.md originally called
+for) turned out to have known, still-being-stabilized drift/source-config bugs
+in the pinned `~> 5.0` provider as of recent Cloudflare changelogs, and even
+when it works, Terraform only manages the project shell — actually deploying
+files still needs a separate `wrangler pages deploy` step, unlike the Worker's
+own single `content_file`-based `terraform apply`. Since provider v5.11,
+`cloudflare_workers_script` itself accepts an `assets` block pointing at a
+directory, with Terraform handling the manifest/hashing/upload the same way
+Wrangler does. `main.tf`'s existing `cloudflare_workers_script "worker"`
+resource now has `assets = { directory = "${path.module}/pwa" }` added directly
+— one `terraform apply` for the whole Cloudflare side, no second deploy step, no
+new moving part. Static files are matched by path first; every existing API
+route (`/pair`, `/queue`, `/internal/*`, etc.) falls through to `index.js`'s
+fetch handler untouched, since none of the PWA's own file names collide with an
+API path — the provider's own default behavior, not something this module had to
+configure.
+
+**The PWA itself** (`terraform/pwa/`): `manifest.json` (Web Share Target,
+`method: "GET"`, `params: {title, text, url}` — matches Android's Level 1 share
+target, no service-worker request interception needed for plain URL/text
+shares), `icon.svg` (a simple stamp/monogram, not a build-generated PNG set —
+`"sizes": "any"` on an SVG icon is broadly supported and needs no
+icon-generation pipeline), `style.css` (the exact same CSS custom properties as
+`src/app.scss` and `extension/src/popup/popup.css` — deliberately reused, not
+reinvented; full reconciliation across all four surfaces including the marketing
+site's ledger/brass/stamp palette remains the separate, still-deferred
+"dashboard visual design system" item), `index.html` (three views: pairing form,
+incoming-share auto-enqueue result, and a paired "manual add + disconnect"
+screen), `app.js` (vanilla JS, no dependencies, no bundler — same "no build
+step" constraint `terraform/worker/index.js` already has, for the identical
+reason: this deploys as a plain static file, not a build artifact), and `sw.js`
+(a deliberately minimal service worker — cache-first for the app shell's own
+four files only, existing purely to satisfy Android's installability requirement
+for share-target registration, not as an offline-first design goal: every real
+action here needs the network regardless).
+
+One simplification worth calling out: because the PWA is served by the same
+Worker it talks to, it's same-origin — there's no "Worker URL" field anywhere in
+its pairing form, unlike the CLI's `recueil auth --url`. Sharing a URL extracts
+it from `location.search`; Android doesn't consistently put the link in the
+`url` param (some apps hand off `text` instead, sometimes with a caption), so
+`app.js` falls back to scanning `text` for the first `https?://`-shaped token
+before giving up.
+
+**New device type**: `DEVICE_TYPES` (`terraform/worker/index.js`) gained
+`"shortcut"` alongside the existing `"extension"`/`"pwa"`/`"cli"`, for the iOS
+Shortcut client below — no D1 schema change needed (`tokens.device_type` has no
+`CHECK` constraint, only a documentation comment, which was updated too). New
+test in `handlePair.test.js` confirming it's accepted and stored correctly.
+
+**iOS Shortcut**: genuinely can't be committed as source — Apple Shortcuts are
+built and exported through the Shortcuts app itself, not authored as plain text,
+and there's no way to test one in this environment either. The deliverable is a
+documented recipe in the root `README.md`'s new "clients" section (same "drop it
+in as a reminder" treatment the Docker Compose config already gets).
+
 ### What's left
 
 Not touched this round, still open from earlier phases: the operator-only CLI
-device-revoke command, the dashboard's visual design system, extension Safari
-packaging, the extension popup's visual design pass, and the README backup
-recipe DESIGN.md §14 calls for (the resync command above is the restore-time
-repair step; the backup-taking side itself still has no example recipe written
-down). PWA share-sheet and iOS Shortcut (both thin wrappers around the existing
-enqueue endpoint) also remain unbuilt.
+device-revoke command, the dashboard's visual design system (now explicitly
+touching four surfaces instead of three), extension Safari packaging, the
+extension popup's visual design pass, and the README backup recipe DESIGN.md §14
+calls for (the resync command from earlier this round is the restore-time repair
+step; the backup-_taking_ side itself still has no example recipe written down).

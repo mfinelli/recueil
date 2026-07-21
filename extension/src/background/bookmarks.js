@@ -151,7 +151,7 @@ async function ensureFolder() {
 
 /**
  * The real reconciliation: pulls the whole current archived-pages list
- * (see terraform/index.js's handleListArchivedPages for why this is a
+ * (see terraform/worker/index.js's handleListArchivedPages for why this is a
  * full list every time, not incremental) and diffs it by URL against
  * whatever's actually in the dedicated folder right now -- see file doc
  * comment for why no separate tracked-id map is needed for this. A no-op

@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// POST /captures/upload-urls (see terraform/index.js's HEX_SHA256_PATTERN)
+// POST /captures/upload-urls (see terraform/worker/index.js's HEX_SHA256_PATTERN)
 // wants content_sha256_html/content_sha256_favicon as lowercase hex --
 // this is the only hash we compute client-side; the base64 form the
 // actual R2 PUT's x-amz-checksum-sha256 header needs is handed back to us

@@ -166,7 +166,7 @@ func runD1Migrations(ctx context.Context, cfg *config.Config) error {
 		DatabaseID: cfg.CloudflareD1DatabaseID,
 	}
 
-	migrations, err := fs.Sub(D1MigrationsFS, "terraform/migrations")
+	migrations, err := fs.Sub(D1MigrationsFS, "terraform/worker/migrations")
 	if err != nil {
 		return fmt.Errorf("preparing embedded D1 migrations: %w", err)
 	}
