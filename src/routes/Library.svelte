@@ -21,11 +21,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      tagging, collection membership editing, and the mirror-exclusion
      toggle are PageDetail concerns for a later round, not this list. -->
 <script lang="ts">
-  import { link, push } from "svelte-spa-router";
+  import { link } from "svelte-spa-router";
   import { SvelteSet } from "svelte/reactivity";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Page, PageListResponse } from "../lib/types";
-  import { session } from "../lib/session.svelte";
+  import AppHeader from "../components/AppHeader.svelte";
 
   const PAGE_SIZE = 50;
   const VIEW_MODE_KEY = "recueil:library-view-mode";
@@ -123,23 +123,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       day: "numeric",
     });
   }
-
-  async function handleLogout() {
-    await session.logout();
-    await push("/login");
-  }
 </script>
 
 <main class="screen">
-  <header>
-    <h1>recueil</h1>
-    {#if session.user}
-      <div class="account">
-        <span>{session.user.username}</span>
-        <button onclick={handleLogout}>Sign out</button>
-      </div>
-    {/if}
-  </header>
+  <AppHeader />
 
   <div class="toolbar">
     <input
@@ -236,20 +223,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     max-width: 64rem;
     margin: 0 auto;
     padding: 2rem 1rem;
-  }
-
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 1.5rem;
-  }
-
-  .account {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    font-size: 0.875rem;
   }
 
   button {

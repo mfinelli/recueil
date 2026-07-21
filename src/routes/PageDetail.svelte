@@ -29,6 +29,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <script lang="ts">
   import { link } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
+  import AppHeader from "../components/AppHeader.svelte";
   import type {
     PageDetail,
     CaptureSummary,
@@ -281,6 +282,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </script>
 
 <main class="screen">
+  <AppHeader />
   <a class="back" href="/" use:link>&larr; Library</a>
 
   {#if loading}
