@@ -1769,14 +1769,40 @@ that actually served the bytes.
   risks serving a stale icon/thumbnail after a later re-capture changes what the
   URL resolves to.
 
+### PageDetail's write actions, and frontend logic tests
+
+- **`PageDetail.svelte`** now calls all four write endpoints it had been
+  displaying data for read-only: tag add (`UpsertTag` + `AddPageTag`, source
+  hardcoded `"manual"` server-side — the response doesn't even carry it, so the
+  frontend's `TagCreated` type reflects that) and remove; collection add
+  (offering only collections the page isn't already in) and remove; the
+  `excluded_from_mirror` checkbox; and a per-capture language `<select>`
+  populated from `GET /api/text-search-configs`, saving immediately on change.
+  All four update `page` optimistically from each write's own response rather
+  than refetching the whole page afterward — a normal tradeoff for a single-user
+  tool, not hardened against concurrent-editor conflicts.
+- **Frontend logic tests, started**: a new `"dashboard"` project in
+  `vitest.config.js` (`environment: 'jsdom'`, the `svelte()` plugin so
+  `.svelte.ts` compiles, and critically `resolve.conditions: ['browser']` —
+  without it, `$state` resolves to Svelte's inert SSR runtime under plain Node
+  rather than a live reactive signal, verified against Svelte's own testing docs
+  rather than assumed). `jsdom` is now root `package.json`'s own devDependency
+  too (previously only `extension/package.json`'s). `routes.ts`'s three guards
+  became named exports specifically so they're directly testable, not just
+  reachable through a mounted router. `session.svelte.ts`'s `sessionReady` fires
+  its bootstrap fetch calls as a deliberate module-level side effect at import
+  time — real for the app, awkward for tests, since a static import would race
+  real network calls against a test's own mock; handled with
+  `vi.resetModules()` + dynamic `import()` per test rather than changing that
+  design. 25 new tests (`api.test.ts`, `session.svelte.test.ts`,
+  `routes.test.ts`), full suite now 326 (was 301). Scoped to logic only, not
+  component rendering (`@testing-library/svelte`) — a separate, later decision.
+
 ### Still ahead
 
-Write actions against screens that already display their own data read-only:
-tag/collection editing, the `excluded_from_mirror` toggle, and language
-correction on `PageDetail`. The Manage Devices screen (the backend's been ready
-since earlier this phase). A real in-app reader view, rather than linking out to
-the raw archived HTML. Then `go:embed` wiring once the screen set feels
-reasonably complete, and the dashboard's actual visual design system
-(reconciling the extension's neutral paper/ink surface against the marketing
-site's ledger/brass/stamp accents — flagged during planning, still deliberately
-deferred).
+The Manage Devices screen (the backend's been ready since earlier this phase). A
+real in-app reader view, rather than linking out to the raw archived HTML. Then
+`go:embed` wiring once the screen set feels reasonably complete, and the
+dashboard's actual visual design system (reconciling the extension's neutral
+paper/ink surface against the marketing site's ledger/brass/stamp accents —
+flagged during planning, still deferred).

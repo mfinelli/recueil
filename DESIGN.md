@@ -3233,6 +3233,33 @@ README that can drift out of sync with the architecture decisions around it.
   by the screenshot job well after ingestion, not at `UpsertPage` time), so the
   thumbnail endpoint resolves the latest capture fresh per request instead.
 
+- **Frontend logic testing**: a `"dashboard"` Vitest project alongside the
+  existing Worker/extension ones, deliberately scoped to logic
+  (`src/lib/*.test.ts`) rather than component rendering for now — a separate,
+  later decision with its own setup cost (`@testing-library/svelte`). Testing
+  Svelte 5 runes under Vitest needs `resolve.conditions: ['browser']` alongside
+  `environment: 'jsdom'`; without it `$state` resolves to Svelte's inert SSR
+  runtime rather than a live reactive signal, silently testing the wrong thing
+  rather than failing loudly. Verified against Svelte's own official testing
+  docs, not assumed.
+- **`src/components/`** (new, alongside `src/lib/` and `src/routes/`): shared UI
+  that's neither pure logic nor a routed page. `AppHeader.svelte` is the first
+  resident — extracted once three real screens would otherwise be repeating the
+  same title/nav/account bar, not decided in advance of needing it.
+- **Optimistic writes, not refetch-after-write**: `PageDetail`'s tag/
+  collection/mirror-toggle/language-correction actions all update local state
+  directly from each write's own response. Reasonable for a single-user personal
+  tool; not defended against concurrent-editor conflicts, and would need
+  reconsidering if multi-user concurrent editing of the same page ever became a
+  real scenario.
+- **Collections management** (`Collections.svelte`): the tree is built
+  client-side from the flat `(id, parent_id)` list `GET /api/collections`
+  already returns, not requested pre-nested — consistent with
+  `ListCollectionsByUser`'s own documented reasoning that a full-user listing
+  doesn't need a recursive CTE. Cascading delete (removing a collection removes
+  its whole subtree, per §10) surfaces a `confirm()` naming the actual
+  descendant count before proceeding, rather than a silent or generic warning.
+
 This section is expected to keep growing as the extension, dashboard, and CLI
 are built out.
 
@@ -3448,3 +3475,16 @@ What remains open is purely implementation-phase, not architectural:
   erroring, so CI's `pnpm run check` had been a false pass on every `.svelte`
   file since the skeleton. See §13a's Svelte Dashboard subsection and
   IMPLEMENTATION.md for the details.
+- **Resolved this round (Phase 6, continued): `PageDetail` is now a full
+  read/write loop**, not display-only — tag/collection add-remove, the
+  mirror-exclusion toggle, and per-capture language correction all call their
+  real endpoints. A dedicated **Collections management screen** landed too (tree
+  view, create/rename/delete), after two real gaps surfaced from actually using
+  the write actions rather than being planned ahead of time: AI-sourced tags
+  weren't visually distinguished from manual ones, and there was no way to
+  create a collection from the dashboard at all, let alone browse the tree to
+  choose a parent for a nested one. Frontend logic testing also started (a
+  `"dashboard"` Vitest project), and a shared `AppHeader` component got
+  extracted once three real screens existed to repeat the same title/nav/account
+  bar across. See §13a's Svelte Dashboard subsection and IMPLEMENTATION.md for
+  the details.
