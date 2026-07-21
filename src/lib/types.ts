@@ -138,3 +138,18 @@ export interface DeviceListResponse {
 export interface PairingTokenResponse {
   pairing_token: string;
 }
+
+// GET /api/queue-items' item shape (only status=failed is currently
+// supported server-side -- see internal/httpapi's ListFailedQueueItems).
+// id is a client-generated UUID (queue_items.id is TEXT), not a number.
+export interface QueueItem {
+  id: string;
+  url: string;
+  status: string;
+  manual_retry: boolean;
+  created_at: string;
+}
+
+export interface QueueItemListResponse {
+  items: QueueItem[];
+}

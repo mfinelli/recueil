@@ -46,6 +46,7 @@ import (
 	"github.com/mfinelli/recueil/internal/httpapi"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
+	"github.com/mfinelli/recueil/internal/queueitems"
 )
 
 var (
@@ -111,8 +112,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+	queueItemsClient := queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, bootstrap, cfg.SessionCookieSecure, pairingKey)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

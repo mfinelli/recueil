@@ -39,6 +39,7 @@ import Library from "../routes/Library.svelte";
 import PageDetail from "../routes/PageDetail.svelte";
 import Collections from "../routes/Collections.svelte";
 import Devices from "../routes/Devices.svelte";
+import Queue from "../routes/Queue.svelte";
 import CaptureReader from "../routes/CaptureReader.svelte";
 
 export const requireSetup: RoutePrecondition = () => {
@@ -78,6 +79,7 @@ const routes: RouteDefinition = new Map([
   ["/pages/:id", wrap({ component: PageDetail, conditions: [requireAuth] })],
   ["/collections", wrap({ component: Collections, conditions: [requireAuth] })],
   ["/devices", wrap({ component: Devices, conditions: [requireAuth] })],
+  ["/queue", wrap({ component: Queue, conditions: [requireAuth] })],
   [
     "/captures/:id",
     wrap({ component: CaptureReader, conditions: [requireAuth] }),

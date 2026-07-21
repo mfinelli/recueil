@@ -48,6 +48,7 @@ import (
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/queueitems"
 )
 
 // The cookie name is a private constant in internal/auth (cookieName =
@@ -85,11 +86,17 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	q := db.New(pool)
 	m := mirror.NewClient(mirrorURL, "test-secret")
 	d := devices.NewClient(mirrorURL, "test-secret")
+	qi := queueitems.NewClient(mirrorURL, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, rawToken, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
+	// EnableOpenRegistration is true here (unlike the real default) so the
+	// ~40 existing callers of this helper, including TestRegister's own
+	// happy-path coverage, keep exercising the real /api/auth/register
+	// flow unchanged. TestRegisterDisabledByDefault covers the
+	// default-false gate directly against its own server.
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -110,11 +117,12 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	q := db.New(pool)
 	m := mirror.NewClient(mirrorURL, "test-secret")
 	d := devices.NewClient(mirrorURL, "test-secret")
+	qi := queueitems.NewClient(mirrorURL, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -203,10 +211,11 @@ func TestNewRouter_DashboardSPA(t *testing.T) {
 	q := db.New(pool)
 	m := mirror.NewClient(unreachable, "test-secret")
 	d := devices.NewClient(unreachable, "test-secret")
+	qi := queueitems.NewClient(unreachable, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
-	s := httpapi.NewServer(q, pool, store, m, d, bootstrap, false, testPairingKey(t))
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
@@ -410,6 +419,35 @@ func TestRegister(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusConflict, resp.StatusCode)
 	})
+}
+
+// TestRegisterDisabledByDefault covers EnableOpenRegistration's real
+// default (false) directly, since newTestServer itself always passes
+// true so its ~40 other callers, including TestRegister above, keep
+// exercising the enabled path unchanged.
+func TestRegisterDisabledByDefault(t *testing.T) {
+	pool := dbtest.Setup(t)
+	q := db.New(pool)
+	m := mirror.NewClient(unreachable, "test-secret")
+	d := devices.NewClient(unreachable, "test-secret")
+	qi := queueitems.NewClient(unreachable, "test-secret")
+	store := archive.New(t.TempDir())
+	bootstrap, _, err := auth.NewBootstrapTokenHolder()
+	require.NoError(t, err)
+
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false)
+	logger := httplog.NewLogger("recueil-test")
+	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
+	require.NoError(t, err)
+	server := httptest.NewServer(r)
+	t.Cleanup(server.Close)
+
+	body := `{"username":"register-disabled","password":"hunter2"}`
+	resp, err := http.Post(server.URL+"/api/auth/register", "application/json", strings.NewReader(body))
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.False(t, hasSessionCookie(resp))
 }
 
 // createUserWithPassword bypasses dbtest.CreateUser's placeholder
@@ -657,6 +695,53 @@ func newDeviceWorkerServer(t *testing.T, tokensByUser map[int64][]map[string]any
 	return srv
 }
 
+// newQueueItemsWorkerServer is newDeviceWorkerServer's twin for the
+// dashboard's Queue screen: a mock Worker standing in for
+// GET /internal/queue-items?status=failed and
+// POST /internal/queue-items/:id/retry. itemsByUser is mutated in place
+// (retry flips manual_retry to true) the same way newDeviceWorkerServer's
+// tokensByUser is mutated by revoke.
+func newQueueItemsWorkerServer(t *testing.T, itemsByUser map[int64][]map[string]any) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Service-Key") != "test-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/internal/queue-items":
+			userID, err := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
+			if err != nil || r.URL.Query().Get("status") != "failed" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": itemsByUser[userID]})
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/internal/queue-items/") && strings.HasSuffix(r.URL.Path, "/retry"):
+			itemID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/internal/queue-items/"), "/retry")
+			userID, err := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			items := itemsByUser[userID]
+			for i, item := range items {
+				if item["id"] == itemID && item["status"] == "failed" {
+					items[i]["manual_retry"] = float64(1)
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestListDevices(t *testing.T) {
 	pool := dbtest.Setup(t)
 
@@ -782,6 +867,128 @@ func TestRevokeDevice(t *testing.T) {
 	t.Run("without a session cookie returns 401", func(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/devices/1", http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestListFailedQueueItems(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a member sees their own failed items", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
+			member.ID: {{"id": "item-1", "url": "https://example.com/a", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+		})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/queue-items", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Items []struct {
+				ID  string `json:"id"`
+				URL string `json:"url"`
+			} `json:"items"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Items, 1)
+		assert.Equal(t, "item-1", got.Items[0].ID)
+	})
+
+	t.Run("?user_id= is ignored -- always self-scoped, even for an admin", func(t *testing.T) {
+		admin := dbtest.CreateUser(t, pool, "admin")
+		other := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
+			admin.ID: {{"id": "admin-item", "url": "https://example.com/admin", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+			other.ID: {{"id": "other-item", "url": "https://example.com/other", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+		})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &admin)
+
+		resp := requestWithCookie(t, server, http.MethodGet,
+			fmt.Sprintf("/api/queue-items?user_id=%d", other.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Items, 1)
+		assert.Equal(t, "admin-item", got.Items[0].ID)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/queue-items")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestRetryQueueItem(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a member can retry their own failed item", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
+			member.ID: {{"id": "retry-me", "url": "https://example.com/r", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+		})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodPost, "/api/queue-items/retry-me/retry", cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	})
+
+	t.Run("a member cannot retry another user's item even by guessing the id", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
+			other.ID: {{"id": "not-yours", "url": "https://example.com/n", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+		})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		// No ?user_id= at all -- the member's own id is used, which
+		// doesn't own this item, so the Worker's own cross-check is
+		// what actually blocks this.
+		resp := requestWithCookie(t, server, http.MethodPost, "/api/queue-items/not-yours/retry", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("retrying a nonexistent item returns 404", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodPost, "/api/queue-items/does-not-exist/retry", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("?user_id= is ignored -- an admin cannot retry another user's item via it", func(t *testing.T) {
+		admin := dbtest.CreateUser(t, pool, "admin")
+		other := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
+			other.ID: {{"id": "cross-user", "url": "https://example.com/c", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+		})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &admin)
+
+		resp := requestWithCookie(t, server, http.MethodPost,
+			fmt.Sprintf("/api/queue-items/cross-user/retry?user_id=%d", other.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/queue-items/x/retry", http.NoBody)
 		require.NoError(t, err)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)

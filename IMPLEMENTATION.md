@@ -1853,3 +1853,59 @@ CLI device-revoke command (§5, point 3 — `internal/devices.Client` is already
 shaped for it), and the dashboard's actual visual design system (reconciling the
 extension's neutral paper/ink surface against the marketing site's
 ledger/brass/stamp accents) — both explicitly punted to a separate session.
+
+## Phase 9 (small backend gaps: open registration, mirror resync, failed-queue retry)
+
+Scoped as a deliberately small round of leftover implementation-phase gaps
+flagged in DESIGN.md §15, rather than a new user-facing screen or capability
+area — see the closing note on what's still left after this one. Built in the
+order: the registration toggle, the resync CLI command, then the failed-queue
+manual-retry mechanism (Worker → backend → dashboard, in that order).
+
+### `ENABLE_OPEN_REGISTRATION`
+
+- New `Config.EnableOpenRegistration` (`enable_open_registration`,
+  `viper.SetDefault(..., false)`). Gated inline in the `Register` handler itself
+  (`if !s.EnableOpenRegistration { 403 }`) rather than conditionally registering
+  `POST /api/auth/register` in the router — keeps routing static, one branch to
+  reason about.
+- Landed default `false`, a reversal from DESIGN.md's original "open by default,
+  flag for invite-only later" plan (see DESIGN.md §5, §15).
+- `NewServer`'s signature grew an `enableOpenRegistration bool` parameter.
+  `newTestServer`/`newTestServerWithStore` pass `true` so existing coverage,
+  including `TestRegister`'s own happy-path assertions, keeps exercising the
+  enabled path unchanged; a new `TestRegisterDisabledByDefault` builds its own
+  one-off server with `false` to cover the real default directly.
+
+### `recueil user resync`
+
+- New CLI subcommand (`cmd/user.go`), CLI-only like the planned device-revoke
+  command — a rare, ops-triggered action, not a dashboard click. Repair path
+  DESIGN.md §14 calls for after a Postgres restore leaves the D1 pairing-token
+  mirror stale.
+- For each account: decrypts `pairing_token_enc` where present
+  (`auth.DecryptPairingToken`), re-hashes with the same `auth.HashToken` the
+  create/regenerate paths already use, and re-pushes through `mirror.PushUser` —
+  the exact idempotent call already made at create/regenerate/revoke time, just
+  looped across every user. Pushes `nil` for an account with a revoked (NULL)
+  token, same as the revoke flow itself, so a stale non-NULL hash left over in
+  D1 from before a restore gets cleared too, not just skipped. Per-account
+  failures are logged and counted, not fatal to the whole run; the command exits
+  non-zero only if at least one account failed.
+
+### Failed queue items: surfaced, with manual retry
+
+DESIGN.md §15 left this genuinely undecided (surface to the user? automatic
+retry? a separate/longer expiry?) — resolved this round: surface with manual
+retry, keep failed items forever otherwise (low expected volume at this
+project's scale; can revisit if that stops holding).
+
+### What's left
+
+Not touched this round, still open from earlier phases: the operator-only CLI
+device-revoke command, the dashboard's visual design system, extension Safari
+packaging, the extension popup's visual design pass, and the README backup
+recipe DESIGN.md §14 calls for (the resync command above is the restore-time
+repair step; the backup-taking side itself still has no example recipe written
+down). PWA share-sheet and iOS Shortcut (both thin wrappers around the existing
+enqueue endpoint) also remain unbuilt.

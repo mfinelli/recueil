@@ -72,8 +72,9 @@ type userMirrorPayload struct {
 //
 // Failure here doesn't roll back the Postgres write (account creation,
 // regenerate, and revoke are not currently retried on mirror-push
-// failure); the resync command (planned) is the intended repair path for
-// drift.
+// failure); `recueil user resync` (cmd/user.go) is the intended repair
+// path for drift, including the specific case of a stale mirror after
+// restoring Postgres from a backup.
 func (c *Client) PushUser(ctx context.Context, id int64, pairingTokenHash *string) error {
 	body, err := json.Marshal(userMirrorPayload{ID: id, PairingTokenHash: pairingTokenHash})
 	if err != nil {

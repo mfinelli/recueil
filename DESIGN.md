@@ -1334,16 +1334,20 @@ operator friction than holding one additional narrowly-scoped credential.
 
 ### Account creation and roles
 
-- **Open registration.** Anyone who can reach the dashboard can create a
-  `member` account via a signup form — no invite step. This is intentionally
-  consistent with the dashboard's threat model: reachability is already gated by
-  whatever network the operator chose (LAN/VPN/tunnel), so anyone who can reach
-  the signup form is presumed already trusted at the network level, the same way
-  anyone on a home LAN can usually reach a router's admin page. This also lines
-  up naturally with a future hosted/SaaS mode, where open signup is the default
-  expectation anyway. A config flag (e.g. `ENABLE_OPEN_REGISTRATION=false`) is
-  worth offering later for operators who want invite-only instead, but isn't
-  required for the initial version.
+- **Registration, gated by `ENABLE_OPEN_REGISTRATION` (default `false`).**
+  Anyone who can reach the dashboard while this is enabled can create a `member`
+  account via a signup form — no invite step. This was originally planned
+  open-by-default (reachability is already gated by whatever network the
+  operator chose — LAN/VPN/tunnel — so anyone who can reach the signup form is
+  presumed already trusted at the network level, the same way anyone on a home
+  LAN can usually reach a router's admin page), but landed closed-by-default
+  instead once actually built (Phase 9): a self-hosted personal archiving tool
+  has no business letting anyone who can reach it create their own account
+  without the operator opting in, and the bootstrap flow plus
+  `recueil user create` already cover account creation without it. An operator
+  running a small family/friends deployment who wants self-serve signup (or a
+  future hosted/SaaS mode, where open signup is the default expectation) can
+  still turn it on.
 - **Bootstrap token for the first admin, held in memory, not persisted.** On
   startup, if `users` is empty, the backend generates a random bootstrap token
   (32-byte CSPRNG, base64url-encoded, `rcl_bootstrap_...` prefix), prints it to
@@ -2010,9 +2014,26 @@ not anticipated in the original design:
 - **Deletes only `captured` items**, and only once older than a 72-hour
   retention window (long enough to be useful for auditability/debugging shortly
   after the fact, short enough not to accumulate indefinitely). `failed` items
-  are **not** touched — they're kept indefinitely for now. What to do about them
-  long-term (surface them to the user, retry them, expire them on a
-  separate/longer schedule) is an open question, not decided here — see §15.
+  are **not** touched — they're kept indefinitely, a deliberate decision as of
+  Phase 9 (see below), not a deferred one.
+- **`failed` items are surfaced to the user with a manual-retry action (Phase
+  9), not left as a dead end.** A `queue_items.manual_retry` flag (D1, default
+  `0`) lets the dashboard's Queue screen ask for another attempt without losing
+  the `failed` status itself — `failed` stays the durable, queryable "needs
+  attention" state the screen lists against; the flag layers "and it should be
+  claimable again" on top, cleared automatically the moment some device's
+  `POST /queue/:id/claim` picks the item up (both the claim query's `WHERE` and
+  `GET /queue`'s own listing query were extended with
+  `OR (status = 'failed' AND manual_retry = 1)` to make this possible — see the
+  migration and `handleClaimQueueItem`/`handleListQueue` in `terraform/index.js`
+  for the exact shape). Two new service-secret-gated Worker endpoints back this:
+  `GET /internal/queue-items?status=failed` and
+  `POST /internal/queue-items/:id/retry`, called by the backend's own
+  `internal/queueitems` client (structured like `internal/devices`) via
+  session-protected, self-scoped `GET`/`POST /api/queue-items...`. No automatic
+  retry mechanism and no separate/longer expiry were built — expected volume is
+  low at this project's personal/family scale, and an operator can always
+  intervene by hand if that stops holding.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
   `pending` for a long time before being claimed; it's time since actual
   completion that should drive retention, not time since the original enqueue.
@@ -3343,11 +3364,15 @@ should be backed up in the same job/window.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/
-  changed accounts may still have valid mirrored credentials). A manual **resync
-  command** (CLI or admin dashboard action) re-runs the existing
-  credential-mirror-push logic as an idempotent bulk operation across all users,
-  rather than only firing on the create/password-change event hook. This should
-  be run after any Postgres restore.
+  changed accounts may still have valid mirrored credentials).
+  **`recueil user resync`** (Phase 9, `cmd/user.go`) is the manual resync
+  command this section called for — CLI-only, not an admin dashboard action,
+  matching the operator-only precedent already set for device management. It
+  re-runs the same idempotent `mirror.PushUser` push already used at
+  create/regenerate/revoke time across every account: decrypts each account's
+  `pairing_token_enc` where present, re-hashes it, and re-pushes it (or pushes
+  `nil` for an account with a revoked/NULL token, clearing any stale D1 hash
+  left over from before the restore). Should be run after any Postgres restore.
 
 ---
 
@@ -3385,9 +3410,14 @@ choices, tracked in §13a rather than here.
 
 What remains open is purely implementation-phase, not architectural:
 
-- Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
-  toggle) is worth building in the initial version or deferred until someone
-  actually asks for it.
+- **Resolved this round (Phase 9): `ENABLE_OPEN_REGISTRATION` is built**
+  (config: `enable_open_registration`, default `false`) — gates
+  `POST /api/auth/register` directly in the handler rather than conditionally
+  registering the route, so routing stays static. Defaulted closed rather than
+  matching the previously-unconditional-open behavior: a self-hosted personal
+  archiving tool has no business letting anyone who can reach the dashboard
+  create their own account by default, and nothing was depending on the old
+  behavior since this was pre-1.0.
 - The pairing-token redesign (round five) retrofitted already-built Phase 1
   code: the `/internal/users/mirror` Worker route and D1 `users` schema both
   changed from password-hash mirroring to pairing-token-hash mirroring before
@@ -3405,13 +3435,19 @@ What remains open is purely implementation-phase, not architectural:
   `pending_captures` row — deliberately deferred out of Phase 2, since that work
   is entangled with the capture-upload pipeline's shape rather than the
   queue/auth mechanics Phase 2 was scoped to.
-- **New this round:** what to do with `failed` queue items long-term. §8's
-  cleanup endpoint deliberately never removes them (only `captured` items are
-  swept), but "keep forever, do nothing else" isn't a real long-term answer —
-  surfacing them to the user, a retry mechanism, or a separate (probably much
-  longer, or manually-triggered) expiry are all plausible and none has been
-  decided. Blocked on the `complete`/`fail` endpoints existing at all, since
-  there's no way to mark an item `failed` yet.
+- **Resolved this round (Phase 9): `failed` queue items are now surfaced to the
+  user with a manual-retry action**, not just kept forever with no further
+  recourse. A new `queue_items.manual_retry` D1 column (cleared on claim), two
+  new service-secret-gated Worker endpoints
+  (`GET /internal/queue-items?status=failed`,
+  `POST /internal/queue-items/:id/retry`), a backend `internal/queueitems`
+  client mirroring `internal/devices`'s shape, session-protected
+  `GET`/`POST /api/queue-items...` (self-scoped, same reasoning as Manage
+  Devices), and a new dashboard Queue screen. §8's cleanup endpoint is otherwise
+  unchanged — `captured` items are still swept, `failed` items are still never
+  deleted, now a deliberate decision (low expected volume at this project's
+  scale, and an operator can always clean up by hand) rather than a deferred
+  one.
 - **Resolved this round: Readability extraction moved from the extension (and
   the dashboard's browser, for manual uploads) to a single deferred, async
   backend job, sharing the headless-Chrome sidecar with the screenshot job — see

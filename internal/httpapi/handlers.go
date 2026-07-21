@@ -38,21 +38,24 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/queueitems"
 )
 
 type Server struct {
-	Queries      *db.Queries
-	Pool         *pgxpool.Pool
-	Store        *archive.Store
-	Mirror       *mirror.Client
-	Devices      *devices.Client
-	Bootstrap    *auth.BootstrapTokenHolder
-	CookieSecure bool
-	PairingKey   auth.PairingKey
+	Queries                *db.Queries
+	Pool                   *pgxpool.Pool
+	Store                  *archive.Store
+	Mirror                 *mirror.Client
+	Devices                *devices.Client
+	QueueItems             *queueitems.Client
+	Bootstrap              *auth.BootstrapTokenHolder
+	CookieSecure           bool
+	PairingKey             auth.PairingKey
+	EnableOpenRegistration bool
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey) *Server {
-	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey}
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool) *Server {
+	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration}
 }
 
 type credentials struct {
@@ -172,8 +175,14 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
 }
 
-// POST /api/auth/register: open registration.
+// POST /api/auth/register: open registration. Gated by
+// EnableOpenRegistration (config: enable_open_registration).
 func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
+	if !s.EnableOpenRegistration {
+		writeError(w, http.StatusForbidden, "open registration is disabled")
+		return
+	}
+
 	req, err := decodeJSON[credentials](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -403,6 +412,62 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("warning: failed to revoke device %d for user %d: %v", tokenID, user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type queueItemListResponse struct {
+	Items []queueitems.Item `json:"items"`
+}
+
+// GET /api/queue-items: lists the calling user's own failed queue items
+// (URLs the extension/CLI tried and failed to archive). Always
+// self-scoped, same reasoning as ListDevices -- this is personal data, not
+// a member-vs-admin dashboard concern the way Manage Devices originally
+// was before that cross-user piece was reconsidered and removed.
+func (s *Server) ListFailedQueueItems(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	items, err := s.QueueItems.ListFailed(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list failed queue items for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, queueItemListResponse{Items: items})
+}
+
+// POST /api/queue-items/{id}/retry: flags one of the calling user's own
+// failed queue items for another device claim attempt. Always
+// self-scoped. Not a live push -- the item is picked up on some device's
+// next poll of GET /queue, same as any other queue item.
+func (s *Server) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	itemID := chi.URLParam(r, "id")
+	if itemID == "" {
+		writeError(w, http.StatusBadRequest, "invalid queue item id")
+		return
+	}
+
+	if err := s.QueueItems.Retry(r.Context(), user.ID, itemID); err != nil {
+		if errors.Is(err, queueitems.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "queue item not found or not retryable")
+			return
+		}
+		log.Printf("warning: failed to retry queue item %q for user %d: %v", itemID, user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
