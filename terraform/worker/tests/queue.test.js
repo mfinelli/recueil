@@ -231,7 +231,7 @@ describe("handleListQueue", () => {
     expect(body.items.map((i) => i.id)).toEqual(["stale-item"]);
   });
 
-  it("excludes captured and failed items", async () => {
+  it("excludes captured and non-retry-flagged failed items", async () => {
     const { userId } = await seedUserAndToken("rcl_live_terminal");
     await env.DB.prepare(
       "INSERT INTO queue_items (id, user_id, url, status) VALUES (?, ?, ?, 'captured')",
@@ -251,6 +251,23 @@ describe("handleListQueue", () => {
     );
     const body = await response.json();
     expect(body.items).toEqual([]);
+  });
+
+  it("includes a failed item flagged for manual retry", async () => {
+    const { userId } = await seedUserAndToken("rcl_live_manual-retry-list");
+    await env.DB.prepare(
+      "INSERT INTO queue_items (id, user_id, url, status, manual_retry) VALUES (?, ?, ?, 'failed', 1)",
+    )
+      .bind("retry-flagged-item", userId, "https://example.com/retry")
+      .run();
+
+    const response = await handleListQueue(
+      authedRequest("GET", "/queue", "rcl_live_manual-retry-list"),
+      env,
+      testCtx,
+    );
+    const body = await response.json();
+    expect(body.items.map((i) => i.id)).toEqual(["retry-flagged-item"]);
   });
 
   it("rejects an unknown bearer token", async () => {
@@ -434,6 +451,59 @@ describe("handleClaimQueueItem", () => {
       env,
       testCtx,
       "failed-claim-item",
+    );
+    expect(response.status).toBe(410);
+  });
+
+  it("claims a failed item flagged for manual retry, and clears the flag", async () => {
+    const { userId, tokenId } = await seedUserAndToken(
+      "rcl_live_claim-manual-retry",
+    );
+    await env.DB.prepare(
+      "INSERT INTO queue_items (id, user_id, url, status, manual_retry) VALUES (?, ?, ?, 'failed', 1)",
+    )
+      .bind("manual-retry-item", userId, "https://example.com/retry")
+      .run();
+
+    const response = await handleClaimQueueItem(
+      authedRequest(
+        "POST",
+        "/queue/manual-retry-item/claim",
+        "rcl_live_claim-manual-retry",
+      ),
+      env,
+      testCtx,
+      "manual-retry-item",
+    );
+    expect(response.status).toBe(200);
+
+    const row = await env.DB.prepare(
+      "SELECT status, claimed_by_token_id, manual_retry FROM queue_items WHERE id = ?",
+    )
+      .bind("manual-retry-item")
+      .first();
+    expect(row.status).toBe("claimed");
+    expect(row.claimed_by_token_id).toBe(tokenId);
+    expect(row.manual_retry).toBe(0);
+  });
+
+  it("returns 410 for a failed item without the manual retry flag set", async () => {
+    const { userId } = await seedUserAndToken("rcl_live_claim-failed-no-flag");
+    await env.DB.prepare(
+      "INSERT INTO queue_items (id, user_id, url, status, manual_retry) VALUES (?, ?, ?, 'failed', 0)",
+    )
+      .bind("failed-no-flag-item", userId, "https://example.com/no-flag")
+      .run();
+
+    const response = await handleClaimQueueItem(
+      authedRequest(
+        "POST",
+        "/queue/failed-no-flag-item/claim",
+        "rcl_live_claim-failed-no-flag",
+      ),
+      env,
+      testCtx,
+      "failed-no-flag-item",
     );
     expect(response.status).toBe(410);
   });

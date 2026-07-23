@@ -75,11 +75,28 @@ var userResetPasswordCmd = &cobra.Command{
 	RunE:  runUserResetPassword,
 }
 
+// userResyncCmd is the repair path used after restoring Postgres from a
+// backup: the D1 pairing-token mirror can be stale relative to the restored
+// state (accounts created, password-changed, or pairing-token-regenerated
+// after the backup was taken won't be reflected). Re-pushes every account's
+// current mirror row -- an idempotent bulk rerun of the same PushUser call
+// already made at create/regenerate/revoke time, not a new mechanism.
+// CLI-only for now, same as the operator-only device-revoke command: a rare,
+// ops-triggered action, not something that belongs behind a casual dashboard
+// click.
+var userResyncCmd = &cobra.Command{
+	Use:   "resync",
+	Short: "Rebuild the D1 pairing-token mirror for every account",
+	Args:  cobra.NoArgs,
+	RunE:  runUserResync,
+}
+
 func init() {
 	userCreateCmd.Flags().StringVar(&userCreateRole, "role", "member", `account role: "admin" or "member"`)
 
 	userCmd.AddCommand(userCreateCmd)
 	userCmd.AddCommand(userResetPasswordCmd)
+	userCmd.AddCommand(userResyncCmd)
 	rootCmd.AddCommand(userCmd)
 }
 
@@ -215,6 +232,73 @@ func runUserResetPassword(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Password reset for %q (id %d).\n", user.Username, user.ID)
+	return nil
+}
+
+func runUserResync(cmd *cobra.Command, args []string) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	pairingKey, err := auth.ParsePairingKey(cfg.PairingTokenKey)
+	if err != nil {
+		return fmt.Errorf("parsing pairing token key: %w", err)
+	}
+
+	ctx := cmd.Context()
+
+	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("connecting to postgres: %w", err)
+	}
+	defer pool.Close()
+
+	queries := db.New(pool)
+
+	users, err := queries.ListUsers(ctx)
+	if err != nil {
+		return fmt.Errorf("listing users: %w", err)
+	}
+
+	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+
+	var succeeded, failed int
+	for _, user := range users {
+		// A NULL pairing_token_enc means the token was explicitly
+		// revoked (see UpdatePairingToken's own doc comment) -- push
+		// nil through, same as the revoke flow itself does, rather
+		// than skipping the user, so a stale non-NULL hash left over
+		// in D1 from before a restore gets cleared too.
+		var hash *string
+		if user.PairingTokenEnc.Valid {
+			raw, err := auth.DecryptPairingToken(pairingKey, user.PairingTokenEnc.String)
+			if err != nil {
+				log.Printf("warning: user %d (%s): failed to decrypt pairing token, skipping: %v", user.ID, user.Username, err)
+				failed++
+				continue
+			}
+			h := auth.HashToken(raw)
+			hash = &h
+		}
+
+		if err := mirrorClient.PushUser(ctx, user.ID, hash); err != nil {
+			log.Printf("warning: user %d (%s): mirror push failed: %v", user.ID, user.Username, err)
+			failed++
+			continue
+		}
+		succeeded++
+	}
+
+	fmt.Printf("Resynced %d of %d accounts to the D1 mirror", succeeded, len(users))
+	if failed > 0 {
+		fmt.Printf(" (%d failed -- see warnings above)", failed)
+	}
+	fmt.Println(".")
+
+	if failed > 0 {
+		return fmt.Errorf("%d account(s) failed to resync", failed)
+	}
 	return nil
 }
 

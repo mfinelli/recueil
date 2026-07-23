@@ -157,7 +157,7 @@ export async function captureTab(tabId, url, queueItemId) {
 
   // POST /queue/:id/complete doesn't take url in its body at all -- it
   // reads it back off the queue_items row the Worker already has (see
-  // terraform/index.js's handleCompleteQueueItem), unlike
+  // terraform/worker/index.js's handleCompleteQueueItem), unlike
   // POST /captures/complete, which has no queue_items row to fall back on
   // and needs the caller to supply it directly.
   const completion = queueItemId

@@ -19,6 +19,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -38,21 +39,24 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/queueitems"
 )
 
 type Server struct {
-	Queries      *db.Queries
-	Pool         *pgxpool.Pool
-	Store        *archive.Store
-	Mirror       *mirror.Client
-	Devices      *devices.Client
-	Bootstrap    *auth.BootstrapTokenHolder
-	CookieSecure bool
-	PairingKey   auth.PairingKey
+	Queries                *db.Queries
+	Pool                   *pgxpool.Pool
+	Store                  *archive.Store
+	Mirror                 *mirror.Client
+	Devices                *devices.Client
+	QueueItems             *queueitems.Client
+	Bootstrap              *auth.BootstrapTokenHolder
+	CookieSecure           bool
+	PairingKey             auth.PairingKey
+	EnableOpenRegistration bool
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey) *Server {
-	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey}
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool) *Server {
+	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration}
 }
 
 type credentials struct {
@@ -172,8 +176,14 @@ func (s *Server) Setup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, userResponse{ID: user.ID, Username: user.Username, Role: user.Role})
 }
 
-// POST /api/auth/register: open registration.
+// POST /api/auth/register: open registration. Gated by
+// EnableOpenRegistration (config: enable_open_registration).
 func (s *Server) Register(w http.ResponseWriter, r *http.Request) {
+	if !s.EnableOpenRegistration {
+		writeError(w, http.StatusForbidden, "open registration is disabled")
+		return
+	}
+
 	req, err := decodeJSON[credentials](r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -403,6 +413,229 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("warning: failed to revoke device %d for user %d: %v", tokenID, user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type queueItemListResponse struct {
+	Items []queueitems.Item `json:"items"`
+}
+
+// GET /api/queue-items: lists the calling user's own failed queue items
+// (URLs the extension/CLI tried and failed to archive). Always
+// self-scoped, same reasoning as ListDevices -- this is personal data, not
+// a member-vs-admin dashboard concern the way Manage Devices originally
+// was before that cross-user piece was reconsidered and removed.
+func (s *Server) ListFailedQueueItems(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	items, err := s.QueueItems.ListFailed(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list failed queue items for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, queueItemListResponse{Items: items})
+}
+
+// POST /api/queue-items/{id}/retry: flags one of the calling user's own
+// failed queue items for another device claim attempt. Always
+// self-scoped. Not a live push -- the item is picked up on some device's
+// next poll of GET /queue, same as any other queue item.
+func (s *Server) RetryQueueItem(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	itemID := chi.URLParam(r, "id")
+	if itemID == "" {
+		writeError(w, http.StatusBadRequest, "invalid queue item id")
+		return
+	}
+
+	if err := s.QueueItems.Retry(r.Context(), user.ID, itemID); err != nil {
+		if errors.Is(err, queueitems.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "queue item not found or not retryable")
+			return
+		}
+		log.Printf("warning: failed to retry queue item %q for user %d: %v", itemID, user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// timestamptzOrNil converts a pgtype.Timestamptz into the *time.Time shape
+// the dashboard's JSON responses use -- nil rather than the zero time for
+// a genuinely NULL completed_at (a job that hasn't finished, one way or
+// the other, yet), same reasoning as textOrNil/int8OrNil.
+func timestamptzOrNil(t pgtype.Timestamptz) *time.Time {
+	if !t.Valid {
+		return nil
+	}
+	return &t.Time
+}
+
+// failedJob is the dashboard Queue screen's combined shape for a failed
+// screenshot/readability/AI job -- all three of ListFailedScreenshotJobsForUser/
+// ListFailedReadabilityJobsForUser/ListFailedAIJobsForUser return this same
+// row shape (id/attempts/error/completed_at from the job itself,
+// page_id/raw_url/title from the capture it belongs to, via the same
+// pages-ownership join GetCaptureByIDForUser already uses), so one response
+// type serves all three lists rather than three near-identical DTOs.
+type failedJob struct {
+	ID          int64      `json:"id"`
+	PageID      int64      `json:"page_id"`
+	URL         string     `json:"url"`
+	Title       *string    `json:"title"`
+	Attempts    int32      `json:"attempts"`
+	Error       *string    `json:"error"`
+	CompletedAt *time.Time `json:"completed_at"`
+}
+
+// failedJobsResponse groups all three job types under their own keys
+// (rather than one flat list with a job_type discriminator) so the
+// dashboard's Queue screen can render them as separate sections without
+// having to partition the response itself.
+type failedJobsResponse struct {
+	ScreenshotJobs  []failedJob `json:"screenshot_jobs"`
+	ReadabilityJobs []failedJob `json:"readability_jobs"`
+	AIJobs          []failedJob `json:"ai_jobs"`
+}
+
+// GET /api/jobs: lists the calling user's own failed screenshot,
+// readability, and AI-enrichment jobs in one response -- these are
+// backend-owned async jobs (unlike queue_items, nothing device-side ever
+// claims them), so this needs no Worker round trip at all, just three
+// ownership-scoped Postgres queries. Always self-scoped, same reasoning as
+// ListFailedQueueItems/ListDevices.
+//
+// A capture whose readability extraction permanently failed never gets an
+// ai_jobs row at all (see readability_jobs.sql's CreateAIJob-on-success
+// comment) -- it shows up in ReadabilityJobs here, not AIJobs, since
+// there's nothing in the ai_jobs table to list for it yet.
+func (s *Server) ListFailedJobs(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	screenshotRows, err := s.Queries.ListFailedScreenshotJobsForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list failed screenshot jobs for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	readabilityRows, err := s.Queries.ListFailedReadabilityJobsForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list failed readability jobs for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	aiRows, err := s.Queries.ListFailedAIJobsForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list failed AI jobs for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	resp := failedJobsResponse{
+		ScreenshotJobs:  make([]failedJob, 0, len(screenshotRows)),
+		ReadabilityJobs: make([]failedJob, 0, len(readabilityRows)),
+		AIJobs:          make([]failedJob, 0, len(aiRows)),
+	}
+	for _, j := range screenshotRows {
+		resp.ScreenshotJobs = append(resp.ScreenshotJobs, failedJob{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
+			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+		})
+	}
+	for _, j := range readabilityRows {
+		resp.ReadabilityJobs = append(resp.ReadabilityJobs, failedJob{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
+			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+		})
+	}
+	for _, j := range aiRows {
+		resp.AIJobs = append(resp.AIJobs, failedJob{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
+			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+		})
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// jobKindToRetry maps the {kind} path param POST /api/jobs/{kind}/{id}/retry
+// is routed with to the right ownership-scoped retry query. A single
+// dispatching handler (RetryJob below) rather than three near-identical
+// ones, since the only thing that differs between screenshot/readability/AI
+// retry is which query to call.
+var jobKindToRetry = map[string]func(s *Server, ctx context.Context, id, userID int64) (int64, error){
+	"screenshot": func(s *Server, ctx context.Context, id, userID int64) (int64, error) {
+		return s.Queries.ManualRetryScreenshotJobForUser(ctx, db.ManualRetryScreenshotJobForUserParams{ID: id, UserID: userID})
+	},
+	"readability": func(s *Server, ctx context.Context, id, userID int64) (int64, error) {
+		return s.Queries.ManualRetryReadabilityJobForUser(ctx, db.ManualRetryReadabilityJobForUserParams{ID: id, UserID: userID})
+	},
+	"ai": func(s *Server, ctx context.Context, id, userID int64) (int64, error) {
+		return s.Queries.ManualRetryAIJobForUser(ctx, db.ManualRetryAIJobForUserParams{ID: id, UserID: userID})
+	},
+}
+
+// POST /api/jobs/{kind}/{id}/retry: flags one of the calling user's own
+// failed screenshot/readability/AI jobs for another attempt. {kind} must be
+// one of "screenshot", "readability", "ai" -- anything else is a 400, not a
+// 404, since it's a caller bug (an unrecognized kind), not a
+// missing-resource situation. Always self-scoped, same reasoning as
+// ListFailedJobs above.
+//
+// Unlike RetryQueueItem, there's no device to race against here and no
+// separate "flag it, some device picks it up later" step: the retry query
+// resets the job straight back to 'pending' with next_attempt_at cleared,
+// so the backend's own next poll of ClaimDueScreenshotJobs/
+// ClaimDueReadabilityJobs/ClaimDueAIJobs picks it up immediately. attempts
+// is deliberately left untouched by the query itself -- see
+// ManualRetryScreenshotJobForUser's own doc comment for why a manual retry
+// spends the next attempt rather than resetting the budget.
+func (s *Server) RetryJob(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	kind := chi.URLParam(r, "kind")
+	retry, ok := jobKindToRetry[kind]
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid job kind")
+		return
+	}
+
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid job id")
+		return
+	}
+
+	if _, err := retry(s, r.Context(), id, user.ID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "job not found or not retryable")
+			return
+		}
+		log.Printf("warning: failed to retry %s job %d for user %d: %v", kind, id, user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

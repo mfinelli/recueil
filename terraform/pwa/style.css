@@ -1,0 +1,210 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/* Same token values as src/app.scss (the dashboard) and
+   extension/src/popup/popup.css, not a new identity. */
+:root {
+  --ink: #2b2924;
+  --ink-muted: #746c5c;
+  --paper: #f2ede1;
+  --paper-raised: #fdfbf6;
+  --rule: #ddd2b8;
+  --accent: #8a3223;
+  --accent-success: #3c5c3a;
+  --focus: #4a6b8a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ece5d4;
+    --ink-muted: #a89c86;
+    --paper: #1d1b17;
+    --paper-raised: #29261f;
+    --rule: #40392d;
+    --accent: #d17b64;
+    --accent-success: #8bb385;
+    --focus: #7fa8c9;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+main {
+  max-width: 26rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem;
+}
+
+h1 {
+  font-size: 1.375rem;
+  margin: 0 0 0.25rem;
+}
+
+.tagline {
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+  margin: 0 0 2rem;
+}
+
+p.hint {
+  color: var(--ink-muted);
+  font-size: 0.8125rem;
+  margin: 0 0 1rem;
+}
+
+label {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="url"] {
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  margin-bottom: 1rem;
+}
+
+input[type="text"]:focus-visible,
+input[type="password"]:focus-visible,
+input[type="url"]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+button {
+  width: 100%;
+  padding: 0.625rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--paper-raised);
+}
+
+button.secondary {
+  margin-top: 0.5rem;
+}
+
+.status {
+  font-size: 0.875rem;
+  padding: 0.75rem;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+.status.success {
+  background: color-mix(
+    in srgb,
+    var(--accent-success) 15%,
+    var(--paper-raised)
+  );
+  color: var(--accent-success);
+}
+
+.status.error {
+  background: color-mix(in srgb, var(--accent) 15%, var(--paper-raised));
+  color: var(--accent);
+}
+
+.url-preview {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+  word-break: break-all;
+  margin-bottom: 1.25rem;
+}
+
+/* Matches Devices.svelte's own .token-row/.token exactly -- same "show
+   a credential once, in a copyable monospace box" pattern as the
+   dashboard's own pairing-token display. */
+.token-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.token {
+  flex: 1;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  background: var(--paper-raised);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8125rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.token-row button {
+  width: auto;
+}
+
+.settings {
+  margin-top: 2rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+}
+
+.settings .meta {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+  margin-bottom: 0.75rem;
+}
+
+[hidden] {
+  display: none !important;
+}

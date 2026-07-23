@@ -139,7 +139,7 @@ export async function setQueueCache(cache) {
 //
 // Never explicitly cleaned up if a tab is just closed without capturing since it's
 // not needed: the Worker's own claim already goes stale and
-// becomes reclaimable after 15 minutes (see terraform/index.js's
+// becomes reclaimable after 15 minutes (see terraform/worker/index.js's
 // handleClaimQueueItem), so an orphaned entry here is harmless clutter,
 // not a correctness problem. Tidied up on tab close anyway
 // (background/index.js's tabs.onRemoved listener) purely so this doesn't

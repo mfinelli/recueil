@@ -40,6 +40,11 @@
 //   deletion reconciliation, batch delete) -- all four deliberately dumb:
 //   the backend computes what changed and what to delete, the Worker only
 //   ever executes exactly what it's told
+// - GET /internal/queue-items?status=failed, POST
+//   /internal/queue-items/:id/retry: service-secret-gated, called by the
+//   backend on the dashboard's Queue screen's behalf -- lists failed items
+//   for manual review, and flags one for another claim attempt without
+//   losing its 'failed' status (see the manual_retry migration's comment)
 // - GET /archived-pages: device-facing read of the same mirror, for the
 //   extension's own bookmark sync -- a full list every time, not
 //   incremental, see handleListArchivedPages's own doc comment for why
@@ -134,7 +139,7 @@ async function authenticateDevice(request, env, ctx) {
 //
 // R2's S3-compatible endpoint accepts SigV4 exactly like S3 does, with
 // region "auto" and service "s3" (Cloudflare's R2 API docs). This
-// implementation is verified two ways in terraform/tests/r2-presign.test.js:
+// implementation is verified two ways in terraform/worker/tests/r2-presign.test.js:
 // against AWS's own published presigned-URL worked example, and against
 // the official @smithy/signature-v4 signer (the library aws-sdk-js v3
 // itself uses) for arbitrary R2-shaped requests -- a test-only dependency,
@@ -278,7 +283,7 @@ export function encodePath(path) {
  *
  * Two genuinely distinct mechanisms are in play here, worth not
  * conflating (a real point of confusion working this out -- see
- * terraform/tests/r2-presign.test.js and the PresignParams doc above):
+ * terraform/worker/tests/r2-presign.test.js and the PresignParams doc above):
  * - The SigV4 "payload hash" slot (the last line of the canonical
  *   request) is a *signing* input, not a content-integrity check. R2's
  *   own documented presigned-URL examples leave it as the literal string
@@ -458,6 +463,15 @@ export default {
     if (method === "POST" && pathname === "/internal/archived-pages/delete") {
       return handleDeleteArchivedPages(request, env);
     }
+    if (method === "GET" && pathname === "/internal/queue-items") {
+      return handleListFailedQueueItems(request, env);
+    }
+    const retryMatch = pathname.match(
+      /^\/internal\/queue-items\/([^/]+)\/retry$/,
+    );
+    if (method === "POST" && retryMatch) {
+      return handleRetryQueueItem(request, env, retryMatch[1]);
+    }
 
     return new Response("Not Found", { status: 404 });
   },
@@ -518,7 +532,7 @@ export async function handleUserMirror(request, env) {
   return new Response(null, { status: 204 });
 }
 
-const DEVICE_TYPES = new Set(["extension", "pwa", "cli"]);
+const DEVICE_TYPES = new Set(["extension", "pwa", "cli", "shortcut"]);
 
 /**
  * POST /pair: exchanges a pairing token for a device bearer token.
@@ -654,7 +668,10 @@ export async function handleEnqueue(request, env, ctx) {
  * GET /queue: lists this device's user's pending items, plus any claimed
  * item whose claim has gone stale (the claiming device died mid-capture --
  * see DESIGN.md lazy-reclaim-at-query-time design, no separate sweep
- * job). Listing never claims; POST /queue/:id/claim does that atomically.
+ * job), plus any failed item the user has flagged for another attempt via
+ * the dashboard's Queue screen (manual_retry = 1 -- see the migration's
+ * own comment). Listing never claims; POST /queue/:id/claim does that
+ * atomically.
  *
  * @param {Request} request
  * @param {Env} env
@@ -670,7 +687,8 @@ export async function handleListQueue(request, env, ctx) {
      FROM queue_items
      WHERE user_id = ?
        AND (status = 'pending'
-            OR (status = 'claimed' AND claimed_at < datetime('now', '-15 minutes')))
+            OR (status = 'claimed' AND claimed_at < datetime('now', '-15 minutes'))
+            OR (status = 'failed' AND manual_retry = 1))
      ORDER BY created_at ASC`,
   )
     .bind(auth.userId)
@@ -683,17 +701,19 @@ export async function handleListQueue(request, env, ctx) {
 }
 
 /**
- * POST /queue/:id/claim: atomically claims a pending (or stale-claimed)
- * item via a conditional UPDATE ... RETURNING -- this, not GET /queue, is
- * where the two-devices-race-for-the-same-item risk actually lives.
+ * POST /queue/:id/claim: atomically claims a pending (or stale-claimed, or
+ * manual-retry-flagged failed) item via a conditional UPDATE ...
+ * RETURNING -- this, not GET /queue, is where the two-devices-race-for-
+ * the-same-item risk actually lives.
  *
  * On failure to claim, distinguishes three cases rather than a uniform
  * 409: 404 (wrong id, or belongs to a different user -- collapsed
  * together so cross-user existence is never leaked), 410 (status is
- * captured/failed -- a terminal state, permanently no longer claimable),
- * or 409 (actively claimed by another device, not yet stale -- worth
- * retrying later). The extra SELECT to distinguish these only runs on the
- * failure path, never on a successful claim.
+ * captured, or failed without manual_retry set -- a terminal state,
+ * permanently no longer claimable), or 409 (actively claimed by another
+ * device, not yet stale -- worth retrying later). The extra SELECT to
+ * distinguish these only runs on the failure path, never on a successful
+ * claim.
  *
  * @param {Request} request
  * @param {Env} env
@@ -711,11 +731,13 @@ export async function handleClaimQueueItem(request, env, ctx, itemId) {
     claimed = /** @type {Record<string, unknown> | null} */ (
       await env.DB.prepare(
         `UPDATE queue_items
-         SET status = 'claimed', claimed_by_token_id = ?, claimed_at = CURRENT_TIMESTAMP
+         SET status = 'claimed', claimed_by_token_id = ?, claimed_at = CURRENT_TIMESTAMP,
+             manual_retry = 0
          WHERE id = ?
            AND user_id = ?
            AND (status = 'pending'
-                OR (status = 'claimed' AND claimed_at < datetime('now', '-15 minutes')))
+                OR (status = 'claimed' AND claimed_at < datetime('now', '-15 minutes'))
+                OR (status = 'failed' AND manual_retry = 1))
          RETURNING id, url, status, claimed_by_token_id, claimed_at, created_at`,
       )
         .bind(auth.tokenId, itemId, auth.userId)
@@ -883,8 +905,11 @@ const CAPTURED_RETENTION_HOURS = 72;
  * query time, no sweep job either).
  *
  * Deliberately does NOT touch 'failed' items -- those are kept
- * indefinitely for now. What to do about failed items long-term is an
- * open question for later, not decided here.
+ * indefinitely (a deliberate decision, not a deferred one: expected
+ * volume is low for a personal/family-scale deployment, they're now
+ * surfaced to the user with a manual-retry action via the dashboard's
+ * Queue screen (GET/POST /internal/queue-items...), and an operator can
+ * always clean them up by hand if that ever stops holding).
  *
  * Uses claimed_at, not created_at, as the retention clock: an item can
  * sit pending for a long time before being claimed, and it's time since
@@ -1510,6 +1535,92 @@ export async function handleFailQueueItem(request, env, ctx, itemId) {
     .bind(itemId)
     .run();
 
+  return new Response(null, { status: 204 });
+}
+
+/**
+ * GET /internal/queue-items?user_id=&status=failed: lists a user's failed
+ * queue items for the dashboard's Queue screen. Service-secret-gated,
+ * called by the backend, same shape as handleListTokens. Only
+ * `status=failed` is supported for now (the only thing the dashboard
+ * currently shows) -- an unrecognized or missing status is a 400 rather
+ * than silently listing everything, so a future caller bug doesn't leak
+ * pending/claimed rows for other devices' in-flight work.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleListFailedQueueItems(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const userIdParam = url.searchParams.get("user_id");
+  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  if (!Number.isInteger(userId)) {
+    return new Response("Missing or invalid user_id", { status: 400 });
+  }
+  if (url.searchParams.get("status") !== "failed") {
+    return new Response("Missing or unsupported status", { status: 400 });
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, url, status, manual_retry, created_at
+     FROM queue_items WHERE user_id = ? AND status = 'failed'
+     ORDER BY created_at ASC`,
+  )
+    .bind(userId)
+    .all();
+
+  return new Response(JSON.stringify({ items: results }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * POST /internal/queue-items/:id/retry?user_id=: flags one failed item for
+ * another claim attempt (manual_retry = 1), without touching its status
+ * -- handleClaimQueueItem is what actually transitions it, once some
+ * device's next poll picks it up. Scoped by user_id as well as id, same
+ * belt-and-suspenders as handleRevokeToken. Only matches rows currently
+ * `status = 'failed'`: retrying a pending/claimed/already-captured item
+ * makes no sense, so those fall through to the same 404 a wrong id would
+ * (the Worker doesn't distinguish "wrong id" from "wrong state" here,
+ * unlike the claim endpoint's own three-way split -- there's no device
+ * racing this one, so there's no 409/410 distinction worth making).
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {string} itemId
+ * @returns {Promise<Response>}
+ */
+export async function handleRetryQueueItem(request, env, itemId) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const userIdParam = url.searchParams.get("user_id");
+  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  if (!Number.isInteger(userId)) {
+    return new Response("Missing or invalid user_id", { status: 400 });
+  }
+
+  const result = await env.DB.prepare(
+    `UPDATE queue_items SET manual_retry = 1
+     WHERE id = ? AND user_id = ? AND status = 'failed'`,
+  )
+    .bind(itemId, userId)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return new Response("Not Found", { status: 404 });
+  }
   return new Response(null, { status: 204 });
 }
 

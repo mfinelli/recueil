@@ -90,3 +90,11 @@ variable "enable_browser_integrity_check_bypass" {
   type        = bool
   default     = true
 }
+
+variable "enable_pwa" {
+  description = <<-EOT
+    Whether to deploy the share-sheet PWA's static assets alongside the Worker.
+  EOT
+  type        = bool
+  default     = true
+}

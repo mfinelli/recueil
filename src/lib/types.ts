@@ -138,3 +138,38 @@ export interface DeviceListResponse {
 export interface PairingTokenResponse {
   pairing_token: string;
 }
+
+// GET /api/queue-items' item shape (only status=failed is currently
+// supported server-side -- see internal/httpapi's ListFailedQueueItems).
+// id is a client-generated UUID (queue_items.id is TEXT), not a number.
+export interface QueueItem {
+  id: string;
+  url: string;
+  status: string;
+  manual_retry: boolean;
+  created_at: string;
+}
+
+export interface QueueItemListResponse {
+  items: QueueItem[];
+}
+
+// GET /api/jobs' item shape -- one combined shape for all three job
+// kinds (screenshot/readability/AI), same as internal/httpapi's own
+// failedJob DTO. id is a plain job-table integer PK, unlike QueueItem's
+// client-generated UUID.
+export interface FailedJob {
+  id: number;
+  page_id: number;
+  url: string;
+  title: string | null;
+  attempts: number;
+  error: string | null;
+  completed_at: string | null;
+}
+
+export interface FailedJobsResponse {
+  screenshot_jobs: FailedJob[];
+  readability_jobs: FailedJob[];
+  ai_jobs: FailedJob[];
+}

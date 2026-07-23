@@ -33,6 +33,7 @@ CREATE TABLE queue_items (
   added_by_token_id INTEGER REFERENCES tokens(id),
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
   claimed_by_token_id INTEGER REFERENCES tokens(id),
+  manual_retry INTEGER NOT NULL DEFAULT 0,
   claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;

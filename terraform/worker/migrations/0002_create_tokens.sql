@@ -30,7 +30,7 @@ CREATE TABLE tokens (
   token_hash TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
-  device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli'
+  device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli' | 'shortcut'
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_used_at TEXT
 ) STRICT;

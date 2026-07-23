@@ -41,6 +41,11 @@ type Config struct {
 	WorkerServiceSecret string `mapstructure:"worker_service_secret"`
 	SessionCookieSecure bool   `mapstructure:"session_cookie_secure"`
 
+	// EnableOpenRegistration gates POST /api/auth/register. Defaults to
+	// false: the bootstrap flow (POST /api/setup) already creates the
+	// first admin.
+	EnableOpenRegistration bool `mapstructure:"enable_open_registration"`
+
 	// PairingTokenKey is a base64-encoded 32-byte AES-256 key, used to
 	// reversibly encrypt/decrypt each account's pairing token for storage
 	// in Postgres. Operator-generated (e.g. `openssl rand -base64 32`);
@@ -194,6 +199,7 @@ type Config struct {
 func init() {
 	viper.SetDefault("listen_addr", ":8080")
 	viper.SetDefault("session_cookie_secure", true)
+	viper.SetDefault("enable_open_registration", false)
 	viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
 	viper.SetDefault("agent_local_poll_interval_seconds", 300)
 	viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")

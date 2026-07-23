@@ -60,7 +60,7 @@ func NewWorkerClient(baseURL, serviceSecret string) *WorkerClient {
 }
 
 // PendingCapture mirrors the shape returned by
-// GET /internal/pending-captures -- see terraform/index.js's
+// GET /internal/pending-captures -- see terraform/worker/index.js's
 // handleListPendingCaptures. QueueItemID is nil for a direct capture.
 // R2KeyFavicon is nil whenever the extension didn't find (or upload) a
 // favicon for this capture -- always optional, never a reason ingestion

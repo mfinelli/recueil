@@ -18,7 +18,7 @@
 
 // Package r2 is the backend's own client for R2, separate from (and using a
 // different credential-consumption path than) the Worker's own R2 access.
-// The Worker only ever issues presigned URLs (terraform/index.js's
+// The Worker only ever issues presigned URLs (terraform/worker/index.js's
 // hand-rolled SigV4 -- no dependency allowed there); the backend pulls the
 // actual capture blob down and deletes it once ingested which is real,
 // ongoing R2 traffic the backend is free to make with a real SDK rather than

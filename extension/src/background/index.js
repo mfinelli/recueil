@@ -91,7 +91,7 @@ browser.runtime.onInstalled.addListener(() => {
 // purely storage hygiene, not a correctness requirement: an orphaned
 // entry left behind by, say, the browser crashing is harmless (the
 // Worker's own claim goes stale and becomes reclaimable after 15 minutes
-// regardless, see terraform/index.js's handleClaimQueueItem), just clutter
+// regardless, see terraform/worker/index.js's handleClaimQueueItem), just clutter
 // that would otherwise accumulate over a long browsing session.
 browser.tabs.onRemoved.addListener((tabId) => {
   clearClaimedTab(tabId).catch(() => {});

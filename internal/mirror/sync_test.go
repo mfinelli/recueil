@@ -43,7 +43,7 @@ import (
 // (checkpoint = MAX(updated_at) of what's actually stored, upsert
 // semantics, deletion by id), not a reimplementation of D1/SQLite. The
 // real endpoints' own correctness is already covered by
-// terraform/tests/archived-pages.test.js; this only needs to exercise
+// terraform/worker/tests/archived-pages.test.js; this only needs to exercise
 // Syncer's own orchestration logic against something that behaves the
 // same way.
 type fakeWorkerMirror struct {

@@ -1,0 +1,114 @@
+<!--
+recueil: self-hosted webpage bookmarker and archiver
+Copyright © 2026 Mario Finelli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Recueil</title>
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#8a3223" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main>
+      <!-- Not yet paired: the only thing this screen needs is the
+           pairing token from the dashboard's Devices screen -- no Worker
+           URL field, since this page is served by the same Worker it
+           talks to (see terraform/main.tf's assets block), so every
+           request below is same-origin. -->
+      <section data-view="pair">
+        <h1>Recueil</h1>
+        <p class="tagline">Send pages to your archive from the share sheet.</p>
+        <p class="hint">
+          Paste the pairing token from your dashboard's Devices screen to
+          connect this phone.
+        </p>
+        <form id="pair-form">
+          <div id="pair-status" role="alert"></div>
+          <label for="pairing-token">Pairing token</label>
+          <input
+            type="password"
+            id="pairing-token"
+            name="pairing-token"
+            autocomplete="off"
+            required
+          />
+          <label for="device-name">Name this device</label>
+          <input
+            type="text"
+            id="device-name"
+            name="device-name"
+            placeholder="My phone"
+            autocomplete="off"
+            required
+          />
+          <button type="submit" class="primary" id="pair-submit">
+            Connect
+          </button>
+        </form>
+      </section>
+
+      <!-- A share just arrived (manifest.json's share_target) and is
+           being sent, or just finished sending. -->
+      <section data-view="sharing" hidden>
+        <h1>Recueil</h1>
+        <p id="sharing-status" class="status">Saving…</p>
+        <p id="sharing-url" class="url-preview"></p>
+        <button type="button" id="sharing-retry" class="secondary" hidden>
+          Try again
+        </button>
+        <button type="button" id="sharing-done" class="secondary" hidden>
+          Done
+        </button>
+      </section>
+
+      <!-- Already paired, opened directly (not via a share): a manual
+           "paste a URL" fallback plus device settings. -->
+      <section data-view="main" hidden>
+        <h1>Recueil</h1>
+        <p class="tagline">Connected and ready for the share sheet.</p>
+        <form id="manual-form">
+          <div id="manual-status" role="alert"></div>
+          <label for="manual-url">Add a URL</label>
+          <input
+            type="url"
+            id="manual-url"
+            name="manual-url"
+            placeholder="https://example.com/article"
+            required
+          />
+          <button type="submit" class="primary" id="manual-submit">
+            Add to queue
+          </button>
+        </form>
+
+        <div class="settings">
+          <p class="meta">
+            Paired as <strong id="device-name-display"></strong>
+          </p>
+          <button type="button" id="unpair-button" class="secondary">
+            Disconnect this device
+          </button>
+        </div>
+      </section>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

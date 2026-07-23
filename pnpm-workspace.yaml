@@ -10,4 +10,4 @@ allowBuilds:
 
 packages:
   - extension
-  - terraform
+  - terraform/worker

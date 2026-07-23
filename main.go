@@ -28,7 +28,7 @@ import (
 //go:embed migrations/*.sql
 var postgresMigrationsFS embed.FS
 
-//go:embed terraform/migrations/*.sql
+//go:embed terraform/worker/migrations/*.sql
 var d1MigrationsFS embed.FS
 
 //go:embed node_modules/@mozilla/readability/Readability.js

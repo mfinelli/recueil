@@ -1853,3 +1853,213 @@ CLI device-revoke command (§5, point 3 — `internal/devices.Client` is already
 shaped for it), and the dashboard's actual visual design system (reconciling the
 extension's neutral paper/ink surface against the marketing site's
 ledger/brass/stamp accents) — both explicitly punted to a separate session.
+
+## Phase 9 (small backend gaps: open registration, mirror resync, failed-queue retry)
+
+Scoped as a deliberately small round of leftover implementation-phase gaps
+flagged in DESIGN.md §15, rather than a new user-facing screen or capability
+area — see the closing note on what's still left after this one. Built in the
+order: the registration toggle, the resync CLI command, then the failed-queue
+manual-retry mechanism (Worker → backend → dashboard, in that order).
+
+### `ENABLE_OPEN_REGISTRATION`
+
+- New `Config.EnableOpenRegistration` (`enable_open_registration`,
+  `viper.SetDefault(..., false)`). Gated inline in the `Register` handler itself
+  (`if !s.EnableOpenRegistration { 403 }`) rather than conditionally registering
+  `POST /api/auth/register` in the router — keeps routing static, one branch to
+  reason about.
+- Landed default `false`, a reversal from DESIGN.md's original "open by default,
+  flag for invite-only later" plan (see DESIGN.md §5, §15).
+- `NewServer`'s signature grew an `enableOpenRegistration bool` parameter.
+  `newTestServer`/`newTestServerWithStore` pass `true` so existing coverage,
+  including `TestRegister`'s own happy-path assertions, keeps exercising the
+  enabled path unchanged; a new `TestRegisterDisabledByDefault` builds its own
+  one-off server with `false` to cover the real default directly.
+
+### `recueil user resync`
+
+- New CLI subcommand (`cmd/user.go`), CLI-only like the planned device-revoke
+  command — a rare, ops-triggered action, not a dashboard click. Repair path
+  DESIGN.md §14 calls for after a Postgres restore leaves the D1 pairing-token
+  mirror stale.
+- For each account: decrypts `pairing_token_enc` where present
+  (`auth.DecryptPairingToken`), re-hashes with the same `auth.HashToken` the
+  create/regenerate paths already use, and re-pushes through `mirror.PushUser` —
+  the exact idempotent call already made at create/regenerate/revoke time, just
+  looped across every user. Pushes `nil` for an account with a revoked (NULL)
+  token, same as the revoke flow itself, so a stale non-NULL hash left over in
+  D1 from before a restore gets cleared too, not just skipped. Per-account
+  failures are logged and counted, not fatal to the whole run; the command exits
+  non-zero only if at least one account failed.
+
+### Failed queue items: surfaced, with manual retry
+
+DESIGN.md §15 left this genuinely undecided (surface to the user? automatic
+retry? a separate/longer expiry?) — resolved this round: surface with manual
+retry, keep failed items forever otherwise (low expected volume at this
+project's scale; can revisit if that stops holding).
+
+### Failed screenshot/readability/AI jobs: same idea, extended, combined into Queue
+
+Prompted by a direct follow-up question after the queue-items work above: these
+three job tables (`screenshot_jobs`, `readability_jobs`, `ai_jobs`) all already
+had automatic bounded retry with exponential backoff
+(`internal/{screenshot,readability,ai}`, from Phase 7), and DESIGN.md's AI
+section had originally envisioned "the dashboard surfaces failed jobs as a small
+badge on the capture with a manual retry action" — never actually built. Checked
+before starting: the API exposed zero job status at all (`GetCaptureByIDForUser`
+was a bare `SELECT captures.*`, no join to any job table), so a
+`null ai_summary` was indistinguishable between "still processing," "permanently
+failed," and "will never exist" (readability failed, so `ai_jobs` was never
+created — see below).
+
+- **Combined into the Queue screen** — one place for everything currently stuck,
+  not scattered across `PageDetail`. `Queue.svelte` gained a second section
+  ("Failed to process") alongside the existing queue-items one ("Failed to
+  capture"), rendering all three job kinds through a shared Svelte 5
+  `{#snippet}` rather than tripling near-identical markup. Each row links to
+  `/pages/{page_id}` (`svelte-spa-router`'s `link` action) since, unlike a queue
+  item, these already have a real page to show.
+- **No flag column needed here, unlike `queue_items.manual_retry`.** These three
+  tables are only ever claimed by the backend's own
+  `ClaimDueScreenshotJobs`/`ClaimDueReadabilityJobs`/`ClaimDueAIJobs` — no
+  device races another actor for them — so a retry can reset the row directly
+  and the backend's own next poll picks it up immediately, no "flag it now,
+  something else claims it eventually" indirection required.
+- **Your call: a manual retry does not reset `attempts`** — it spends the next
+  one rather than granting a fresh budget. This required no new logic at all:
+  leaving `attempts` at its already-terminal value means
+  `internal/{screenshot,readability,ai}`'s existing `handleFailure` (computes
+  `attempts+1 >= MaxAttempts`) naturally permanently re-fails the job after
+  exactly one more attempt if it fails again, with zero special-casing for "this
+  was a manual retry" anywhere in the job-processing code.
+- A capture whose readability extraction permanently failed still never gets an
+  `ai_jobs` row at all (unchanged, cascade already worked this way) — it
+  surfaces under Readability in the Queue screen, not AI, until that's retried;
+  nothing needed to change about the cascade itself for this to keep being true.
+
+### Share-sheet PWA and iOS Shortcut (both thin remaining clients)
+
+**Repo restructure first, prompted by how the PWA needed to deploy:**
+`terraform/index.js`/`migrations/`/`tests/`/`package.json`/`tsconfig.json` moved
+into a new `terraform/worker/` subdirectory, with `terraform/pwa/` as its new
+sibling — a reversal of the original repo-layout plan (which explicitly kept the
+Worker's source flat alongside the `.tf` files and put `pwa/` at the repo root,
+arguing static PWA files weren't a Terraform/Worker concern). They are now: both
+directories need to be `path.module`-relative for `cloudflare_workers_script`'s
+`content_file` and `assets.directory` arguments to reach them from `main.tf`.
+
+**Hosting decision, reversed from DESIGN.md's original plan:**
+`cloudflare_pages_project` (the Terraform resource DESIGN.md originally called
+for) turned out to have known, still-being-stabilized drift/source-config bugs
+in the pinned `~> 5.0` provider as of recent Cloudflare changelogs, and even
+when it works, Terraform only manages the project shell — actually deploying
+files still needs a separate `wrangler pages deploy` step, unlike the Worker's
+own single `content_file`-based `terraform apply`. Since provider v5.11,
+`cloudflare_workers_script` itself accepts an `assets` block pointing at a
+directory, with Terraform handling the manifest/hashing/upload the same way
+Wrangler does. `main.tf`'s existing `cloudflare_workers_script "worker"`
+resource now has `assets = { directory = "${path.module}/pwa" }` added directly
+— one `terraform apply` for the whole Cloudflare side, no second deploy step, no
+new moving part. Static files are matched by path first; every existing API
+route (`/pair`, `/queue`, `/internal/*`, etc.) falls through to `index.js`'s
+fetch handler untouched, since none of the PWA's own file names collide with an
+API path — the provider's own default behavior, not something this module had to
+configure.
+
+**The PWA itself** (`terraform/pwa/`): `manifest.json` (Web Share Target,
+`method: "GET"`, `params: {title, text, url}` — matches Android's Level 1 share
+target, no service-worker request interception needed for plain URL/text
+shares), `icon.svg` (a simple stamp/monogram, not a build-generated PNG set —
+`"sizes": "any"` on an SVG icon is broadly supported and needs no
+icon-generation pipeline), `style.css` (the exact same CSS custom properties as
+`src/app.scss` and `extension/src/popup/popup.css` — deliberately reused, not
+reinvented; full reconciliation across all four surfaces including the marketing
+site's ledger/brass/stamp palette remains the separate, still-deferred
+"dashboard visual design system" item), `index.html` (three views: pairing form,
+incoming-share auto-enqueue result, and a paired "manual add + disconnect"
+screen), `app.js` (vanilla JS, no dependencies, no bundler — same "no build
+step" constraint `terraform/worker/index.js` already has, for the identical
+reason: this deploys as a plain static file, not a build artifact), and `sw.js`
+(a deliberately minimal service worker — cache-first for the app shell's own
+four files only, existing purely to satisfy Android's installability requirement
+for share-target registration, not as an offline-first design goal: every real
+action here needs the network regardless).
+
+One simplification worth calling out: because the PWA is served by the same
+Worker it talks to, it's same-origin — there's no "Worker URL" field anywhere in
+its pairing form, unlike the CLI's `recueil auth --url`. Sharing a URL extracts
+it from `location.search`; Android doesn't consistently put the link in the
+`url` param (some apps hand off `text` instead, sometimes with a caption), so
+`app.js` falls back to scanning `text` for the first `https?://`-shaped token
+before giving up.
+
+**New device type**: `DEVICE_TYPES` (`terraform/worker/index.js`) gained
+`"shortcut"` alongside the existing `"extension"`/`"pwa"`/`"cli"`, for the iOS
+Shortcut client below — no D1 schema change needed (`tokens.device_type` has no
+`CHECK` constraint, only a documentation comment, which was updated too). New
+test in `handlePair.test.js` confirming it's accepted and stored correctly.
+
+**iOS Shortcut**: genuinely can't be committed as source — Apple Shortcuts are
+built and exported through the Shortcuts app itself, not authored as plain text,
+and there's no way to test one in this environment either. The deliverable is a
+documented recipe in the root `README.md`'s new "clients" section (same "drop it
+in as a reminder" treatment the Docker Compose config already gets).
+
+### CLI device-revoke command
+
+The operator-only escape hatch DESIGN.md §5 (point 3) planned for but never
+built, once the dashboard's own Manage Devices screen was reversed to strictly
+self-scoped in Phase 6 (an admin can't reach into another user's devices from
+the browser at all). `cmd/device.go`: `recueil device list <username>` and
+`recueil device revoke <username> <device-id>`, structured exactly like
+`cmd/user.go`'s existing commands — same config-load/pool-connect boilerplate,
+same `queries.GetUserByUsername` + wrap-the-error pattern for resolving a
+username, no special-casing `pgx.ErrNoRows` into a nicer message the way nothing
+else in `cmd/` does either. Postgres is only ever touched to resolve that
+username into a user id; the actual list/revoke goes through
+`internal/devices.Client`, the same Worker client the dashboard's own
+`ListDevices`/`RevokeDevice` handlers already use — this command doesn't add a
+new path to the Worker, it's a different caller of the existing one.
+
+`revoke` lists the user's devices first rather than revoking blind: a wrong
+device id fails immediately with a clear "no device with id N for user X" before
+ever making a request to the Worker (rather than surfacing as
+`devices.ErrNotFound` after the fact with no context), and a successful run
+reports which device it revoked by name and type, not just an id number typed
+back at the operator. `list` output goes through `text/tabwriter` — no prior
+convention for tabular CLI output existed anywhere in `cmd/` to match, so this
+introduces one (ID/DEVICE NAME/TYPE/PAIRED/LAST USED columns, `never` for a
+device that's been paired but not yet used). No tests added, consistent with
+`cmd/`'s existing state: no file in this package has a test today
+(`runUserCreate`/`runUserResync`/`runUserResetPassword` included), so this
+doesn't introduce a gap relative to its siblings.
+
+### README backup recipe
+
+The one half of DESIGN.md §14's Backup & Restore section that wasn't already
+covered by `recueil user resync` (that's the restore-time repair step; this is
+the backup-_taking_ side itself). New "Backup" subsection in the root
+`README.md`, same "starting point, not a drop-in final config" framing already
+used for the Docker Compose example right above it, and explicitly pointed at
+adapting it to real backup tooling (`restic`, `rclone`, a managed backup
+service) rather than presenting the example script itself as the intended
+production mechanism.
+
+The recipe itself: `pg_dump -Fc` run inside the `postgres` container via
+`docker compose exec -T` (avoids needing 5432 reachable from wherever the backup
+script runs; `-T` specifically because the dump is binary output being
+redirected to a file, not something meant to hit a TTY), plus the plain `tar` of
+`./data/archive` above, both landing in one timestamped directory per invocation
+so DESIGN.md's "same job/window" consistency requirement is structural rather
+than something the operator has to remember to enforce themselves.
+
+The restore half closes the loop back to the already-built resync command:
+restore Postgres, untar the archive backup into a fresh volume, then run
+`recueil user resync` before treating the restored instance as live.
+
+### What's left
+
+Not touched this round, still open from earlier phases: the dashboard's visual
+design system and extension Safari packaging (explicitly punted for now).

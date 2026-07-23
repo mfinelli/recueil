@@ -21,10 +21,15 @@
 // /api/auth/me, session-protected pairing-token management
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
 // strictly self-scoped -- see ListDevices' own doc comment for why
-// cross-user device management isn't a web capability here), session-protected
-// library browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}),
-// session-protected capture detail/HTML/language correction
-// (GET /api/captures/{id}, GET /api/captures/{id}/html,
+// cross-user device management isn't a web capability here),
+// session-protected failed-queue-item review/retry (GET /api/queue-items,
+// POST /api/queue-items/{id}/retry, also strictly self-scoped, same
+// reasoning), session-protected failed-job review/retry (GET /api/jobs,
+// POST /api/jobs/{kind}/{id}/retry for the screenshot/readability/AI
+// enrichment jobs -- {kind} one of "screenshot"/"readability"/"ai" -- also
+// strictly self-scoped, same reasoning), session-protected library
+// browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}), session-protected capture detail/HTML/language
+// correction (GET /api/captures/{id}, GET /api/captures/{id}/html,
 // PATCH /api/captures/{id}/language, GET /api/text-search-configs), and
 // session-protected tags/collections (GET /api/tags,
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
@@ -40,9 +45,10 @@
 // happens in internal/auth (passwords, sessions, the bootstrap holder),
 // internal/db (Postgres), internal/archive (reading archived HTML off
 // disk), internal/mirror (pushing the credential mirror to the Worker),
-// and internal/devices (the Manage Devices Worker calls). The
-// device-facing / Worker-facing API surface (queue, presigned R2 URLs,
-// /internal/tokens itself) isn't part of this package.
+// internal/devices (the Manage Devices Worker calls), and internal/queueitems
+// (the failed-queue-item Worker calls). The device-facing / Worker-facing
+// API surface (queue, presigned R2 URLs, /internal/tokens itself) isn't
+// part of this package.
 //
 // NewRouter's dashboard parameter is the embedded Svelte build's dist/
 // directory (see main.go's go:embed directive and cmd/server.go, which
@@ -125,6 +131,10 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pairing-token", s.RevokePairingToken)
 			r.Get("/devices", s.ListDevices)
 			r.Delete("/devices/{id}", s.RevokeDevice)
+			r.Get("/queue-items", s.ListFailedQueueItems)
+			r.Post("/queue-items/{id}/retry", s.RetryQueueItem)
+			r.Get("/jobs", s.ListFailedJobs)
+			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)

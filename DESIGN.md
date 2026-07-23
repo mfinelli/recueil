@@ -1155,7 +1155,7 @@ CREATE TABLE tokens (
   token_hash TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
-  device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli'
+  device_type TEXT NOT NULL,       -- 'extension' | 'pwa' | 'cli' | 'shortcut'
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_used_at TEXT
 ) STRICT;
@@ -1242,17 +1242,22 @@ path to read or mutate it. Three pieces are needed:
    reaching into another user's access shouldn't be one browser session away.
    `GET /api/devices`/`DELETE /api/devices/{id}` are now strictly self-scoped
    for every role, no exceptions; `resolveTargetUserID` and its `?user_id=`
-   handling were removed from `internal/httpapi` entirely. An **operator-only
-   CLI escape hatch** for the rare lost-device case (the person who deployed the
-   instance, not merely an admin account within it, handling it directly against
-   Postgres/D1) is planned for a future phase, not built yet —
-   `internal/devices.Client` already takes an arbitrary `userID` per call, which
-   is exactly what that command will need, so nothing about this reversal
-   narrows what's available to build it later. The Worker's own `?user_id=`
-   parameter on `DELETE /internal/tokens/:id` (point 1 above) stays exactly as
-   it was — it's still real defense-in-depth against a backend-side bug passing
-   the wrong id pair, independent of whether the caller is the dashboard or a
-   future CLI command.
+   handling were removed from `internal/httpapi` entirely. **Built (Phase 9):**
+   `recueil device list <username>` and
+   `recueil device revoke <username> <device-id>` (`cmd/device.go`) are the
+   operator-only CLI escape hatch this point originally just planned for — the
+   person who deployed the instance, not merely an admin account within it,
+   handling the rare lost-device case directly. Postgres is only ever consulted
+   to resolve a username into the user id `internal/devices.Client`'s calls need
+   (exactly the arbitrary `userID`-per-call shape this client already had,
+   unused until now); the actual list/revoke still goes through the same Worker
+   client the dashboard's own handlers use, not a separate path. `revoke` lists
+   first rather than revoking blind, so a wrong device id fails with a clear "no
+   such device" before ever reaching the Worker, and a successful run reports
+   which device it revoked by name. The Worker's own `?user_id=` parameter on
+   `DELETE /internal/tokens/:id` (point 1 above) stays exactly as it was — it's
+   still real defense-in-depth against a backend-side bug passing the wrong id
+   pair, independent of whether the caller is the dashboard or this CLI command.
 
 One behavior worth documenting rather than treating as a bug: revocation is
 **not** a live push to the device. A revoked extension/PWA/CLI will keep working
@@ -1334,16 +1339,20 @@ operator friction than holding one additional narrowly-scoped credential.
 
 ### Account creation and roles
 
-- **Open registration.** Anyone who can reach the dashboard can create a
-  `member` account via a signup form — no invite step. This is intentionally
-  consistent with the dashboard's threat model: reachability is already gated by
-  whatever network the operator chose (LAN/VPN/tunnel), so anyone who can reach
-  the signup form is presumed already trusted at the network level, the same way
-  anyone on a home LAN can usually reach a router's admin page. This also lines
-  up naturally with a future hosted/SaaS mode, where open signup is the default
-  expectation anyway. A config flag (e.g. `ENABLE_OPEN_REGISTRATION=false`) is
-  worth offering later for operators who want invite-only instead, but isn't
-  required for the initial version.
+- **Registration, gated by `ENABLE_OPEN_REGISTRATION` (default `false`).**
+  Anyone who can reach the dashboard while this is enabled can create a `member`
+  account via a signup form — no invite step. This was originally planned
+  open-by-default (reachability is already gated by whatever network the
+  operator chose — LAN/VPN/tunnel — so anyone who can reach the signup form is
+  presumed already trusted at the network level, the same way anyone on a home
+  LAN can usually reach a router's admin page), but landed closed-by-default
+  instead once actually built (Phase 9): a self-hosted personal archiving tool
+  has no business letting anyone who can reach it create their own account
+  without the operator opting in, and the bootstrap flow plus
+  `recueil user create` already cover account creation without it. An operator
+  running a small family/friends deployment who wants self-serve signup (or a
+  future hosted/SaaS mode, where open signup is the default expectation) can
+  still turn it on.
 - **Bootstrap token for the first admin, held in memory, not persisted.** On
   startup, if `users` is empty, the backend generates a random bootstrap token
   (32-byte CSPRNG, base64url-encoded, `rcl_bootstrap_...` prefix), prints it to
@@ -1889,12 +1898,41 @@ ALTER TABLE ai_jobs ADD COLUMN next_attempt_at TIMESTAMPTZ;
 On failure: increment `attempts`; if under a small max (e.g. 3), set `status`
 back to `pending` with `next_attempt_at` pushed out (simple exponential
 backoff); once attempts are exhausted, mark `status = 'failed'` permanently with
-`error` preserved. The dashboard surfaces failed jobs as a small badge on the
-capture with a manual retry action — no dead-letter queue is needed given this
-is optional and low-stakes; the failed row itself serves that purpose.
+`error` preserved. **Built (Phase 9), landed differently than originally planned
+here:** rather than a per-capture badge on the capture detail view, failed jobs
+across all three of screenshot/readability/AI surface together on the
+dashboard's Queue screen (§8's `queue_items` retry UI, extended to cover these
+too) — one place for everything currently stuck, not scattered badges per
+capture. `error` is shown on its own line there, not folded into attempts/timing
+metadata: which provider error occurred (e.g. rate-limited vs. some other
+failure) is often the most actionable thing on the screen. No dead-letter queue
+is needed given this is optional and low-stakes; the failed row itself serves
+that purpose.
 
 The same `attempts`/`next_attempt_at`/bounded-retry shape is reused for the
 screenshot job in §6.
+
+### Manual retry (Phase 9)
+
+- `GET /api/jobs` (all three of `screenshot_jobs`/`readability_jobs`/`ai_jobs`,
+  self-scoped, grouped under their own response keys) and
+  `POST /api/jobs/{kind}/{id}/retry` (`{kind}` one of
+  `screenshot`/`readability`/`ai`; a single dispatching handler rather than
+  three near-identical ones, since only the query called differs).
+- Unlike `queue_items`' manual retry (§8), no flag column is needed: these three
+  tables are only ever claimed by the backend's own
+  `ClaimDueScreenshotJobs`/`ClaimDueReadabilityJobs`/`ClaimDueAIJobs` (no device
+  races another actor for them), so a retry can just reset the row directly —
+  `status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL`
+  — and the backend's own next poll picks it up.
+- **Deliberately does not reset `attempts`.** A manual retry doesn't grant a
+  fresh budget; it spends the next one. If it fails again, `handleFailure`'s
+  existing `attempts+1 >= MaxAttempts` check fires exactly as it would for any
+  other attempt and the job goes back to permanently `failed` — one more try,
+  not an unbounded reset-and-retry loop.
+- A readability job that succeeds on retry still creates its `ai_jobs` row in
+  the same transaction as any other successful completion — nothing needed to
+  special-case "this was a retry" for that cascade to keep working.
 
 ### Implementation
 
@@ -2010,9 +2048,26 @@ not anticipated in the original design:
 - **Deletes only `captured` items**, and only once older than a 72-hour
   retention window (long enough to be useful for auditability/debugging shortly
   after the fact, short enough not to accumulate indefinitely). `failed` items
-  are **not** touched — they're kept indefinitely for now. What to do about them
-  long-term (surface them to the user, retry them, expire them on a
-  separate/longer schedule) is an open question, not decided here — see §15.
+  are **not** touched — they're kept indefinitely, a deliberate decision as of
+  Phase 9 (see below), not a deferred one.
+- **`failed` items are surfaced to the user with a manual-retry action (Phase
+  9), not left as a dead end.** A `queue_items.manual_retry` flag (D1, default
+  `0`) lets the dashboard's Queue screen ask for another attempt without losing
+  the `failed` status itself — `failed` stays the durable, queryable "needs
+  attention" state the screen lists against; the flag layers "and it should be
+  claimable again" on top, cleared automatically the moment some device's
+  `POST /queue/:id/claim` picks the item up (both the claim query's `WHERE` and
+  `GET /queue`'s own listing query were extended with
+  `OR (status = 'failed' AND manual_retry = 1)` to make this possible — see the
+  migration and `handleClaimQueueItem`/`handleListQueue` in `terraform/index.js`
+  for the exact shape). Two new service-secret-gated Worker endpoints back this:
+  `GET /internal/queue-items?status=failed` and
+  `POST /internal/queue-items/:id/retry`, called by the backend's own
+  `internal/queueitems` client (structured like `internal/devices`) via
+  session-protected, self-scoped `GET`/`POST /api/queue-items...`. No automatic
+  retry mechanism and no separate/longer expiry were built — expected volume is
+  low at this project's personal/family scale, and an operator can always
+  intervene by hand if that stops holding.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
   `pending` for a long time before being claimed; it's time since actual
   completion that should drive retention, not time since the original enqueue.
@@ -2630,7 +2685,7 @@ CREATE TABLE tokens (
   token_hash TEXT NOT NULL UNIQUE,
   user_id INTEGER NOT NULL REFERENCES users(id),
   device_name TEXT NOT NULL,
-  device_type TEXT NOT NULL,        -- 'extension' | 'pwa' | 'cli'
+  device_type TEXT NOT NULL,        -- 'extension' | 'pwa' | 'cli' | 'shortcut'
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   last_used_at TEXT
 ) STRICT;
@@ -2719,18 +2774,18 @@ writes to `schema_migrations`.
 
 ## 11. Components Summary
 
-| Component                 | Tech                                                                                                    | Reachability required                                              | Responsibility                                                                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                               | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6a), upload to R2                                                                  |
-| Share-sheet PWA           | Static site, Cloudflare Pages                                                                           | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
-| iOS Shortcut              | Apple Shortcuts                                                                                         | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
-| CLI                       | Small script/binary                                                                                     | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
-| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
-| D1                        | Cloudflare D1 (SQLite)                                                                                  | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
-| R2                        | Cloudflare R2                                                                                           | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
-| Backend                   | Go + Postgres, Docker Compose                                                                           | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
-| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                            | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6) and Readability extractions (§6a)                                                      |
-| Dashboard                 | Svelte                                                                                                  | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
+| Component                 | Tech                                                                                                                                                                           | Reachability required                                              | Responsibility                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                                                                                                      | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6a), upload to R2                                                                  |
+| Share-sheet PWA           | Static site, served as Cloudflare Workers static assets bound to the same Worker below (Phase 9 — see §13's own note on the reversal from a separate Cloudflare Pages project) | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
+| iOS Shortcut              | Apple Shortcuts                                                                                                                                                                | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
+| CLI                       | Small script/binary                                                                                                                                                            | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
+| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting                                                                        | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
+| D1                        | Cloudflare D1 (SQLite)                                                                                                                                                         | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
+| R2                        | Cloudflare R2                                                                                                                                                                  | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
+| Backend                   | Go + Postgres, Docker Compose                                                                                                                                                  | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
+| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                                                                                                   | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6) and Readability extractions (§6a)                                                      |
+| Dashboard                 | Svelte                                                                                                                                                                         | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
 
 ---
 
@@ -2741,12 +2796,13 @@ writes to `schema_migrations`.
   the local archive directory both use **bind mounts** (not named volumes) so an
   external backup tool can snapshot them directly from the host (see §14).
 - **Cloudflare side**: Terraform/OpenTofu module in the public repo,
-  provisioning D1, R2, the Worker (and its routes/bindings), the Cloudflare
-  Pages project for the share-sheet PWA, a `random_password` resource for the
-  backend↔Worker service secret (§5a), and a `cloudflare_api_token` resource
-  scoped to `D1:Edit` on the D1 database for the backend's migration runner
-  (§5b) — both output as `sensitive`, to be copied into the backend's `.env`
-  after `terraform apply`.
+  provisioning D1, R2, the Worker (and its routes/bindings, plus the share-sheet
+  PWA's static files bound to that same Worker as of Phase 9 — see §13's own
+  note on why this isn't a separate Cloudflare Pages project), a
+  `random_password` resource for the backend↔Worker service secret (§5a), and a
+  `cloudflare_api_token` resource scoped to `D1:Edit` on the D1 database for the
+  backend's migration runner (§5b) — both output as `sensitive`, to be copied
+  into the backend's `.env` after `terraform apply`.
 - **Networking**: the repo takes no position on how the backend/dashboard is
   exposed beyond the local machine — that's a deployment-time decision left to
   the operator (LAN-only, reverse proxy, VPN, tunnel, etc.). The core archiving
@@ -2871,12 +2927,20 @@ recueil/
 │                                 # distinct port + tmpfs, separate from the
 │                                 # dev database below
 │
-├── terraform/                  # OpenTofu module AND the Worker's own source
-│   │                              # -- flat, not nested under a worker/
-│   │                              # subdirectory (an earlier revision of
-│   │                              # this tree assumed one; the Worker's
-│   │                              # source lives directly alongside the
-│   │                              # OpenTofu config that deploys it)
+├── terraform/                  # OpenTofu module, the Worker's own source, AND
+│   │                              # the share-sheet PWA's static files --
+│   │                              # reversed from an earlier revision of this
+│   │                              # tree, which kept the Worker's source flat
+│   │                              # alongside the OpenTofu config and put pwa/
+│   │                              # at the repo root: once the PWA started
+│   │                              # deploying as static assets bound to this
+│   │                              # same cloudflare_workers_script resource
+│   │                              # (Phase 9) rather than a separate
+│   │                              # Cloudflare Pages project, both needed to
+│   │                              # live somewhere `path.module`-relative, so
+│   │                              # the Worker's own source moved into its own
+│   │                              # worker/ subdirectory and pwa/ became its
+│   │                              # sibling
 │   ├── main.tf                   # includes random_password for the
 │   │                                # backend↔Worker service secret (§5a) and
 │   │                                # a cloudflare_api_token scoped to D1:Edit
@@ -2888,33 +2952,66 @@ recueil/
 │   │                                # for backend→Worker service-secret
 │   │                                # traffic (§5c)
 │   ├── README.md
-│   ├── index.js                  # plain JS, no build step for deployment —
-│   │                                # local test/lint tooling doesn't change
-│   │                                # that
-│   ├── package.json              # Worker's own devDependencies (wrangler,
-│   │                                # @cloudflare/*, @aws-crypto/*,
-│   │                                # @smithy/*) — added Phase 6, makes
-│   │                                # terraform/ a pnpm workspace member;
-│   │                                # see §13a for why ESLint/Vitest
-│   │                                # themselves stay root-level regardless
-│   ├── tsconfig.json              # @ts-check/JSDoc type-checking, index.js only
-│   ├── migrations/                # D1 schema — applied by the backend (§5b),
-│   │   │                            # not by wrangler
-│   │   ├── 0000_schema_migrations.sql
-│   │   └── 0001_users.sql
-│   └── tests/                     # @cloudflare/vitest-pool-workers — real
-│       │                            # simulated D1 via Miniflare, not mocks
-│       ├── apply-migrations.js
-│       ├── fetch.test.js
-│       └── handleUserMirror.test.js
-├── pwa/                          # static share-target PWA, no build step --
-│   ├── index.html                  # not yet built (see IMPLEMENTATION.md's
-│   └── manifest.json               # "On the horizon") -- top-level, not
-│                                      # nested under terraform/ as an earlier
-│                                      # revision of this tree had it: static
-│                                      # PWA files aren't a Terraform/Worker
-│                                      # concern the way index.js is
-│
+│   ├── worker/                   # plain JS, no build step for deployment —
+│   │   │                            # local test/lint tooling doesn't change
+│   │   │                            # that
+│   │   ├── index.js
+│   │   ├── package.json          # Worker's own devDependencies (wrangler,
+│   │   │                            # @cloudflare/*, @aws-crypto/*,
+│   │   │                            # @smithy/*) — added Phase 6, makes
+│   │   │                            # terraform/worker/ a pnpm workspace
+│   │   │                            # member; see §13a for why ESLint/Vitest
+│   │   │                            # themselves stay root-level regardless
+│   │   ├── tsconfig.json          # @ts-check/JSDoc type-checking, index.js only
+│   │   ├── migrations/            # D1 schema — applied by the backend (§5b),
+│   │   │   │                        # not by wrangler
+│   │   │   ├── 0000_schema_migrations.sql
+│   │   │   └── 0001_users.sql
+│   │   └── tests/                 # @cloudflare/vitest-pool-workers — real
+│   │       │                        # simulated D1 via Miniflare, not mocks
+│   │       ├── apply-migrations.js
+│   │       ├── fetch.test.js
+│   │       └── handleUserMirror.test.js
+│   └── pwa/                       # static share-target PWA (Phase 9), no
+│       │                            # build step, no dependencies — same
+│       │                            # "no build step" constraint as worker/,
+│       │                            # for the same reason (deploys as plain
+│       │                            # static files, not a build artifact).
+│       │                            # Served by main.tf's
+│       │                            # cloudflare_workers_script `assets`
+│       │                            # block, alongside worker/'s own
+│       │                            # content_file — one terraform apply for
+│       │                            # the whole Cloudflare side, not a
+│       │                            # separate Pages project + separate
+│       │                            # `wrangler pages deploy` step
+│       ├── index.html
+│       ├── style.css               # reuses src/app.scss's exact token
+│       │                              # values (extension/dashboard/PWA all
+│       │                              # share them today) rather than a new
+│       │                              # palette -- full reconciliation
+│       │                              # against the marketing site's own
+│       │                              # ledger/brass/stamp palette is still
+│       │                              # the separate, still-deferred
+│       │                              # "dashboard visual design system"
+│       │                              # item (§15)
+│       ├── app.js                  # pairs and enqueues same-origin (no
+│       │                              # Worker URL field anywhere in this
+│       │                              # app -- it's served by the Worker it
+│       │                              # talks to)
+│       ├── sw.js                   # minimal: satisfies installability,
+│       │                              # cache-first for the app shell only
+│       ├── manifest.json           # Web Share Target (GET, url/text/title)
+│       ├── icon.svg
+│       ├── token.html               # standalone (own token.js, no service
+│       │                              # worker) -- exchanges a pairing token
+│       │                              # for a bearer token and displays it
+│       │                              # once, for pasting into a client that
+│       │                              # can't run POST /pair itself (the
+│       │                              # iOS Shortcut recipe below); not
+│       │                              # part of app.js's own pair/enqueue
+│       │                              # flow, and saves nothing itself
+│       └── token.js
+
 ├── extension/                # WebExtension, own package.json (needs bundling
 │   ├── src/                    # to pull in vendored SingleFile capture code
 │   ├── manifest.json            # and a WebExtension polyfill — no longer
@@ -3313,10 +3410,10 @@ Two things, together, on the same schedule:
 2. **The local archive directory** (zstd-compressed HTML + thumbnails) — a plain
    directory copy/sync is fine here, since these are static files once written.
 
-Because both bind-mount to the host filesystem (§4, §12), any external backup
-tool (rsync, restic, a `pg_dump | rclone` pipeline, etc.) can operate on them
-directly. The README should include one example recipe as a starting point,
-without the application running it itself.
+Both bind-mount to the host filesystem in the example `compose.yaml`/README
+config (`./data/postgres`, `./data/archive`), not named Docker volumes: the
+whole point is that both are real, inspectable paths on the host, readable by
+any external backup tool directly, without going through Docker at all.
 
 **Consistency matters**: if the two are backed up on different schedules or by
 different mechanisms, a restore can leave a `captures` row pointing at an
@@ -3343,11 +3440,15 @@ should be backed up in the same job/window.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/
-  changed accounts may still have valid mirrored credentials). A manual **resync
-  command** (CLI or admin dashboard action) re-runs the existing
-  credential-mirror-push logic as an idempotent bulk operation across all users,
-  rather than only firing on the create/password-change event hook. This should
-  be run after any Postgres restore.
+  changed accounts may still have valid mirrored credentials).
+  **`recueil user resync`** (Phase 9, `cmd/user.go`) is the manual resync
+  command this section called for — CLI-only, not an admin dashboard action,
+  matching the operator-only precedent already set for device management. It
+  re-runs the same idempotent `mirror.PushUser` push already used at
+  create/regenerate/revoke time across every account: decrypts each account's
+  `pairing_token_enc` where present, re-hashes it, and re-pushes it (or pushes
+  `nil` for an account with a revoked/NULL token, clearing any stale D1 hash
+  left over from before the restore). Should be run after any Postgres restore.
 
 ---
 
@@ -3385,9 +3486,14 @@ choices, tracked in §13a rather than here.
 
 What remains open is purely implementation-phase, not architectural:
 
-- Whether `ENABLE_OPEN_REGISTRATION` (mentioned in §5 as a future invite-only
-  toggle) is worth building in the initial version or deferred until someone
-  actually asks for it.
+- **Resolved this round (Phase 9): `ENABLE_OPEN_REGISTRATION` is built**
+  (config: `enable_open_registration`, default `false`) — gates
+  `POST /api/auth/register` directly in the handler rather than conditionally
+  registering the route, so routing stays static. Defaulted closed rather than
+  matching the previously-unconditional-open behavior: a self-hosted personal
+  archiving tool has no business letting anyone who can reach the dashboard
+  create their own account by default, and nothing was depending on the old
+  behavior since this was pre-1.0.
 - The pairing-token redesign (round five) retrofitted already-built Phase 1
   code: the `/internal/users/mirror` Worker route and D1 `users` schema both
   changed from password-hash mirroring to pairing-token-hash mirroring before
@@ -3405,13 +3511,19 @@ What remains open is purely implementation-phase, not architectural:
   `pending_captures` row — deliberately deferred out of Phase 2, since that work
   is entangled with the capture-upload pipeline's shape rather than the
   queue/auth mechanics Phase 2 was scoped to.
-- **New this round:** what to do with `failed` queue items long-term. §8's
-  cleanup endpoint deliberately never removes them (only `captured` items are
-  swept), but "keep forever, do nothing else" isn't a real long-term answer —
-  surfacing them to the user, a retry mechanism, or a separate (probably much
-  longer, or manually-triggered) expiry are all plausible and none has been
-  decided. Blocked on the `complete`/`fail` endpoints existing at all, since
-  there's no way to mark an item `failed` yet.
+- **Resolved this round (Phase 9): `failed` queue items are now surfaced to the
+  user with a manual-retry action**, not just kept forever with no further
+  recourse. A new `queue_items.manual_retry` D1 column (cleared on claim), two
+  new service-secret-gated Worker endpoints
+  (`GET /internal/queue-items?status=failed`,
+  `POST /internal/queue-items/:id/retry`), a backend `internal/queueitems`
+  client mirroring `internal/devices`'s shape, session-protected
+  `GET`/`POST /api/queue-items...` (self-scoped, same reasoning as Manage
+  Devices), and a new dashboard Queue screen. §8's cleanup endpoint is otherwise
+  unchanged — `captured` items are still swept, `failed` items are still never
+  deleted, now a deliberate decision (low expected volume at this project's
+  scale, and an operator can always clean up by hand) rather than a deferred
+  one.
 - **Resolved this round: Readability extraction moved from the extension (and
   the dashboard's browser, for manual uploads) to a single deferred, async
   backend job, sharing the headless-Chrome sidecar with the screenshot job — see
