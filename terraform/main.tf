@@ -59,7 +59,7 @@ resource "cloudflare_workers_script" "worker" {
   # overrides, since the PWA's own file names never collide with any
   # API path.
   assets = {
-    directory = "${path.module}/pwa"
+    directory = var.enable_pwa ? "${path.module}/pwa" : null
   }
 
   # Bump periodically; pinned rather than computed dynamically since
