@@ -38,6 +38,7 @@ import browser from "webextension-polyfill";
 import { getConfig, setQueueCache, setClaimedTab } from "../common/storage.js";
 import { apiRequest, ApiError } from "../common/api-client.js";
 import { NotPairedError } from "./capture.js";
+import { t } from "../common/i18n.js";
 
 const REFRESH_ALARM_NAME = "recueil-queue-refresh";
 const REFRESH_PERIOD_MINUTES = 360; // 6 hours
@@ -152,13 +153,13 @@ export async function claimQueueItem(itemId) {
 function describeClaimFailure(error) {
   if (error instanceof ApiError) {
     if (error.status === 409) {
-      return "recueil: this item is already being worked on from another device";
+      return t("queueClaimConflict");
     }
     if (error.status === 410) {
-      return "recueil: this item has already been captured (or permanently failed)";
+      return t("queueClaimGone");
     }
     if (error.status === 404) {
-      return "recueil: this item no longer exists";
+      return t("queueClaimNotFound");
     }
   }
   return error instanceof Error ? error.message : String(error);

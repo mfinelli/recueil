@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "recueil",
-  "description": "Capture and archive pages to your self-hosted recueil instance",
+  "name": "__MSG_extName__",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
   "version": "1.0.0",
   "permissions": ["storage", "alarms", "activeTab", "scripting", "tabs"],
   "optional_permissions": ["bookmarks"],

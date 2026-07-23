@@ -1,0 +1,122 @@
+{
+  "extName": {
+    "message": "recueil",
+    "description": "Extension name, shown in the browser toolbar/extensions page."
+  },
+  "extDescription": {
+    "message": "Capturez et archivez des pages sur votre instance recueil auto-hébergée",
+    "description": "Extension description, shown on the browser extensions page/store listing."
+  },
+  "popupTitle": {
+    "message": "recueil",
+    "description": "<title> of the popup document."
+  },
+  "loading": {
+    "message": "Chargement…",
+    "description": "Shown briefly while the popup determines pairing state."
+  },
+  "pairHeading": {
+    "message": "Associer votre instance recueil",
+    "description": "Heading on the pairing form."
+  },
+  "fieldInstanceUrl": {
+    "message": "URL de l'instance",
+    "description": "Label for the pairing form's Worker URL field."
+  },
+  "fieldPairingToken": {
+    "message": "Jeton d'association",
+    "description": "Label for the pairing form's pairing token field."
+  },
+  "fieldDeviceName": {
+    "message": "Nom de l'appareil",
+    "description": "Label for the pairing form's (optional) device name field."
+  },
+  "pairButton": {
+    "message": "Associer",
+    "description": "Submit button on the pairing form, idle state."
+  },
+  "pairButtonPairing": {
+    "message": "Association…",
+    "description": "Submit button on the pairing form, while the pair request is in flight."
+  },
+  "errorUrlAndTokenRequired": {
+    "message": "L'URL de l'instance et le jeton d'association sont requis.",
+    "description": "Validation error when either required pairing field is left blank."
+  },
+  "errorInvalidUrl": {
+    "message": "Cela ne ressemble pas à une URL valide.",
+    "description": "Validation error when the instance URL field doesn't parse as a URL."
+  },
+  "errorPermissionDenied": {
+    "message": "recueil a besoin d'une autorisation pour communiquer avec votre instance — veuillez l'accorder et réessayer.",
+    "description": "Shown when the browser's <all_urls> permission prompt is denied during pairing."
+  },
+  "pairedStatusSub": {
+    "message": "associé · auto-hébergé",
+    "description": "Small subtitle next to the heading once paired."
+  },
+  "labelInstance": {
+    "message": "Instance",
+    "description": "Label for the paired instance's URL in the paired-view info list."
+  },
+  "labelThisDevice": {
+    "message": "Cet appareil",
+    "description": "Label for this device's name in the paired-view info list."
+  },
+  "captureButton": {
+    "message": "Enregistrer cette page",
+    "description": "Button that captures the current tab."
+  },
+  "capturing": {
+    "message": "Capture en cours…",
+    "description": "Capture button status while a capture is in progress."
+  },
+  "captureSaved": {
+    "message": "Enregistré",
+    "description": "Capture button status after a successful capture."
+  },
+  "unpairLink": {
+    "message": "Oublier cet appareil",
+    "description": "Link that unpairs this device from the recueil instance."
+  },
+  "queueHeading": {
+    "message": "File d'attente",
+    "description": "Heading for the queue section of the paired view."
+  },
+  "queueRefresh": {
+    "message": "↻ Actualiser",
+    "description": "Manual refresh button for the queue list."
+  },
+  "queueEmpty": {
+    "message": "Aucun élément dans la file d'attente.",
+    "description": "Shown in place of the queue list when there are no pending items."
+  },
+  "queueClaiming": {
+    "message": "Réservation…",
+    "description": "Status shown while a queue item claim request is in flight."
+  },
+  "queueOpenedNewTab": {
+    "message": "Ouvert dans un nouvel onglet",
+    "description": "Status shown after successfully claiming a queue item."
+  },
+  "queueClaimConflict": {
+    "message": "recueil : cet élément est déjà en cours de traitement sur un autre appareil",
+    "description": "Claim failure: the item is actively claimed by another device (HTTP 409)."
+  },
+  "queueClaimGone": {
+    "message": "recueil : cet élément a déjà été capturé (ou a définitivement échoué)",
+    "description": "Claim failure: the item is in a terminal state (HTTP 410)."
+  },
+  "queueClaimNotFound": {
+    "message": "recueil : cet élément n'existe plus",
+    "description": "Claim failure: the item doesn't exist, or belongs to another user (HTTP 404)."
+  },
+  "bookmarkSyncLabel": {
+    "message": "Synchroniser les pages archivées avec les favoris",
+    "description": "Label for the bookmark-sync toggle checkbox."
+  },
+  "bookmarkSyncPermissionDenied": {
+    "message": "L'autorisation n'a pas été accordée.",
+    "description": "Shown when the browser's bookmarks permission prompt is denied."
+  }
+}

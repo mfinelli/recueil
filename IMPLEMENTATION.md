@@ -2063,3 +2063,23 @@ restore Postgres, untar the archive backup into a fresh volume, then run
 
 Not touched this round, still open from earlier phases: the dashboard's visual
 design system and extension Safari packaging (explicitly punted for now).
+
+## Phase 10 (extension i18n infrastructure)
+
+### What exists now
+
+- **`extension/_locales/en/messages.json`** (default) and
+  **`extension/_locales/fr/messages.json`** — the WebExtensions i18n message
+  catalogs. `fr` is a real, complete translation, not a stub, specifically so
+  the pipeline gets proven against real substitution/layout behavior, not just
+  file-copying.
+- **`manifest.base.json`**: `name`/`description` switched to
+  `__MSG_extName__`/`__MSG_extDescription__`, `default_locale: "en"` added — the
+  one place the browser substitutes `__MSG_*__` placeholders outside of
+  application code.
+- **`popup.html`/`popup.js`**: every user-facing string (headings, field labels,
+  button text/states, status messages, the empty-queue message) now goes through
+  `t()`. `popup.html`'s static `<title>`/"Loading…" placeholder text stays an
+  English fallback in the markup itself (general extension-page HTML has no
+  `__MSG_*__` auto-substitution, unlike `manifest.json`) — `popup.js` overwrites
+  both from the current locale as the very first thing it does once it runs.

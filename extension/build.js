@@ -34,7 +34,7 @@
 // parses on every service-worker wake, for no benefit.
 
 import { build } from "esbuild";
-import { readFile, writeFile, mkdir, copyFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, cp, copyFile } from "node:fs/promises";
 
 const BROWSERS = ["chrome", "firefox"];
 const watch = process.argv.includes("--watch");
@@ -82,6 +82,14 @@ async function copyStatic(browser, filename) {
   );
 }
 
+async function copyLocales(browser) {
+  await cp(
+    new URL("./_locales/", import.meta.url),
+    new URL(`./dist/${browser}/_locales/`, import.meta.url),
+    { recursive: true },
+  );
+}
+
 async function buildAll() {
   for (const browser of BROWSERS) {
     await buildManifest(browser);
@@ -102,6 +110,7 @@ async function buildAll() {
     // tags reference by the same relative filename.
     await copyStatic(browser, "popup.html");
     await copyStatic(browser, "popup.css");
+    await copyLocales(browser);
     console.log(`built extension/dist/${browser}`);
   }
 }

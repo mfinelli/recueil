@@ -1022,6 +1022,55 @@ reusing the backend's own checkpoint-based approach.
 
 ---
 
+### 3k. Internationalization (i18n)
+
+**The native WebExtensions i18n API, not a library.**
+`_locales/<locale> /messages.json` files, `__MSG_key__` substitution in
+`manifest.json`, `browser.i18n.getMessage()` in code — built into Chrome and
+Firefox both, zero new dependencies. This fits the project's existing bias
+against pulling in a library where a platform primitive already does the job
+(the same reasoning already applied to, e.g., not using a JWT library for bearer
+tokens, §5).
+
+**Every lookup goes through one wrapper (`src/common/i18n.js`'s `t()`), never
+`browser.i18n.getMessage()` directly from a call site.** This isn't defensive
+architecture-for-its-own-sake — it's a real answer to a real, concrete
+constraint: the native API has no supported way to select a locale other than
+the browser's own current UI language. There's no "pass a locale" parameter
+anywhere in it. If the popup ever grows a manual language override (there's no
+settings UI at all today for one to attach to, so this is speculative, not
+planned), the only way to build it is for `t()` to stop delegating to
+`browser.i18n.getMessage()` and instead fetch a specific
+`_locales/<lang>/messages.json` itself and look keys up from that — a change
+confined to one file precisely because every call site already goes through it,
+not a rearchitecture of `popup.js`.
+
+**Scope: only strings recueil itself authors are translated — never passthrough
+browser/network error text.** A raw `fetch()` failure or an HTTP response body
+is the browser's or the network's own message, not something recueil wrote;
+there's no translatable string to look up for it, and attempting to wrap it
+would either lose information or require re-authoring content that isn't ours to
+begin with. `background/queue.js`'s `describeClaimFailure` is the concrete line:
+its own three authored messages (409/410/404) are translated; the generic
+`error.message` fallback for anything else is left exactly as the
+browser/network produced it. `auth.js`'s pairing-network-error templates and
+`capture.js`'s R2-upload-error templates are a related but not-yet-converted
+case — an authored template wrapping an untranslated interpolated value (a
+network error's own message, an HTTP response body) — deferred, not
+architecturally blocked: same `t()` pattern applies whenever it's worth doing.
+
+**`en` is `default_locale`, both the fallback for missing keys in any other
+locale and the source of truth for what keys exist.** `manifest.base.json`'s own
+`name`/`description` are localized too
+(`__MSG_extName__`/`__MSG_extDescription__`), the one place the browser
+substitutes `__MSG_*__` placeholders outside of code — general extension-page
+HTML has no equivalent automatic substitution, which is why `popup.html`'s own
+static `<title>`/loading-placeholder text stays an English fallback in the
+markup itself, overwritten by `popup.js` via `t()` as the first thing it does
+once it actually runs.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the

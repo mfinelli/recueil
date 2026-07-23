@@ -16,6 +16,32 @@ extension trees from the same source, per-browser manifest differences merged in
 at build time (see `build.js`). Both are gitignored; nothing here is meant to be
 committed.
 
+## Internationalization
+
+User-facing strings live in `_locales/<locale>/messages.json`
+([WebExtensions i18n](https://developer.chrome.com/docs/extensions/reference/api/i18n)
+— native to both Chrome and Firefox, no library). `en` is `default_locale`
+(`manifest.base.json`) and is the fallback for any key missing from another
+locale.
+
+The browser picks the matching locale from its own UI language automatically —
+there's no in-popup language picker, and none is planned until the popup has
+other settings worth building a picker alongside.
+
+**Adding a language**: copy `_locales/en/messages.json` to
+`_locales/<code>/messages.json` and translate each `message` value (leave
+`description` as-is — it's developer-facing only, shown in some browsers' own
+translation tooling, never rendered to a user). No code changes needed;
+`just build`/`build.js` picks up any directory under `_locales/` automatically.
+
+**Adding a string in code**: add the key to `_locales/en/messages.json` (and
+every other locale — a key missing from a non-default locale silently falls back
+to `en`, which is fine short-term but shouldn't be left that way), then call
+`t("yourKey")` from `src/common/i18n.js` — never `browser.i18n.getMessage()`
+directly (see that file's own doc comment for why: centralizing the call site is
+what keeps a future manual-locale-override feature from requiring a rewrite of
+every call site).
+
 ## Try it locally (temporary, not durable)
 
 - **Chrome**: `chrome://extensions` → enable Developer mode → "Load unpacked" →
