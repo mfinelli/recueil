@@ -2036,11 +2036,30 @@ device that's been paired but not yet used). No tests added, consistent with
 (`runUserCreate`/`runUserResync`/`runUserResetPassword` included), so this
 doesn't introduce a gap relative to its siblings.
 
+### README backup recipe
+
+The one half of DESIGN.md §14's Backup & Restore section that wasn't already
+covered by `recueil user resync` (that's the restore-time repair step; this is
+the backup-_taking_ side itself). New "Backup" subsection in the root
+`README.md`, same "starting point, not a drop-in final config" framing already
+used for the Docker Compose example right above it, and explicitly pointed at
+adapting it to real backup tooling (`restic`, `rclone`, a managed backup
+service) rather than presenting the example script itself as the intended
+production mechanism.
+
+The recipe itself: `pg_dump -Fc` run inside the `postgres` container via
+`docker compose exec -T` (avoids needing 5432 reachable from wherever the backup
+script runs; `-T` specifically because the dump is binary output being
+redirected to a file, not something meant to hit a TTY), plus the plain `tar` of
+`./data/archive` above, both landing in one timestamped directory per invocation
+so DESIGN.md's "same job/window" consistency requirement is structural rather
+than something the operator has to remember to enforce themselves.
+
+The restore half closes the loop back to the already-built resync command:
+restore Postgres, untar the archive backup into a fresh volume, then run
+`recueil user resync` before treating the restored instance as live.
+
 ### What's left
 
 Not touched this round, still open from earlier phases: the dashboard's visual
-design system (now explicitly touching four surfaces instead of three),
-extension Safari packaging, the extension popup's visual design pass, and the
-README backup recipe DESIGN.md §14 calls for (the resync command from earlier
-this round is the restore-time repair step; the backup-_taking_ side itself
-still has no example recipe written down).
+design system and extension Safari packaging (explicitly punted for now).

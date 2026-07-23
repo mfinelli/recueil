@@ -3410,10 +3410,10 @@ Two things, together, on the same schedule:
 2. **The local archive directory** (zstd-compressed HTML + thumbnails) — a plain
    directory copy/sync is fine here, since these are static files once written.
 
-Because both bind-mount to the host filesystem (§4, §12), any external backup
-tool (rsync, restic, a `pg_dump | rclone` pipeline, etc.) can operate on them
-directly. The README should include one example recipe as a starting point,
-without the application running it itself.
+Both bind-mount to the host filesystem in the example `compose.yaml`/README
+config (`./data/postgres`, `./data/archive`), not named Docker volumes: the
+whole point is that both are real, inspectable paths on the host, readable by
+any external backup tool directly, without going through Docker at all.
 
 **Consistency matters**: if the two are backed up on different schedules or by
 different mechanisms, a restore can leave a `captures` row pointing at an
