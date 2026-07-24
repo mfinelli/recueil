@@ -1537,6 +1537,31 @@ ships ahead of (or behind) the infra change. This string only needs to answer
 "is this one of our own clients," never "which version," so it's bumped only if
 its own meaning ever changes, independent of ordinary releases.
 
+### 5d. Dashboard settings (`user_settings`)
+
+**A dedicated table, not more columns on `users`.** `users` already holds
+account-identity concerns (credentials, role, the pairing token); dashboard
+preferences are a different kind of thing — user-editable, expected to grow over
+time (language today, plausibly a theme or other display preferences later), and
+with no reason to be tangled into the same row that authentication code paths
+read and write. `user_settings.user_id` is the table's own primary key, not a
+separate identity column — a genuine 1:1 extension of `users`, not a one-to-many
+relationship, so there's no reason for a settings row to have an identity
+distinct from the account it belongs to.
+
+**No row exists until a user's first `PATCH`.** There's no backfill migration
+creating a row for every existing account, and no row-creation hook on
+account-creation paths (`Setup`, `Register`, `recueil user create`) either —
+deliberately, to keep this addition fully decoupled from every one of those
+existing flows rather than touching all of them for a feature that's still
+inert. `GET /api/settings` treats "no row" and "a row with `language` explicitly
+`NULL`" as exactly the same thing: both render as `{"language": null}`, both
+mean "no override, fall back to auto-detection once the dashboard has one."
+`PATCH /api/settings` is accordingly an upsert
+(`ON CONFLICT (user_id) DO UPDATE`), not an update that assumes a row already
+exists — a user's first-ever settings change is exactly as valid an operation as
+their hundredth.
+
 ---
 
 ## 6. Screenshot / Thumbnail Generation

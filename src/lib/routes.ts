@@ -41,6 +41,7 @@ import Collections from "../routes/Collections.svelte";
 import Devices from "../routes/Devices.svelte";
 import Queue from "../routes/Queue.svelte";
 import CaptureReader from "../routes/CaptureReader.svelte";
+import Settings from "../routes/Settings.svelte";
 
 export const requireSetup: RoutePrecondition = () => {
   if (session.needsSetup) return true;
@@ -84,6 +85,7 @@ const routes: RouteDefinition = new Map([
     "/captures/:id",
     wrap({ component: CaptureReader, conditions: [requireAuth] }),
   ],
+  ["/settings", wrap({ component: Settings, conditions: [requireAuth] })],
 ]);
 
 export default routes;

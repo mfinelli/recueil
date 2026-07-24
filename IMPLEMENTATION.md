@@ -2064,7 +2064,7 @@ restore Postgres, untar the archive backup into a fresh volume, then run
 Not touched this round, still open from earlier phases: the dashboard's visual
 design system and extension Safari packaging (explicitly punted for now).
 
-## Phase 10 (extension i18n infrastructure)
+## Phase 10 (i18n infrastructure)
 
 ### What exists now
 
@@ -2083,3 +2083,46 @@ design system and extension Safari packaging (explicitly punted for now).
   English fallback in the markup itself (general extension-page HTML has no
   `__MSG_*__` auto-substitution, unlike `manifest.json`) — `popup.js` overwrites
   both from the current locale as the very first thing it does once it runs.
+- **`migrations/00010_create_user_settings.sql`**: new `user_settings` table,
+  `user_id` itself as the primary key (a 1:1 extension of `users`, not a
+  one-to-many table), a single nullable `language TEXT` column. No `CHECK`
+  constraint, unlike every other small-fixed-enum column in this schema — see
+  the migration's own comment and DESIGN.md §5d for why: the supported-language
+  set is expected to grow as translations are added, unlike a genuinely fixed
+  set like `role`.
+- **`internal/httpapi`**: `GET`/`PATCH /api/settings`, both session-protected
+  and self-scoped (no cross-user concept here at all, same as pairing-token/
+  device management). `GetSettings` treats "no row" and "a row with `language`
+  explicitly `NULL`" identically — both respond `{"language": null}`.
+  `PatchSettings` takes a full-replacement request body (`{"language": "fr"}` to
+  set, `{"language": ""}` to clear back to `NULL`) rather than `PatchPage`'s
+  per-field-pointer pattern — see DESIGN.md §5d for why that's the right call
+  for a single-field endpoint today, and the explicit note that it's worth
+  revisiting once (not before) a second setting actually lands. Validates the
+  submitted value against a shape-only regexp (`^[a-z]{2,3}(-[A-Z]{2})?$`), not
+  a maintained allowlist — a `textOrNull`/`textOrNil` pair (package-local twins
+  of `internal/ingest`'s and the existing `textOrNil`, respectively) handles the
+  empty-string-means-NULL conversion in both directions.
+- **Dashboard**: `src/lib/types.ts` gained `UserSettings`; a new
+  `src/routes/Settings.svelte` (loads current settings, a `<select>` with a
+  small hardcoded `LANGUAGE_OPTIONS` list — "Automatic," `en`, `fr` — that saves
+  on change) wired into `src/lib/routes.ts` under the same `requireAuth` guard
+  as every other authenticated screen, and linked from `AppHeader`'s main nav.
+  The screen's own on-page copy says outright that changing the language doesn't
+  do anything visible yet, rather than leaving that silently surprising.
+
+### What's explicitly NOT built yet
+
+- **Nothing reads `user_settings.language` to actually change what the dashboard
+  renders.** No i18n library, no message catalogs, no rendered string anywhere
+  in `src/` is affected by this setting. That's the next, separate phase.
+- **No `Accept-Language`/`navigator.language` auto-detection.** Only the
+  explicit-override half of the eventual design (DESIGN.md §5d) is built; an
+  unset preference just means "no override" today, with nothing yet deciding
+  what to fall back to.
+- **`LANGUAGE_OPTIONS` in `Settings.svelte` is a small hardcoded list, not
+  fetched from anywhere.** There's no server-side registry of "languages the
+  dashboard supports" to query (unlike the extension, where the browser can
+  enumerate `_locales/` directories on its own) — this list grows by hand as
+  real dashboard translations land, mirroring how `extension/_locales/` itself
+  grew.

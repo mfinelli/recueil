@@ -33,6 +33,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <a href="/collections" use:link>Collections</a>
       <a href="/devices" use:link>Devices</a>
       <a href="/queue" use:link>Queue</a>
+      <a href="/settings" use:link>Settings</a>
     </nav>
   </div>
   {#if session.user}
