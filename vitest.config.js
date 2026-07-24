@@ -66,10 +66,11 @@ export default defineConfig(async () => {
           },
         },
         {
-          // The dashboard's own logic tests (src/lib/*.test.ts) -- NOT
-          // component-rendering tests yet, just the plain TS/runes logic
-          // underneath the screens: the API client, session/auth state,
-          // and route guards.
+          // The dashboard's own tests: src/lib/*.test.ts covers the plain
+          // TS/runes logic underneath the screens (the API client,
+          // session/auth state, and route guards); src/components and
+          // src/routes tests render real components via
+          // @testing-library/svelte on top of that.
           plugins: [svelte()],
           resolve: {
             // Without this, Svelte resolves to its server/SSR runtime
