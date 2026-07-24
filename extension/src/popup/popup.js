@@ -49,7 +49,7 @@ import {
   clearPairingDraft,
 } from "../common/storage.js";
 import { defaultDeviceName } from "../common/device-name.js";
-import { t } from "../common/i18n.js";
+import { t, documentLanguage } from "../common/i18n.js";
 
 /**
  * The shape background/auth.js's getAuthState() actually returns --
@@ -72,6 +72,7 @@ const app = /** @type {HTMLElement} */ (document.getElementById("app"));
 let queueStatusDismissTimer = /** @type {number|undefined} */ (undefined);
 
 document.title = t("popupTitle");
+document.documentElement.lang = documentLanguage();
 // popup.html's own static markup ships an English "Loading…" placeholder
 // (see its file comment) since it has no JS of its own to localize it --
 // this is the earliest point popup.js can overwrite it.

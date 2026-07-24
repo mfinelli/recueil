@@ -25,6 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { push } from "svelte-spa-router";
   import { session } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
+  import { m } from "../paraglide/messages";
 
   let bootstrapToken = $state("");
   let username = $state("");
@@ -36,7 +37,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
     if (password !== confirmPassword) {
-      error = "passwords do not match";
+      error = m.setup_error_password_mismatch();
       return;
     }
     error = null;
@@ -45,7 +46,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       await session.completeSetup(bootstrapToken, username, password);
       await push("/");
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "setup failed";
+      error = err instanceof ApiError ? err.message : m.setup_error_generic();
     } finally {
       submitting = false;
     }
@@ -55,9 +56,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <main class="screen">
   <form class="card" onsubmit={handleSubmit}>
     <h1>recueil</h1>
-    <p class="sub">Create the first admin account to get started.</p>
+    <p class="sub">{m.setup_subtitle()}</p>
 
-    <label for="bootstrap-token">Bootstrap token</label>
+    <label for="bootstrap-token">{m.setup_bootstrap_token()}</label>
     <input
       id="bootstrap-token"
       type="text"
@@ -66,9 +67,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       required
       disabled={submitting}
     />
-    <p class="hint">Printed to the backend's logs on startup.</p>
+    <p class="hint">{m.setup_bootstrap_token_hint()}</p>
 
-    <label for="username">Username</label>
+    <label for="username">{m.common_username()}</label>
     <input
       id="username"
       type="text"
@@ -78,7 +79,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       disabled={submitting}
     />
 
-    <label for="password">Password</label>
+    <label for="password">{m.common_password()}</label>
     <input
       id="password"
       type="password"
@@ -88,7 +89,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       disabled={submitting}
     />
 
-    <label for="confirm-password">Confirm password</label>
+    <label for="confirm-password">{m.setup_confirm_password()}</label>
     <input
       id="confirm-password"
       type="password"
@@ -103,7 +104,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {/if}
 
     <button type="submit" disabled={submitting}
-      >{submitting ? "Creating…" : "Create admin account"}</button
+      >{submitting ? m.setup_creating() : m.setup_create_account()}</button
     >
   </form>
 </main>

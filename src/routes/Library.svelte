@@ -26,6 +26,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { apiJSON, ApiError } from "../lib/api";
   import type { Page, PageListResponse } from "../lib/types";
   import AppHeader from "../components/AppHeader.svelte";
+  import { m } from "../paraglide/messages";
 
   const PAGE_SIZE = 50;
   const VIEW_MODE_KEY = "recueil:library-view-mode";
@@ -76,7 +77,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       total = res.total;
       imageLoadFailed.clear();
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "failed to load pages";
+      error = err instanceof ApiError ? err.message : m.library_load_error();
     } finally {
       loading = false;
     }
@@ -132,29 +133,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <input
       class="search"
       type="search"
-      placeholder="Search your archive…"
+      placeholder={m.library_search_placeholder()}
       oninput={handleSearchInput}
-      aria-label="Search"
+      aria-label={m.library_search_label()}
     />
-    <div class="view-toggle" role="group" aria-label="View">
+    <div class="view-toggle" role="group" aria-label={m.library_view_label()}>
       <button
         class:active={viewMode === "list"}
-        onclick={() => setViewMode("list")}>List</button
+        onclick={() => setViewMode("list")}>{m.library_view_list()}</button
       >
       <button
         class:active={viewMode === "grid"}
-        onclick={() => setViewMode("grid")}>Grid</button
+        onclick={() => setViewMode("grid")}>{m.library_view_grid()}</button
       >
     </div>
   </div>
 
   {#if loading}
-    <p class="status">Loading…</p>
+    <p class="status">{m.common_loading()}</p>
   {:else if error}
     <p class="status error" role="alert">{error}</p>
   {:else if pages.length === 0}
     <p class="status">
-      {query ? "No pages match your search." : "Nothing archived yet."}
+      {query ? m.library_no_search_results() : m.library_nothing_archived()}
     </p>
   {:else if viewMode === "list"}
     <ul class="pages-list">
@@ -209,10 +210,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   {#if !loading && !error && pages.length > 0}
     <div class="pagination">
-      <button onclick={prevPage} disabled={offset === 0}>Previous</button>
-      <span>{offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}</span>
+      <button onclick={prevPage} disabled={offset === 0}
+        >{m.library_previous()}</button
+      >
+      <span
+        >{m.library_pagination_summary({
+          start: offset + 1,
+          end: Math.min(offset + PAGE_SIZE, total),
+          total,
+        })}</span
+      >
       <button onclick={nextPage} disabled={offset + PAGE_SIZE >= total}
-        >Next</button
+        >{m.library_next()}</button
       >
     </div>
   {/if}

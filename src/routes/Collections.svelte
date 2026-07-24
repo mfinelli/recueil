@@ -25,6 +25,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Collection, CollectionListResponse } from "../lib/types";
+  import { m } from "../paraglide/messages";
 
   interface CollectionNode extends Collection {
     children: CollectionNode[];
@@ -87,7 +88,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       collections = res.collections;
     } catch (err) {
       loadError =
-        err instanceof ApiError ? err.message : "failed to load collections";
+        err instanceof ApiError ? err.message : m.collections_load_error();
     } finally {
       loading = false;
     }
@@ -119,7 +120,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       newTopLevelName = "";
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to create collection";
+        err instanceof ApiError ? err.message : m.collections_create_error();
     } finally {
       creatingTopLevel = false;
     }
@@ -142,7 +143,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       newChildName = "";
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to create collection";
+        err instanceof ApiError ? err.message : m.collections_create_error();
     } finally {
       creatingChild = false;
     }
@@ -168,7 +169,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       editingId = null;
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to rename collection";
+        err instanceof ApiError ? err.message : m.collections_rename_error();
     } finally {
       savingRename = false;
     }
@@ -192,8 +193,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     const descendantCount = countDescendants(node);
     const warning =
       descendantCount > 0
-        ? `Delete "${node.name}" and its ${descendantCount} sub-collection${descendantCount === 1 ? "" : "s"}? Pages stay archived, but they'll no longer be in any of these.`
-        : `Delete "${node.name}"? Pages stay archived, but they'll no longer be in this collection.`;
+        ? descendantCount === 1
+          ? m.collections_delete_confirm_with_children_one({
+              name: node.name,
+              count: descendantCount,
+            })
+          : m.collections_delete_confirm_with_children_other({
+              name: node.name,
+              count: descendantCount,
+            })
+        : m.collections_delete_confirm_simple({ name: node.name });
     if (!confirm(warning)) return;
 
     deletingId = node.id;
@@ -204,7 +213,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       collections = collections.filter((c) => !removedIds.has(c.id));
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to delete collection";
+        err instanceof ApiError ? err.message : m.collections_delete_error();
     } finally {
       deletingId = null;
     }
@@ -218,21 +227,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         <form class="inline-form" onsubmit={(e) => handleRename(e, node.id)}>
           <input type="text" bind:value={editingName} disabled={savingRename} />
           <button type="submit" disabled={savingRename || !editingName.trim()}
-            >Save</button
+            >{m.common_save()}</button
           >
           <button
             type="button"
             onclick={() => (editingId = null)}
-            disabled={savingRename}>Cancel</button
+            disabled={savingRename}>{m.common_cancel()}</button
           >
         </form>
       {:else}
         <span class="name">{node.name}</span>
         <div class="row-actions">
           <button type="button" onclick={() => startAddingChild(node.id)}
-            >+ Sub-collection</button
+            >{m.collections_add_subcollection()}</button
           >
-          <button type="button" onclick={() => startRename(node)}>Rename</button
+          <button type="button" onclick={() => startRename(node)}
+            >{m.collections_rename()}</button
           >
           <button
             type="button"
@@ -240,7 +250,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             onclick={() => handleDelete(node)}
             disabled={deletingId === node.id}
           >
-            Delete
+            {m.common_delete()}
           </button>
         </div>
       {/if}
@@ -254,17 +264,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       >
         <input
           type="text"
-          placeholder="Sub-collection name…"
+          placeholder={m.collections_subcollection_placeholder()}
           bind:value={newChildName}
           disabled={creatingChild}
         />
         <button type="submit" disabled={creatingChild || !newChildName.trim()}
-          >Create</button
+          >{m.common_create()}</button
         >
         <button
           type="button"
           onclick={() => (addingChildTo = null)}
-          disabled={creatingChild}>Cancel</button
+          disabled={creatingChild}>{m.common_cancel()}</button
         >
       </form>
     {/if}
@@ -281,7 +291,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>Collections</h1>
+  <h1>{m.nav_collections()}</h1>
 
   {#if actionError}
     <p class="status error" role="alert">{actionError}</p>
@@ -290,21 +300,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   <form class="inline-form" onsubmit={handleCreateTopLevel}>
     <input
       type="text"
-      placeholder="New top-level collection…"
+      placeholder={m.collections_new_top_level_placeholder()}
       bind:value={newTopLevelName}
       disabled={creatingTopLevel}
     />
     <button type="submit" disabled={creatingTopLevel || !newTopLevelName.trim()}
-      >Create</button
+      >{m.common_create()}</button
     >
   </form>
 
   {#if loading}
-    <p class="status">Loading…</p>
+    <p class="status">{m.common_loading()}</p>
   {:else if loadError}
     <p class="status error" role="alert">{loadError}</p>
   {:else if tree.length === 0}
-    <p class="status">No collections yet.</p>
+    <p class="status">{m.collections_no_collections()}</p>
   {:else}
     <ul class="tree">
       {#each tree as node (node.id)}

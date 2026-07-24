@@ -51,3 +51,33 @@ export function t(key, substitutions) {
   }
   return message;
 }
+
+// Keep this in sync with extension/_locales/ -- there's no runtime API to
+// list which locale subdirectories actually shipped (unlike enumerating
+// files on disk at build time), so this is a hand-maintained mirror of it,
+// same acknowledged limitation as the dashboard's own LANGUAGE_OPTIONS list
+// (src/routes/Settings.svelte).
+const SHIPPED_LOCALES = ["en", "fr"];
+
+/**
+ * The locale popup.html's own <html lang> should actually claim -- NOT
+ * simply browser.i18n.getUILanguage() (the browser's raw UI language),
+ * because that isn't necessarily the language t() is actually rendering.
+ * browser.i18n.getMessage() silently falls back to default_locale ("en")
+ * whenever the browser's UI language isn't one of this extension's own
+ * shipped locales (e.g. a browser set to German sees English popup text,
+ * since there's no German translation) -- claiming lang="de" over English
+ * text would be actively wrong, not just imprecise, for anything that
+ * reads the lang attribute (screen readers' pronunciation rules, browser
+ * spell-check/translate prompts). Matching only the primary subtag (the
+ * "fr" in "fr-CA") against SHIPPED_LOCALES is a close enough approximation
+ * of browser.i18n's own real locale-negotiation algorithm for a
+ * two-locale extension; it doesn't need to be exact.
+ *
+ * @returns {string}
+ */
+export function documentLanguage() {
+  const uiLanguage = browser.i18n.getUILanguage();
+  const primary = uiLanguage.split("-")[0];
+  return SHIPPED_LOCALES.includes(primary) ? primary : "en";
+}

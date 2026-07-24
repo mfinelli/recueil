@@ -23,6 +23,7 @@ import { describe, expect, it, vi } from "vitest";
 // missing key) without needing a real browser or a real _locales file
 // loaded, which jsdom has no notion of at all.
 let messages;
+let uiLanguage;
 vi.mock("webextension-polyfill", () => ({
   default: {
     i18n: {
@@ -35,11 +36,14 @@ vi.mock("webextension-polyfill", () => ({
           : [substitutions];
         return template.replace(/\$(\d)/g, (_, n) => subs[Number(n) - 1]);
       },
+      getUILanguage() {
+        return uiLanguage;
+      },
     },
   },
 }));
 
-const { t } = await import("../src/common/i18n.js");
+const { t, documentLanguage } = await import("../src/common/i18n.js");
 
 describe("t", () => {
   it("returns the looked-up message", () => {
@@ -60,5 +64,31 @@ describe("t", () => {
   it("throws on a key whose message is an empty string", () => {
     messages = { blank: "" };
     expect(() => t("blank")).toThrow(/blank/);
+  });
+});
+
+describe("documentLanguage", () => {
+  it("uses the browser's UI language when it's one of the shipped locales", () => {
+    uiLanguage = "fr";
+    expect(documentLanguage()).toBe("fr");
+  });
+
+  it("matches on the primary subtag, ignoring region", () => {
+    uiLanguage = "fr-CA";
+    expect(documentLanguage()).toBe("fr");
+  });
+
+  it("falls back to en when the UI language has no shipped translation", () => {
+    // A browser set to German sees English popup text (no de locale
+    // exists) -- this is the exact case documentLanguage() exists to get
+    // right: claiming lang="de" over English text would be wrong, not
+    // just imprecise.
+    uiLanguage = "de";
+    expect(documentLanguage()).toBe("en");
+  });
+
+  it("matches en-US to the shipped en locale", () => {
+    uiLanguage = "en-US";
+    expect(documentLanguage()).toBe("en");
   });
 });

@@ -47,6 +47,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     QueueItem,
     QueueItemListResponse,
   } from "../lib/types";
+  import { m } from "../paraglide/messages";
 
   type JobKind = "screenshot" | "readability" | "ai";
 
@@ -70,7 +71,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       items = res.items;
     } catch (err) {
       loadError =
-        err instanceof ApiError ? err.message : "failed to load queue items";
+        err instanceof ApiError ? err.message : m.queue_load_items_error();
     } finally {
       itemsLoading = false;
     }
@@ -85,7 +86,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       aiJobs = res.ai_jobs;
     } catch (err) {
       loadError =
-        err instanceof ApiError ? err.message : "failed to load failed jobs";
+        err instanceof ApiError ? err.message : m.queue_load_jobs_error();
     } finally {
       jobsLoading = false;
     }
@@ -111,7 +112,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       );
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to retry item";
+        err instanceof ApiError ? err.message : m.queue_retry_item_error();
     } finally {
       retryingItemId = null;
     }
@@ -144,7 +145,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       );
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to retry job";
+        err instanceof ApiError ? err.message : m.queue_retry_job_error();
     } finally {
       retryingJobKey = null;
     }
@@ -165,7 +166,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   <div class="job-section">
     <h3>{label}</h3>
     {#if jobs.length === 0}
-      <p class="status">Nothing failed.</p>
+      <p class="status">{m.queue_nothing_failed()}</p>
     {:else}
       <ul class="items">
         {#each jobs as job (job.id)}
@@ -175,9 +176,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                 >{job.title || job.url}</a
               >
               <span class="meta">
-                {job.attempts} attempt{job.attempts === 1 ? "" : "s"}
+                {job.attempts === 1
+                  ? m.queue_attempts_one({ count: job.attempts })
+                  : m.queue_attempts_other({ count: job.attempts })}
                 {#if job.completed_at}
-                  · last tried {formatDateTime(job.completed_at)}
+                  · {m.queue_last_tried({
+                    date: formatDateTime(job.completed_at),
+                  })}
                 {/if}
               </span>
               {#if job.error}
@@ -189,7 +194,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               onclick={() => retryJob(job, kind)}
               disabled={retryingJobKey === `${kind}:${job.id}`}
             >
-              Retry
+              {m.common_retry()}
             </button>
           </li>
         {/each}
@@ -200,7 +205,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>Queue</h1>
+  <h1>{m.nav_queue()}</h1>
 
   {#if loadError}
     <p class="status error" role="alert">{loadError}</p>
@@ -210,16 +215,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {/if}
 
   <section>
-    <h2>Failed to capture</h2>
+    <h2>{m.queue_failed_capture_heading()}</h2>
     <p class="hint">
-      URLs your devices tried and failed to archive. Retrying flags an item to
-      be picked up again on a device's next poll -- it isn't retried
-      immediately.
+      {m.queue_failed_capture_hint()}
     </p>
     {#if itemsLoading}
-      <p class="status">Loading…</p>
+      <p class="status">{m.common_loading()}</p>
     {:else if items.length === 0}
-      <p class="status">No failed items.</p>
+      <p class="status">{m.queue_no_failed_items()}</p>
     {:else}
       <ul class="items">
         {#each items as item (item.id)}
@@ -227,9 +230,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             <div class="item-info">
               <span class="url">{item.url}</span>
               <span class="meta">
-                failed · added {formatDateTime(item.created_at)}
+                {m.queue_item_status_failed()} ·
+                {m.queue_item_added_at({
+                  date: formatDateTime(item.created_at),
+                })}
                 {#if item.manual_retry}
-                  · <span class="pending-retry">retry pending</span>
+                  · <span class="pending-retry">{m.queue_retry_pending()}</span>
                 {/if}
               </span>
             </div>
@@ -238,7 +244,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               onclick={() => retryItem(item)}
               disabled={item.manual_retry || retryingItemId === item.id}
             >
-              {item.manual_retry ? "Retry queued" : "Retry"}
+              {item.manual_retry ? m.queue_retry_queued() : m.common_retry()}
             </button>
           </li>
         {/each}
@@ -247,22 +253,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   </section>
 
   <section>
-    <h2>Failed to process</h2>
+    <h2>{m.queue_failed_process_heading()}</h2>
     <p class="hint">
-      Captures that archived fine, but where a follow-up step (screenshot,
-      article extraction, or AI summary) permanently failed. Retrying tries
-      again on the backend's own next pass.
+      {m.queue_failed_process_hint()}
     </p>
     {#if jobsLoading}
-      <p class="status">Loading…</p>
+      <p class="status">{m.common_loading()}</p>
     {:else}
-      {@render jobList(screenshotJobs, "screenshot", "Screenshots")}
+      {@render jobList(
+        screenshotJobs,
+        "screenshot",
+        m.queue_screenshots_label(),
+      )}
       {@render jobList(
         readabilityJobs,
         "readability",
-        "Readability extraction",
+        m.queue_readability_label(),
       )}
-      {@render jobList(aiJobs, "ai", "AI summaries")}
+      {@render jobList(aiJobs, "ai", m.queue_ai_summaries_label())}
     {/if}
   </section>
 </main>

@@ -100,12 +100,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {/if}
 
   <section>
-    <h2>{m.settings_language_heading()}</h2>
+    <h2>{m.common_language()}</h2>
     <p class="hint">
       {m.settings_language_hint()}
     </p>
     {#if loading}
-      <p class="status">{m.settings_loading()}</p>
+      <p class="status">{m.common_loading()}</p>
     {:else}
       <select bind:value={language} onchange={handleChange} disabled={saving}>
         {#each LANGUAGE_OPTIONS as option (option.value)}

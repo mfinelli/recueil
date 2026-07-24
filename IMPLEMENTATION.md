@@ -2132,3 +2132,29 @@ design system and extension Safari packaging (explicitly punted for now).
   `./node_modules/@inlang/plugin-.../dist/index.js` — deliberately not
   Paraglide's own CLI-generated `cdn.jsdelivr.net` URLs, which fetch over the
   network on every single compile.
+- **Every dashboard screen now translated** (`Library`, `Devices`, `Queue`,
+  `Collections`, `PageDetail`, `CaptureReader`, `Login`, `Setup`, on top of the
+  `AppHeader`/`Settings` proof of concept) — `src/messages/{en,fr}.json` grew to
+  cover every authored string across all eight screens, `fr` complete
+  translations throughout, not stubs. A `common_*` prefix was introduced for
+  strings genuinely repeated verbatim across screens (`Loading…`, `Cancel`,
+  `Save`, `Username`, `Password`, `Language`, and so on) rather than duplicating
+  an identical translation under N screen-prefixed keys — `Settings.svelte`'s
+  own `settings_loading`/`settings_language_heading` were folded into
+  `common_loading`/`common_language` as part of this, since they turned out to
+  be exactly this case.
+- **Two real English/French plurals** (`{count} attempt(s)` in `Queue.svelte`,
+  `{count} sub-collection(s)` in `Collections.svelte`'s delete confirmation) —
+  handled as two independent message keys (`_one`/`_other`) selected in plain
+  JS, the same ternary the code already had, not Paraglide's ICU MessageFormat 2
+  `.match`/selector syntax. Confirmed (by inspecting real compiled output, not
+  assumed) that Paraglide does **not** auto-select between
+  `_one`/`_other`-suffixed keys by naming convention — real MF2 plural syntax
+  exists for when actual multi-language plural-rule complexity is worth the
+  added authoring complexity, which two languages and two simple counts don't
+  yet warrant.
+- **Real localized units, not passthrough abbreviations**: `PageDetail.svelte`'s
+  `formatBytes` now goes through `unit_bytes`/`unit_kilobytes`/`unit_megabytes`
+  messages — French uses `o`/`Ko`/`Mo` (octet-based), not the English `B`/`KB`/
+  `MB`, a real correctness difference this project's own established "authored
+  strings get translated" scope already implied but hadn't been applied to yet.

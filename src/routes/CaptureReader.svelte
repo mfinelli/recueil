@@ -33,6 +33,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { apiJSON, ApiError } from "../lib/api";
   import AppHeader from "../components/AppHeader.svelte";
   import type { CaptureDetail } from "../lib/types";
+  import { m } from "../paraglide/messages";
 
   let { params }: { params: { id: string } } = $props();
 
@@ -51,7 +52,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       })
       .catch((err: unknown) => {
         loadError =
-          err instanceof ApiError ? err.message : "failed to load capture";
+          err instanceof ApiError ? err.message : m.capturereader_load_error();
       })
       .finally(() => {
         loading = false;
@@ -73,23 +74,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   <AppHeader />
 
   {#if loading}
-    <p class="status">Loading…</p>
+    <p class="status">{m.common_loading()}</p>
   {:else if loadError}
     <p class="status error" role="alert">{loadError}</p>
   {:else if capture}
     <a class="back" href={`/pages/${capture.page_id}`} use:link
-      >&larr; Back to page</a
+      >&larr; {m.capturereader_back()}</a
     >
 
     <h1>{capture.title ?? capture.raw_url}</h1>
     <div class="byline">
-      <span>Captured {formatDateTime(capture.captured_at)}</span>
-      <a href={capture.raw_url} target="_blank" rel="noreferrer">Original URL</a
+      <span
+        >{m.capturereader_captured_at({
+          date: formatDateTime(capture.captured_at),
+        })}</span
+      >
+      <a href={capture.raw_url} target="_blank" rel="noreferrer"
+        >{m.capturereader_original_url()}</a
       >
       <a
         href={`/api/captures/${capture.id}/html`}
         target="_blank"
-        rel="noreferrer">View archived page</a
+        rel="noreferrer">{m.capturereader_view_archived()}</a
       >
     </div>
 
@@ -100,7 +106,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#if capture.reader_text}
       <div class="reader-text">{capture.reader_text}</div>
     {:else}
-      <p class="status">No extracted text for this capture yet.</p>
+      <p class="status">{m.capturereader_no_text()}</p>
     {/if}
   {/if}
 </main>
