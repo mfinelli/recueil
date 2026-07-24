@@ -22,6 +22,7 @@
 // into two single-purpose stores would just mean coordinating two async
 // reads instead of one for that one shared use.
 import { apiFetch, apiJSON } from "./api";
+import { setCachedLanguage } from "./locale";
 
 export interface CurrentUser {
   id: number;
@@ -67,17 +68,29 @@ export const session = new SessionState();
 // assume session.user/needsSetup already reflect reality by the time it
 // runs, with no per-route "have we checked yet" bookkeeping of its own.
 //
-// GET /auth/me and GET /setup-status run in parallel, not sequentially --
-// they're independent reads with nothing for one to gate the other on.
-// Tolerant of a failed fetch (backend unreachable, a transient network
-// error): defaults to "not logged in, setup status unknown" rather than
-// leaving sessionReady permanently rejected, which would strand the app
-// on App.svelte's loading state forever with no way to recover without a
-// manual reload.
+// GET /auth/me, GET /setup-status, and GET /settings all run in parallel,
+// not sequentially -- three independent reads with nothing for one to gate
+// another on. /settings feeds locale.ts's cache (see its own comment) so
+// Paraglide's custom-userSettings strategy already has an answer by the
+// time App.svelte mounts the Router and any component calls an m.*()
+// message function. A guest (no session yet) gets a 401 here, same as
+// /auth/me -- that's a normal, expected outcome (falls through to the
+// preferredLanguage/baseLocale strategies), not a load failure, so it's
+// not distinguished from any other failure mode below; either way the
+// cache is simply left unset.
+//
+// Tolerant of any of the three failing outright (backend unreachable, a
+// transient network error): Promise.allSettled means one rejection can't
+// stop the others from being read, and bootstrap() itself never throws --
+// worst case is "not logged in, setup status unknown, no locale
+// override," not sessionReady left permanently rejected and the app
+// stranded on App.svelte's loading state with no way to recover short of
+// a manual reload.
 async function bootstrap(): Promise<void> {
-  const [meResult, statusResult] = await Promise.allSettled([
+  const [meResult, statusResult, settingsResult] = await Promise.allSettled([
     apiFetch("/auth/me"),
     apiFetch("/setup-status"),
+    apiFetch("/settings"),
   ]);
 
   if (meResult.status === "fulfilled" && meResult.value.ok) {
@@ -86,6 +99,12 @@ async function bootstrap(): Promise<void> {
   if (statusResult.status === "fulfilled" && statusResult.value.ok) {
     const body = (await statusResult.value.json()) as { needs_setup: boolean };
     session.needsSetup = body.needs_setup;
+  }
+  if (settingsResult.status === "fulfilled" && settingsResult.value.ok) {
+    const body = (await settingsResult.value.json()) as {
+      language: string | null;
+    };
+    setCachedLanguage(body.language);
   }
 }
 

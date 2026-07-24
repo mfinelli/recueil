@@ -1562,6 +1562,62 @@ mean "no override, fall back to auto-detection once the dashboard has one."
 exists — a user's first-ever settings change is exactly as valid an operation as
 their hundredth.
 
+### 5e. Dashboard i18n (Paraglide JS)
+
+**A compiler, not a runtime library — a different choice from the extension's
+own i18n (§3k), not an inconsistency.** The extension uses the native
+WebExtensions `browser.i18n` API because that's a real platform primitive
+already built into the browser; nothing equivalent exists for arbitrary UI
+strings in a Vite-built SPA, so a library is genuinely warranted here in a way
+it wasn't there. Paraglide JS was chosen specifically because it's SvelteKit's
+own officially-recommended i18n integration. Its compile-time model (message
+keys become typed, tree-shaken functions rather than runtime dictionary lookups)
+also happens to be the closest available equivalent, in a Vite/Svelte context,
+to the "lean on a compiler/ platform primitive over a runtime abstraction"
+instinct that shaped §3k's own extension choice.
+
+**recueil is not SvelteKit, so only Paraglide's framework-agnostic Vite plugin
+applies — deliberately none of its SvelteKit-specific integration.** The
+dashboard is plain Svelte 5 + Vite + `svelte-spa-router`: a client-only SPA, no
+SSR, no file-based routing. Most of Paraglide's own SvelteKit documentation
+(URL-based locale routing, `hooks.server.ts` middleware, cookie strategies for
+first-paint SSR) solves problems this dashboard doesn't have. The plain
+`paraglideVitePlugin` (one plugin, JSON message files, typed `m.*` functions,
+`getLocale()`/`setLocale()`) is Paraglide's own documented path for exactly this
+shape of app.
+
+**Locale resolution is a custom strategy backed by `user_settings.language`, not
+any of Paraglide's built-in cookie/localStorage/URL strategies.**
+`src/lib/locale.ts` defines a `custom-userSettings` client strategy
+(`defineCustomClientStrategy`) whose `getLocale()` reads a plain in-memory cache
+— client-side custom strategies must be synchronous, so a live network call on
+every lookup was never an option — populated once by `session.svelte.ts`'s
+existing bootstrap sequence (a third parallel `GET /settings` alongside its
+`/auth/me`/`/setup-status` reads) before `App.svelte` ever mounts the Router.
+Strategy order is `["custom-userSettings", "preferredLanguage", "baseLocale"]`:
+an explicit user override wins outright; absent that, Paraglide's built-in
+`preferredLanguage` strategy reads the browser's own `navigator.languages`
+(matched against `en`/`fr`); `baseLocale` (`en`) is the final fallback. This is
+exactly the two-tier behavior sketched out when `user_settings` was first
+proposed (§5d) — explicit override, then browser-language detection.
+
+**No Svelte reactivity (runes or otherwise) around locale changes.** Paraglide's
+own `setLocale()` triggers a full page reload by default, and its own docs argue
+that's the right tradeoff for a "user picks a language once" flow rather than
+something to optimize away — this project leans into that rather than fighting
+it, since the alternative (wrapping every localized string in a `$derived` that
+reads a locale rune, just to make `m.*()` calls reactive) is real, ongoing
+boilerplate at every call site for a change that happens rarely. `locale.ts`
+actually exports its own `applyLanguageOverride()` rather than calling
+Paraglide's exported `setLocale()` directly, though, because `setLocale()`'s own
+type only accepts a concrete `Locale` — it has no way to express "clear the
+override, fall back to `preferredLanguage`/`baseLocale`," which is exactly what
+picking "Automatic" in `Settings.svelte`'s language selector needs to do.
+`Settings.svelte` itself still owns persisting the choice to the backend
+(unchanged from §5d); `applyLanguageOverride()` only updates `locale.ts`'s own
+cache and reloads — the one thing Paraglide's `setLocale()` would otherwise have
+delegated to this strategy anyway.
+
 ---
 
 ## 6. Screenshot / Thumbnail Generation

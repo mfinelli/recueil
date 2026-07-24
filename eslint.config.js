@@ -137,6 +137,7 @@ export default [
       "extension/dist/**/*",
       "extension/node_modules/**/*",
       "internal/urlnorm/clearurls-rules/**/*",
+      "src/paraglide/**/*",
     ],
   },
 ];

@@ -2110,19 +2110,25 @@ design system and extension Safari packaging (explicitly punted for now).
   as every other authenticated screen, and linked from `AppHeader`'s main nav.
   The screen's own on-page copy says outright that changing the language doesn't
   do anything visible yet, rather than leaving that silently surprising.
-
-### What's explicitly NOT built yet
-
-- **Nothing reads `user_settings.language` to actually change what the dashboard
-  renders.** No i18n library, no message catalogs, no rendered string anywhere
-  in `src/` is affected by this setting. That's the next, separate phase.
-- **No `Accept-Language`/`navigator.language` auto-detection.** Only the
-  explicit-override half of the eventual design (DESIGN.md §5d) is built; an
-  unset preference just means "no override" today, with nothing yet deciding
-  what to fall back to.
-- **`LANGUAGE_OPTIONS` in `Settings.svelte` is a small hardcoded list, not
-  fetched from anywhere.** There's no server-side registry of "languages the
-  dashboard supports" to query (unlike the extension, where the browser can
-  enumerate `_locales/` directories on its own) — this list grows by hand as
-  real dashboard translations land, mirroring how `extension/_locales/` itself
-  grew.
+- **`src/lib/locale.ts`** (new): the `custom-userSettings` client strategy.
+  `getLocale()` returns a synchronous in-memory cache (client-side custom
+  strategies can't be async); `setCachedLanguage()` populates it.
+  `applyLanguageOverride(language: string | null)` is the actual public entry
+  point `Settings.svelte` calls — deliberately not Paraglide's own exported
+  `setLocale()`, which has no way to type-safely express "clear the override"
+  (see the file's own comment). Not a Svelte rune — locale changes go through a
+  full reload (Paraglide's own recommended default), so nothing needs to
+  reactively re-render when it changes.
+- **`session.svelte.ts`**: bootstrap gained a third parallel read,
+  `GET /settings`, alongside the existing `/auth/me`/`/setup-status` — feeds
+  `locale.ts`'s cache before `App.svelte` ever mounts the Router. A guest (401)
+  is treated the same as any other bootstrap failure: the cache is just left
+  unset, falling through to `preferredLanguage`/`baseLocale`.
+- **`App.svelte`**: sets `document.documentElement.lang`/`dir` from Paraglide's
+  resolved `getLocale()`/`getTextDirection()` once `sessionReady` (and therefore
+  `locale.ts`'s cache) has settled — `index.html`'s own static `lang="en"` is
+  just a pre-resolution fallback, same relationship as the extension's
+  `popup.html` placeholder text to `popup.js`'s `t()` calls (§3k).
+  `./node_modules/@inlang/plugin-.../dist/index.js` — deliberately not
+  Paraglide's own CLI-generated `cdn.jsdelivr.net` URLs, which fetch over the
+  network on every single compile.

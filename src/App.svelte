@@ -19,9 +19,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import Router from "svelte-spa-router";
   import routes from "./lib/routes";
   import { sessionReady } from "./lib/session.svelte";
+  import { getLocale, getTextDirection } from "./paraglide/runtime";
+
+  // index.html ships a static lang="en" fallback (see its own comment) --
+  // this is the first point where the real, resolved locale is known:
+  // sessionReady only resolves once session.svelte.ts's bootstrap has
+  // populated locale.ts's cache from GET /settings, so getLocale() here
+  // already reflects the custom-userSettings/preferredLanguage/baseLocale
+  // strategy chain, not just the static fallback.
+  async function applyDocumentLocale() {
+    await sessionReady;
+    document.documentElement.lang = getLocale();
+    document.documentElement.dir = getTextDirection();
+  }
+  const documentLocaleReady = applyDocumentLocale();
 </script>
 
-{#await sessionReady}
+{#await Promise.all([sessionReady, documentLocaleReady])}
   <main class="boot">
     <p>Loading…</p>
   </main>

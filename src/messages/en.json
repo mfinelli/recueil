@@ -1,0 +1,16 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "nav_library": "Library",
+  "nav_collections": "Collections",
+  "nav_devices": "Devices",
+  "nav_queue": "Queue",
+  "settings": "Settings",
+  "sign_out": "Sign out",
+  "settings_language_heading": "Language",
+  "settings_language_hint": "Changes the dashboard's display language.",
+  "settings_loading": "Loading…",
+  "settings_saved": "Saved",
+  "settings_load_error": "failed to load settings",
+  "settings_save_error": "failed to save settings",
+  "language_option_automatic": "Automatic (browser language)"
+}

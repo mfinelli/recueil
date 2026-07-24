@@ -18,14 +18,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <!-- LANGUAGE_OPTIONS is a small hardcoded list, not fetched from the
      backend -- there's no server-side registry of "languages the
      dashboard supports" (unlike the extension's own _locales/
-     directories, which the browser can enumerate on its own). -->
+     directories, which the browser can enumerate on its own). The
+     "English"/"Français" labels are deliberately left as plain literals,
+     not run through m.*() -- a language picker conventionally shows each
+     language's own autonym regardless of the current UI language (so a
+     French-reading user still sees "English" as "English", not a
+     translation of it), so these two are invariant by design, not
+     untranslated by oversight. -->
 <script lang="ts">
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { UserSettings } from "../lib/types";
+  import { m } from "../paraglide/messages";
+  import { applyLanguageOverride } from "../lib/locale";
 
   const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
-    { value: "", label: "Automatic (browser language)" },
+    { value: "", label: m.language_option_automatic() },
     { value: "en", label: "English" },
     { value: "fr", label: "Français" },
   ];
@@ -44,7 +52,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       language = res.language ?? "";
     } catch (err) {
       loadError =
-        err instanceof ApiError ? err.message : "failed to load settings";
+        err instanceof ApiError ? err.message : m.settings_load_error();
     } finally {
       loading = false;
     }
@@ -68,9 +76,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       setTimeout(() => {
         saved = false;
       }, 2000);
+      // Persistence to the backend is already done above -- this only
+      // makes Paraglide itself pick up the change on reload. See
+      // locale.ts's own comment for why this goes through
+      // applyLanguageOverride() rather than Paraglide's own exported
+      // setLocale() (which has no way to express "clear the override").
+      applyLanguageOverride(language || null);
     } catch (err) {
       saveError =
-        err instanceof ApiError ? err.message : "failed to save settings";
+        err instanceof ApiError ? err.message : m.settings_save_error();
     } finally {
       saving = false;
     }
@@ -79,20 +93,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>Settings</h1>
+  <h1>{m.settings()}</h1>
 
   {#if loadError}
     <p class="status error" role="alert">{loadError}</p>
   {/if}
 
   <section>
-    <h2>Language</h2>
+    <h2>{m.settings_language_heading()}</h2>
     <p class="hint">
-      Doesn't change anything yet -- the dashboard doesn't support other
-      languages yet, but your preference is saved for when it does.
+      {m.settings_language_hint()}
     </p>
     {#if loading}
-      <p class="status">Loading…</p>
+      <p class="status">{m.settings_loading()}</p>
     {:else}
       <select bind:value={language} onchange={handleChange} disabled={saving}>
         {#each LANGUAGE_OPTIONS as option (option.value)}
@@ -100,7 +113,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         {/each}
       </select>
       {#if saved}
-        <span class="status success">Saved</span>
+        <span class="status success">{m.settings_saved()}</span>
       {/if}
       {#if saveError}
         <p class="status error" role="alert">{saveError}</p>

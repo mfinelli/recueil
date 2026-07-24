@@ -1,0 +1,16 @@
+{
+  "$schema": "https://inlang.com/schema/inlang-message-format",
+  "nav_library": "Bibliothèque",
+  "nav_collections": "Collections",
+  "nav_devices": "Appareils",
+  "nav_queue": "File d'attente",
+  "settings": "Paramètres",
+  "sign_out": "Se déconnecter",
+  "settings_language_heading": "Langue",
+  "settings_language_hint": "Modifie la langue d'affichage du tableau de bord.",
+  "settings_loading": "Chargement…",
+  "settings_saved": "Enregistré",
+  "settings_load_error": "échec du chargement des paramètres",
+  "settings_save_error": "échec de l'enregistrement des paramètres",
+  "language_option_automatic": "Automatique (langue du navigateur)"
+}
