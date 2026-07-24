@@ -27,6 +27,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     DeviceListResponse,
     PairingTokenResponse,
   } from "../lib/types";
+  import { m } from "../paraglide/messages";
 
   let pairingToken = $state<string | null>(null);
   let pairingTokenLoading = $state(true);
@@ -53,9 +54,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         pairingToken = null;
       } else {
         loadError =
-          err instanceof ApiError
-            ? err.message
-            : "failed to load pairing token";
+          err instanceof ApiError ? err.message : m.devices_load_token_error();
       }
     } finally {
       pairingTokenLoading = false;
@@ -69,7 +68,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       devices = res.devices;
     } catch (err) {
       loadError =
-        err instanceof ApiError ? err.message : "failed to load devices";
+        err instanceof ApiError ? err.message : m.devices_load_devices_error();
     } finally {
       devicesLoading = false;
     }
@@ -81,12 +80,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   });
 
   async function regeneratePairingToken() {
-    if (
-      pairingToken &&
-      !confirm(
-        "Generate a new pairing token? The current one will stop working for pairing new devices (already-paired devices are unaffected).",
-      )
-    ) {
+    if (pairingToken && !confirm(m.devices_regenerate_confirm())) {
       return;
     }
     regenerating = true;
@@ -99,21 +93,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       pairingToken = res.pairing_token;
     } catch (err) {
       actionError =
-        err instanceof ApiError
-          ? err.message
-          : "failed to regenerate pairing token";
+        err instanceof ApiError ? err.message : m.devices_regenerate_error();
     } finally {
       regenerating = false;
     }
   }
 
   async function revokePairingToken() {
-    if (
-      !confirm(
-        "Revoke the pairing token? No new devices can pair until you generate a new one.",
-      )
-    )
-      return;
+    if (!confirm(m.devices_revoke_token_confirm())) return;
     revokingPairing = true;
     actionError = null;
     try {
@@ -121,9 +108,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       pairingToken = null;
     } catch (err) {
       actionError =
-        err instanceof ApiError
-          ? err.message
-          : "failed to revoke pairing token";
+        err instanceof ApiError ? err.message : m.devices_revoke_token_error();
     } finally {
       revokingPairing = false;
     }
@@ -139,11 +124,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   async function revokeDevice(device: Device) {
-    if (
-      !confirm(
-        `Revoke "${device.device_name}"? It will need to be paired again to archive pages.`,
-      )
-    )
+    if (!confirm(m.devices_revoke_device_confirm({ name: device.device_name })))
       return;
     revokingDeviceId = device.id;
     actionError = null;
@@ -152,7 +133,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       devices = devices.filter((d) => d.id !== device.id);
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to revoke device";
+        err instanceof ApiError ? err.message : m.devices_revoke_device_error();
     } finally {
       revokingDeviceId = null;
     }
@@ -171,7 +152,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>Devices</h1>
+  <h1>{m.nav_devices()}</h1>
 
   {#if loadError}
     <p class="status error" role="alert">{loadError}</p>
@@ -181,23 +162,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {/if}
 
   <section>
-    <h2>Pairing token</h2>
+    <h2>{m.devices_pairing_token_heading()}</h2>
     <p class="hint">
-      Used once to pair a new device (the extension, CLI, or PWA) to your
-      account.
+      {m.devices_pairing_token_hint()}
     </p>
     {#if pairingTokenLoading}
-      <p class="status">Loading…</p>
+      <p class="status">{m.common_loading()}</p>
     {:else}
       {#if pairingToken}
         <div class="token-row">
           <code class="token">{pairingToken}</code>
           <button type="button" onclick={copyPairingToken}
-            >{copied ? "Copied!" : "Copy"}</button
+            >{copied ? m.devices_copied() : m.devices_copy()}</button
           >
         </div>
       {:else}
-        <p class="status">No pairing token yet.</p>
+        <p class="status">{m.devices_no_token()}</p>
       {/if}
       <div class="token-actions">
         <button
@@ -205,14 +185,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           onclick={regeneratePairingToken}
           disabled={regenerating}
         >
-          {pairingToken ? "Regenerate" : "Generate"}
+          {pairingToken ? m.devices_regenerate() : m.devices_generate()}
         </button>
         {#if pairingToken}
           <button
             type="button"
             class="danger"
             onclick={revokePairingToken}
-            disabled={revokingPairing}>Revoke</button
+            disabled={revokingPairing}>{m.devices_revoke()}</button
           >
         {/if}
       </div>
@@ -220,11 +200,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   </section>
 
   <section>
-    <h2>Paired devices</h2>
+    <h2>{m.devices_paired_heading()}</h2>
     {#if devicesLoading}
-      <p class="status">Loading…</p>
+      <p class="status">{m.common_loading()}</p>
     {:else if devices.length === 0}
-      <p class="status">No devices paired yet.</p>
+      <p class="status">{m.devices_no_devices()}</p>
     {:else}
       <ul class="devices">
         {#each devices as device (device.id)}
@@ -232,11 +212,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             <div class="device-info">
               <span class="name">{device.device_name}</span>
               <span class="meta">
-                {device.device_type} · paired {formatDateTime(
-                  device.created_at,
-                )} · last used {device.last_used_at
-                  ? formatDateTime(device.last_used_at)
-                  : "never"}
+                {device.device_type} ·
+                {m.devices_paired_at({
+                  date: formatDateTime(device.created_at),
+                })}
+                ·
+                {m.devices_last_used_at({
+                  value: device.last_used_at
+                    ? formatDateTime(device.last_used_at)
+                    : m.devices_never(),
+                })}
               </span>
             </div>
             <button
@@ -245,7 +230,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               onclick={() => revokeDevice(device)}
               disabled={revokingDeviceId === device.id}
             >
-              Revoke
+              {m.devices_revoke()}
             </button>
           </li>
         {/each}

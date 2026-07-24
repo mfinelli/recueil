@@ -1022,6 +1022,55 @@ reusing the backend's own checkpoint-based approach.
 
 ---
 
+### 3k. Internationalization (i18n)
+
+**The native WebExtensions i18n API, not a library.**
+`_locales/<locale> /messages.json` files, `__MSG_key__` substitution in
+`manifest.json`, `browser.i18n.getMessage()` in code — built into Chrome and
+Firefox both, zero new dependencies. This fits the project's existing bias
+against pulling in a library where a platform primitive already does the job
+(the same reasoning already applied to, e.g., not using a JWT library for bearer
+tokens, §5).
+
+**Every lookup goes through one wrapper (`src/common/i18n.js`'s `t()`), never
+`browser.i18n.getMessage()` directly from a call site.** This isn't defensive
+architecture-for-its-own-sake — it's a real answer to a real, concrete
+constraint: the native API has no supported way to select a locale other than
+the browser's own current UI language. There's no "pass a locale" parameter
+anywhere in it. If the popup ever grows a manual language override (there's no
+settings UI at all today for one to attach to, so this is speculative, not
+planned), the only way to build it is for `t()` to stop delegating to
+`browser.i18n.getMessage()` and instead fetch a specific
+`_locales/<lang>/messages.json` itself and look keys up from that — a change
+confined to one file precisely because every call site already goes through it,
+not a rearchitecture of `popup.js`.
+
+**Scope: only strings recueil itself authors are translated — never passthrough
+browser/network error text.** A raw `fetch()` failure or an HTTP response body
+is the browser's or the network's own message, not something recueil wrote;
+there's no translatable string to look up for it, and attempting to wrap it
+would either lose information or require re-authoring content that isn't ours to
+begin with. `background/queue.js`'s `describeClaimFailure` is the concrete line:
+its own three authored messages (409/410/404) are translated; the generic
+`error.message` fallback for anything else is left exactly as the
+browser/network produced it. `auth.js`'s pairing-network-error templates and
+`capture.js`'s R2-upload-error templates are a related but not-yet-converted
+case — an authored template wrapping an untranslated interpolated value (a
+network error's own message, an HTTP response body) — deferred, not
+architecturally blocked: same `t()` pattern applies whenever it's worth doing.
+
+**`en` is `default_locale`, both the fallback for missing keys in any other
+locale and the source of truth for what keys exist.** `manifest.base.json`'s own
+`name`/`description` are localized too
+(`__MSG_extName__`/`__MSG_extDescription__`), the one place the browser
+substitutes `__MSG_*__` placeholders outside of code — general extension-page
+HTML has no equivalent automatic substitution, which is why `popup.html`'s own
+static `<title>`/loading-placeholder text stays an English fallback in the
+markup itself, overwritten by `popup.js` via `t()` as the first thing it does
+once it actually runs.
+
+---
+
 ## 4. Storage Strategy
 
 - **R2 is temporary only.** It exists purely to get large payloads from the
@@ -1487,6 +1536,87 @@ expression working — otherwise the bypass silently breaks the moment a binary
 ships ahead of (or behind) the infra change. This string only needs to answer
 "is this one of our own clients," never "which version," so it's bumped only if
 its own meaning ever changes, independent of ordinary releases.
+
+### 5d. Dashboard settings (`user_settings`)
+
+**A dedicated table, not more columns on `users`.** `users` already holds
+account-identity concerns (credentials, role, the pairing token); dashboard
+preferences are a different kind of thing — user-editable, expected to grow over
+time (language today, plausibly a theme or other display preferences later), and
+with no reason to be tangled into the same row that authentication code paths
+read and write. `user_settings.user_id` is the table's own primary key, not a
+separate identity column — a genuine 1:1 extension of `users`, not a one-to-many
+relationship, so there's no reason for a settings row to have an identity
+distinct from the account it belongs to.
+
+**No row exists until a user's first `PATCH`.** There's no backfill migration
+creating a row for every existing account, and no row-creation hook on
+account-creation paths (`Setup`, `Register`, `recueil user create`) either —
+deliberately, to keep this addition fully decoupled from every one of those
+existing flows rather than touching all of them for a feature that's still
+inert. `GET /api/settings` treats "no row" and "a row with `language` explicitly
+`NULL`" as exactly the same thing: both render as `{"language": null}`, both
+mean "no override, fall back to auto-detection once the dashboard has one."
+`PATCH /api/settings` is accordingly an upsert
+(`ON CONFLICT (user_id) DO UPDATE`), not an update that assumes a row already
+exists — a user's first-ever settings change is exactly as valid an operation as
+their hundredth.
+
+### 5e. Dashboard i18n (Paraglide JS)
+
+**A compiler, not a runtime library — a different choice from the extension's
+own i18n (§3k), not an inconsistency.** The extension uses the native
+WebExtensions `browser.i18n` API because that's a real platform primitive
+already built into the browser; nothing equivalent exists for arbitrary UI
+strings in a Vite-built SPA, so a library is genuinely warranted here in a way
+it wasn't there. Paraglide JS was chosen specifically because it's SvelteKit's
+own officially-recommended i18n integration. Its compile-time model (message
+keys become typed, tree-shaken functions rather than runtime dictionary lookups)
+also happens to be the closest available equivalent, in a Vite/Svelte context,
+to the "lean on a compiler/ platform primitive over a runtime abstraction"
+instinct that shaped §3k's own extension choice.
+
+**recueil is not SvelteKit, so only Paraglide's framework-agnostic Vite plugin
+applies — deliberately none of its SvelteKit-specific integration.** The
+dashboard is plain Svelte 5 + Vite + `svelte-spa-router`: a client-only SPA, no
+SSR, no file-based routing. Most of Paraglide's own SvelteKit documentation
+(URL-based locale routing, `hooks.server.ts` middleware, cookie strategies for
+first-paint SSR) solves problems this dashboard doesn't have. The plain
+`paraglideVitePlugin` (one plugin, JSON message files, typed `m.*` functions,
+`getLocale()`/`setLocale()`) is Paraglide's own documented path for exactly this
+shape of app.
+
+**Locale resolution is a custom strategy backed by `user_settings.language`, not
+any of Paraglide's built-in cookie/localStorage/URL strategies.**
+`src/lib/locale.ts` defines a `custom-userSettings` client strategy
+(`defineCustomClientStrategy`) whose `getLocale()` reads a plain in-memory cache
+— client-side custom strategies must be synchronous, so a live network call on
+every lookup was never an option — populated once by `session.svelte.ts`'s
+existing bootstrap sequence (a third parallel `GET /settings` alongside its
+`/auth/me`/`/setup-status` reads) before `App.svelte` ever mounts the Router.
+Strategy order is `["custom-userSettings", "preferredLanguage", "baseLocale"]`:
+an explicit user override wins outright; absent that, Paraglide's built-in
+`preferredLanguage` strategy reads the browser's own `navigator.languages`
+(matched against `en`/`fr`); `baseLocale` (`en`) is the final fallback. This is
+exactly the two-tier behavior sketched out when `user_settings` was first
+proposed (§5d) — explicit override, then browser-language detection.
+
+**No Svelte reactivity (runes or otherwise) around locale changes.** Paraglide's
+own `setLocale()` triggers a full page reload by default, and its own docs argue
+that's the right tradeoff for a "user picks a language once" flow rather than
+something to optimize away — this project leans into that rather than fighting
+it, since the alternative (wrapping every localized string in a `$derived` that
+reads a locale rune, just to make `m.*()` calls reactive) is real, ongoing
+boilerplate at every call site for a change that happens rarely. `locale.ts`
+actually exports its own `applyLanguageOverride()` rather than calling
+Paraglide's exported `setLocale()` directly, though, because `setLocale()`'s own
+type only accepts a concrete `Locale` — it has no way to express "clear the
+override, fall back to `preferredLanguage`/`baseLocale`," which is exactly what
+picking "Automatic" in `Settings.svelte`'s language selector needs to do.
+`Settings.svelte` itself still owns persisting the choice to the backend
+(unchanged from §5d); `applyLanguageOverride()` only updates `locale.ts`'s own
+cache and reloads — the one thing Paraglide's `setLocale()` would otherwise have
+delegated to this strategy anyway.
 
 ---
 

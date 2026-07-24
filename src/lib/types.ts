@@ -139,6 +139,12 @@ export interface PairingTokenResponse {
   pairing_token: string;
 }
 
+// GET/PATCH /api/settings' response shape. language is null both for "no
+// row yet" and "explicitly cleared".
+export interface UserSettings {
+  language: string | null;
+}
+
 // GET /api/queue-items' item shape (only status=failed is currently
 // supported server-side -- see internal/httpapi's ListFailedQueueItems).
 // id is a client-generated UUID (queue_items.id is TEXT), not a number.

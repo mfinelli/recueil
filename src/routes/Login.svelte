@@ -19,6 +19,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { push } from "svelte-spa-router";
   import { session } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
+  import { m } from "../paraglide/messages";
 
   let username = $state("");
   let password = $state("");
@@ -33,7 +34,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       await session.login(username, password);
       await push("/");
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "login failed";
+      error = err instanceof ApiError ? err.message : m.login_error_generic();
     } finally {
       submitting = false;
     }
@@ -44,7 +45,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   <form class="card" onsubmit={handleSubmit}>
     <h1>recueil</h1>
 
-    <label for="username">Username</label>
+    <label for="username">{m.common_username()}</label>
     <input
       id="username"
       type="text"
@@ -54,7 +55,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       disabled={submitting}
     />
 
-    <label for="password">Password</label>
+    <label for="password">{m.common_password()}</label>
     <input
       id="password"
       type="password"
@@ -69,7 +70,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {/if}
 
     <button type="submit" disabled={submitting}
-      >{submitting ? "Signing in…" : "Sign in"}</button
+      >{submitting ? m.login_signing_in() : m.login_sign_in()}</button
     >
   </form>
 </main>

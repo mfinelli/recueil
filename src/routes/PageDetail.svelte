@@ -38,6 +38,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     CollectionListResponse,
     TextSearchConfigsResponse,
   } from "../lib/types";
+  import { m } from "../paraglide/messages";
 
   let { params }: { params: { id: string } } = $props();
 
@@ -79,7 +80,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         loadError =
           pageResult.reason instanceof ApiError
             ? pageResult.reason.message
-            : "failed to load page";
+            : m.pagedetail_load_error();
       }
       allCollections =
         collectionsResult.status === "fulfilled"
@@ -104,9 +105,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   function formatBytes(n: number): string {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    if (n < 1024) return m.unit_bytes({ n: String(n) });
+    if (n < 1024 * 1024) return m.unit_kilobytes({ n: (n / 1024).toFixed(1) });
+    return m.unit_megabytes({ n: (n / (1024 * 1024)).toFixed(1) });
   }
 
   async function addTag(event: SubmitEvent) {
@@ -129,7 +130,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       ].sort((a, b) => a.name.localeCompare(b.name));
       tagInput = "";
     } catch (err) {
-      actionError = err instanceof ApiError ? err.message : "failed to add tag";
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_tag_error();
     } finally {
       addingTag = false;
     }
@@ -143,7 +145,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       page.tags = page.tags.filter((t) => t.id !== tagId);
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to remove tag";
+        err instanceof ApiError ? err.message : m.pagedetail_remove_tag_error();
     }
   }
 
@@ -178,7 +180,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       selectedCollectionId = "";
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to add to collection";
+        err instanceof ApiError
+          ? err.message
+          : m.pagedetail_add_to_collection_error();
     } finally {
       addingToCollection = false;
     }
@@ -208,7 +212,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       newCollectionName = "";
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to create collection";
+        err instanceof ApiError ? err.message : m.collections_create_error();
     } finally {
       creatingCollection = false;
     }
@@ -226,7 +230,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       actionError =
         err instanceof ApiError
           ? err.message
-          : "failed to remove from collection";
+          : m.pagedetail_remove_from_collection_error();
     }
   }
 
@@ -251,9 +255,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       page.excluded_from_mirror = next;
     } catch (err) {
       actionError =
-        err instanceof ApiError
-          ? err.message
-          : "failed to update mirror setting";
+        err instanceof ApiError ? err.message : m.pagedetail_mirror_error();
     } finally {
       togglingMirror = false;
     }
@@ -274,7 +276,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       capture.language = newLanguage;
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : "failed to update language";
+        err instanceof ApiError ? err.message : m.pagedetail_language_error();
     } finally {
       savingLanguageFor = null;
     }
@@ -283,10 +285,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <a class="back" href="/" use:link>&larr; Library</a>
+  <a class="back" href="/" use:link>&larr; {m.nav_library()}</a>
 
   {#if loading}
-    <p class="status">Loading…</p>
+    <p class="status">{m.common_loading()}</p>
   {:else if loadError}
     <p class="status error" role="alert">{loadError}</p>
   {:else if page}
@@ -309,22 +311,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         disabled={togglingMirror}
         onchange={toggleExcludedFromMirror}
       />
-      Exclude from bookmark-list mirror
+      {m.pagedetail_mirror_toggle_label()}
     </label>
 
     <section>
-      <h2>Tags</h2>
+      <h2>{m.pagedetail_tags_heading()}</h2>
       <ul class="chips">
         {#each page.tags as tag (tag.id)}
           <li class:ai={tag.source === "ai"}>
             {tag.name}
             {#if tag.source === "ai"}
-              <span class="source-label">AI</span>
+              <span class="source-label">{m.pagedetail_ai_label()}</span>
             {/if}
             <button
               type="button"
               class="remove"
-              aria-label={`Remove tag ${tag.name}`}
+              aria-label={m.pagedetail_remove_tag_aria({ name: tag.name })}
               onclick={() => removeTag(tag.id)}>&times;</button
             >
           </li>
@@ -333,18 +335,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <form class="inline-form" onsubmit={addTag}>
         <input
           type="text"
-          placeholder="Add a tag…"
+          placeholder={m.pagedetail_add_tag_placeholder()}
           bind:value={tagInput}
           disabled={addingTag}
         />
         <button type="submit" disabled={addingTag || !tagInput.trim()}
-          >Add</button
+          >{m.common_add()}</button
         >
       </form>
     </section>
 
     <section>
-      <h2>Collections</h2>
+      <h2>{m.nav_collections()}</h2>
       <ul class="chips">
         {#each page.collections as collection (collection.id)}
           <li>
@@ -352,7 +354,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             <button
               type="button"
               class="remove"
-              aria-label={`Remove from ${collection.name}`}
+              aria-label={m.pagedetail_remove_from_collection_aria({
+                name: collection.name,
+              })}
               onclick={() => removeFromCollection(collection.id)}
               >&times;</button
             >
@@ -365,7 +369,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             bind:value={selectedCollectionId}
             disabled={addingToCollection}
           >
-            <option value="">Add to a collection…</option>
+            <option value=""
+              >{m.pagedetail_add_to_collection_placeholder()}</option
+            >
             {#each availableCollections(page) as collection (collection.id)}
               <option value={collection.id}>{collection.name}</option>
             {/each}
@@ -373,26 +379,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           <button
             type="submit"
             disabled={addingToCollection || selectedCollectionId === ""}
-            >Add</button
+            >{m.common_add()}</button
           >
         </form>
       {/if}
       <form class="inline-form" onsubmit={createAndAddCollection}>
         <input
           type="text"
-          placeholder="Or create a new collection…"
+          placeholder={m.pagedetail_new_collection_placeholder()}
           bind:value={newCollectionName}
           disabled={creatingCollection}
         />
         <button
           type="submit"
           disabled={creatingCollection || !newCollectionName.trim()}
-          >Create &amp; add</button
+          >{m.pagedetail_create_and_add()}</button
         >
       </form>
     </section>
 
-    <h2>Captures</h2>
+    <h2>{m.pagedetail_captures_heading()}</h2>
     <ul class="captures">
       {#each page.captures as capture (capture.id)}
         <li>
@@ -408,7 +414,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           </a>
           {#if languageOptions.length > 0}
             <label class="language-picker">
-              Language
+              {m.common_language()}
               <select
                 value={capture.language}
                 disabled={savingLanguageFor === capture.id}

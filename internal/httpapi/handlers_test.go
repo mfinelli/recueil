@@ -1309,6 +1309,140 @@ func TestGetPage(t *testing.T) {
 	})
 }
 
+func TestGetSettings(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("no row yet returns language: null, not a 404/500", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/settings", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Language *string `json:"language"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Nil(t, got.Language)
+	})
+
+	t.Run("returns a previously set language", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":"fr"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		_, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/settings", cookie)
+		var got struct {
+			Language *string `json:"language"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Language)
+		assert.Equal(t, "fr", *got.Language)
+	})
+}
+
+func TestPatchSettings(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("sets the language on first patch (no prior row)", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":"en"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Language *string `json:"language"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Language)
+		assert.Equal(t, "en", *got.Language)
+	})
+
+	t.Run("empty string clears back to null", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		setReq, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":"fr"}`))
+		require.NoError(t, err)
+		setReq.Header.Set("Content-Type", "application/json")
+		setReq.AddCookie(cookie)
+		_, err = http.DefaultClient.Do(setReq)
+		require.NoError(t, err)
+
+		clearReq, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":""}`))
+		require.NoError(t, err)
+		clearReq.Header.Set("Content-Type", "application/json")
+		clearReq.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(clearReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Language *string `json:"language"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Nil(t, got.Language)
+	})
+
+	t.Run("a malformed language tag is rejected", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":"not a language tag"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("one user's settings never affect another's", func(t *testing.T) {
+		userA := dbtest.CreateUser(t, pool, "member")
+		userB := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookieA := sessionCookieFor(t, pool, &userA)
+		cookieB := sessionCookieFor(t, pool, &userB)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":"fr"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookieA)
+		_, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/settings", cookieB)
+		var got struct {
+			Language *string `json:"language"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Nil(t, got.Language)
+	})
+}
+
 func TestPatchPage(t *testing.T) {
 	pool := dbtest.Setup(t)
 

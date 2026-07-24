@@ -18,6 +18,7 @@
 
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { paraglideVitePlugin } from "@inlang/paraglide-js";
 
 // Build output goes to dist/, embedded into the Go binary via go:embed.
 //
@@ -25,8 +26,29 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 // forwards /api (and its cookies) to the Go backend so `recueil server`
 // doesn't need rebuilding on every frontend change. Adjust the target if
 // your local backend listens somewhere other than the default.
+//
+// paraglideVitePlugin compiles messages/{locale}.json into typed,
+// tree-shakeable message functions under src/paraglide/.
+//
+// NOTE: Paraglide's own generated/documented default for the `modules`
+// array in project.inlang/settings.json points at cdn.jsdelivr.net,
+// fetching its message-format/matcher plugins over the network on every
+// single compile.  project.inlang/settings.json points at
+// ./node_modules/@inlang/plugin-{message-format,m-function-matcher}
+// instead following the advice in
+// https://github.com/opral/paraglide-js/issues/498#issuecomment-2830728989
+// for how to use real npm dependencies (pinned and lockfile-verified like
+// everything else).
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [
+    svelte(),
+    paraglideVitePlugin({
+      project: "./src/project.inlang",
+      outdir: "./src/paraglide",
+      strategy: ["custom-userSettings", "preferredLanguage", "baseLocale"],
+      emitTsDeclarations: true,
+    }),
+  ],
   server: {
     proxy: {
       "/api": {

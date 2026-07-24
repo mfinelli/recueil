@@ -49,6 +49,7 @@ import {
   clearPairingDraft,
 } from "../common/storage.js";
 import { defaultDeviceName } from "../common/device-name.js";
+import { t, documentLanguage } from "../common/i18n.js";
 
 /**
  * The shape background/auth.js's getAuthState() actually returns --
@@ -70,6 +71,14 @@ const app = /** @type {HTMLElement} */ (document.getElementById("app"));
 // it fire later and blank out whatever the new claim just set.
 let queueStatusDismissTimer = /** @type {number|undefined} */ (undefined);
 
+document.title = t("popupTitle");
+document.documentElement.lang = documentLanguage();
+// popup.html's own static markup ships an English "Loading…" placeholder
+// (see its file comment) since it has no JS of its own to localize it --
+// this is the earliest point popup.js can overwrite it.
+const loadingParagraph = app.querySelector("p");
+if (loadingParagraph) loadingParagraph.textContent = t("loading");
+
 async function main() {
   const authState = /** @type {AuthState} */ (
     await browser.runtime.sendMessage({ type: GET_AUTH_STATE })
@@ -86,7 +95,7 @@ async function renderPairingForm(errorMessage) {
   app.replaceChildren();
 
   const heading = document.createElement("h1");
-  heading.textContent = "Pair with your recueil instance";
+  heading.textContent = t("pairHeading");
   app.append(heading);
 
   const form = document.createElement("form");
@@ -102,18 +111,24 @@ async function renderPairingForm(errorMessage) {
   form.append(
     fieldLabel(
       "worker-url",
-      "Instance URL",
+      t("fieldInstanceUrl"),
       "url",
       "https://recueil.example.com",
       { value: draft.workerBaseURL },
     ),
-    fieldLabel("pairing-token", "Pairing token", "text", "", {
+    fieldLabel("pairing-token", t("fieldPairingToken"), "text", "", {
       value: draft.pairingToken,
     }),
-    fieldLabel("device-name", "Device name", "text", defaultDeviceName(), {
-      value: draft.deviceName,
-      required: false,
-    }),
+    fieldLabel(
+      "device-name",
+      t("fieldDeviceName"),
+      "text",
+      defaultDeviceName(),
+      {
+        value: draft.deviceName,
+        required: false,
+      },
+    ),
   );
 
   form.addEventListener("input", () => {
@@ -126,7 +141,7 @@ async function renderPairingForm(errorMessage) {
 
   const submitButton = document.createElement("button");
   submitButton.type = "submit";
-  submitButton.textContent = "Pair";
+  submitButton.textContent = t("pairButton");
   form.append(submitButton);
 
   const status = document.createElement("div");
@@ -174,19 +189,19 @@ async function handlePairSubmit(event, submitButton) {
   const deviceName = getInputValue("device-name") || defaultDeviceName();
 
   if (!workerBaseURL || !pairingToken) {
-    await renderPairingForm("Instance URL and pairing token are required.");
+    await renderPairingForm(t("errorUrlAndTokenRequired"));
     return;
   }
 
   try {
     new URL(workerBaseURL);
   } catch {
-    await renderPairingForm("That doesn't look like a valid URL.");
+    await renderPairingForm(t("errorInvalidUrl"));
     return;
   }
 
   submitButton.disabled = true;
-  submitButton.textContent = "Pairing…";
+  submitButton.textContent = t("pairButtonPairing");
 
   try {
     // Requesting <all_urls> here, not just originPattern, is deliberate --
@@ -203,9 +218,7 @@ async function handlePairSubmit(event, submitButton) {
       origins: ["<all_urls>"],
     });
     if (!granted) {
-      await renderPairingForm(
-        "recueil needs permission to talk to your instance to pair -- please allow it and try again.",
-      );
+      await renderPairingForm(t("errorPermissionDenied"));
       return;
     }
 
@@ -235,13 +248,16 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   heading.append(document.createTextNode("recueil"));
   const statusSub = document.createElement("span");
   statusSub.className = "sub";
-  statusSub.textContent = "paired · self-hosted";
+  statusSub.textContent = t("pairedStatusSub");
   heading.append(statusSub);
   app.append(heading);
 
   const info = document.createElement("dl");
   info.className = "paired-info";
-  info.append(dtdd("Instance", workerBaseURL), dtdd("This device", deviceName));
+  info.append(
+    dtdd(t("labelInstance"), workerBaseURL),
+    dtdd(t("labelThisDevice"), deviceName),
+  );
   app.append(info);
 
   const captureBlock = document.createElement("div");
@@ -250,7 +266,7 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   const captureButton = document.createElement("button");
   captureButton.type = "button";
   captureButton.className = "capture-button";
-  captureButton.textContent = "Save this page";
+  captureButton.textContent = t("captureButton");
   captureButton.addEventListener("click", () =>
     handleCaptureClick(captureButton),
   );
@@ -273,7 +289,7 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   const unpairLink = document.createElement("a");
   unpairLink.href = "#";
   unpairLink.className = "unpair-link";
-  unpairLink.textContent = "Forget this device";
+  unpairLink.textContent = t("unpairLink");
   unpairLink.addEventListener("click", async (event) => {
     event.preventDefault();
     await browser.runtime.sendMessage({ type: UNPAIR_DEVICE });
@@ -296,11 +312,11 @@ function renderQueueSection() {
   list.id = "queue-list";
 
   const heading = document.createElement("h2");
-  heading.textContent = "Queue";
+  heading.textContent = t("queueHeading");
   const refreshButton = document.createElement("button");
   refreshButton.type = "button";
   refreshButton.className = "queue-refresh";
-  refreshButton.textContent = "↻ Refresh";
+  refreshButton.textContent = t("queueRefresh");
   refreshButton.addEventListener("click", () =>
     handleRefreshQueueClick(refreshButton, list),
   );
@@ -329,7 +345,7 @@ function renderQueueItems(list, items) {
   if (items.length === 0) {
     const empty = document.createElement("li");
     empty.className = "queue-empty";
-    empty.textContent = "Nothing in the queue.";
+    empty.textContent = t("queueEmpty");
     list.append(empty);
     return;
   }
@@ -382,14 +398,14 @@ async function handleQueueItemClick(itemId, itemElement, list) {
   clearTimeout(queueStatusDismissTimer);
   itemElement.classList.add("queue-item--claiming");
   status.className = "status status--pending-plain";
-  status.textContent = "Claiming…";
+  status.textContent = t("queueClaiming");
 
   try {
     await browser.runtime.sendMessage({
       type: CLAIM_QUEUE_ITEM,
       payload: { itemId },
     });
-    showAutoDismissingSuccess(status, "Opened in a new tab");
+    showAutoDismissingSuccess(status, t("queueOpenedNewTab"));
   } catch (error) {
     status.className = "status status--error";
     status.textContent = error instanceof Error ? error.message : String(error);
@@ -451,7 +467,7 @@ function renderBookmarkSyncSection() {
 
   const label = document.createElement("label");
   const labelText = document.createElement("span");
-  labelText.textContent = "Sync archived pages to bookmarks";
+  labelText.textContent = t("bookmarkSyncLabel");
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.id = "bookmark-sync-toggle";
@@ -497,7 +513,7 @@ async function handleBookmarkSyncToggle(checkbox, status) {
       if (!granted) {
         checkbox.checked = false;
         status.className = "status status--error";
-        status.textContent = "Permission was not granted.";
+        status.textContent = t("bookmarkSyncPermissionDenied");
         return;
       }
       await browser.runtime.sendMessage({ type: ENABLE_BOOKMARK_SYNC });
@@ -528,12 +544,12 @@ async function handleCaptureClick(captureButton) {
   );
   captureButton.disabled = true;
   status.className = "status status--pending";
-  status.textContent = "Capturing…";
+  status.textContent = t("capturing");
 
   try {
     await browser.runtime.sendMessage({ type: CAPTURE_ACTIVE_TAB });
     status.className = "status status--success";
-    status.textContent = "Saved";
+    status.textContent = t("captureSaved");
   } catch (error) {
     status.className = "status status--error";
     status.textContent = error instanceof Error ? error.message : String(error);

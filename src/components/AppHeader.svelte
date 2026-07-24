@@ -18,6 +18,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
   import { session } from "../lib/session.svelte";
+  import { m } from "../paraglide/messages";
 
   async function handleLogout() {
     await session.logout();
@@ -29,16 +30,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   <div class="brand">
     <a href="/" use:link>recueil</a>
     <nav>
-      <a href="/" use:link>Library</a>
-      <a href="/collections" use:link>Collections</a>
-      <a href="/devices" use:link>Devices</a>
-      <a href="/queue" use:link>Queue</a>
+      <a href="/" use:link>{m.nav_library()}</a>
+      <a href="/collections" use:link>{m.nav_collections()}</a>
+      <a href="/devices" use:link>{m.nav_devices()}</a>
+      <a href="/queue" use:link>{m.nav_queue()}</a>
+      <a href="/settings" use:link>{m.settings()}</a>
     </nav>
   </div>
   {#if session.user}
     <div class="account">
       <span>{session.user.username}</span>
-      <button onclick={handleLogout}>Sign out</button>
+      <button onclick={handleLogout}>{m.sign_out()}</button>
     </div>
   {/if}
 </header>

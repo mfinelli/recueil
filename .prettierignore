@@ -1,2 +1,4 @@
 /pnpm-lock.yaml
 /internal/urlnorm/clearurls-rules
+/src/project.inlang/*
+!/src/project.inlang/settings.json

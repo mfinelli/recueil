@@ -57,6 +57,24 @@ vi.mock("webextension-polyfill", () => ({
     tabs: {
       create: (...args) => tabsCreateMock(...args),
     },
+    // Real English strings, not a stub -- queue.js's describeClaimFailure
+    // is what this file's own 409/410/404 tests exercise, so this needs to
+    // resolve to the actual copy, not just something t() to prove it was
+    // called. i18n.test.js covers t()'s own lookup/substitution/missing-key
+    // contract in isolation; this only needs enough to not throw.
+    i18n: {
+      getMessage(key) {
+        return (
+          {
+            queueClaimConflict:
+              "recueil: this item is already being worked on from another device",
+            queueClaimGone:
+              "recueil: this item has already been captured (or permanently failed)",
+            queueClaimNotFound: "recueil: this item no longer exists",
+          }[key] ?? ""
+        );
+      },
+    },
   },
 }));
 

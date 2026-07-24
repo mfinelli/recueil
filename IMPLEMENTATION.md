@@ -2063,3 +2063,98 @@ restore Postgres, untar the archive backup into a fresh volume, then run
 
 Not touched this round, still open from earlier phases: the dashboard's visual
 design system and extension Safari packaging (explicitly punted for now).
+
+## Phase 10 (i18n infrastructure)
+
+### What exists now
+
+- **`extension/_locales/en/messages.json`** (default) and
+  **`extension/_locales/fr/messages.json`** — the WebExtensions i18n message
+  catalogs. `fr` is a real, complete translation, not a stub, specifically so
+  the pipeline gets proven against real substitution/layout behavior, not just
+  file-copying.
+- **`manifest.base.json`**: `name`/`description` switched to
+  `__MSG_extName__`/`__MSG_extDescription__`, `default_locale: "en"` added — the
+  one place the browser substitutes `__MSG_*__` placeholders outside of
+  application code.
+- **`popup.html`/`popup.js`**: every user-facing string (headings, field labels,
+  button text/states, status messages, the empty-queue message) now goes through
+  `t()`. `popup.html`'s static `<title>`/"Loading…" placeholder text stays an
+  English fallback in the markup itself (general extension-page HTML has no
+  `__MSG_*__` auto-substitution, unlike `manifest.json`) — `popup.js` overwrites
+  both from the current locale as the very first thing it does once it runs.
+- **`migrations/00010_create_user_settings.sql`**: new `user_settings` table,
+  `user_id` itself as the primary key (a 1:1 extension of `users`, not a
+  one-to-many table), a single nullable `language TEXT` column. No `CHECK`
+  constraint, unlike every other small-fixed-enum column in this schema — see
+  the migration's own comment and DESIGN.md §5d for why: the supported-language
+  set is expected to grow as translations are added, unlike a genuinely fixed
+  set like `role`.
+- **`internal/httpapi`**: `GET`/`PATCH /api/settings`, both session-protected
+  and self-scoped (no cross-user concept here at all, same as pairing-token/
+  device management). `GetSettings` treats "no row" and "a row with `language`
+  explicitly `NULL`" identically — both respond `{"language": null}`.
+  `PatchSettings` takes a full-replacement request body (`{"language": "fr"}` to
+  set, `{"language": ""}` to clear back to `NULL`) rather than `PatchPage`'s
+  per-field-pointer pattern — see DESIGN.md §5d for why that's the right call
+  for a single-field endpoint today, and the explicit note that it's worth
+  revisiting once (not before) a second setting actually lands. Validates the
+  submitted value against a shape-only regexp (`^[a-z]{2,3}(-[A-Z]{2})?$`), not
+  a maintained allowlist — a `textOrNull`/`textOrNil` pair (package-local twins
+  of `internal/ingest`'s and the existing `textOrNil`, respectively) handles the
+  empty-string-means-NULL conversion in both directions.
+- **Dashboard**: `src/lib/types.ts` gained `UserSettings`; a new
+  `src/routes/Settings.svelte` (loads current settings, a `<select>` with a
+  small hardcoded `LANGUAGE_OPTIONS` list — "Automatic," `en`, `fr` — that saves
+  on change) wired into `src/lib/routes.ts` under the same `requireAuth` guard
+  as every other authenticated screen, and linked from `AppHeader`'s main nav.
+  The screen's own on-page copy says outright that changing the language doesn't
+  do anything visible yet, rather than leaving that silently surprising.
+- **`src/lib/locale.ts`** (new): the `custom-userSettings` client strategy.
+  `getLocale()` returns a synchronous in-memory cache (client-side custom
+  strategies can't be async); `setCachedLanguage()` populates it.
+  `applyLanguageOverride(language: string | null)` is the actual public entry
+  point `Settings.svelte` calls — deliberately not Paraglide's own exported
+  `setLocale()`, which has no way to type-safely express "clear the override"
+  (see the file's own comment). Not a Svelte rune — locale changes go through a
+  full reload (Paraglide's own recommended default), so nothing needs to
+  reactively re-render when it changes.
+- **`session.svelte.ts`**: bootstrap gained a third parallel read,
+  `GET /settings`, alongside the existing `/auth/me`/`/setup-status` — feeds
+  `locale.ts`'s cache before `App.svelte` ever mounts the Router. A guest (401)
+  is treated the same as any other bootstrap failure: the cache is just left
+  unset, falling through to `preferredLanguage`/`baseLocale`.
+- **`App.svelte`**: sets `document.documentElement.lang`/`dir` from Paraglide's
+  resolved `getLocale()`/`getTextDirection()` once `sessionReady` (and therefore
+  `locale.ts`'s cache) has settled — `index.html`'s own static `lang="en"` is
+  just a pre-resolution fallback, same relationship as the extension's
+  `popup.html` placeholder text to `popup.js`'s `t()` calls (§3k).
+  `./node_modules/@inlang/plugin-.../dist/index.js` — deliberately not
+  Paraglide's own CLI-generated `cdn.jsdelivr.net` URLs, which fetch over the
+  network on every single compile.
+- **Every dashboard screen now translated** (`Library`, `Devices`, `Queue`,
+  `Collections`, `PageDetail`, `CaptureReader`, `Login`, `Setup`, on top of the
+  `AppHeader`/`Settings` proof of concept) — `src/messages/{en,fr}.json` grew to
+  cover every authored string across all eight screens, `fr` complete
+  translations throughout, not stubs. A `common_*` prefix was introduced for
+  strings genuinely repeated verbatim across screens (`Loading…`, `Cancel`,
+  `Save`, `Username`, `Password`, `Language`, and so on) rather than duplicating
+  an identical translation under N screen-prefixed keys — `Settings.svelte`'s
+  own `settings_loading`/`settings_language_heading` were folded into
+  `common_loading`/`common_language` as part of this, since they turned out to
+  be exactly this case.
+- **Two real English/French plurals** (`{count} attempt(s)` in `Queue.svelte`,
+  `{count} sub-collection(s)` in `Collections.svelte`'s delete confirmation) —
+  handled as two independent message keys (`_one`/`_other`) selected in plain
+  JS, the same ternary the code already had, not Paraglide's ICU MessageFormat 2
+  `.match`/selector syntax. Confirmed (by inspecting real compiled output, not
+  assumed) that Paraglide does **not** auto-select between
+  `_one`/`_other`-suffixed keys by naming convention — real MF2 plural syntax
+  exists for when actual multi-language plural-rule complexity is worth the
+  added authoring complexity, which two languages and two simple counts don't
+  yet warrant.
+- **Real localized units, not passthrough abbreviations**: `PageDetail.svelte`'s
+  `formatBytes` now goes through `unit_bytes`/`unit_kilobytes`/`unit_megabytes`
+  messages — French uses `o`/`Ko`/`Mo` (octet-based), not the English `B`/`KB`/
+  `MB`, a real correctness difference this project's own established "authored
+  strings get translated" scope already implied but hadn't been applied to yet.

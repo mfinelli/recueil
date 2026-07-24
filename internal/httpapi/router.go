@@ -18,7 +18,8 @@
 
 // Package httpapi is the dashboard-facing HTTP API: registration, login,
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
-// /api/auth/me, session-protected pairing-token management
+// /api/auth/me, session-protected dashboard settings (GET/PATCH
+// /api/settings), session-protected pairing-token management
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
 // strictly self-scoped -- see ListDevices' own doc comment for why
 // cross-user device management isn't a web capability here),
@@ -126,6 +127,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireSession(q))
 			r.Get("/auth/me", s.Me)
+			r.Get("/settings", s.GetSettings)
+			r.Patch("/settings", s.PatchSettings)
 			r.Get("/pairing-token", s.GetPairingToken)
 			r.Post("/pairing-token/regenerate", s.RegeneratePairingToken)
 			r.Delete("/pairing-token", s.RevokePairingToken)

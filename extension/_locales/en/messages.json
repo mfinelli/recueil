@@ -1,0 +1,122 @@
+{
+  "extName": {
+    "message": "recueil",
+    "description": "Extension name, shown in the browser toolbar/extensions page."
+  },
+  "extDescription": {
+    "message": "Capture and archive pages to your self-hosted recueil instance",
+    "description": "Extension description, shown on the browser extensions page/store listing."
+  },
+  "popupTitle": {
+    "message": "recueil",
+    "description": "<title> of the popup document."
+  },
+  "loading": {
+    "message": "Loading…",
+    "description": "Shown briefly while the popup determines pairing state."
+  },
+  "pairHeading": {
+    "message": "Pair with your recueil instance",
+    "description": "Heading on the pairing form."
+  },
+  "fieldInstanceUrl": {
+    "message": "Instance URL",
+    "description": "Label for the pairing form's Worker URL field."
+  },
+  "fieldPairingToken": {
+    "message": "Pairing token",
+    "description": "Label for the pairing form's pairing token field."
+  },
+  "fieldDeviceName": {
+    "message": "Device name",
+    "description": "Label for the pairing form's (optional) device name field."
+  },
+  "pairButton": {
+    "message": "Pair",
+    "description": "Submit button on the pairing form, idle state."
+  },
+  "pairButtonPairing": {
+    "message": "Pairing…",
+    "description": "Submit button on the pairing form, while the pair request is in flight."
+  },
+  "errorUrlAndTokenRequired": {
+    "message": "Instance URL and pairing token are required.",
+    "description": "Validation error when either required pairing field is left blank."
+  },
+  "errorInvalidUrl": {
+    "message": "That doesn't look like a valid URL.",
+    "description": "Validation error when the instance URL field doesn't parse as a URL."
+  },
+  "errorPermissionDenied": {
+    "message": "recueil needs permission to talk to your instance to pair — please allow it and try again.",
+    "description": "Shown when the browser's <all_urls> permission prompt is denied during pairing."
+  },
+  "pairedStatusSub": {
+    "message": "paired · self-hosted",
+    "description": "Small subtitle next to the heading once paired."
+  },
+  "labelInstance": {
+    "message": "Instance",
+    "description": "Label for the paired instance's URL in the paired-view info list."
+  },
+  "labelThisDevice": {
+    "message": "This device",
+    "description": "Label for this device's name in the paired-view info list."
+  },
+  "captureButton": {
+    "message": "Save this page",
+    "description": "Button that captures the current tab."
+  },
+  "capturing": {
+    "message": "Capturing…",
+    "description": "Capture button status while a capture is in progress."
+  },
+  "captureSaved": {
+    "message": "Saved",
+    "description": "Capture button status after a successful capture."
+  },
+  "unpairLink": {
+    "message": "Forget this device",
+    "description": "Link that unpairs this device from the recueil instance."
+  },
+  "queueHeading": {
+    "message": "Queue",
+    "description": "Heading for the queue section of the paired view."
+  },
+  "queueRefresh": {
+    "message": "↻ Refresh",
+    "description": "Manual refresh button for the queue list."
+  },
+  "queueEmpty": {
+    "message": "Nothing in the queue.",
+    "description": "Shown in place of the queue list when there are no pending items."
+  },
+  "queueClaiming": {
+    "message": "Claiming…",
+    "description": "Status shown while a queue item claim request is in flight."
+  },
+  "queueOpenedNewTab": {
+    "message": "Opened in a new tab",
+    "description": "Status shown after successfully claiming a queue item."
+  },
+  "queueClaimConflict": {
+    "message": "recueil: this item is already being worked on from another device",
+    "description": "Claim failure: the item is actively claimed by another device (HTTP 409)."
+  },
+  "queueClaimGone": {
+    "message": "recueil: this item has already been captured (or permanently failed)",
+    "description": "Claim failure: the item is in a terminal state (HTTP 410)."
+  },
+  "queueClaimNotFound": {
+    "message": "recueil: this item no longer exists",
+    "description": "Claim failure: the item doesn't exist, or belongs to another user (HTTP 404)."
+  },
+  "bookmarkSyncLabel": {
+    "message": "Sync archived pages to bookmarks",
+    "description": "Label for the bookmark-sync toggle checkbox."
+  },
+  "bookmarkSyncPermissionDenied": {
+    "message": "Permission was not granted.",
+    "description": "Shown when the browser's bookmarks permission prompt is denied."
+  }
+}

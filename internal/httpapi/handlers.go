@@ -26,6 +26,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -420,6 +421,92 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type userSettingsResponse struct {
+	// Pointer, not a plain string -- nil renders as JSON null, distinct
+	// from an explicit empty-string language, matching textOrNil's own
+	// convention elsewhere in this file (title/favicon_path/etc.).
+	Language *string `json:"language"`
+}
+
+func userSettingsResponseFromSettings(s *db.UserSetting) userSettingsResponse {
+	return userSettingsResponse{Language: textOrNil(s.Language)}
+}
+
+// GET /api/settings: the calling user's dashboard preferences. A user who
+// has never PATCHed their settings has no row in user_settings at all (see
+// UpsertUserSettings's own doc comment for why there's no row-per-user
+// backfill) -- that's treated identically to a row that exists with
+// language explicitly NULL, both rendering as {"language": null}, since
+// from the API's point of view "never set" and "explicitly cleared" mean
+// the same thing: no override, fall back to auto-detection once the
+// dashboard actually has one.
+func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	settings, err := s.Queries.GetUserSettings(r.Context(), user.ID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusOK, userSettingsResponse{})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, userSettingsResponseFromSettings(&settings))
+}
+
+// A shape check, not a fixed enum -- this only rejects values that couldn't
+// possibly be a real language tag, not values that aren't (yet) translated.
+var languageTagPattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Z]{2})?$`)
+
+type patchSettingsRequest struct {
+	// Not a pointer, unlike patchPageRequest's per-field pointers -- this
+	// endpoint has exactly one field today, so there's no "which fields
+	// were provided" question a pointer would answer. An empty string
+	// clears the override back to NULL/auto-detect; anything else must
+	// match languageTagPattern. If a second setting is ever added here,
+	// this request shape (and PatchPage's pointer pattern) is the thing to
+	// revisit then, not before.
+	Language string `json:"language"`
+}
+
+// PATCH /api/settings: full-replace semantics for the language field (see
+// patchSettingsRequest's own doc comment). Upserts rather than requiring a
+// prior GET/row to exist -- a user's very first settings change is exactly
+// as valid as their hundredth.
+func (s *Server) PatchSettings(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	req, err := decodeJSON[patchSettingsRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Language != "" && !languageTagPattern.MatchString(req.Language) {
+		writeError(w, http.StatusBadRequest, "invalid language tag")
+		return
+	}
+
+	settings, err := s.Queries.UpsertUserSettings(r.Context(), db.UpsertUserSettingsParams{
+		UserID: user.ID, Language: textOrNull(req.Language),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, userSettingsResponseFromSettings(&settings))
+}
+
 type queueItemListResponse struct {
 	Items []queueitems.Item `json:"items"`
 }
@@ -676,6 +763,15 @@ func textOrNil(t pgtype.Text) *string {
 		return nil
 	}
 	return &t.String
+}
+
+// textOrNull is textOrNil's inverse -- internal/ingest has its own
+// identically-named, identically-shaped helper, but that one's unexported
+// in a different package, so this is a deliberate package-local twin, not
+// a shared dependency. An empty string is treated as "not set" (NULL),
+// same convention as ingest's use of it for title.
+func textOrNull(s string) pgtype.Text {
+	return pgtype.Text{String: s, Valid: s != ""}
 }
 
 type pageResponse struct {

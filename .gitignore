@@ -4,6 +4,7 @@
 /internal/db/*
 /node_modules/*
 /recueil
+/src/paraglide/*
 /terraform/*.tfstate*
 /terraform/.terraform*
 /terraform/node_modules/*
