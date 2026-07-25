@@ -101,5 +101,5 @@ func Generate(name string) string {
 // output (which always already satisfies this by construction, empty
 // string aside).
 func Valid(s string) bool {
-	return len(s) > 0 && len(s) <= MaxLength && validPattern.MatchString(s)
+	return s != "" && len(s) <= MaxLength && validPattern.MatchString(s)
 }

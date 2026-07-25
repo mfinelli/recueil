@@ -1531,10 +1531,10 @@ func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	slug := chi.URLParam(r, "slug")
+	tagSlug := chi.URLParam(r, "slug")
 	ctx := r.Context()
 
-	tag, err := s.Queries.GetTagBySlug(ctx, db.GetTagBySlugParams{Slug: slug, UserID: user.ID})
+	tag, err := s.Queries.GetTagBySlug(ctx, db.GetTagBySlugParams{Slug: tagSlug, UserID: user.ID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "tag not found")
 		return
@@ -1643,8 +1643,8 @@ func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := make([]collectionResponse, 0, len(rows))
-	for _, c := range rows {
-		resp = append(resp, collectionResponseFromCollection(&c))
+	for i := range rows {
+		resp = append(resp, collectionResponseFromCollection(&rows[i]))
 	}
 	writeJSON(w, http.StatusOK, map[string][]collectionResponse{"collections": resp})
 }
