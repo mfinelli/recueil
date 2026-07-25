@@ -2663,7 +2663,11 @@ CREATE TABLE tags (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
   name TEXT NOT NULL,
-  UNIQUE (user_id, name)
+  slug TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, name),
+  UNIQUE (user_id, slug)
 );
 
 -- Tags live on pages, not captures: tags describe the subject matter of
@@ -2679,7 +2683,12 @@ CREATE TABLE page_tags (
 -- Nested collections. Adjacency list (parent_id self-reference) rather
 -- than a closure table: simpler writes, and at this project's scale a
 -- recursive CTE for "this collection and all descendants" is fast enough
--- that a closure table's extra write-complexity isn't justified.
+-- that a closure table's extra write-complexity isn't justified. (That
+-- recursive-descendant capability has never actually been needed:
+-- CollectionDetail deliberately shows only a collection's own direct
+-- pages plus its sub-collections as links, not a subtree rollup -- see
+-- §13a. If that changes, this adjacency-list choice is exactly why it'd
+-- still be cheap to add.)
 --
 -- Uniqueness is per (user_id, parent_id, name), but that can't be a
 -- single UNIQUE table constraint: parent_id is nullable for top-level
@@ -2689,18 +2698,30 @@ CREATE TABLE page_tags (
 -- partial unique indexes instead (implemented in Phase 6, replacing an
 -- earlier revision of this section that had the single-constraint bug
 -- above) -- one per case, since each is a normal (non-NULL) unique check
--- within its own partition.
+-- within its own partition. slug (added alongside description/timestamps
+-- in the tags/collections slug work) gets the identical treatment, for
+-- the identical reason: two more partial indexes, not folded into the
+-- existing two as a compound (name, slug) pair -- a name collision and a
+-- slug collision should each surface as their own distinct conflict, not
+-- an ambiguous "the pair wasn't unique" error.
 CREATE TABLE collections (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
   parent_id BIGINT REFERENCES collections(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  slug TEXT NOT NULL,
+  description TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX collections_user_id_name_top_level_key
   ON collections(user_id, name) WHERE parent_id IS NULL;
+CREATE UNIQUE INDEX collections_user_id_slug_top_level_key
+  ON collections(user_id, slug) WHERE parent_id IS NULL;
 CREATE UNIQUE INDEX collections_user_id_parent_id_name_key
   ON collections(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
+CREATE UNIQUE INDEX collections_user_id_parent_id_slug_key
+  ON collections(user_id, parent_id, slug) WHERE parent_id IS NOT NULL;
 CREATE INDEX idx_collections_parent ON collections(parent_id);
 
 -- A page may be in zero, one, or many collections. Deleting a collection
