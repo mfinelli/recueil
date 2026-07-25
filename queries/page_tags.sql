@@ -31,3 +31,12 @@ ORDER BY tags.name;
 
 -- name: RemovePageTag :exec
 DELETE FROM page_tags WHERE page_id = $1 AND tag_id = $2;
+
+-- name: ListTagPages :many
+-- Pages carrying a given tag, most recently captured first -- same
+-- ordering as ListCollectionPages and the library view's own default.
+SELECT pages.*
+FROM page_tags
+JOIN pages ON pages.id = page_tags.page_id
+WHERE page_tags.tag_id = $1
+ORDER BY pages.latest_capture_at DESC;

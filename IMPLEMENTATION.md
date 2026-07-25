@@ -2158,3 +2158,117 @@ design system and extension Safari packaging (explicitly punted for now).
   messages — French uses `o`/`Ko`/`Mo` (octet-based), not the English `B`/`KB`/
   `MB`, a real correctness difference this project's own established "authored
   strings get translated" scope already implied but hadn't been applied to yet.
+
+## Phase 11 (tag/collection slugs and browsable detail pages)
+
+### Schema
+
+`tags` and `collections` both gained `slug TEXT NOT NULL` (independently unique,
+not derived at read time — see §10's own updated comment) and
+`created_at`/`updated_at`; `collections` also gained `description TEXT`
+(nullable, tags stay lightweight and don't get one). `collections`' slug
+uniqueness is scoped identically to its existing name uniqueness: two more
+partial unique indexes (top-level vs. nested), not folded into a compound
+`(name, slug)` pair, so a name collision and a slug collision each surface as
+their own distinct conflict rather than an ambiguous "the pair wasn't unique"
+error.
+
+### `internal/slug`: generation and validation
+
+A new small package, `Generate(name string) string` and `Valid(s string) bool`.
+`Generate` is NFKD-decompose, strip Unicode combining marks (so "café" → "cafe",
+not "café" verbatim), lowercase, collapse runs of non-`[a-z0-9]` characters to a
+single hyphen, trim, cap at 63 chars (the conventional DNS-label length).
+Intentionally **not** a transliteration/ romanization system: a name with no
+Latin skeleton at all — pure CJK, Cyrillic, emoji — decomposes to nothing and
+`Generate` returns `""`; callers must treat that as "couldn't auto-generate,"
+not silently store an empty slug. A matching `src/lib/slugPreview.ts` mirrors
+the same algorithm in JS (`String.prototype.normalize("NFKD")` + `\p{M}`
+stripping) for the dashboard's live "URL will be..." preview; it's explicitly
+documented as a best-effort preview, not the source of truth — the backend
+always computes and validates the real slug on save, and the two implementations
+are allowed to drift on edge cases (no length cap client-side, for one) since a
+live preview only needs to be close, not exact.
+
+### Conflict policy: explicit creation vs. implicit/AI creation
+
+Two different rules, by design, not two accidentally-inconsistent ones:
+
+- **Explicit actions with a form behind them** (the dashboard's tag rename,
+  collection create/rename) get a flat `409` on any name-or-slug collision, no
+  auto-suffixing. A person sees the conflict and picks something else —
+  auto-appending `-2` was considered and explicitly rejected, since it would
+  silently give someone a slug they never chose.
+- **Implicit/background creation with no form to show a conflict in**
+  (`AddPageTag`'s quick "add tag to page" flow, and the AI enrichment job)
+  needed a different answer, and the two ended up different from each other too:
+  `AddPageTag` still surfaces a `409` (a person did click something, even if
+  there's no slug field in that particular quick-add UI yet), while the AI job
+  silently skips a suggested tag whose slug collides, logs a warning, and moves
+  on to the next suggestion — consistent with the pre-existing precedent that an
+  AI-suggested tag colliding with an existing one _by name_ was already a silent
+  no-op (`AddPageTag`'s own `ON CONFLICT DO NOTHING`).
+- **`UpsertTag`'s `ON CONFLICT (user_id, name) DO UPDATE`** absorbs the ordinary
+  "tag already exists" path with no error at all; the _only_ error it can return
+  is the separate `(user_id, slug)` constraint firing for a genuinely new tag
+  name whose candidate slug collides with some other, differently-named tag's.
+  That fact is what makes the manual/AI split above safe to implement as "treat
+  any error as the collision" on the manual side.
+
+### Tag rename/delete and the pages-for-a-tag endpoint
+
+`RenameTag` (`PATCH /api/tags/{id}`) and `DeleteTag` (`DELETE /api/tags/{id}`)
+are new — tags previously had no way to be renamed or deleted at all, only
+created implicitly through `AddPageTag`/the AI job. `DeleteTag` cascades to
+`page_tags` via the schema's existing `ON DELETE CASCADE`, same shape as
+`DeleteCollection`. `GetTagBySlug` and `ListTagPages`
+(`GET /api/tags/{slug}/pages`, response `{tag, pages}`) back the new `TagDetail`
+dashboard screen — keyed by slug, not id, since this is the browsable URL a
+person actually sees and might bookmark; `RenameTag`/ `DeleteTag` stay id-keyed
+since those are internal API calls that never appear in an address bar.
+
+### Frontend: `PageList` extraction, `Tags`/`TagDetail`, `CollectionDetail`
+
+- **`src/components/PageList.svelte`** (new): the list/grid rendering, view-
+  mode toggle (and its `localStorage` persistence), and favicon/thumbnail
+  broken-image fallback, extracted out of `Library.svelte` so `TagDetail`/
+  `CollectionDetail` can reuse it instead of re-implementing the same markup.
+  Its own test file (`PageList.test.ts`) picked up the view-mode/fallback tests
+  that used to live in `Library.test.ts` (moved, not duplicated), plus one
+  genuinely new case: resetting stale broken-image state when the `pages` prop
+  changes identity — dead code as far as `Library`'s own usage goes (it fully
+  remounts `PageList` on every reload), but real once
+  `TagDetail`/`CollectionDetail` reuse the component without remounting on every
+  navigation.
+- **`src/routes/Tags.svelte`** (new): flat list (tags have no hierarchy, unlike
+  collections), inline rename with a collapsed-by-default slug field — shows a
+  live "URL: /tags/{preview}" button that expands into a real input on click,
+  auto-following the name field until a person actually opens and edits it. No
+  create form: there's no standalone tag-creation endpoint, only implicit
+  creation via tagging, so this screen is rename/ delete only.
+- **`src/routes/TagDetail.svelte`** (new): pages for one tag, via the shared
+  `PageList`.
+- **`src/routes/CollectionDetail.svelte`** (new): pages for one collection,
+  routed by a wildcard path (`/collections/*`, e.g.
+  `/collections/cooking/recipes`) resolved **entirely client-side** against the
+  same flat `GET /collections` list `Collections.svelte` already fetches to
+  build its tree — split the wildcard on `/`, walk each segment matching
+  `(slug, parent_id)` one level at a time. No backend path-resolving endpoint
+  exists or was needed: collections aren't slug-unique per-user (only
+  per-parent), so a single-query slug lookup the way `GetTagBySlug` works for
+  tags isn't available, and a server-side recursive walk was considered and
+  explicitly decided against — re-fetching the full collection list client-side
+  on every visit is a non-issue at this project's personal/self-hosted scale,
+  the same "at this project's scale" reasoning §10 already uses to justify the
+  adjacency-list schema over a closure table. Shows a collection's own direct
+  pages only, never a subtree rollup — sub-collections are surfaced as their own
+  links instead, a person clicks in rather than everything nesting flattening
+  into one list.
+- **`Collections.svelte`** picked up two changes to close the loop: its tree
+  rows now link into `CollectionDetail` (previously plain text — the new screen
+  would otherwise have been unreachable except by typing a URL by hand), and its
+  rename form gained the same slug-field/description editing `Tags.svelte` has.
+  The slug preview here accounts for nesting — it shows the _full_ path a save
+  would produce (`/collections/zebra/side-dishes`), not just the leaf segment,
+  by threading the accumulated parent path down through the recursive
+  tree-rendering snippet alongside the existing `depth` parameter.

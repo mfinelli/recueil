@@ -264,7 +264,8 @@ func runUserResync(cmd *cobra.Command, args []string) error {
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 
 	var succeeded, failed int
-	for _, user := range users {
+	for i := range users {
+		user := &users[i]
 		// A NULL pairing_token_enc means the token was explicitly
 		// revoked (see UpdatePairingToken's own doc comment) -- push
 		// nil through, same as the revoke flow itself does, rather

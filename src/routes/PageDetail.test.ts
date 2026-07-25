@@ -90,14 +90,20 @@ const articlesCollection: Collection = {
   id: 5,
   parent_id: null,
   name: "Articles",
+  slug: "articles",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 
 const recipesCollection: Collection = {
   id: 6,
   parent_id: null,
   name: "Recipes",
+  slug: "recipes",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 
 const basePage: PageDetail = {
@@ -295,7 +301,10 @@ describe("PageDetail", () => {
       id: 7,
       parent_id: null,
       name: "Cooking",
+      slug: "cooking",
+      description: null,
       created_at: "2026-05-01T12:00:00Z",
+      updated_at: "2026-05-01T12:00:00Z",
     };
     apiJSONMock.mockResolvedValueOnce(created).mockResolvedValueOnce(undefined);
     const input = screen.getByPlaceholderText("Or create a new collection…");

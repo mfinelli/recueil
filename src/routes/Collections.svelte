@@ -20,12 +20,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      is purely about the collections themselves. Deletion uses a plain
      confirm() -- no custom modal component exists yet, and this is a
      intentionally not-fancy first pass, same spirit as the tag source
-     styling. -->
+     styling.
+
+     Slug/description editing lives only in the rename form, not create --
+     same reasoning as Tags.svelte: create stays a quick "type a name" flow
+     with an auto-generated slug, and a person who wants to customize it
+     does that as an edit right after. -->
 <script lang="ts">
+  import { link } from "svelte-spa-router";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Collection, CollectionListResponse } from "../lib/types";
+  import { previewSlug } from "../lib/slugPreview";
   import { m } from "../paraglide/messages";
+
+  const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
   interface CollectionNode extends Collection {
     children: CollectionNode[];
@@ -41,6 +50,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   let editingId = $state<number | null>(null);
   let editingName = $state("");
+  let editingDescription = $state("");
+  let editingSlug = $state("");
+  let slugFieldOpen = $state(false);
+  // The path of this node's *parent* (empty for a top-level collection),
+  // captured when rename starts -- used only to preview the full URL a
+  // rename would produce (see fullSlugPreview below), same slug-first
+  // segments the actual route uses once saved.
+  let editingParentPath = $state("");
   let savingRename = $state(false);
 
   let addingChildTo = $state<number | null>(null);
@@ -48,6 +65,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let creatingChild = $state(false);
 
   let deletingId = $state<number | null>(null);
+
+  let slugPreview = $derived(previewSlug(editingName));
+  let fullSlugPreview = $derived(
+    editingParentPath ? `${editingParentPath}/${slugPreview}` : slugPreview,
+  );
+  let slugValid = $derived(
+    !slugFieldOpen ||
+      editingSlug.trim() === "" ||
+      SLUG_PATTERN.test(editingSlug.trim()),
+  );
 
   // Parent_id points at a real id (an FK guarantees that), so a
   // single map-then-attach pass is enough -- no need to handle a
@@ -149,21 +176,38 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  function startRename(node: CollectionNode) {
+  function startRename(node: CollectionNode, path: string) {
     editingId = node.id;
     editingName = node.name;
+    editingDescription = node.description ?? "";
+    editingSlug = "";
+    slugFieldOpen = false;
+    const lastSlash = path.lastIndexOf("/");
+    editingParentPath = lastSlash === -1 ? "" : path.slice(0, lastSlash);
+    actionError = null;
+  }
+
+  function openSlugField() {
+    editingSlug = slugPreview;
+    slugFieldOpen = true;
   }
 
   async function handleRename(event: SubmitEvent, id: number) {
     event.preventDefault();
     const name = editingName.trim();
-    if (!name) return;
+    if (!name || !slugValid) return;
     savingRename = true;
     actionError = null;
     try {
+      const slug = editingSlug.trim();
+      const body: { name: string; slug?: string; description: string } = {
+        name,
+        description: editingDescription.trim(),
+        ...(slugFieldOpen && slug ? { slug } : {}),
+      };
       const updated = await apiJSON<Collection>(`/collections/${id}`, {
         method: "PATCH",
-        body: { name },
+        body,
       });
       collections = collections.map((c) => (c.id === id ? updated : c));
       editingId = null;
@@ -220,28 +264,69 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 </script>
 
-{#snippet nodeRow(node: CollectionNode, depth: number)}
+{#snippet nodeRow(node: CollectionNode, depth: number, path: string)}
   <li>
     <div class="row" style={`padding-left: ${depth * 1.25}rem`}>
       {#if editingId === node.id}
-        <form class="inline-form" onsubmit={(e) => handleRename(e, node.id)}>
-          <input type="text" bind:value={editingName} disabled={savingRename} />
-          <button type="submit" disabled={savingRename || !editingName.trim()}
-            >{m.common_save()}</button
-          >
-          <button
-            type="button"
-            onclick={() => (editingId = null)}
-            disabled={savingRename}>{m.common_cancel()}</button
-          >
+        <form
+          class="inline-form rename-form"
+          onsubmit={(e) => handleRename(e, node.id)}
+        >
+          <div class="edit-fields">
+            <input
+              type="text"
+              bind:value={editingName}
+              disabled={savingRename}
+            />
+            {#if slugFieldOpen}
+              <div class="slug-field">
+                <input
+                  type="text"
+                  class:invalid={!slugValid}
+                  placeholder={m.tags_slug_placeholder()}
+                  bind:value={editingSlug}
+                  disabled={savingRename}
+                />
+                {#if !slugValid}
+                  <span class="slug-error">{m.tags_slug_invalid()}</span>
+                {/if}
+              </div>
+            {:else}
+              <button
+                type="button"
+                class="slug-preview"
+                onclick={openSlugField}
+              >
+                {m.collections_slug_preview({ path: fullSlugPreview })}
+              </button>
+            {/if}
+            <input
+              type="text"
+              placeholder={m.collections_description_placeholder()}
+              bind:value={editingDescription}
+              disabled={savingRename}
+            />
+          </div>
+          <div class="row-actions">
+            <button
+              type="submit"
+              disabled={savingRename || !editingName.trim() || !slugValid}
+              >{m.common_save()}</button
+            >
+            <button
+              type="button"
+              onclick={() => (editingId = null)}
+              disabled={savingRename}>{m.common_cancel()}</button
+            >
+          </div>
         </form>
       {:else}
-        <span class="name">{node.name}</span>
+        <a class="name" href={`/collections/${path}`} use:link>{node.name}</a>
         <div class="row-actions">
           <button type="button" onclick={() => startAddingChild(node.id)}
             >{m.collections_add_subcollection()}</button
           >
-          <button type="button" onclick={() => startRename(node)}
+          <button type="button" onclick={() => startRename(node, path)}
             >{m.collections_rename()}</button
           >
           <button
@@ -282,7 +367,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#if node.children.length > 0}
       <ul class="tree">
         {#each node.children as child (child.id)}
-          {@render nodeRow(child, depth + 1)}
+          {@render nodeRow(child, depth + 1, `${path}/${child.slug}`)}
         {/each}
       </ul>
     {/if}
@@ -318,7 +403,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {:else}
     <ul class="tree">
       {#each tree as node (node.id)}
-        {@render nodeRow(node, 0)}
+        {@render nodeRow(node, 0, node.slug)}
       {/each}
     </ul>
   {/if}
@@ -347,6 +432,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     display: flex;
     gap: 0.5rem;
     margin-bottom: 1rem;
+  }
+
+  .rename-form {
+    align-items: flex-start;
+    justify-content: space-between;
+    width: 100%;
+    margin-bottom: 0;
   }
 
   .child-form {
@@ -402,6 +494,49 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   .name {
     font-size: 0.9375rem;
+    color: inherit;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  .edit-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    flex: 1;
+  }
+
+  .slug-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .slug-error {
+    font-size: 0.75rem;
+    color: var(--accent);
+  }
+
+  .slug-preview {
+    width: fit-content;
+    padding: 0.125rem 0;
+    border: none;
+    background: none;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    text-decoration: underline dotted;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--ink);
+    }
+  }
+
+  input[type="text"].invalid {
+    border-color: var(--accent);
   }
 
   .row-actions {

@@ -19,10 +19,14 @@ CREATE TABLE tags (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   user_id BIGINT NOT NULL,
   name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT tags_pkey PRIMARY KEY (id),
   CONSTRAINT tags_user_id_fkey FOREIGN KEY (user_id)
     REFERENCES users(id) ON DELETE CASCADE,
-  CONSTRAINT tags_user_id_name_key UNIQUE (user_id, name)
+  CONSTRAINT tags_user_id_name_key UNIQUE (user_id, name),
+  CONSTRAINT tags_user_id_slug_key UNIQUE (user_id, slug)
 );
 
 CREATE INDEX idx_tags_user_id ON tags(user_id);

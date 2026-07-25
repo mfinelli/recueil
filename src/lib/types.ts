@@ -94,14 +94,31 @@ export interface PageDetail extends Page {
   collections: PageCollection[];
 }
 
-// POST /api/pages/{id}/tags' response -- lighter than PageTag: the backend
-// hardcodes source: "manual" for anything added through this endpoint
-// (see internal/httpapi's AddPageTag), so it isn't part of the response at
-// all; the caller already knows what it just set.
-export interface TagCreated {
+// GET /api/tags' item shape -- also what the rename/delete-adjacent
+// create/rename tag endpoints return. Slugs are a real, independently
+// unique column not derived client-side.
+export interface Tag {
   id: number;
   name: string;
+  slug: string;
 }
+
+export interface TagListResponse {
+  tags: Tag[];
+}
+
+// GET /api/tags/{id}/pages' response -- includes the tag itself, not just
+// its pages, so TagDetail can render a heading without a second request.
+export interface TagPagesResponse {
+  tag: Tag;
+  pages: Page[];
+}
+
+// POST /api/pages/{id}/tags' response -- same shape as Tag; kept as its
+// own alias since the two describe conceptually different actions (the
+// full tag vocabulary vs. "the tag I just applied to this page"), same
+// as the PageCollection/Collection split below.
+export type TagCreated = Tag;
 
 // GET /api/collections' own item shape -- structurally close to
 // PageCollection but with created_at, since that's a full collection
@@ -110,11 +127,25 @@ export interface Collection {
   id: number;
   parent_id: number | null;
   name: string;
+  slug: string;
+  description: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface CollectionListResponse {
   collections: Collection[];
+}
+
+// GET /api/collections/{id}/pages' response -- direct membership only,
+// not the collection's subtree (CollectionDetail shows sub-collections
+// as their own links instead, same decision as tags: no recursive
+// rollup). Unlike TagPagesResponse, there's no collection object nested
+// in here -- CollectionDetail already has the full collection (and its
+// ancestors, for the breadcrumb) from resolving the URL's path against
+// GET /api/collections, so it would be redundant here.
+export interface CollectionPagesResponse {
+  pages: Page[];
 }
 
 export interface TextSearchConfigsResponse {

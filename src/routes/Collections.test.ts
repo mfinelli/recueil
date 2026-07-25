@@ -78,19 +78,28 @@ const zebra: Collection = {
   id: 1,
   parent_id: null,
   name: "Zebra",
+  slug: "zebra",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 const apple: Collection = {
   id: 2,
   parent_id: null,
   name: "Apple",
+  slug: "apple",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 const zebraSub: Collection = {
   id: 3,
   parent_id: 1,
   name: "Sub",
+  slug: "sub",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 
 describe("Collections", () => {
@@ -132,6 +141,21 @@ describe("Collections", () => {
     // between "Apple" and "Zebra" alphabetically -- nesting wins over a
     // flat alphabetical pass.
     expect(names).toEqual(["Apple", "Zebra", "Sub"]);
+  });
+
+  it("links each collection name to its slug-path detail URL", async () => {
+    mockLoad([zebra, zebraSub]);
+    render(Collections);
+
+    const zebraLink = (await screen.findByRole("link", {
+      name: "Zebra",
+    })) as HTMLAnchorElement;
+    expect(zebraLink.getAttribute("href")).toBe("#/collections/zebra");
+
+    const subLink = (await screen.findByRole("link", {
+      name: "Sub",
+    })) as HTMLAnchorElement;
+    expect(subLink.getAttribute("href")).toBe("#/collections/zebra/sub");
   });
 
   it("creates a top-level collection and clears the input on success", async () => {
@@ -198,7 +222,7 @@ describe("Collections", () => {
     expect(await screen.findByText("Child")).toBeTruthy();
   });
 
-  it("renames a collection", async () => {
+  it("renames a collection, re-deriving the slug from the new name by default", async () => {
     mockLoad([zebra]);
     render(Collections);
 
@@ -206,16 +230,78 @@ describe("Collections", () => {
     await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
 
     const renameInput = within(row).getByDisplayValue("Zebra");
-    apiJSONMock.mockResolvedValueOnce({ ...zebra, name: "Zorse" });
+    apiJSONMock.mockResolvedValueOnce({
+      ...zebra,
+      name: "Zorse",
+      slug: "zorse",
+    });
     await fireEvent.input(renameInput, { target: { value: "Zorse" } });
     await fireEvent.click(within(row).getByRole("button", { name: "Save" }));
 
     expect(apiJSONMock).toHaveBeenCalledWith("/collections/1", {
       method: "PATCH",
-      body: { name: "Zorse" },
+      body: { name: "Zorse", description: "" },
     });
     expect(await screen.findByText("Zorse")).toBeTruthy();
     expect(screen.queryByText("Zebra")).toBeNull();
+  });
+
+  it("pre-fills the description field with the collection's existing description", async () => {
+    mockLoad([{ ...zebra, description: "Stripy horses." }]);
+    render(Collections);
+
+    const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
+    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+
+    expect(within(row).getByDisplayValue("Stripy horses.")).toBeTruthy();
+  });
+
+  it("shows a live slug preview that follows the name, including the parent path for a nested collection", async () => {
+    mockLoad([zebra, zebraSub]);
+    render(Collections);
+
+    const row = (await screen.findByText("Sub")).closest("li") as HTMLElement;
+    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+
+    const renameInput = within(row).getByDisplayValue("Sub");
+    await fireEvent.input(renameInput, { target: { value: "Side Dishes" } });
+
+    expect(
+      within(row).getByRole("button", {
+        name: "URL: /collections/zebra/side-dishes",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("sends an explicit slug and description once edited", async () => {
+    mockLoad([zebra]);
+    render(Collections);
+
+    const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
+    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "URL: /collections/zebra" }),
+    );
+
+    const slugInput = within(row).getByPlaceholderText("custom-slug");
+    await fireEvent.input(slugInput, { target: { value: "stripes" } });
+    const descriptionInput = within(row).getByPlaceholderText(
+      "Description (optional)",
+    );
+    await fireEvent.input(descriptionInput, {
+      target: { value: "Stripy horses." },
+    });
+    apiJSONMock.mockResolvedValueOnce({
+      ...zebra,
+      slug: "stripes",
+      description: "Stripy horses.",
+    });
+    await fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/collections/1", {
+      method: "PATCH",
+      body: { name: "Zebra", description: "Stripy horses.", slug: "stripes" },
+    });
   });
 
   it("deletes a leaf collection after a simple confirmation", async () => {

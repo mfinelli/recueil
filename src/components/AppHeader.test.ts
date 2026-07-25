@@ -63,6 +63,7 @@ describe("AppHeader", () => {
     for (const label of [
       "Library",
       "Collections",
+      "Tags",
       "Devices",
       "Queue",
       "Settings",
