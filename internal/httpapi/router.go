@@ -148,6 +148,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Patch("/captures/{id}/language", s.PatchCaptureLanguage)
 			r.Get("/text-search-configs", s.ListTextSearchConfigs)
 			r.Get("/tags", s.ListTags)
+			r.Patch("/tags/{id}", s.RenameTag)
+			r.Get("/tags/{id}/pages", s.ListTagPages)
 			r.Post("/pages/{id}/tags", s.AddPageTag)
 			r.Delete("/pages/{id}/tags/{tagId}", s.RemovePageTag)
 			r.Get("/collections", s.ListCollections)

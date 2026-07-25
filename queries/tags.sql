@@ -54,3 +54,17 @@ SELECT EXISTS (
 
 -- name: ListTags :many
 SELECT * FROM tags WHERE user_id = $1 ORDER BY name;
+
+-- name: GetTagByID :one
+SELECT * FROM tags WHERE id = $1 AND user_id = $2;
+
+-- name: RenameTag :one
+-- Same shape as RenameCollection: user_id checked in the WHERE clause (so
+-- a caller bug passing the wrong id can't rename another user's tag,
+-- same belt-and-suspenders reasoning), slug resolved by the caller (see
+-- handlers.go's resolveSlug).  This is currently the only way a tag's
+-- slug can be customized after creation; AddPageTag's own quick inline
+-- "add tag to page" flow always auto-generates one.
+UPDATE tags SET name = $1, slug = $2, updated_at = now()
+WHERE id = $3 AND user_id = $4
+RETURNING *;

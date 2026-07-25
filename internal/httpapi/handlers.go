@@ -1443,6 +1443,87 @@ func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug})
 }
 
+type renameTagRequest struct {
+	Name string  `json:"name"`
+	Slug *string `json:"slug"`
+}
+
+// PATCH /api/tags/{id}. Same resolveSlug reconciliation as
+// RenameCollection: an explicit slug is validated and used as-is,
+// otherwise one is re-derived from the new name. This is currently the
+// only way to give a tag a custom slug after the fact -- AddPageTag's
+// quick inline "add tag to page" flow always auto-generates one, never
+// takes an override.
+func (s *Server) RenameTag(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tag id")
+		return
+	}
+	req, err := decodeJSON[renameTagRequest](r)
+	if err != nil || req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	candidateSlug, ok := resolveSlug(req.Name, req.Slug)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "a valid slug is required (could not derive one automatically from that name)")
+		return
+	}
+
+	tag, err := s.Queries.RenameTag(r.Context(), db.RenameTagParams{
+		Name: req.Name, Slug: candidateSlug, ID: id, UserID: user.ID,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tag not found")
+			return
+		}
+		writeError(w, http.StatusConflict, "a tag with that name or slug already exists")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug})
+}
+
+// GET /api/tags/{id}/pages: pages carrying a given tag, same
+// shape/ordering as ListCollectionPages.
+func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tag id")
+		return
+	}
+	ctx := r.Context()
+
+	if _, err := s.Queries.GetTagByID(ctx, db.GetTagByIDParams{ID: id, UserID: user.ID}); err != nil {
+		writeError(w, http.StatusNotFound, "tag not found")
+		return
+	}
+
+	pages, err := s.Queries.ListTagPages(ctx, id)
+	if err != nil {
+		log.Printf("warning: failed to list pages for tag %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp := make([]pageResponse, 0, len(pages))
+	for i := range pages {
+		resp = append(resp, pageResponseFromPage(&pages[i]))
+	}
+	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
+}
+
 // DELETE /api/pages/{id}/tags/{tagId}
 func (s *Server) RemovePageTag(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())

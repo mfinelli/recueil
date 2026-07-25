@@ -1863,6 +1863,151 @@ func TestAddAndRemovePageTag(t *testing.T) {
 	})
 }
 
+func TestRenameTag(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("renames and re-derives the slug by default", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "recipes", Slug: "recipes"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/tags/%d", tag.ID),
+			strings.NewReader(`{"name":"Cooking"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var renamed struct {
+			Name string `json:"name"`
+			Slug string `json:"slug"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&renamed))
+		assert.Equal(t, "Cooking", renamed.Name)
+		assert.Equal(t, "cooking", renamed.Slug)
+	})
+
+	t.Run("an explicit slug is honored", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "recipes", Slug: "recipes"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/tags/%d", tag.ID),
+			strings.NewReader(`{"name":"Cooking","slug":"food"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var renamed struct {
+			Slug string `json:"slug"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&renamed))
+		assert.Equal(t, "food", renamed.Slug)
+	})
+
+	t.Run("renaming to a slug already used by another tag returns 409", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "existing", Slug: "existing"})
+		require.NoError(t, err)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "renaming-me", Slug: "renaming-me"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/tags/%d", tag.ID),
+			strings.NewReader(`{"name":"Something Else","slug":"existing"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	})
+
+	t.Run("renaming another user's tag returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: owner.ID, Name: "not-yours", Slug: "not-yours"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+fmt.Sprintf("/api/tags/%d", tag.ID),
+			strings.NewReader(`{"name":"Hijacked"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
+func TestListTagPages(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("returns pages carrying the tag, excluding untagged pages", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		tagged1 := dbtest.CreatePage(t, pool, user.ID, "https://example.com/tagged-one")
+		tagged2 := dbtest.CreatePage(t, pool, user.ID, "https://example.com/tagged-two")
+		untagged := dbtest.CreatePage(t, pool, user.ID, "https://example.com/untagged")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "recipes", Slug: "recipes"})
+		require.NoError(t, err)
+		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: tagged1.ID, TagID: tag.ID, Source: "manual"}))
+		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: tagged2.ID, TagID: tag.ID, Source: "manual"}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/tags/%d/pages", tag.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Pages []struct {
+				ID int64 `json:"id"`
+			} `json:"pages"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Pages, 2)
+		gotIDs := []int64{got.Pages[0].ID, got.Pages[1].ID}
+		assert.Contains(t, gotIDs, tagged1.ID)
+		assert.Contains(t, gotIDs, tagged2.ID)
+		assert.NotContains(t, gotIDs, untagged.ID)
+	})
+
+	t.Run("another user's tag id returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: owner.ID, Name: "not-yours", Slug: "not-yours"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/tags/%d/pages", tag.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+}
+
 func TestCollectionsCRUD(t *testing.T) {
 	pool := dbtest.Setup(t)
 
