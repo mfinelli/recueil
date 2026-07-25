@@ -127,11 +127,25 @@ export interface Collection {
   id: number;
   parent_id: number | null;
   name: string;
+  slug: string;
+  description: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 export interface CollectionListResponse {
   collections: Collection[];
+}
+
+// GET /api/collections/{id}/pages' response -- direct membership only,
+// not the collection's subtree (CollectionDetail shows sub-collections
+// as their own links instead, same decision as tags: no recursive
+// rollup). Unlike TagPagesResponse, there's no collection object nested
+// in here -- CollectionDetail already has the full collection (and its
+// ancestors, for the breadcrumb) from resolving the URL's path against
+// GET /api/collections, so it would be redundant here.
+export interface CollectionPagesResponse {
+  pages: Page[];
 }
 
 export interface TextSearchConfigsResponse {

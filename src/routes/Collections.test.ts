@@ -78,19 +78,28 @@ const zebra: Collection = {
   id: 1,
   parent_id: null,
   name: "Zebra",
+  slug: "zebra",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 const apple: Collection = {
   id: 2,
   parent_id: null,
   name: "Apple",
+  slug: "apple",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 const zebraSub: Collection = {
   id: 3,
   parent_id: 1,
   name: "Sub",
+  slug: "sub",
+  description: null,
   created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
 };
 
 describe("Collections", () => {
@@ -132,6 +141,21 @@ describe("Collections", () => {
     // between "Apple" and "Zebra" alphabetically -- nesting wins over a
     // flat alphabetical pass.
     expect(names).toEqual(["Apple", "Zebra", "Sub"]);
+  });
+
+  it("links each collection name to its slug-path detail URL", async () => {
+    mockLoad([zebra, zebraSub]);
+    render(Collections);
+
+    const zebraLink = (await screen.findByRole("link", {
+      name: "Zebra",
+    })) as HTMLAnchorElement;
+    expect(zebraLink.getAttribute("href")).toBe("#/collections/zebra");
+
+    const subLink = (await screen.findByRole("link", {
+      name: "Sub",
+    })) as HTMLAnchorElement;
+    expect(subLink.getAttribute("href")).toBe("#/collections/zebra/sub");
   });
 
   it("creates a top-level collection and clears the input on success", async () => {

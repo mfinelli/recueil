@@ -118,6 +118,13 @@
   "tagdetail_load_error": "failed to load pages for this tag",
   "tagdetail_no_pages": "No pages have this tag yet.",
 
+  "collectiondetail_back": "← All collections",
+  "collectiondetail_breadcrumb_aria": "Breadcrumb",
+  "collectiondetail_not_found": "Collection not found.",
+  "collectiondetail_load_error": "failed to load pages for this collection",
+  "collectiondetail_no_pages": "No pages directly in this collection yet.",
+  "collectiondetail_subcollections_heading": "Sub-collections",
+
   "library_load_error": "failed to load pages",
   "library_search_placeholder": "Search your archive…",
   "library_search_label": "Search",

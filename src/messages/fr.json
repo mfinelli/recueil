@@ -118,6 +118,13 @@
   "tagdetail_load_error": "échec du chargement des pages pour cette étiquette",
   "tagdetail_no_pages": "Aucune page n'a encore cette étiquette.",
 
+  "collectiondetail_back": "← Toutes les collections",
+  "collectiondetail_breadcrumb_aria": "Fil d'Ariane",
+  "collectiondetail_not_found": "Collection introuvable.",
+  "collectiondetail_load_error": "échec du chargement des pages pour cette collection",
+  "collectiondetail_no_pages": "Aucune page directement dans cette collection.",
+  "collectiondetail_subcollections_heading": "Sous-collections",
+
   "library_load_error": "échec du chargement des pages",
   "library_search_placeholder": "Rechercher dans votre archive…",
   "library_search_label": "Recherche",

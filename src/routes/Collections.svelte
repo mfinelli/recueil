@@ -22,6 +22,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      intentionally not-fancy first pass, same spirit as the tag source
      styling. -->
 <script lang="ts">
+  import { link } from "svelte-spa-router";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Collection, CollectionListResponse } from "../lib/types";
@@ -220,7 +221,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 </script>
 
-{#snippet nodeRow(node: CollectionNode, depth: number)}
+{#snippet nodeRow(node: CollectionNode, depth: number, path: string)}
   <li>
     <div class="row" style={`padding-left: ${depth * 1.25}rem`}>
       {#if editingId === node.id}
@@ -236,7 +237,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           >
         </form>
       {:else}
-        <span class="name">{node.name}</span>
+        <a class="name" href={`/collections/${path}`} use:link>{node.name}</a>
         <div class="row-actions">
           <button type="button" onclick={() => startAddingChild(node.id)}
             >{m.collections_add_subcollection()}</button
@@ -282,7 +283,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#if node.children.length > 0}
       <ul class="tree">
         {#each node.children as child (child.id)}
-          {@render nodeRow(child, depth + 1)}
+          {@render nodeRow(child, depth + 1, `${path}/${child.slug}`)}
         {/each}
       </ul>
     {/if}
@@ -318,7 +319,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {:else}
     <ul class="tree">
       {#each tree as node (node.id)}
-        {@render nodeRow(node, 0)}
+        {@render nodeRow(node, 0, node.slug)}
       {/each}
     </ul>
   {/if}
@@ -402,6 +403,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   .name {
     font-size: 0.9375rem;
+    color: inherit;
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
   }
 
   .row-actions {
