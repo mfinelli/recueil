@@ -1,0 +1,63 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// Mobile-first breakpoints.
+$bp-mobile: 640px;
+$bp-tablet: 900px;
+
+// AppHeader's own collapse point -- deliberately its own variable, not
+// $bp-mobile. Six nav links + brand + account need more horizontal room
+// than generic mobile content does; collapsing at $bp-mobile let the nav
+// wrap onto multiple lines *before* the toggle kicks in.
+$bp-header: 780px;
+
+@mixin mobile {
+  @media (max-width: $bp-mobile) {
+    @content;
+  }
+}
+
+@mixin tablet {
+  @media (max-width: $bp-tablet) {
+    @content;
+  }
+}
+
+@mixin header-collapse {
+  @media (max-width: $bp-header) {
+    @content;
+  }
+}
+
+// Raised card/input surface -- the paper-raised + rule-border combination
+// already used ad hoc across every dashboard screen's inputs/panels.
+@mixin card-surface {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+}
+
+// Dotted row divider -- matches the extension's #queue-list li treatment.
+@mixin dotted-rule {
+  border-bottom: 1px dotted var(--rule);
+}
+
+@mixin focus-ring {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}

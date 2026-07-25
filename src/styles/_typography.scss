@@ -1,0 +1,56 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// Font roles shared across the dashboard, mirroring the marketing site's
+// $font-display/$font-mono (www/sass/style.scss) and the extension
+// popup's ad hoc ui-serif/ui-monospace usage in h1/input -- consolidated
+// here as the one source both surfaces conceptually already agreed on.
+$font-display: "Fraunces", Georgia, "Times New Roman", serif;
+$font-mono:
+  "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
+$font-body:
+  -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+  sans-serif;
+
+// Page/section headings -- the italic serif both the extension's h1 and
+// the marketing site's .title already reach for, just formalized as a
+// mixin instead of copy-pasted per component.
+@mixin heading {
+  font-family: $font-display;
+  font-style: italic;
+  font-weight: 600;
+  margin: 0;
+}
+
+// Small uppercase brass label -- recurs as extension's .queue-section h2,
+// marketing's .card__row--top .mono/.entry dt, and the dashboard's own
+// nav labels/section headers once this pass lands on them.
+@mixin eyebrow {
+  font-family: $font-mono;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+
+// Mono treatment for URLs, IDs, dates, byte sizes -- data that reads
+// better fixed-width, matching the extension's input/#queue-list usage.
+@mixin data-mono {
+  font-family: $font-mono;
+}

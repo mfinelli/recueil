@@ -18,14 +18,17 @@
     "types": "pnpm run paraglide:compile && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
+    "@fontsource/fraunces": "^5.2.9",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
     "@inlang/paraglide-js": "^2.22.0",
+    "@lucide/svelte": "^1.25.0",
     "@mozilla/readability": "^0.6.0",
     "svelte-spa-router": "^5.1.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@inlang/plugin-m-function-matcher": "2.2.6",
-    "@inlang/plugin-message-format": "4.4.0",
+    "@inlang/plugin-m-function-matcher": "^2.2.9",
+    "@inlang/plugin-message-format": "^4.4.0",
     "@sveltejs/vite-plugin-svelte": "^7.2.0",
     "@testing-library/svelte": "^5.4.2",
     "eslint": "^10.7.0",
@@ -35,13 +38,13 @@
     "prettier": "^3.9.5",
     "prettier-plugin-svelte": "^4.1.1",
     "sass": "^1.101.0",
-    "svelte": "^5.56.4",
-    "svelte-check": "^4.7.2",
+    "svelte": "^5.56.6",
+    "svelte-check": "^4.7.3",
     "svelte-eslint-parser": "^1.8.0",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.63.0",
-    "vite": "^8.1.4",
+    "typescript-eslint": "^8.64.0",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10",
-    "wrangler": "^4.110.0"
+    "wrangler": "^4.112.0"
   }
 }

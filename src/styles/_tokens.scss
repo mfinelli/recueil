@@ -16,38 +16,31 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Design system: tokens (colors), typography (font stacks + text mixins),
-// and mixins (layout/surface/breakpoints) live in src/styles/ so every
-// component's own <style lang="scss"> block can @use them instead of
-// re-declaring the same values.
-@use "./styles/tokens";
-@use "./styles/typography" as type;
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+// Color tokens for the dashboard's design system. --ink/--ink-muted/--paper/
+// --paper-raised/--rule/--accent/--accent-success/--focus are carried over
+// from extension/src/popup/popup.css).
+:root {
+  --ink: #2b2924;
+  --ink-muted: #746c5c;
+  --paper: #f2ede1;
+  --paper-raised: #fdfbf6;
+  --rule: #ddd2b8;
+  --accent: #8a3223;
+  --accent-success: #3c5c3a;
+  --focus: #4a6b8a;
+  --brass: #b68a2e;
 }
 
-html,
-body {
-  height: 100%;
-  margin: 0;
-}
-
-body {
-  font-family: type.$font-body;
-  color: var(--ink);
-  background: var(--paper);
-  -webkit-font-smoothing: antialiased;
-}
-
-h1,
-h2,
-h3 {
-  @include type.heading;
-}
-
-a {
-  color: inherit;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #ece5d4;
+    --ink-muted: #a89c86;
+    --paper: #1d1b17;
+    --paper-raised: #29261f;
+    --rule: #40392d;
+    --accent: #d17b64;
+    --accent-success: #8bb385;
+    --focus: #7fa8c9;
+    --brass: #d9ae52;
+  }
 }
