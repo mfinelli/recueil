@@ -17,16 +17,14 @@
  */
 
 // Same AppHeader/apiJSON mocking approach as the other route tests.
-// Three things new to this screen:
-//  - view mode reads/writes real localStorage (jsdom implements it, so
-//    it's used for real rather than mocked -- just cleared between tests
-//    so one test's choice doesn't leak into the next).
-//  - search is debounced via a real 300ms setTimeout, so the one test
-//    that exercises it uses fake timers (restored to real afterward, in
-//    the shared afterEach, in case a test fails mid-fake-timer-block).
-//  - the favicon/thumbnail <img>'s onerror handler is exercised by
-//    firing a real "error" event at the element, same as a browser would
-//    on a broken image URL.
+// List/grid rendering, the view toggle, and favicon/thumbnail fallback
+// now live in PageList.test.ts, since that behavior moved to its own
+// component -- this file keeps only what's actually Library's job:
+// fetching, loading/error state, search debounce, and pagination. One
+// thing still worth noting here: search is debounced via a real 300ms
+// setTimeout, so the one test that exercises it uses fake timers
+// (restored to real afterward, in the shared afterEach, in case a test
+// fails mid-fake-timer-block).
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 
@@ -50,10 +48,6 @@ import type { Page } from "../lib/types";
 import Library from "./Library.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
-
-// Mirrors Library.svelte's own private VIEW_MODE_KEY constant -- not
-// exported, so duplicated here rather than imported.
-const VIEW_MODE_KEY = "recueil:library-view-mode";
 
 afterEach(() => {
   cleanup();
@@ -90,15 +84,6 @@ describe("Library", () => {
     expect(await screen.findByText("An example article")).toBeTruthy();
     expect(screen.getByText("example.com/article")).toBeTruthy();
     expect(apiJSONMock).toHaveBeenCalledWith("/pages?limit=50&offset=0");
-  });
-
-  it("falls back to the normalized URL as the title when there's none", async () => {
-    mockLoad([{ ...examplePage, title: null }]);
-    render(Library);
-
-    expect(
-      await screen.findByRole("link", { name: /example\.com\/article/ }),
-    ).toBeTruthy();
   });
 
   it("shows a nothing-archived placeholder when there are no pages and no search", async () => {
@@ -145,47 +130,6 @@ describe("Library", () => {
       "/pages?limit=50&offset=0&q=nonexistent",
     );
     expect(await screen.findByText("No pages match your search.")).toBeTruthy();
-  });
-
-  it("switches to grid view and persists the choice to localStorage", async () => {
-    mockLoad([examplePage]);
-    const { container } = render(Library);
-    await screen.findByText("An example article");
-
-    await fireEvent.click(screen.getByRole("button", { name: "Grid" }));
-
-    expect(localStorage.getItem(VIEW_MODE_KEY)).toBe("grid");
-    // Grid view's own thumbnail markup replaces the list view's favicon
-    // markup for the same page. alt="" is intentional on both (they're
-    // decorative, with the title as a text sibling), which also means
-    // neither gets an accessible "img" role -- queried by class through
-    // the container instead of screen.getByRole for that reason.
-    expect(screen.getByText("An example article")).toBeTruthy();
-    const img = container.querySelector<HTMLImageElement>(".thumbnail");
-    expect(img?.src).toContain("/thumbnail");
-  });
-
-  it("starts in grid view when that was the last-persisted choice", async () => {
-    localStorage.setItem(VIEW_MODE_KEY, "grid");
-    mockLoad([examplePage]);
-    const { container } = render(Library);
-    await screen.findByText("An example article");
-
-    const img = container.querySelector<HTMLImageElement>(".thumbnail");
-    expect(img?.src).toContain("/thumbnail");
-  });
-
-  it("shows a placeholder instead of a broken favicon image", async () => {
-    mockLoad([examplePage]);
-    const { container } = render(Library);
-    await screen.findByText("An example article");
-
-    const img = container.querySelector<HTMLImageElement>(".favicon");
-    expect(img).toBeTruthy();
-    await fireEvent.error(img as HTMLImageElement);
-
-    expect(container.querySelector(".favicon")).toBeNull();
-    expect(container.querySelector(".favicon-placeholder")).toBeTruthy();
   });
 
   it("paginates forward and back, disabling Previous/Next at the edges", async () => {
