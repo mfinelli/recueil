@@ -32,6 +32,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <nav>
       <a href="/" use:link>{m.nav_library()}</a>
       <a href="/collections" use:link>{m.nav_collections()}</a>
+      <a href="/tags" use:link>{m.nav_tags()}</a>
       <a href="/devices" use:link>{m.nav_devices()}</a>
       <a href="/queue" use:link>{m.nav_queue()}</a>
       <a href="/settings" use:link>{m.settings()}</a>

@@ -1977,15 +1977,23 @@ func TestListTagPages(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/tags/%d/pages", tag.ID), cookie)
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/tags/%s/pages", tag.Slug), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var got struct {
+			Tag struct {
+				ID   int64  `json:"id"`
+				Name string `json:"name"`
+				Slug string `json:"slug"`
+			} `json:"tag"`
 			Pages []struct {
 				ID int64 `json:"id"`
 			} `json:"pages"`
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, tag.ID, got.Tag.ID)
+		assert.Equal(t, "recipes", got.Tag.Name)
+		assert.Equal(t, "recipes", got.Tag.Slug)
 		require.Len(t, got.Pages, 2)
 		gotIDs := []int64{got.Pages[0].ID, got.Pages[1].ID}
 		assert.Contains(t, gotIDs, tagged1.ID)
@@ -1993,7 +2001,7 @@ func TestListTagPages(t *testing.T) {
 		assert.NotContains(t, gotIDs, untagged.ID)
 	})
 
-	t.Run("another user's tag id returns 404", func(t *testing.T) {
+	t.Run("another user's tag slug returns 404", func(t *testing.T) {
 		owner := dbtest.CreateUser(t, pool, "member")
 		requester := dbtest.CreateUser(t, pool, "member")
 		q := db.New(pool)
@@ -2003,7 +2011,7 @@ func TestListTagPages(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &requester)
 
-		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/tags/%d/pages", tag.ID), cookie)
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/tags/%s/pages", tag.Slug), cookie)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 }

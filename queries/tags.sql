@@ -58,6 +58,15 @@ SELECT * FROM tags WHERE user_id = $1 ORDER BY name;
 -- name: GetTagByID :one
 SELECT * FROM tags WHERE id = $1 AND user_id = $2;
 
+-- name: GetTagBySlug :one
+-- Backs the dashboard's browsable /tags/:slug route (see TagDetail.svelte
+-- and ListTagPages) -- the slug, not the id, is what appears in that URL,
+-- same reasoning as the rest of the slug work: a person can bookmark or
+-- share it. GetTagByID stays in separate use for the id-keyed edit/delete
+-- API calls, which never appear in an address bar and have no reason to
+-- change.
+SELECT * FROM tags WHERE slug = $1 AND user_id = $2;
+
 -- name: RenameTag :one
 -- Same shape as RenameCollection: user_id checked in the WHERE clause (so
 -- a caller bug passing the wrong id can't rename another user's tag,

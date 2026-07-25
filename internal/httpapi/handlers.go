@@ -1520,29 +1520,29 @@ func (s *Server) DeleteTag(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// GET /api/tags/{id}/pages: pages carrying a given tag, same
-// shape/ordering as ListCollectionPages.
+// GET /api/tags/{slug}/pages: pages carrying a given tag, same
+// shape/ordering as ListCollectionPages. Keyed by slug, not id -- this
+// is the endpoint backing the dashboard's browsable /tags/:slug URL (see
+// TagDetail.svelte), so it needs to resolve the same identifier a person
+// would actually have bookmarked or shared.
 func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid tag id")
-		return
-	}
+	slug := chi.URLParam(r, "slug")
 	ctx := r.Context()
 
-	if _, err := s.Queries.GetTagByID(ctx, db.GetTagByIDParams{ID: id, UserID: user.ID}); err != nil {
+	tag, err := s.Queries.GetTagBySlug(ctx, db.GetTagBySlugParams{Slug: slug, UserID: user.ID})
+	if err != nil {
 		writeError(w, http.StatusNotFound, "tag not found")
 		return
 	}
 
-	pages, err := s.Queries.ListTagPages(ctx, id)
+	pages, err := s.Queries.ListTagPages(ctx, tag.ID)
 	if err != nil {
-		log.Printf("warning: failed to list pages for tag %d: %v", id, err)
+		log.Printf("warning: failed to list pages for tag %d: %v", tag.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -1550,7 +1550,15 @@ func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
+	// Includes the tag itself, not just its pages -- the caller (the
+	// TagDetail dashboard screen) needs the tag's name for its own
+	// heading and has no other endpoint that would give it that
+	// alongside the pages in one round trip. GetTagByID's own result is
+	// already in hand from the existence check above, so this is free.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tag":   tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
+		"pages": resp,
+	})
 }
 
 // DELETE /api/pages/{id}/tags/{tagId}

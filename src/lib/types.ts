@@ -94,14 +94,31 @@ export interface PageDetail extends Page {
   collections: PageCollection[];
 }
 
-// POST /api/pages/{id}/tags' response -- lighter than PageTag: the backend
-// hardcodes source: "manual" for anything added through this endpoint
-// (see internal/httpapi's AddPageTag), so it isn't part of the response at
-// all; the caller already knows what it just set.
-export interface TagCreated {
+// GET /api/tags' item shape -- also what the rename/delete-adjacent
+// create/rename tag endpoints return. Slugs are a real, independently
+// unique column not derived client-side.
+export interface Tag {
   id: number;
   name: string;
+  slug: string;
 }
+
+export interface TagListResponse {
+  tags: Tag[];
+}
+
+// GET /api/tags/{id}/pages' response -- includes the tag itself, not just
+// its pages, so TagDetail can render a heading without a second request.
+export interface TagPagesResponse {
+  tag: Tag;
+  pages: Page[];
+}
+
+// POST /api/pages/{id}/tags' response -- same shape as Tag; kept as its
+// own alias since the two describe conceptually different actions (the
+// full tag vocabulary vs. "the tag I just applied to this page"), same
+// as the PageCollection/Collection split below.
+export type TagCreated = Tag;
 
 // GET /api/collections' own item shape -- structurally close to
 // PageCollection but with created_at, since that's a full collection
