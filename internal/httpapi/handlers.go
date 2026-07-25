@@ -1491,6 +1491,35 @@ func (s *Server) RenameTag(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug})
 }
 
+// DELETE /api/tags/{id}: removes the tag entirely (cascading to
+// page_tags), same shape as DeleteCollection -- not the same thing as
+// RemovePageTag, which only unlinks the tag from one page.
+func (s *Server) DeleteTag(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tag id")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeleteTag(r.Context(), db.DeleteTagParams{ID: id, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete tag %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "tag not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // GET /api/tags/{id}/pages: pages carrying a given tag, same
 // shape/ordering as ListCollectionPages.
 func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {

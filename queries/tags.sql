@@ -68,3 +68,10 @@ SELECT * FROM tags WHERE id = $1 AND user_id = $2;
 UPDATE tags SET name = $1, slug = $2, updated_at = now()
 WHERE id = $3 AND user_id = $4
 RETURNING *;
+
+-- name: DeleteTag :execrows
+-- Cascades to page_tags rows via the schema's own ON DELETE CASCADE --
+-- nothing else to clean up. execrows so the caller can distinguish
+-- "deleted" from "didn't exist / wasn't this user's", same as
+-- DeleteCollection.
+DELETE FROM tags WHERE id = $1 AND user_id = $2;

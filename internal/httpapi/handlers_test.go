@@ -2008,6 +2008,62 @@ func TestListTagPages(t *testing.T) {
 	})
 }
 
+func TestDeleteTag(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("deletes the tag and unlinks it from tagged pages", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/delete-tag-target")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "recipes", Slug: "recipes"})
+		require.NoError(t, err)
+		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual"}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		delResp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/tags/%d", tag.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, delResp.StatusCode)
+
+		pageTags, err := q.ListPageTags(context.Background(), page.ID)
+		require.NoError(t, err)
+		assert.Empty(t, pageTags)
+
+		listResp := requestWithCookie(t, server, http.MethodGet, "/api/tags", cookie)
+		var list struct {
+			Tags []struct{ ID int64 } `json:"tags"`
+		}
+		require.NoError(t, json.NewDecoder(listResp.Body).Decode(&list))
+		assert.Empty(t, list.Tags)
+	})
+
+	t.Run("deleting a nonexistent tag returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/tags/999999", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("deleting another user's tag returns 404 and leaves it intact", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: owner.ID, Name: "not-yours", Slug: "not-yours"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/tags/%d", tag.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		_, err = q.GetTagByID(context.Background(), db.GetTagByIDParams{ID: tag.ID, UserID: owner.ID})
+		assert.NoError(t, err, "the other user's tag should still exist")
+	})
+}
+
 func TestCollectionsCRUD(t *testing.T) {
 	pool := dbtest.Setup(t)
 
