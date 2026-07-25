@@ -2272,3 +2272,54 @@ since those are internal API calls that never appear in an address bar.
   would produce (`/collections/zebra/side-dishes`), not just the leaf segment,
   by threading the accumulated parent path down through the recursive
   tree-rendering snippet alongside the existing `depth` parameter.
+
+## Phase 12 (Dashboard visual design pass)
+
+Picks up the item explicitly punted at the end of Phase 6: reconciling the
+dashboard's placeholder `app.scss` (copy-pasted from the extension popup)
+against the marketing site's ledger/brass/stamp palette into an actual design
+system. Scoped screen by screen, mockup-first per screen before any real
+component changes, starting with the shared foundation and `AppHeader` since
+it's on every screen. See `DESIGN_SYSTEM.md` (new this phase) for the resulting
+reference — colors, type roles, breakpoints, and patterns — kept separate from
+this phase-history entry and from `DESIGN.md`'s architecture-level scope on
+purpose, so a screen's visual work can be looked up without reading a phase
+narrative first.
+
+### What exists now
+
+- **`src/styles/_tokens.scss`/`_typography.scss`/`_mixins.scss`** (new): the
+  dashboard's color tokens (unchanged from the Phase 6 placeholder, plus one new
+  `--brass` label accent from the marketing site's palette), three font roles
+  (Fraunces/IBM Plex Mono/system sans, self-hosted via `@fontsource`), and
+  breakpoint variables/mixins. `app.scss` now just imports these plus base
+  resets, instead of carrying the placeholder values directly.
+- **`AppHeader.svelte`**: active nav-link highlighting via
+  `svelte-spa-router/active`, aware of each section's drill-down routes (its own
+  `path` regex per link, not just an exact match — Library also matches
+  `/pages/:id`/`/captures/:id`, Collections also matches `/collections/*`, Tags
+  also matches `/tags/:slug`); a real mobile nav disclosure (the header had zero
+  responsive handling before this phase); icon-only sign-out and a
+  `Menu`/`X`-swapping nav toggle via `@lucide/svelte`.
+- **`@lucide/svelte`** adopted for dashboard icons generally, not just this
+  screen — see `DESIGN_SYSTEM.md`'s Icons section for the actual usage pattern.
+- **Stamp motif** (the extension popup's rotated bordered badge, also on the
+  marketing site's seal) was explored for reuse on the dashboard (Queue/job
+  status was the obvious candidate) and explicitly dropped — extension-only for
+  now, see `DESIGN_SYSTEM.md`.
+- **Dark mode toggle**: discussed, not built. Leaning toward a `Settings`-screen
+  preference (system/light/dark) matching the existing `language` setting's
+  exact shape (`user_settings` nullable column, same upsert, same
+  automatic-plus-explicit-options `<select>`) rather than a header quick-toggle
+  — the header already holds nav + account, and this is a set-once preference
+  rather than something reached for every session, the same profile `Settings`
+  already exists for. Flagged as backend work and picked up separately when the
+  `Settings` screen's own visual pass comes around; see `DESIGN_SYSTEM.md`'s
+  Open Items.
+
+### What's left
+
+The rest of the dashboard's screens, one at a time, mockup-first: Login/Setup
+next, then Library, PageDetail, the Collections/Tags family, Devices/Queue/
+Settings. `DESIGN_SYSTEM.md` gets updated in place as new patterns come up,
+rather than waiting until the whole pass is done.

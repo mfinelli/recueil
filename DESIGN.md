@@ -3535,6 +3535,21 @@ README that can drift out of sync with the architecture decisions around it.
   on top of the extension's own `blockScripts: true` capture setting, since the
   response is served same-origin with the dashboard).
 
+- **Fonts and icons** (visual-pass tooling, Phase 12): `@fontsource/fraunces`
+  and `@fontsource/ibm-plex-mono` self-host the dashboard's two non-body font
+  families rather than pulling from a CDN — the dashboard is the authenticated
+  half of a self-hosted tool, unlike the marketing site's public page.
+  `@lucide/svelte` (the current official package; not the deprecated
+  `lucide-svelte` v0 name) provides icons via per-icon subpath imports, with
+  app-wide size/stroke-width defaults set once through its own `setLucideProps`
+  context API rather than a local wrapper component. Same category as
+  `chi`/`cobra`/`viper` above — a concrete tooling choice, not an architectural
+  one. The actual design tokens/patterns these support (color palette,
+  typography roles, breakpoints, icon usage conventions) live in the new
+  `DESIGN_SYSTEM.md`, not here — that content is a living reference meant to be
+  read while building a screen, a different shape than this section's own
+  tooling-choice log.
+
 This section is expected to keep growing as the extension, dashboard, and CLI
 are built out.
 
