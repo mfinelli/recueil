@@ -98,6 +98,8 @@
   "collections_delete_error": "failed to delete collection",
   "collections_add_subcollection": "+ Sub-collection",
   "collections_rename": "Rename",
+  "collections_slug_preview": "URL: /collections/{path}",
+  "collections_description_placeholder": "Description (optional)",
   "collections_subcollection_placeholder": "Sub-collection name…",
   "collections_new_top_level_placeholder": "New top-level collection…",
   "collections_no_collections": "No collections yet.",

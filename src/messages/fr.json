@@ -98,6 +98,8 @@
   "collections_delete_error": "échec de la suppression de la collection",
   "collections_add_subcollection": "+ Sous-collection",
   "collections_rename": "Renommer",
+  "collections_slug_preview": "URL : /collections/{path}",
+  "collections_description_placeholder": "Description (facultatif)",
   "collections_subcollection_placeholder": "Nom de la sous-collection…",
   "collections_new_top_level_placeholder": "Nouvelle collection de premier niveau…",
   "collections_no_collections": "Aucune collection pour le moment.",

@@ -222,7 +222,7 @@ describe("Collections", () => {
     expect(await screen.findByText("Child")).toBeTruthy();
   });
 
-  it("renames a collection", async () => {
+  it("renames a collection, re-deriving the slug from the new name by default", async () => {
     mockLoad([zebra]);
     render(Collections);
 
@@ -230,16 +230,78 @@ describe("Collections", () => {
     await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
 
     const renameInput = within(row).getByDisplayValue("Zebra");
-    apiJSONMock.mockResolvedValueOnce({ ...zebra, name: "Zorse" });
+    apiJSONMock.mockResolvedValueOnce({
+      ...zebra,
+      name: "Zorse",
+      slug: "zorse",
+    });
     await fireEvent.input(renameInput, { target: { value: "Zorse" } });
     await fireEvent.click(within(row).getByRole("button", { name: "Save" }));
 
     expect(apiJSONMock).toHaveBeenCalledWith("/collections/1", {
       method: "PATCH",
-      body: { name: "Zorse" },
+      body: { name: "Zorse", description: "" },
     });
     expect(await screen.findByText("Zorse")).toBeTruthy();
     expect(screen.queryByText("Zebra")).toBeNull();
+  });
+
+  it("pre-fills the description field with the collection's existing description", async () => {
+    mockLoad([{ ...zebra, description: "Stripy horses." }]);
+    render(Collections);
+
+    const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
+    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+
+    expect(within(row).getByDisplayValue("Stripy horses.")).toBeTruthy();
+  });
+
+  it("shows a live slug preview that follows the name, including the parent path for a nested collection", async () => {
+    mockLoad([zebra, zebraSub]);
+    render(Collections);
+
+    const row = (await screen.findByText("Sub")).closest("li") as HTMLElement;
+    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+
+    const renameInput = within(row).getByDisplayValue("Sub");
+    await fireEvent.input(renameInput, { target: { value: "Side Dishes" } });
+
+    expect(
+      within(row).getByRole("button", {
+        name: "URL: /collections/zebra/side-dishes",
+      }),
+    ).toBeTruthy();
+  });
+
+  it("sends an explicit slug and description once edited", async () => {
+    mockLoad([zebra]);
+    render(Collections);
+
+    const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
+    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "URL: /collections/zebra" }),
+    );
+
+    const slugInput = within(row).getByPlaceholderText("custom-slug");
+    await fireEvent.input(slugInput, { target: { value: "stripes" } });
+    const descriptionInput = within(row).getByPlaceholderText(
+      "Description (optional)",
+    );
+    await fireEvent.input(descriptionInput, {
+      target: { value: "Stripy horses." },
+    });
+    apiJSONMock.mockResolvedValueOnce({
+      ...zebra,
+      slug: "stripes",
+      description: "Stripy horses.",
+    });
+    await fireEvent.click(within(row).getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/collections/1", {
+      method: "PATCH",
+      body: { name: "Zebra", description: "Stripy horses.", slug: "stripes" },
+    });
   });
 
   it("deletes a leaf collection after a simple confirmation", async () => {
