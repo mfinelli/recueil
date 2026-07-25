@@ -32,7 +32,10 @@ CREATE TABLE collections (
   user_id BIGINT NOT NULL,
   parent_id BIGINT,
   name TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  description TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT collections_pkey PRIMARY KEY (id),
   CONSTRAINT collections_user_id_fkey FOREIGN KEY (user_id)
     REFERENCES users(id) ON DELETE CASCADE,
@@ -40,10 +43,21 @@ CREATE TABLE collections (
     REFERENCES collections(id) ON DELETE CASCADE
 );
 
+-- Slug uniqueness is scoped the same way as name uniqueness (per parent,
+-- per user) and for the same reason: two partial indexes rather than one
+-- constraint, since parent_id is nullable and Postgres treats NULL as
+-- distinct from itself. Name and slug are checked independently (four
+-- indexes, not one compound pair) so a name collision and a slug collision
+-- each surface as their own clear conflict rather than one compound index
+-- producing an ambiguous "the pair wasn't unique" error.
 CREATE UNIQUE INDEX collections_user_id_name_top_level_key
   ON collections(user_id, name) WHERE parent_id IS NULL;
+CREATE UNIQUE INDEX collections_user_id_slug_top_level_key
+  ON collections(user_id, slug) WHERE parent_id IS NULL;
 CREATE UNIQUE INDEX collections_user_id_parent_id_name_key
   ON collections(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
+CREATE UNIQUE INDEX collections_user_id_parent_id_slug_key
+  ON collections(user_id, parent_id, slug) WHERE parent_id IS NOT NULL;
 
 CREATE INDEX idx_collections_user_id ON collections(user_id);
 CREATE INDEX idx_collections_parent_id ON collections(parent_id);
