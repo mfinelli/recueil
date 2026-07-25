@@ -101,6 +101,18 @@ generic mobile content, give it its own breakpoint variable the way `AppHeader`
 did, rather than force-fitting it to an existing one or adding ad hoc `@media`
 queries with hardcoded widths.
 
+### Base reset
+
+`app.scss` carries a small hand-rolled reset rather than a library — a generic
+reset's opinions would mostly need overriding anyway to match this project's own
+tokens/type roles. Currently covers: `box-sizing: border-box` globally, form
+elements (`input`/`button`/`textarea`/`select`) inheriting font/color instead of
+the browser's UI font, `textarea` vertical resize, `button:disabled` cursor, and
+`img`/`video`/`canvas`/`svg` defaulting to `display: block` + `max-width: 100%`
+(avoids the stray inline-gap and keeps media from overflowing on narrow
+screens). Grows opportunistically as new element types actually show up in a
+screen, not fleshed out ahead of need.
+
 ## Patterns
 
 ### Shared mixins (`src/styles/_mixins.scss`)
@@ -145,6 +157,14 @@ pattern on this dashboard is to put the accessible name on the _enclosing_
 interactive element (a button's `aria-label`) and leave the icon itself
 decorative, rather than labelling the icon directly.
 
+**One exception:** `AppHeader`'s nav-toggle button is a hand-built three-bar
+hamburger (plain `<span>`s + CSS transforms), not a Lucide icon — it's the one
+place on the dashboard that needs the classic animated morph into an X, which
+requires both states to share the same three shapes so they can animate into
+each other. Two separate icon glyphs can only cross-fade as a pair, not morph
+line-by-line. Every other icon still goes through `@lucide/svelte`; don't reach
+for a hand-built icon elsewhere without a similarly concrete animation reason.
+
 ### Active nav link
 
 `svelte-spa-router/active`'s `use:active` action. Default usage (no options)
@@ -185,14 +205,14 @@ just because it exists elsewhere in the product.
 
 ## Screen status
 
-| Screen                         | Status                                                      |
-| ------------------------------ | ----------------------------------------------------------- |
-| `AppHeader` (shared)           | Done — active link, mobile disclosure, icon toggle/sign-out |
-| Login / Setup                  | Not started                                                 |
-| Library                        | Not started                                                 |
-| PageDetail                     | Not started                                                 |
-| Collections / CollectionDetail | Not started                                                 |
-| Tags / TagDetail               | Not started                                                 |
-| Devices                        | Not started                                                 |
-| Queue                          | Not started                                                 |
-| Settings                       | Not started                                                 |
+| Screen                         | Status                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out |
+| Login / Setup                  | Not started                                                                     |
+| Library                        | Not started                                                                     |
+| PageDetail                     | Not started                                                                     |
+| Collections / CollectionDetail | Not started                                                                     |
+| Tags / TagDetail               | Not started                                                                     |
+| Devices                        | Not started                                                                     |
+| Queue                          | Not started                                                                     |
+| Settings                       | Not started                                                                     |

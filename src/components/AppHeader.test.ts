@@ -100,17 +100,21 @@ describe("AppHeader", () => {
     expect(pushMock).toHaveBeenCalledWith("/login");
   });
 
-  it("toggles the mobile nav disclosure open and closed", async () => {
-    render(AppHeader);
+  it("toggles the mobile nav disclosure open and closed, morphing the hamburger", async () => {
+    const { container } = render(AppHeader);
 
     const toggle = screen.getByRole("button", { name: "Menu" });
+    const hamburger = container.querySelector(".hamburger");
     expect(toggle).toHaveProperty("ariaExpanded", "false");
+    expect(hamburger?.classList.contains("open")).toBe(false);
 
     await fireEvent.click(toggle);
     expect(toggle).toHaveProperty("ariaExpanded", "true");
+    expect(hamburger?.classList.contains("open")).toBe(true);
 
     await fireEvent.click(toggle);
     expect(toggle).toHaveProperty("ariaExpanded", "false");
+    expect(hamburger?.classList.contains("open")).toBe(false);
   });
 
   it("closes the mobile nav disclosure when a nav link is clicked", async () => {

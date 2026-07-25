@@ -51,3 +51,36 @@ h3 {
 a {
   color: inherit;
 }
+
+// Form elements don't inherit typography by default in any browser --
+// without this every <input>/<button>/<textarea>/<select> on Login/Setup's
+// forms (and everywhere else) would render in the browser's own UI font
+// instead of $font-body.
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+// Images/video/canvas/svg default to inline display, which leaves a stray
+// gap underneath from the line-box they sit in -- relevant here since
+// Library/PageDetail render thumbnails and favicons. max-width keeps them
+// from overflowing their container on narrow screens (see the responsive
+// requirement noted when this pass started).
+img,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
+}

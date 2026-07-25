@@ -19,8 +19,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { link, push } from "svelte-spa-router";
   import active from "svelte-spa-router/active";
   import LogOut from "@lucide/svelte/icons/log-out";
-  import Menu from "@lucide/svelte/icons/menu";
-  import X from "@lucide/svelte/icons/x";
   import { session } from "../lib/session.svelte";
   import { m } from "../paraglide/messages";
 
@@ -61,11 +59,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       aria-label={m.nav_toggle()}
       onclick={() => (navOpen = !navOpen)}
     >
-      {#if navOpen}
-        <X />
-      {:else}
-        <Menu />
-      {/if}
+      <span class="hamburger" class:open={navOpen} aria-hidden="true">
+        <span class="bar"></span>
+        <span class="bar"></span>
+        <span class="bar"></span>
+      </span>
     </button>
   </div>
 
@@ -145,6 +143,64 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
     &:focus-visible {
       @include mix.focus-ring;
+    }
+  }
+
+  // Hand-built rather than swapping between two @lucide/svelte icons -- the
+  // classic 3-bars-morph-to-X effect needs both states built from the same
+  // three shapes so they can animate into each other; two unrelated icon
+  // glyphs can only cross-fade as a pair, not morph line-by-line.
+  //
+  // Sized to match the 18px/2px global icon defaults set via
+  // setLucideProps in App.svelte, so it reads as the same weight as every
+  // other icon even though it isn't one.
+  .hamburger {
+    position: relative;
+    display: inline-block;
+    width: 18px;
+    height: 14px;
+  }
+
+  .bar {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    border-radius: 1px;
+    background: currentColor;
+    transition:
+      top 0.2s ease,
+      transform 0.2s ease,
+      opacity 0.2s ease;
+  }
+
+  .bar:nth-child(1) {
+    top: 0;
+  }
+  .bar:nth-child(2) {
+    top: 6px;
+  }
+  .bar:nth-child(3) {
+    top: 12px;
+  }
+
+  .hamburger.open {
+    .bar:nth-child(1) {
+      top: 6px;
+      transform: rotate(45deg);
+    }
+    .bar:nth-child(2) {
+      opacity: 0;
+    }
+    .bar:nth-child(3) {
+      top: 6px;
+      transform: rotate(-45deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bar {
+      transition: none;
     }
   }
 
