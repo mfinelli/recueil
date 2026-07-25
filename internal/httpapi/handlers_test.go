@@ -1742,11 +1742,11 @@ func TestListTags(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		other := dbtest.CreateUser(t, pool, "member")
 		q := db.New(pool)
-		_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: other.ID, Name: "not-mine"})
+		_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: other.ID, Name: "not-mine", Slug: "not-mine"})
 		require.NoError(t, err)
-		_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "zebra"})
+		_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "zebra", Slug: "zebra"})
 		require.NoError(t, err)
-		_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "aardvark"})
+		_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "aardvark", Slug: "aardvark"})
 		require.NoError(t, err)
 
 		server, _ := newTestServer(t, pool, unreachable)
@@ -1789,9 +1789,11 @@ func TestAddAndRemovePageTag(t *testing.T) {
 		var tag struct {
 			ID   int64  `json:"id"`
 			Name string `json:"name"`
+			Slug string `json:"slug"`
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&tag))
 		assert.Equal(t, "recipes", tag.Name)
+		assert.Equal(t, "recipes", tag.Slug)
 
 		detailResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
 		var detail struct {
@@ -1834,6 +1836,31 @@ func TestAddAndRemovePageTag(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
+
+	t.Run("a tag whose slug collides with a differently-named tag returns 409", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/tag-collision")
+		q := db.New(pool)
+		_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "Go!", Slug: "go"})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		// "Go!" and "Go?" transliterate to the same slug -- this is
+		// deliberately NOT auto-suffixed for the manual add-tag flow
+		// (see UpsertTag's own doc comment): the person sees an error
+		// and can pick a different name, rather than getting a silently
+		// suffixed slug they never asked for.
+		req, err := http.NewRequest(http.MethodPost, server.URL+fmt.Sprintf("/api/pages/%d/tags", page.ID),
+			strings.NewReader(`{"name":"Go?"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusConflict, resp.StatusCode)
+	})
 }
 
 func TestCollectionsCRUD(t *testing.T) {
@@ -1856,10 +1883,12 @@ func TestCollectionsCRUD(t *testing.T) {
 		var collection struct {
 			ID       int64  `json:"id"`
 			Name     string `json:"name"`
+			Slug     string `json:"slug"`
 			ParentID *int64 `json:"parent_id"`
 		}
 		require.NoError(t, json.NewDecoder(createResp.Body).Decode(&collection))
 		assert.Equal(t, "Reading List", collection.Name)
+		assert.Equal(t, "reading-list", collection.Slug)
 		assert.Nil(t, collection.ParentID)
 
 		listResp := requestWithCookie(t, server, http.MethodGet, "/api/collections", cookie)
@@ -1882,9 +1911,11 @@ func TestCollectionsCRUD(t *testing.T) {
 		assert.Equal(t, http.StatusOK, renameResp.StatusCode)
 		var renamed struct {
 			Name string `json:"name"`
+			Slug string `json:"slug"`
 		}
 		require.NoError(t, json.NewDecoder(renameResp.Body).Decode(&renamed))
 		assert.Equal(t, "Books", renamed.Name)
+		assert.Equal(t, "books", renamed.Slug, "renaming re-derives the slug from the new name by default")
 
 		delResp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/collections/%d", collection.ID), cookie)
 		assert.Equal(t, http.StatusNoContent, delResp.StatusCode)
@@ -1917,12 +1948,75 @@ func TestCollectionsCRUD(t *testing.T) {
 		assert.Equal(t, http.StatusConflict, secondResp.StatusCode)
 	})
 
+	t.Run("an explicit slug is honored instead of the auto-generated one", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections",
+			strings.NewReader(`{"name":"Reading List","slug":"reading"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		var collection struct {
+			Slug string `json:"slug"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&collection))
+		assert.Equal(t, "reading", collection.Slug)
+	})
+
+	t.Run("an invalid explicit slug returns 400", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections",
+			strings.NewReader(`{"name":"Reading List","slug":"Not Valid!"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("a slug collision under a different name still returns 409", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		firstReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections",
+			strings.NewReader(`{"name":"Go!"}`))
+		require.NoError(t, err)
+		firstReq.Header.Set("Content-Type", "application/json")
+		firstReq.AddCookie(cookie)
+		firstResp, err := http.DefaultClient.Do(firstReq)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusCreated, firstResp.StatusCode)
+
+		// "Go!" and "Go?" are different names but transliterate to the
+		// same slug ("go") -- a genuine slug-only collision, distinct
+		// from the plain duplicate-name case above.
+		secondReq, err := http.NewRequest(http.MethodPost, server.URL+"/api/collections",
+			strings.NewReader(`{"name":"Go?"}`))
+		require.NoError(t, err)
+		secondReq.Header.Set("Content-Type", "application/json")
+		secondReq.AddCookie(cookie)
+		secondResp, err := http.DefaultClient.Do(secondReq)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusConflict, secondResp.StatusCode)
+	})
+
 	t.Run("nesting under another user's collection id is rejected", func(t *testing.T) {
 		owner := dbtest.CreateUser(t, pool, "member")
 		requester := dbtest.CreateUser(t, pool, "member")
 		q := db.New(pool)
 		otherCollection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
-			UserID: owner.ID, Name: "Owner's Collection",
+			UserID: owner.ID, Name: "Owner's Collection", Slug: "owners-collection",
 		})
 		require.NoError(t, err)
 
@@ -1944,7 +2038,7 @@ func TestCollectionsCRUD(t *testing.T) {
 		requester := dbtest.CreateUser(t, pool, "member")
 		q := db.New(pool)
 		collection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
-			UserID: owner.ID, Name: "Not Yours",
+			UserID: owner.ID, Name: "Not Yours", Slug: "not-yours",
 		})
 		require.NoError(t, err)
 
@@ -1973,7 +2067,7 @@ func TestPageCollectionMembership(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/collect-me")
 		q := db.New(pool)
 		collection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
-			UserID: user.ID, Name: "My Collection",
+			UserID: user.ID, Name: "My Collection", Slug: "my-collection",
 		})
 		require.NoError(t, err)
 
@@ -2028,7 +2122,7 @@ func TestPageCollectionMembership(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/my-page-their-collection")
 		q := db.New(pool)
 		theirCollection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
-			UserID: otherOwner.ID, Name: "Not Yours Either",
+			UserID: otherOwner.ID, Name: "Not Yours Either", Slug: "not-yours-either",
 		})
 		require.NoError(t, err)
 

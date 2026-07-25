@@ -41,6 +41,7 @@ import (
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/queueitems"
+	"github.com/mfinelli/recueil/internal/slug"
 )
 
 type Server struct {
@@ -774,6 +775,26 @@ func textOrNull(s string) pgtype.Text {
 	return pgtype.Text{String: s, Valid: s != ""}
 }
 
+// resolveSlug decides what slug to store for a tag/collection create or
+// rename: a caller-supplied slug (from the dashboard's optional,
+// initially-collapsed slug field) is used as-is once validated, otherwise
+// one is auto-generated from name. Returns ok=false when neither produces
+// a usable value -- an explicit slug that fails slug.Valid, or an
+// auto-generation attempt that came back empty because name has no Latin
+// skeleton at all (see slug.Generate's own doc comment) -- so the caller
+// can surface a 400 asking the person to type their own slug rather than
+// writing something empty or malformed.
+func resolveSlug(name string, explicit *string) (string, bool) {
+	if explicit != nil {
+		if !slug.Valid(*explicit) {
+			return "", false
+		}
+		return *explicit, true
+	}
+	generated := slug.Generate(name)
+	return generated, generated != ""
+}
+
 type pageResponse struct {
 	ID                 int64     `json:"id"`
 	NormalizedURL      string    `json:"normalized_url"`
@@ -1338,6 +1359,7 @@ func (s *Server) ListTextSearchConfigs(w http.ResponseWriter, r *http.Request) {
 type tagResponse struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+	Slug string `json:"slug"`
 }
 
 // GET /api/tags: the user's full tag vocabulary, for the tags management
@@ -1356,7 +1378,7 @@ func (s *Server) ListTags(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]tagResponse, 0, len(tags))
 	for _, t := range tags {
-		resp = append(resp, tagResponse{ID: t.ID, Name: t.Name})
+		resp = append(resp, tagResponse{ID: t.ID, Name: t.Name, Slug: t.Slug})
 	}
 	writeJSON(w, http.StatusOK, map[string][]tagResponse{"tags": resp})
 }
@@ -1369,6 +1391,13 @@ type addPageTagRequest struct {
 // then links it to the page with source "manual" -- the same source
 // value a person applying a tag through the dashboard should carry,
 // distinguishing it from the AI enrichment job's own tags.
+//
+// There's no slug field on this request -- it's the quick inline
+// "add tag to page" flow, not the fuller tag-management screen -- so the
+// slug is always auto-generated from name here. A name that can't
+// transliterate to anything (see slug.Generate's own doc comment) is
+// rejected with a 400 rather than silently stored empty; the same is
+// true of a genuine collision.
 func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -1385,6 +1414,11 @@ func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	candidateSlug, ok := resolveSlug(req.Name, nil)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "could not derive a URL-friendly slug from that tag name")
+		return
+	}
 	ctx := r.Context()
 
 	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
@@ -1393,10 +1427,10 @@ func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tag, err := s.Queries.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: req.Name})
+	tag, err := s.Queries.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: req.Name, Slug: candidateSlug})
 	if err != nil {
 		log.Printf("warning: failed to upsert tag for user %d: %v", user.ID, err)
-		writeError(w, http.StatusInternalServerError, "internal error")
+		writeError(w, http.StatusConflict, "a different tag already uses that URL")
 		return
 	}
 
@@ -1406,7 +1440,7 @@ func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, tagResponse{ID: tag.ID, Name: tag.Name})
+	writeJSON(w, http.StatusCreated, tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug})
 }
 
 // DELETE /api/pages/{id}/tags/{tagId}
@@ -1454,14 +1488,25 @@ func int8OrNil(v pgtype.Int8) *int64 {
 }
 
 type collectionResponse struct {
-	ID        int64     `json:"id"`
-	ParentID  *int64    `json:"parent_id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id"`
+	ParentID    *int64    `json:"parent_id"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	Description *string   `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func collectionResponseFromCollection(c *db.Collection) collectionResponse {
-	return collectionResponse{ID: c.ID, ParentID: int8OrNil(c.ParentID), Name: c.Name, CreatedAt: c.CreatedAt.Time}
+	return collectionResponse{
+		ID:          c.ID,
+		ParentID:    int8OrNil(c.ParentID),
+		Name:        c.Name,
+		Slug:        c.Slug,
+		Description: textOrNil(c.Description),
+		CreatedAt:   c.CreatedAt.Time,
+		UpdatedAt:   c.UpdatedAt.Time,
+	}
 }
 
 // GET /api/collections: flat list; the dashboard reconstructs the tree
@@ -1487,16 +1532,23 @@ func (s *Server) ListCollections(w http.ResponseWriter, r *http.Request) {
 }
 
 type createCollectionRequest struct {
-	Name     string `json:"name"`
-	ParentID *int64 `json:"parent_id"`
+	Name        string  `json:"name"`
+	ParentID    *int64  `json:"parent_id"`
+	Slug        *string `json:"slug"`
+	Description *string `json:"description"`
 }
 
 // POST /api/collections. When parent_id is given, it's verified to
 // belong to this user before use -- collections.parent_id's own FK has
 // no user_id check, so without this a request could nest a new
-// collection under another user's collection id. A duplicate name under
-// the same parent (top-level or not) collides with one of the schema's
-// two partial unique indexes and surfaces here as a 409.
+// collection under another user's collection id. A duplicate name or
+// slug under the same parent (top-level or not) collides with one of the
+// schema's four partial unique indexes and surfaces here as a 409.
+//
+// slug is optional: the dashboard's create form generates and shows a
+// preview from name, only sending an explicit value once the person
+// opens the (initially collapsed) slug field and edits it themselves.
+// See resolveSlug for how the two are reconciled.
 func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -1506,6 +1558,11 @@ func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeJSON[createCollectionRequest](r)
 	if err != nil || req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	candidateSlug, ok := resolveSlug(req.Name, req.Slug)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "a valid slug is required (could not derive one automatically from that name)")
 		return
 	}
 	ctx := r.Context()
@@ -1519,11 +1576,17 @@ func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request) {
 		parentID = pgtype.Int8{Int64: *req.ParentID, Valid: true}
 	}
 
+	description := ""
+	if req.Description != nil {
+		description = *req.Description
+	}
+
 	collection, err := s.Queries.CreateCollection(ctx, db.CreateCollectionParams{
 		UserID: user.ID, ParentID: parentID, Name: req.Name,
+		Slug: candidateSlug, Description: textOrNull(description),
 	})
 	if err != nil {
-		writeError(w, http.StatusConflict, "a collection with that name already exists here")
+		writeError(w, http.StatusConflict, "a collection with that name or slug already exists here")
 		return
 	}
 
@@ -1531,10 +1594,19 @@ func (s *Server) CreateCollection(w http.ResponseWriter, r *http.Request) {
 }
 
 type renameCollectionRequest struct {
-	Name string `json:"name"`
+	Name        string  `json:"name"`
+	Slug        *string `json:"slug"`
+	Description *string `json:"description"`
 }
 
-// PATCH /api/collections/{id}
+// PATCH /api/collections/{id}. Takes the same three fields as create --
+// name, optional slug override, optional description -- since the
+// dashboard's edit form always submits all of them together in one
+// round trip. Renaming re-derives the slug from the new name by default
+// (see resolveSlug); a changed slug simply breaks any previously
+// bookmarked deep link to this collection, which was a deliberate,
+// discussed tradeoff, not an oversight -- there's no redirect/history
+// mechanism here.
 func (s *Server) RenameCollection(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -1551,14 +1623,25 @@ func (s *Server) RenameCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	candidateSlug, ok := resolveSlug(req.Name, req.Slug)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "a valid slug is required (could not derive one automatically from that name)")
+		return
+	}
+	description := ""
+	if req.Description != nil {
+		description = *req.Description
+	}
 
-	collection, err := s.Queries.RenameCollection(r.Context(), db.RenameCollectionParams{Name: req.Name, ID: id, UserID: user.ID})
+	collection, err := s.Queries.RenameCollection(r.Context(), db.RenameCollectionParams{
+		Name: req.Name, Slug: candidateSlug, Description: textOrNull(description), ID: id, UserID: user.ID,
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "collection not found")
 			return
 		}
-		writeError(w, http.StatusConflict, "a collection with that name already exists here")
+		writeError(w, http.StatusConflict, "a collection with that name or slug already exists here")
 		return
 	}
 

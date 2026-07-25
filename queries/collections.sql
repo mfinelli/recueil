@@ -19,10 +19,11 @@
 -- name: CreateCollection :one
 -- No upsert here, unlike UpsertTag/UpsertPage -- collections are created
 -- by an explicit user action (not derived from ingestion), so a duplicate
--- name under the same parent should surface as a real conflict for the
--- caller to turn into a 409, not be silently merged into the existing row.
-INSERT INTO collections (user_id, parent_id, name)
-VALUES ($1, $2, $3)
+-- name or slug under the same parent should surface as a real conflict for
+-- the caller to turn into a 409, not be silently merged into the existing
+-- row.
+INSERT INTO collections (user_id, parent_id, name, slug, description)
+VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: RenameCollection :one
@@ -30,8 +31,12 @@ RETURNING *;
 -- belt-and-suspenders pattern as the D1 token-revoke cross-check: a caller
 -- bug that passes the wrong id can't rename another user's collection. Zero
 -- rows back means either it doesn't exist or it isn't this user's.
-UPDATE collections SET name = $1
-WHERE id = $2 AND user_id = $3
+--
+-- Takes slug and description alongside name so a rename is one round trip,
+-- not three -- the dashboard's edit form always has all three fields open
+-- together.
+UPDATE collections SET name = $1, slug = $2, description = $3, updated_at = now()
+WHERE id = $4 AND user_id = $5
 RETURNING *;
 
 -- name: DeleteCollection :execrows

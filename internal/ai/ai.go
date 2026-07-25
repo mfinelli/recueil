@@ -62,6 +62,7 @@ import (
 	"github.com/openai/openai-go/v3/option"
 
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/slug"
 )
 
 // defaultBatchLimit bounds how many jobs a single RunOnce call claims --
@@ -366,6 +367,19 @@ func parseTags(response string) []string {
 // internal/screenshot.Runner.commitDone. AddPageTag's own ON CONFLICT DO
 // NOTHING means a tag colliding with one the user already applied manually is
 // a silent no-op here, never an error.
+//
+// Each suggested tag is skipped -- not failed, and not the whole job --
+// when it can't get a usable slug: either slug.Generate can't derive one
+// at all (a name with no Latin skeleton, see its own doc comment), or the
+// derived slug collides with some other, differently-named tag's. Both
+// cases are checked with TagSlugTaken *before* calling UpsertTag, not by
+// attempting the insert and catching the resulting constraint-violation
+// error -- this whole loop runs inside one transaction (tx, below), and
+// Postgres aborts an entire transaction on any statement error, not just
+// the offending statement, so letting UpsertTag itself fail here would
+// take the AI summary and every other tag in this job down with it, not
+// just the one problem tag. See UpsertTag's own doc comment for the same
+// reasoning from the query's side.
 func (r *Runner) commitDone(ctx context.Context, job db.ClaimDueAIJobsRow, summary string, tags []string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -384,7 +398,24 @@ func (r *Runner) commitDone(ctx context.Context, job db.ClaimDueAIJobsRow, summa
 	}
 
 	for _, name := range tags {
-		tag, err := qtx.UpsertTag(ctx, db.UpsertTagParams{UserID: job.UserID, Name: name})
+		candidateSlug := slug.Generate(name)
+		if candidateSlug == "" {
+			r.logger.WarnContext(ctx, "ai: skipping suggested tag with no derivable slug",
+				"user_id", job.UserID, "name", name)
+			continue
+		}
+
+		taken, err := qtx.TagSlugTaken(ctx, db.TagSlugTakenParams{UserID: job.UserID, Slug: candidateSlug, Name: name})
+		if err != nil {
+			return fmt.Errorf("checking tag slug availability for %q: %w", name, err)
+		}
+		if taken {
+			r.logger.WarnContext(ctx, "ai: skipping suggested tag, slug already in use by a different tag",
+				"user_id", job.UserID, "name", name, "slug", candidateSlug)
+			continue
+		}
+
+		tag, err := qtx.UpsertTag(ctx, db.UpsertTagParams{UserID: job.UserID, Name: name, Slug: candidateSlug})
 		if err != nil {
 			return fmt.Errorf("upserting tag %q: %w", name, err)
 		}

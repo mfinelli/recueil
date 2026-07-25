@@ -242,6 +242,7 @@ func TestRunner_RunOnce_TagCollidingWithManualTagIsANoOp(t *testing.T) {
 	tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{
 		UserID: mustGetPageUserID(t, q, capture.PageID),
 		Name:   "testing",
+		Slug:   "testing",
 	})
 	require.NoError(t, err)
 	require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{
@@ -269,6 +270,49 @@ func mustGetPageUserID(t *testing.T, q *db.Queries, pageID int64) int64 {
 	page, err := q.GetPageByID(context.Background(), pageID)
 	require.NoError(t, err)
 	return page.UserID
+}
+
+// The fake server's canned tag suggestions are fixed (see
+// fakeOpenAIServer), always including "testing" -- slug "testing". This
+// pre-creates a manually-applied tag with a *different* name that
+// transliterates to that same slug, so the AI's own attempt to create
+// "testing" hits TagSlugTaken's pre-check, not UpsertTag's name-conflict
+// path (that's TagCollidingWithManualTagIsANoOp, above) -- confirming the
+// job skips just that one suggested tag and still completes, rather than
+// the whole transaction aborting on the would-be constraint violation.
+func TestRunner_RunOnce_TagSlugCollidingWithDifferentlyNamedTagIsSkipped(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+
+	server := fakeOpenAIServer(t)
+	defer server.Close()
+
+	capture, _ := newDueAIJob(t, pool, "An article about testing.")
+
+	_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{
+		UserID: mustGetPageUserID(t, q, capture.PageID),
+		Name:   "Testing!",
+		Slug:   "testing",
+	})
+	require.NoError(t, err)
+
+	r := newRunner(t, pool, server.URL, 3)
+	require.NoError(t, r.RunOnce(context.Background()))
+
+	job, err := q.GetAIJobByCaptureID(context.Background(), capture.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "done", job.Status, "the AI job should still succeed despite the slug collision")
+
+	tags, err := q.ListPageTags(context.Background(), capture.PageID)
+	require.NoError(t, err)
+	var names []string
+	for _, tg := range tags {
+		names = append(names, tg.Name)
+	}
+	assert.NotContains(t, names, "testing", "the colliding suggestion should be skipped, not applied under a different tag's slug")
+	assert.Contains(t, names, "fake server", "the other two suggestions should still be applied normally")
+	assert.Contains(t, names, "chat completions", "the other two suggestions should still be applied normally")
 }
 
 func TestRunner_RunOnce_ReclaimsStaleProcessingJob(t *testing.T) {
