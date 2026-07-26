@@ -34,10 +34,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
      Capture rows now link to the in-app reader view (/captures/{id}) --
      the raw archived HTML itself still opens as a plain new-tab link, but
-     from inside that reader view now, not directly from this list. -->
+     from inside that reader view now, not directly from this list.
+
+     The language picker's own options are labeled in the dashboard's
+     current locale (lib/languageNames.ts), not the raw pg_ts_config name
+     GET /api/text-search-configs actually returns -- explicitly the
+     opposite direction from Settings' own language picker, which shows
+     each option self-named so you can recognize *your own* language among
+     others; here you're already reading the dashboard in your language and
+     labeling someone else's content, so every option is translated into
+     that same language. "simple" (not a real language, Postgres's own name
+     for "no language-specific stemming") is relabeled "Other" rather than
+     run through that translation at all. -->
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
+  import { languageDisplayName } from "../lib/languageNames";
+  import { getLocale } from "../paraglide/runtime";
   import AppHeader from "../components/AppHeader.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
@@ -678,7 +691,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                   updateCaptureLanguage(capture, e.currentTarget.value)}
               >
                 {#each languageOptions as lang (lang)}
-                  <option value={lang}>{lang}</option>
+                  <option value={lang}
+                    >{lang === "simple"
+                      ? m.pagedetail_language_other()
+                      : languageDisplayName(lang, getLocale())}</option
+                  >
                 {/each}
               </select>
             </label>

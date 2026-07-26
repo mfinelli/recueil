@@ -42,6 +42,14 @@ func TestExtractLanguage(t *testing.T) {
 		{"whitespace around the equals sign", `<html lang = "ja">`, "ja"},
 		{"no lang attribute at all", `<html><head></head></html>`, ""},
 		{"empty document", ``, ""},
+		{"unquoted value, no attributes after it", `<html lang=en><head></head></html>`, "en"},
+		{"unquoted value with a region subtag", `<html lang=pt-BR>`, "pt"},
+		{"unquoted value followed by another attribute", `<html lang=en class="no-js">`, "en"},
+		{"unquoted value, uppercase tag/attribute", `<HTML LANG=DE>`, "de"},
+		{
+			"a namespace-prefixed xmlns:lang attribute doesn't shadow the real one",
+			`<html xmlns:lang="x-default" lang="en">`, "en",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

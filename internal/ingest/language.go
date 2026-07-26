@@ -27,11 +27,24 @@ import (
 
 // languageTagPattern extracts the value of an <html lang="..."> attribute
 // -- the standard HTML5 way a page declares its own content language.
-// Deliberately a simple, tolerant pattern (case-insensitive, single or
-// double quotes) rather than a full HTML parser, matching this package's
-// existing extractTitle approach: extracting one well-known attribute
-// from already-trusted, already-captured HTML doesn't need one.
-var languageTagPattern = regexp.MustCompile(`(?is)<html[^>]+lang\s*=\s*["']([^"']+)["']`)
+// Deliberately a simple, tolerant pattern (case-insensitive, matching this
+// package's existing extractTitle approach: extracting one well-known
+// attribute from already-trusted, already-captured HTML doesn't need a
+// full parser) rather than one, but it does need to cover every value
+// syntax HTML5 itself actually allows, not just the quoted ones: an
+// unquoted attribute value (`lang=en`, no quotes at all) is just as valid
+// HTML5 as `lang="en"`/`lang='en'`, and real-world (especially minified)
+// pages use it. The three alternatives below cover double-quoted,
+// single-quoted, and unquoted (bounded by whitespace/`=`/`<`/`>`/backtick,
+// the actual HTML5 unquoted-attribute-value grammar) in that order, with
+// exactly one of the three capture groups populated depending on which
+// alternative matched -- see extractLanguage below for picking out
+// whichever one that was. `\b` before `lang` (rather than the previous
+// version's bare `lang`) also fixes a real, separate false-match: without
+// it, an `<html xmlns:lang="...">` namespace-prefixed attribute could
+// itself satisfy a bare `lang\s*=` match before ever reaching the real
+// `lang="..."` attribute later in the same tag.
+var languageTagPattern = regexp.MustCompile(`(?is)<html\b[^>]*\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>` + "`" + `]+))`)
 
 // postgresLanguageConfigs maps a BCP 47 / ISO 639-1 primary language
 // subtag (the part of an <html lang="..."> value before any "-", e.g.
@@ -92,7 +105,18 @@ func extractLanguage(htmlBytes []byte) string {
 	if m == nil {
 		return ""
 	}
-	tag := strings.ToLower(strings.TrimSpace(string(m[1])))
+	// Exactly one of the three quoted/quoted/unquoted alternatives
+	// actually matched (see languageTagPattern's own doc comment) --
+	// m[1]/m[2]/m[3] correspond to double-quoted/single-quoted/unquoted
+	// respectively, and the other two are empty.
+	var raw []byte
+	for _, group := range m[1:] {
+		if len(group) > 0 {
+			raw = group
+			break
+		}
+	}
+	tag := strings.ToLower(strings.TrimSpace(string(raw)))
 	primary, _, _ := strings.Cut(tag, "-")
 	return primary
 }

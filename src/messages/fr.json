@@ -175,6 +175,7 @@
   "pagedetail_remove_from_collection_error": "échec du retrait de la collection",
   "pagedetail_mirror_error": "échec de la mise à jour du paramètre de miroir",
   "pagedetail_language_error": "échec de la mise à jour de la langue",
+  "pagedetail_language_other": "Autre",
   "pagedetail_captures_heading": "Captures",
   "pagedetail_edit_title_aria": "Modifier le titre",
   "pagedetail_title_placeholder": "Titre",

@@ -544,6 +544,35 @@ describe("PageDetail", () => {
     expect(select).toHaveProperty("value", "fr");
   });
 
+  // The dashboard's own locale is "en" in every test in this file (no
+  // session/settings mocked, so getLocale() falls through to
+  // paraglide's baseLocale) -- these two assert on the *labels* shown
+  // for each <option>, not the underlying values (already covered
+  // above), which is the part lib/languageNames.ts and PageDetail's own
+  // "simple" special-case actually change. Unlike the tests above,
+  // these need real pg_ts_config names ("english", not "en") -- that's
+  // what lib/languageNames.ts's own CONFIG_TO_BCP47 map is keyed on,
+  // and what GET /api/text-search-configs actually returns.
+  it("labels each language option in the dashboard's own locale, not the raw pg_ts_config name", async () => {
+    render42({ languages: ["english", "french", "german"] });
+    const select = await screen.findByRole("combobox", { name: "Language" });
+
+    const labels = Array.from(select.querySelectorAll("option")).map(
+      (o) => o.textContent,
+    );
+    expect(labels).toEqual(["English", "French", "German"]);
+  });
+
+  it('relabels "simple" as "Other" rather than translating it as a language', async () => {
+    render42({ languages: ["english", "simple"] });
+    const select = await screen.findByRole("combobox", { name: "Language" });
+
+    const labels = Array.from(select.querySelectorAll("option")).map(
+      (o) => o.textContent,
+    );
+    expect(labels).toEqual(["English", "Other"]);
+  });
+
   it("edits the title, saving on success", async () => {
     render42();
     await screen.findByRole("heading", { name: "An example article" });
