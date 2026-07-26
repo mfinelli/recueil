@@ -210,3 +210,15 @@ export interface FailedJobsResponse {
   readability_jobs: FailedJob[];
   ai_jobs: FailedJob[];
 }
+
+// GET /info -- unauthenticated, unprefixed (not under /api, served
+// directly by internal/httpapi/router.go alongside /ping/health/metrics
+// via go.finelli.dev/healthchecks), so this doesn't go through
+// api.ts's apiJSON/apiFetch (both hardcode the /api prefix). commit is
+// already a short SHA (e.g. "acff9fd"), not a full 40-character hash --
+// nothing to truncate on the frontend.
+export interface InfoResponse {
+  version: string;
+  commit: string;
+  date: string;
+}

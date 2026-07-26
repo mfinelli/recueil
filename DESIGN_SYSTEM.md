@@ -249,6 +249,7 @@ generic page" states, not blank placeholder boxes.
 | Screen                         | Status                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------- |
 | `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out |
+| `Footer` (shared)              | Done — on every page via `App.svelte`, real version/commit from `GET /info`     |
 | Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
 | Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
 | PageDetail                     | Not started                                                                     |
