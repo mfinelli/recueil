@@ -200,6 +200,38 @@ Every password field (Login, Register ×2, Setup ×2) goes through the shared
 toggle (`Eye`/`EyeOff` from `@lucide/svelte`), consistent `aria-label` swap
 between the two states.
 
+### Empty and error states
+
+A centered icon above the message, not just text — `Archive` (muted,
+`--rule`-colored) for "nothing here yet" states, `AlertCircle` (`--accent`,
+dimmed) for load failures. Same icon Login/Register/Setup already use inline
+next to their error text, just larger (28px) and stacked above the message here
+since these states get a full block of space rather than sitting next to a form
+field.
+
+### Image fallbacks (favicon/thumbnail)
+
+Two independent rules, not one:
+
+- **Check the data before requesting the image.** `Page.favicon_path` is
+  `string | null` from the API — `null` means no favicon was ever captured, a
+  known state, not a failure. `PageList.svelte`'s `showFavicon()` checks this
+  before rendering the `<img>` at all, so a page with no favicon skips the
+  request entirely instead of always firing one and waiting for `onerror`.
+  Thumbnails don't have an equivalent field on `Page`, so they still rely on
+  `onerror` alone — there's nothing to check ahead of time there.
+- **Track each image type's failures independently.** A single id-keyed set
+  covering both favicon and thumbnail state (Phase 6's original shape) silently
+  breaks the moment one screen renders both images for the same page — grid view
+  showing a favicon alongside the thumbnail was what surfaced this.
+  `PageList.svelte` keeps `faviconLoadFailed` and `thumbnailLoadFailed` as two
+  separate `SvelteSet`s for exactly this reason.
+
+Fallback content: a small bordered `Globe` icon for a missing/broken favicon
+(list and grid both), the title's first letter in the display serif for a
+missing/broken thumbnail (grid only) — both are deliberate "this represents a
+generic page" states, not blank placeholder boxes.
+
 ## Open items
 
 - **Dark mode toggle**: currently automatic via `prefers-color-scheme` only, no
@@ -218,7 +250,7 @@ between the two states.
 | ------------------------------ | ------------------------------------------------------------------------------- |
 | `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out |
 | Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
-| Library                        | Not started                                                                     |
+| Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
 | PageDetail                     | Not started                                                                     |
 | Collections / CollectionDetail | Not started                                                                     |
 | Tags / TagDetail               | Not started                                                                     |
