@@ -81,6 +81,12 @@ describe("Login", () => {
     expect(link).toHaveProperty("hash", "#/register");
   });
 
+  it("doesn't render a forgot-password link (SHOW_FORGOT_PASSWORD is false until that feature exists)", () => {
+    render(Login);
+
+    expect(screen.queryByRole("link", { name: "Forgot?" })).toBeNull();
+  });
+
   it("submits the entered username/password and redirects to / on success", async () => {
     const loginSpy = vi.spyOn(session, "login").mockResolvedValue(undefined);
     render(Login);

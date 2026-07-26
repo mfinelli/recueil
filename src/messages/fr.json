@@ -18,6 +18,8 @@
   "common_add": "Ajouter",
   "common_username": "Nom d'utilisateur",
   "common_password": "Mot de passe",
+  "common_show_password": "Afficher le mot de passe",
+  "common_hide_password": "Masquer le mot de passe",
   "common_language": "Langue",
 
   "unit_bytes": "{n} o",
@@ -35,6 +37,7 @@
   "login_sign_in": "Se connecter",
   "login_register_prompt": "Vous n'avez pas de compte ?",
   "login_register_link": "S'inscrire",
+  "login_forgot_password": "Oublié ?",
 
   "register_subtitle": "Créez un compte pour commencer.",
   "register_confirm_password": "Confirmer le mot de passe",

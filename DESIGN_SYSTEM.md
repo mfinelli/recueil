@@ -193,6 +193,13 @@ dashboard (Queue/job status states are the obvious fit) but dropped. Revisit
 if/when the Queue screen's own design comes up, don't reach for it by default
 just because it exists elsewhere in the product.
 
+### Password fields
+
+Every password field (Login, Register ×2, Setup ×2) goes through the shared
+`src/components/PasswordInput.svelte` — bindable `value`, its own show/hide
+toggle (`Eye`/`EyeOff` from `@lucide/svelte`), consistent `aria-label` swap
+between the two states.
+
 ## Open items
 
 - **Dark mode toggle**: currently automatic via `prefers-color-scheme` only, no
@@ -202,13 +209,15 @@ just because it exists elsewhere in the product.
   lands it, applying the resolved theme needs to happen before first paint (the
   same place `App.svelte` currently resolves the locale, after `sessionReady`)
   to avoid a flash of the wrong theme.
+- **Password reset**: CLI-only for now rather than a self-service email flow.
+  Login's forgot-password link exists in the markup already, but gated off.
 
 ## Screen status
 
 | Screen                         | Status                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------- |
 | `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out |
-| Login / Setup                  | Not started                                                                     |
+| Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
 | Library                        | Not started                                                                     |
 | PageDetail                     | Not started                                                                     |
 | Collections / CollectionDetail | Not started                                                                     |

@@ -18,6 +18,8 @@
   "common_add": "Add",
   "common_username": "Username",
   "common_password": "Password",
+  "common_show_password": "Show password",
+  "common_hide_password": "Hide password",
   "common_language": "Language",
 
   "unit_bytes": "{n} B",
@@ -35,6 +37,7 @@
   "login_sign_in": "Sign in",
   "login_register_prompt": "Don't have an account?",
   "login_register_link": "Register",
+  "login_forgot_password": "Forgot?",
 
   "register_subtitle": "Create an account to get started.",
   "register_confirm_password": "Confirm password",
