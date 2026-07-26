@@ -903,6 +903,7 @@ type captureSummaryResponse struct {
 type pageTagResponse struct {
 	ID     int64  `json:"id"`
 	Name   string `json:"name"`
+	Slug   string `json:"slug"`
 	Source string `json:"source"`
 }
 
@@ -981,7 +982,7 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	for _, t := range tags {
-		resp.Tags = append(resp.Tags, pageTagResponse{ID: t.TagID, Name: t.Name, Source: t.Source})
+		resp.Tags = append(resp.Tags, pageTagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug, Source: t.Source})
 	}
 	for _, c := range collections {
 		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})

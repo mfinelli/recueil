@@ -76,6 +76,7 @@ export interface CaptureDetail {
 export interface PageTag {
   id: number;
   name: string;
+  slug: string;
   source: "manual" | "ai";
 }
 

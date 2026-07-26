@@ -232,6 +232,14 @@ Fallback content: a small bordered `Globe` icon for a missing/broken favicon
 missing/broken thumbnail (grid only) — both are deliberate "this represents a
 generic page" states, not blank placeholder boxes.
 
+### De-emphasizing the common case
+
+`PageDetail`'s capture rows show a source label only for `manual_upload`
+captures, not `extension` ones — `extension` is the overwhelming default, so
+labeling it on every row is noise, not information. When a field has a
+heavily-skewed distribution of values, consider surfacing only the uncommon one
+explicitly (with an icon, here `Upload`) rather than labeling every row equally.
+
 ## Open items
 
 - **Dark mode toggle**: currently automatic via `prefers-color-scheme` only, no
@@ -252,7 +260,7 @@ generic page" states, not blank placeholder boxes.
 | `Footer` (shared)              | Done — on every page via `App.svelte`, real version/commit from `GET /info`     |
 | Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
 | Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
-| PageDetail                     | Not started                                                                     |
+| PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures               |
 | Collections / CollectionDetail | Not started                                                                     |
 | Tags / TagDetail               | Not started                                                                     |
 | Devices                        | Not started                                                                     |
