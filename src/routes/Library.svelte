@@ -205,7 +205,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     padding: 0.625rem 0.75rem 0.625rem 2.1rem;
     border: 1px solid var(--rule);
     border-radius: 4px;
-    background: var(--paper);
+    background: var(--paper-raised);
     color: var(--ink);
     font: inherit;
 

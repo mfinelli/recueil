@@ -60,9 +60,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       onclick={() => (navOpen = !navOpen)}
     >
       <span class="hamburger" class:open={navOpen} aria-hidden="true">
-        <span class="bar"></span>
-        <span class="bar"></span>
-        <span class="bar"></span>
+        <span class="hamburger-bar"></span>
+        <span class="hamburger-bar"></span>
+        <span class="hamburger-bar"></span>
       </span>
     </button>
   </div>
@@ -161,7 +161,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     height: 14px;
   }
 
-  .bar {
+  .hamburger-bar {
     position: absolute;
     left: 0;
     width: 100%;
@@ -174,32 +174,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       opacity 0.2s ease;
   }
 
-  .bar:nth-child(1) {
+  .hamburger-bar:nth-child(1) {
     top: 0;
   }
-  .bar:nth-child(2) {
+  .hamburger-bar:nth-child(2) {
     top: 6px;
   }
-  .bar:nth-child(3) {
+  .hamburger-bar:nth-child(3) {
     top: 12px;
   }
 
   .hamburger.open {
-    .bar:nth-child(1) {
+    .hamburger-bar:nth-child(1) {
       top: 6px;
       transform: rotate(45deg);
     }
-    .bar:nth-child(2) {
+    .hamburger-bar:nth-child(2) {
       opacity: 0;
     }
-    .bar:nth-child(3) {
+    .hamburger-bar:nth-child(3) {
       top: 6px;
       transform: rotate(-45deg);
     }
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .bar {
+    .hamburger-bar {
       transition: none;
     }
   }

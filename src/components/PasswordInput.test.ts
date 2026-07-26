@@ -73,4 +73,11 @@ describe("PasswordInput", () => {
       screen.getByRole("button", { name: "Show password" }),
     ).toHaveProperty("disabled", true);
   });
+
+  it("excludes the toggle button from the Tab sequence, so tabbing from one password field lands on the next field, not the toggle", () => {
+    render(PasswordInput, { id: "pw", autocomplete: "current-password" });
+
+    const toggle = screen.getByRole("button", { name: "Show password" });
+    expect(toggle.getAttribute("tabindex")).toBe("-1");
+  });
 });

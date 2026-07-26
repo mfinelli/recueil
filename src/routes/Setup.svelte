@@ -68,6 +68,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       class="mono"
       type="text"
       autocomplete="off"
+      placeholder="rcl_bootstrap_…"
       bind:value={bootstrapToken}
       required
       disabled={submitting}

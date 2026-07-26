@@ -46,10 +46,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {required}
     {disabled}
   />
+  <!-- tabindex=-1: this is a secondary convenience control, not a form
+       field -- without it, Tab from one password field lands here before
+       reaching the next field (e.g. Password -> Confirm password), which
+       reads as landing on the wrong control. -->
   <button
     type="button"
     class="toggle-visibility"
     aria-label={visible ? m.common_hide_password() : m.common_show_password()}
+    tabindex="-1"
     {disabled}
     onclick={() => (visible = !visible)}
   >
