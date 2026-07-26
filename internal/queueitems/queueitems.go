@@ -17,12 +17,13 @@
  */
 
 // Package queueitems is the backend's client for the dashboard's Queue
-// screen's two Worker endpoints (GET /internal/queue-items,
-// POST /internal/queue-items/:id/retry), both gated by the backend<->Worker
-// service secret. Same authenticated-as-the-backend-itself credential tier
-// as internal/devices, internal/mirror, and internal/ingest.WorkerClient --
-// gets its own package for the same reason internal/devices does (its own
-// doc comment explains the general pattern): each service-secret-gated
+// screen's Worker endpoints (GET /internal/queue-items,
+// POST /internal/queue-items/:id/retry) plus the recapture action's
+// POST /internal/queue-items (service-secret-gated, backend-initiated
+// enqueue), all gated by the backend<->Worker service secret. Same
+// authenticated-as-the-backend-itself credential tier as internal/devices,
+// internal/mirror, and internal/ingest.WorkerClient -- gets its own package
+// for the same reason internal/devices does: each service-secret-gated
 // concern here has its own small client, not one shared "Worker API"
 // grab-bag.
 //
@@ -32,6 +33,7 @@
 package queueitems
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -40,6 +42,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // userAgent identifies every request this package sends to the Worker as
@@ -164,6 +168,55 @@ func (c *Client) Retry(ctx context.Context, userID int64, itemID string) error {
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("queueitems: retrying item: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// enqueuePayload mirrors terraform/worker/index.js's handleServiceEnqueue
+// request shape -- id/user_id/url, same three fields the device-facing
+// POST /queue takes (see handleEnqueue), just without a specific device
+// bearer token in the mix.
+type enqueuePayload struct {
+	ID     string `json:"id"`
+	UserID int64  `json:"user_id"`
+	URL    string `json:"url"`
+}
+
+// Enqueue adds a fresh queue_items row for url, to be picked up by
+// whichever device next polls GET /queue -- exactly the same queue a
+// device's own share-sheet/extension enqueue feeds, just entered on the
+// backend's behalf rather than a device's. This is the dashboard's
+// "recapture" action: it never attempts a capture itself, it only asks a
+// device to redo one.
+//
+// The id is generated here (a fresh UUID, same as internal/ingest's own
+// server-generated source_capture_id), not by a device: there's no client
+// on the other end of this call to have generated one. added_by_token_id is
+// left NULL on the Worker's side (there's no device token to attribute this
+// enqueue to), which the queue_items schema already allows for exactly this
+// reason.
+func (c *Client) Enqueue(ctx context.Context, userID int64, url string) error {
+	body, err := json.Marshal(enqueuePayload{ID: uuid.NewString(), UserID: userID, URL: url})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/internal/queue-items", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("queueitems: enqueueing recapture: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("queueitems: enqueueing recapture: status %d", resp.StatusCode)
 	}
 	return nil
 }

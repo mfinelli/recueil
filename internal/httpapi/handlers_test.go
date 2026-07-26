@@ -629,6 +629,21 @@ func requestWithCookie(t *testing.T, server *httptest.Server, method, path strin
 	return resp
 }
 
+// requestWithCookieBody is requestWithCookie's twin for PATCH/POST calls
+// that need a JSON body (PatchPage's title/excluded_from_mirror fields,
+// specifically) -- avoids repeating the same NewRequest/Content-Type/
+// AddCookie dance across several subtests below.
+func requestWithCookieBody(t *testing.T, server *httptest.Server, method, path string, cookie *http.Cookie, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, server.URL+path, strings.NewReader(body))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(cookie)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
 // registerAndGetSessionCookie registers a fresh member account via the
 // real HTTP flow (not dbtest.CreateUser's placeholder password_hash/no
 // pairing token) so there's a real, decryptable pairing_token_enc to
@@ -1519,6 +1534,308 @@ func TestPatchPage(t *testing.T) {
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("overwrites title for the owner", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/retitle")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"title":"My New Title"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Title string `json:"title"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, "My New Title", got.Title)
+	})
+
+	t.Run("trims whitespace from a title before saving", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/retitle-trim")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"title":"  Padded Title  "}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Title string `json:"title"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, "Padded Title", got.Title)
+	})
+
+	t.Run("a blank/whitespace-only title returns 400 and doesn't change the page", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/retitle-blank")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"title":"   "}`)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		unchanged, err := db.New(pool).GetPageByID(context.Background(), page.ID)
+		require.NoError(t, err)
+		assert.Equal(t, page.Title, unchanged.Title)
+	})
+
+	t.Run("another user's page returns 404 for a title update too", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/retitle-not-yours")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"title":"Hijacked"}`)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("both fields in one request applies both -- RETURNING * on the second UPDATE reflects the first's write too", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/retitle-both")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"excluded_from_mirror":true,"title":"Both At Once"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Title              string `json:"title"`
+			ExcludedFromMirror bool   `json:"excluded_from_mirror"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, "Both At Once", got.Title)
+		// Both updates run as two sequential UPDATEs against the same row
+		// (not two independent copies), so by the time the second one's
+		// own RETURNING * fires, it already reflects the first's write --
+		// the response ends up complete either way, not just whichever
+		// field that specific query happened to touch.
+		assert.True(t, got.ExcludedFromMirror)
+
+		persisted, err := db.New(pool).GetPageByID(context.Background(), page.ID)
+		require.NoError(t, err)
+		assert.True(t, persisted.ExcludedFromMirror)
+		assert.Equal(t, "Both At Once", persisted.Title.String)
+	})
+}
+
+func TestDeletePage(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("deletes the page and cascades to its captures/tags/collections", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/to-delete")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		tag, err := q.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: "reading", Slug: "reading"})
+		require.NoError(t, err)
+		require.NoError(t, q.AddPageTag(ctx, db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual"}))
+		collection, err := q.CreateCollection(ctx, db.CreateCollectionParams{UserID: user.ID, Name: "Articles", Slug: "articles"})
+		require.NoError(t, err)
+		require.NoError(t, q.AddPageToCollection(ctx, db.AddPageToCollectionParams{PageID: page.ID, CollectionID: collection.ID}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		_, err = q.GetPageByID(ctx, page.ID)
+		assert.Error(t, err, "page row should be gone")
+		_, err = q.GetCaptureByID(ctx, capture.ID)
+		assert.Error(t, err, "capture should have cascaded away with the page")
+		tags, err := q.ListPageTags(ctx, page.ID)
+		require.NoError(t, err)
+		assert.Empty(t, tags, "page_tags row should have cascaded away")
+		collections, err := q.ListPageCollections(ctx, page.ID)
+		require.NoError(t, err)
+		assert.Empty(t, collections, "page_collections row should have cascaded away")
+	})
+
+	t.Run("another user's page returns 404, not a silent no-op success", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-yours-delete")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/pages/%d", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		// Confirm it's genuinely still there, not a false-positive 404
+		// from some unrelated bug.
+		_, err := db.New(pool).GetPageByID(context.Background(), page.ID)
+		assert.NoError(t, err)
+	})
+
+	t.Run("a nonexistent page id returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/pages/9999999", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-session-delete")
+		server, _ := newTestServer(t, pool, unreachable)
+
+		req, err := http.NewRequest(http.MethodDelete, server.URL+fmt.Sprintf("/api/pages/%d", page.ID), http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+// newEnqueueWorkerServer is newQueueItemsWorkerServer's twin for the
+// recapture action's own Worker call: a mock implementing just
+// POST /internal/queue-items (see terraform/worker/index.js's
+// handleServiceEnqueue). Every accepted call is appended to *enqueued in
+// call order, so a test can assert on exactly what was posted without the
+// mock needing any real D1-backed queue_items state of its own.
+type enqueuedItem struct {
+	ID     string `json:"id"`
+	UserID int64  `json:"user_id"`
+	URL    string `json:"url"`
+}
+
+func newEnqueueWorkerServer(t *testing.T, enqueued *[]enqueuedItem) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Service-Key") != "test-secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/internal/queue-items" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		var item enqueuedItem
+		if err := json.NewDecoder(r.Body).Decode(&item); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		*enqueued = append(*enqueued, item)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRecapturePage(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("enqueues the latest capture's raw_url, not pages.normalized_url", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/recapture-me")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		var enqueued []enqueuedItem
+		workerServer := newEnqueueWorkerServer(t, &enqueued)
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/recapture", page.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		require.Len(t, enqueued, 1)
+		assert.Equal(t, user.ID, enqueued[0].UserID)
+		assert.Equal(t, capture.RawUrl, enqueued[0].URL)
+		assert.NotEqual(t, page.NormalizedUrl, enqueued[0].URL)
+		assert.NotEmpty(t, enqueued[0].ID)
+	})
+
+	t.Run("re-enqueues the most recent capture when there's more than one", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/recapture-versioned")
+		dbtest.CreateCapture(t, pool, page.ID)
+		// GetLatestCaptureByPage orders by captured_at DESC with no
+		// tiebreaker column -- a small sleep guarantees the second
+		// capture's timestamp is strictly later, not relying on however
+		// much real wall-clock time two back-to-back calls happen to
+		// take on their own.
+		time.Sleep(2 * time.Millisecond)
+		latest := dbtest.CreateCapture(t, pool, page.ID)
+
+		var enqueued []enqueuedItem
+		workerServer := newEnqueueWorkerServer(t, &enqueued)
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/recapture", page.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		require.Len(t, enqueued, 1)
+		assert.Equal(t, latest.RawUrl, enqueued[0].URL)
+	})
+
+	t.Run("a page with no captures at all returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-captures-yet")
+
+		var enqueued []enqueuedItem
+		workerServer := newEnqueueWorkerServer(t, &enqueued)
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/recapture", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Empty(t, enqueued)
+	})
+
+	t.Run("another user's page returns 404, not a silent no-op success", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/not-yours-recapture")
+		dbtest.CreateCapture(t, pool, page.ID)
+
+		var enqueued []enqueuedItem
+		workerServer := newEnqueueWorkerServer(t, &enqueued)
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/recapture", page.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+		assert.Empty(t, enqueued)
+	})
+
+	t.Run("a Worker enqueue failure surfaces as a 500", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/recapture-worker-down")
+		dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/recapture", page.ID), cookie)
+		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Post(server.URL+"/api/pages/1/recapture", "application/json", http.NoBody)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 }
 

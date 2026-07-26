@@ -29,7 +29,8 @@
 // POST /api/jobs/{kind}/{id}/retry for the screenshot/readability/AI
 // enrichment jobs -- {kind} one of "screenshot"/"readability"/"ai" -- also
 // strictly self-scoped, same reasoning), session-protected library
-// browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}), session-protected capture detail/HTML/language
+// browsing/search (GET /api/pages, GET/PATCH/DELETE /api/pages/{id},
+// POST /api/pages/{id}/recapture, session-protected capture detail/HTML/language
 // correction (GET /api/captures/{id}, GET /api/captures/{id}/html,
 // PATCH /api/captures/{id}/language, GET /api/text-search-configs), and
 // session-protected tags/collections (GET /api/tags,
@@ -141,6 +142,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)
+			r.Delete("/pages/{id}", s.DeletePage)
+			r.Post("/pages/{id}/recapture", s.RecapturePage)
 			r.Get("/pages/{id}/favicon", s.GetPageFavicon)
 			r.Get("/pages/{id}/thumbnail", s.GetPageThumbnail)
 			r.Get("/captures/{id}", s.GetCapture)

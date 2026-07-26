@@ -170,5 +170,15 @@
   "pagedetail_remove_from_collection_error": "failed to remove from collection",
   "pagedetail_mirror_error": "failed to update mirror setting",
   "pagedetail_language_error": "failed to update language",
-  "pagedetail_captures_heading": "Captures"
+  "pagedetail_captures_heading": "Captures",
+  "pagedetail_edit_title_aria": "Edit title",
+  "pagedetail_title_placeholder": "Title",
+  "pagedetail_title_error": "failed to update title",
+  "pagedetail_recapture": "Recapture",
+  "pagedetail_recapture_queuing": "Queuing…",
+  "pagedetail_recapture_queued": "Queued!",
+  "pagedetail_recapture_error": "failed to queue recapture",
+  "pagedetail_delete": "Delete page",
+  "pagedetail_delete_confirm": "Delete \"{title}\"? This can't be undone from the dashboard.",
+  "pagedetail_delete_error": "failed to delete page"
 }

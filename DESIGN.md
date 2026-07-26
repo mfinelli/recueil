@@ -2116,8 +2116,8 @@ first simply wins.
   prevent two devices from grabbing the same item simultaneously; a claimed item
   records which device claimed it and when.
 - Implemented as three bearer-token-authenticated Worker endpoints, all
-  operating purely between a device and D1 — the backend never touches
-  `queue_items` at all:
+  operating purely between a device and D1 — the backend doesn't participate in
+  the normal device-enqueue path at all:
   - `POST /queue` — enqueue. `id` is client-generated (idempotent retry via
     `INSERT ... ON CONFLICT(id) DO NOTHING` — see §3c's identical reasoning for
     `pending_captures`).
@@ -2128,6 +2128,19 @@ first simply wins.
     the two-devices-race-for-the-same-item risk actually lives, and where the
     phase-2 brief's instruction to "build the idempotency and visibility-timeout
     logic in at this point, not later" was aimed.
+
+**One exception (Phase 13): the dashboard's "recapture" action.** PageDetail's
+recapture button asks the backend to re-enqueue a page's most recent capture's
+URL — the backend has no rendered/authenticated browser session of its own to
+capture with (see §2's own reasoning for why capture only ever happens from a
+real tab), so this still only ever enqueues, same as a device would. It's a
+fourth, service-secret-gated Worker endpoint (`POST /internal/queue-items`,
+alongside the failed-queue-item review endpoints from Phase 9), not a
+bearer-token one: the backend generates the `id` itself (there's no device on
+the other end to have generated one) and leaves `added_by_token_id` `NULL` (the
+schema already allows this). Once the row exists it's indistinguishable from any
+other queued item — picked up by whichever device next polls `GET /queue`, same
+claim/visibility-timeout/cleanup handling as the rest of this section.
 
 **Claim failure is not a single status code.** A failed claim distinguishes
 three cases, decided during Phase 2 rather than left as a uniform `409`:
@@ -2538,7 +2551,15 @@ CREATE TABLE pages (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
   normalized_url TEXT NOT NULL,
-  title TEXT,                        -- denormalized from latest capture
+  title TEXT,                        -- denormalized from latest capture,
+                                      -- but also directly PATCH-able as a
+                                      -- manual override (Phase 13,
+                                      -- PATCH /api/pages/{id}) -- a later
+                                      -- recapture overwrites an override
+                                      -- the same way it always overwrites
+                                      -- this column, deliberately: no
+                                      -- separate title_override column, no
+                                      -- display-time fallback
   latest_capture_at TIMESTAMPTZ NOT NULL,  -- also denormalized from latest
                                       -- capture (via GREATEST, tolerating
                                       -- out-of-order ingestion) -- feeds
@@ -3793,3 +3814,22 @@ What remains open is purely implementation-phase, not architectural:
   extracted once three real screens existed to repeat the same title/nav/account
   bar across. See §13a's Svelte Dashboard subsection and IMPLEMENTATION.md for
   the details.
+- **Resolved this round (Phase 13): three gaps flagged while building
+  PageDetail's read/write loop (Phase 6) are now closed — page delete
+  (`DELETE /api/pages/{id}`), a manual title override (`PATCH /api/pages/{id}`
+  now also accepts `title`, direct-overwrite semantics — see §10's `pages.title`
+  comment for why a recapture clearing it is deliberate, not a gap), and manual
+  recapture (§8's own new subsection covers the enqueue path).** Delete cascades
+  cleanly through Postgres (captures/jobs/tags/collection-memberships all
+  already `ON DELETE CASCADE`) and the D1 bookmark mirror self-heals via the
+  existing periodic sync's deletion reconciliation — nothing new needed on
+  either front. What it deliberately does **not** do: reclaim the deleted page's
+  on-disk archive files. Those are content-hash-addressed (§4) and can be shared
+  across captures or even across pages (identical content recaptured
+  independently), so a safe per-page delete would need a reference-counting pass
+  across every capture's hash, not a simple "delete this page's files." Left
+  genuinely open: a **`recueil gc` CLI command**, operator-run (scheduled or
+  manual, matching the `recueil user resync`/device-management precedent of
+  operator-only tooling over dashboard automation), that walks every capture's
+  referenced hash and removes anything on disk with no remaining referent — not
+  built this round, tracked here as the next piece of this same gap.

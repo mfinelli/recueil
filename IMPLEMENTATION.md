@@ -2323,3 +2323,77 @@ The rest of the dashboard's screens, one at a time, mockup-first: Login/Setup
 next, then Library, PageDetail, the Collections/Tags family, Devices/Queue/
 Settings. `DESIGN_SYSTEM.md` gets updated in place as new patterns come up,
 rather than waiting until the whole pass is done.
+
+## Phase 13 (PageDetail gaps: delete, title override, manual recapture)
+
+Three small, independently-scoped gaps flagged while working on the visual
+design pass's PageDetail mockup, not new capability areas — see DESIGN.md §15's
+own closing note for this round. Built together since all three touch the same
+handler/route/screen; landed in the order backend → Worker → frontend for the
+recapture piece specifically, since it's the only one of the three that crosses
+the Worker boundary.
+
+### `DELETE /api/pages/{id}`
+
+- New `DeletePage` query (`:execrows`, same `WHERE id = $1 AND user_id = $2`
+  scoping and `rowsAffected == 0 → 404` handling as the existing
+  `DeleteCollection` — copied that shape directly rather than inventing a new
+  one).
+- Cascades to captures (and transitively their screenshot/readability/AI jobs),
+  `page_tags`, and `page_collections` rows entirely via the schema's own
+  `ON DELETE CASCADE` chain — nothing else to clean up in Postgres.
+- **Deliberately doesn't touch D1 or on-disk archive files synchronously.** The
+  D1 bookmark mirror self-heals via the existing periodic `Syncer`'s
+  `reconcileDeletions` pass (`GetMirrorEligiblePageIDs` simply no longer
+  includes the deleted id), the same mechanism already handles
+  `excluded_from_mirror`. On-disk HTML/screenshot/favicon files are left
+  orphaned — see DESIGN.md §15's Phase 13 entry for why a per-page delete can't
+  safely reclaim them (content-hash addressing, possible sharing across
+  captures/pages) and the `recueil gc` CLI command flagged there as the
+  follow-up, not built this round.
+- Frontend: a "Delete page" button on PageDetail, `confirm()`-gated (same
+  pattern as Tags'/Collections' own deletes), navigates to `/` (the library) on
+  success via `push("/")` — the first write action on this screen that leaves
+  the page entirely, so its own test needed a captured (not just stubbed) `push`
+  mock, same pattern as Login/Setup's own tests use.
+
+### Title override
+
+- `pages.title` was already denormalized from the latest capture (`UpsertPage`'s
+  `SET title = $3` on every ingest) — **your call was a direct overwrite, not a
+  new `title_override` column**: a later recapture clears a manual override back
+  to the auto-detected title, same as it always has. New `SetPageTitle` query,
+  `patchPageRequest` grew a second optional `*string` field (`title`, alongside
+  the existing `excluded_from_mirror`) — at least one of the two must be
+  provided; either or both can be in the same request, applied as two
+  independent updates (not one combined query) since the dashboard never
+  actually sends both together today (they're two separate pieces of UI).
+- Frontend: an inline edit affordance on PageDetail's `<h1>` (a small pencil
+  icon button, `@lucide/svelte`) swaps the heading for a text input plus
+  Save/Cancel, deliberately unstyled beyond matching the screen's existing
+  inline-form pattern — this screen's own visual pass is a separate,
+  already-planned piece of work (DESIGN_SYSTEM.md), not something to anticipate
+  here.
+
+### Manual recapture
+
+- **Enqueues, doesn't capture.** The backend has no rendered/authenticated
+  browser session of its own (DESIGN.md §2's own reasoning for why capture only
+  ever happens from a real tab) — `POST /api/pages/{id}/recapture` looks up the
+  page's most recent capture's `raw_url` (not `pages.normalized_url` — the raw
+  URL is what a device would actually re-fetch) and re-enqueues it through the
+  exact same queue a device's own share-sheet/extension enqueue feeds, via a new
+  `queueitems.Client.Enqueue` method.
+- **New Worker endpoint: `POST /internal/queue-items`** (`handleServiceEnqueue`)
+  — service-secret-gated, same three fields and same
+  `INSERT ... ON CONFLICT(id) DO NOTHING` idempotency as the device-facing
+  `POST /queue`, just called by the backend instead of a device with its own
+  bearer token. `added_by_token_id` is left `NULL` (the schema already allows
+  this — there's no device token to attribute a backend-initiated enqueue to).
+  The queue item's own `id` is generated backend-side (`google/uuid`, same
+  `uuid.NewString()` already used for `source_capture_id` in `internal/ingest`)
+  since there's no client on the other end to have generated one.
+- Frontend: a "Recapture" button that shows a transient "Queued!" confirmation
+  on success (same pattern as Devices.svelte's copy-to-clipboard button) —
+  there's nothing on the page's own state to update, since this never touches
+  `page` at all, only the queue.

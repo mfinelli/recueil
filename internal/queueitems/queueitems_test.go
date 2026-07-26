@@ -20,12 +20,14 @@ package queueitems_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -148,5 +150,71 @@ func TestClient_Retry(t *testing.T) {
 		err := client.Retry(context.Background(), 42, "item-7")
 		require.Error(t, err)
 		assert.False(t, errors.Is(err, queueitems.ErrNotFound))
+	})
+}
+
+func TestClient_Enqueue(t *testing.T) {
+	t.Run("sends the expected request, generating its own id", func(t *testing.T) {
+		var gotMethod, gotPath, gotServiceKey, gotContentType string
+		var gotBody map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod = r.Method
+			gotPath = r.URL.RequestURI()
+			gotServiceKey = r.Header.Get("X-Service-Key")
+			gotContentType = r.Header.Get("Content-Type")
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "test-secret")
+		err := client.Enqueue(context.Background(), 42, "https://example.com/recapture-me")
+		require.NoError(t, err)
+
+		assert.Equal(t, http.MethodPost, gotMethod)
+		assert.Equal(t, "/internal/queue-items", gotPath)
+		assert.Equal(t, "test-secret", gotServiceKey)
+		assert.Equal(t, "application/json", gotContentType)
+
+		assert.Equal(t, float64(42), gotBody["user_id"])
+		assert.Equal(t, "https://example.com/recapture-me", gotBody["url"])
+		// A real, non-empty id was generated -- not asserting an exact
+		// value (it's a fresh random UUID each call), just that it's
+		// there and looks like one.
+		id, ok := gotBody["id"].(string)
+		require.True(t, ok)
+		assert.NotEmpty(t, id)
+		_, err = uuid.Parse(id)
+		assert.NoError(t, err, "generated id should be a valid UUID")
+	})
+
+	t.Run("two calls generate two different ids", func(t *testing.T) {
+		var gotIDs []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			gotIDs = append(gotIDs, body["id"].(string))
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "test-secret")
+		require.NoError(t, client.Enqueue(context.Background(), 1, "https://example.com/a"))
+		require.NoError(t, client.Enqueue(context.Background(), 1, "https://example.com/b"))
+
+		require.Len(t, gotIDs, 2)
+		assert.NotEqual(t, gotIDs[0], gotIDs[1])
+	})
+
+	t.Run("returns an error on a non-2xx response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "wrong-secret")
+		err := client.Enqueue(context.Background(), 1, "https://example.com/a")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "401")
 	})
 }

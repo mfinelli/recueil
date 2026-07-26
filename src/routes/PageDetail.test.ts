@@ -39,6 +39,15 @@
 //    native pre-onchange DOM mutation. The control visually stays at
 //    whatever the user picked, alongside the error message, rather than
 //    reverting. See each test's own comment for specifics.
+//  - delete is the first write path on this screen that navigates away on
+//    success, so its own tests need push mocked-and-captured (not just
+//    stubbed, like the rest of this file's svelte-spa-router mock), same
+//    as Login.test.ts/Setup.test.ts's own pushMock pattern -- and confirm()
+//    mocked the same way Tags.test.ts/Collections.test.ts already do for
+//    their own confirm()-gated deletes.
+//  - recapture never touches `page` at all on success  -- its test only
+//    asserts the transient "Queued!" button label, not any change to the
+//    rendered page state.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   render,
@@ -63,15 +72,21 @@ vi.mock("../lib/api", async (importOriginal) => {
   return { ...actual, apiJSON: vi.fn() };
 });
 
+import { push } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
 import type { CaptureSummary, Collection, PageDetail } from "../lib/types";
 import PageDetailRoute from "./PageDetail.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
+const pushMock = vi.mocked(push);
+const confirmMock = vi.fn();
+vi.stubGlobal("confirm", confirmMock);
 
 afterEach(() => {
   cleanup();
   apiJSONMock.mockReset();
+  confirmMock.mockReset();
+  pushMock.mockClear();
 });
 
 const exampleCapture: CaptureSummary = {
@@ -416,5 +431,138 @@ describe("PageDetail", () => {
     // the change event already set it to ("fr") rather than reverting to
     // the still-actual "en".
     expect(select).toHaveProperty("value", "fr");
+  });
+
+  it("edits the title, saving on success", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByPlaceholderText("Title");
+    expect(input).toHaveProperty("value", "An example article");
+
+    apiJSONMock.mockResolvedValueOnce({ ...basePage, title: "New title" });
+    await fireEvent.input(input, { target: { value: "New title" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "PATCH",
+      body: { title: "New title" },
+    });
+    expect(
+      await screen.findByRole("heading", { name: "New title" }),
+    ).toBeTruthy();
+  });
+
+  it("cancels a title edit without calling the API", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    await fireEvent.input(screen.getByPlaceholderText("Title"), {
+      target: { value: "Discarded" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/pages/42",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "An example article" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the API's own error message when saving a title fails", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(400, "title cannot be empty"),
+    );
+    await fireEvent.input(screen.getByPlaceholderText("Title"), {
+      target: { value: "   " },
+    });
+    // The submit button is disabled for a blank/whitespace-only title
+    // (see PageDetail.svelte's own `!titleInput.trim()` guard), so this
+    // exercises the same trimmed-empty rejection the backend enforces --
+    // clicking Save here is a no-op at the browser level (disabled
+    // button), so use a real value instead and let the mocked rejection
+    // stand in for the backend's own validation failure.
+    await fireEvent.input(screen.getByPlaceholderText("Title"), {
+      target: { value: "New title" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("title cannot be empty")).toBeTruthy();
+  });
+
+  it("queues a recapture, showing a transient confirmation", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(screen.getByRole("button", { name: "Recapture" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/recapture", {
+      method: "POST",
+    });
+    expect(await screen.findByRole("button", { name: "Queued!" })).toBeTruthy();
+  });
+
+  it("shows the API's own error message when queuing a recapture fails", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "queue unavailable"));
+    await fireEvent.click(screen.getByRole("button", { name: "Recapture" }));
+
+    expect(await screen.findByText("queue unavailable")).toBeTruthy();
+  });
+
+  it("deletes the page after confirmation and navigates back to the library", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    confirmMock.mockReturnValue(true);
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      'Delete "An example article"? This can\'t be undone from the dashboard.',
+    );
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "DELETE",
+    });
+    await vi.waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith("/");
+    });
+  });
+
+  it("doesn't delete the page when the confirmation is declined", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    confirmMock.mockReturnValue(false);
+    await fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/pages/42",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the API's own error message when delete fails, without navigating away", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    confirmMock.mockReturnValue(true);
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "delete failed"));
+    await fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+
+    expect(await screen.findByText("delete failed")).toBeTruthy();
+    expect(pushMock).not.toHaveBeenCalled();
   });
 });

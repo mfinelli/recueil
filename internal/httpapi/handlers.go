@@ -1102,13 +1102,17 @@ func (s *Server) GetPageThumbnail(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchPageRequest struct {
-	ExcludedFromMirror *bool `json:"excluded_from_mirror"`
+	ExcludedFromMirror *bool   `json:"excluded_from_mirror"`
+	Title              *string `json:"title"`
 }
 
-// PATCH /api/pages/{id}: currently only supports toggling
-// excluded_from_mirror. A pointer field distinguishes "not provided"
-// from an explicit false, so more patchable fields can be added later
-// without changing this request shape.
+// PATCH /api/pages/{id}: supports toggling excluded_from_mirror and/or
+// overwriting title (a manual title override). Pointer fields
+// distinguish "not provided" from an explicit false/empty, and at least
+// one must be provided; if both are, each is applied as its own update
+// (not one combined query), and the response reflects whichever ran
+// last -- fine here since the dashboard never actually sends both in one
+// request today (they're two separate pieces of UI).
 func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -1125,20 +1129,111 @@ func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ExcludedFromMirror == nil {
-		writeError(w, http.StatusBadRequest, "excluded_from_mirror is required")
+	if req.ExcludedFromMirror == nil && req.Title == nil {
+		writeError(w, http.StatusBadRequest, "excluded_from_mirror or title is required")
 		return
 	}
 
-	page, err := s.Queries.SetPageExcludedFromMirror(r.Context(), db.SetPageExcludedFromMirrorParams{
-		ExcludedFromMirror: *req.ExcludedFromMirror, ID: id, UserID: user.ID,
-	})
+	ctx := r.Context()
+	var page db.Page
+
+	if req.ExcludedFromMirror != nil {
+		page, err = s.Queries.SetPageExcludedFromMirror(ctx, db.SetPageExcludedFromMirrorParams{
+			ExcludedFromMirror: *req.ExcludedFromMirror, ID: id, UserID: user.ID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "page not found")
+			return
+		}
+	}
+
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		if trimmed == "" {
+			writeError(w, http.StatusBadRequest, "title cannot be empty")
+			return
+		}
+		page, err = s.Queries.SetPageTitle(ctx, db.SetPageTitleParams{
+			Title: pgtype.Text{String: trimmed, Valid: true}, ID: id, UserID: user.ID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "page not found")
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, pageResponseFromPage(&page))
+}
+
+// DELETE /api/pages/{id}: see DeletePage's own doc comment for exactly
+// what this does and doesn't clean up (Postgres cascade vs. the D1
+// mirror's self-healing sync vs. intentionally-orphaned on-disk archive
+// files).
+func (s *Server) DeletePage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeletePage(r.Context(), db.DeletePageParams{ID: id, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete page %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/pages/{id}/recapture: re-enqueues the page's most recent
+// capture's raw_url (not the normalized_url stored on the page itself --
+// the raw URL is what a device would actually re-fetch) via the Worker's
+// queue, the exact same queue a device's own share-sheet/extension enqueue
+// feeds. This doesn't attempt any capture itself -- it's picked up
+// by whichever device next polls GET /queue, same as any other queued
+// URL, no different from a fresh manual add.
+func (s *Server) RecapturePage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: id, UserID: user.ID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "page not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, pageResponseFromPage(&page))
+	capture, err := s.Queries.GetLatestCaptureByPage(ctx, page.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no captures to recapture")
+		return
+	}
+
+	if err := s.QueueItems.Enqueue(ctx, user.ID, capture.RawUrl); err != nil {
+		log.Printf("warning: failed to enqueue recapture for page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type captureDetailResponse struct {

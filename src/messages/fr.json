@@ -170,5 +170,15 @@
   "pagedetail_remove_from_collection_error": "échec du retrait de la collection",
   "pagedetail_mirror_error": "échec de la mise à jour du paramètre de miroir",
   "pagedetail_language_error": "échec de la mise à jour de la langue",
-  "pagedetail_captures_heading": "Captures"
+  "pagedetail_captures_heading": "Captures",
+  "pagedetail_edit_title_aria": "Modifier le titre",
+  "pagedetail_title_placeholder": "Titre",
+  "pagedetail_title_error": "échec de la mise à jour du titre",
+  "pagedetail_recapture": "Recapturer",
+  "pagedetail_recapture_queuing": "Mise en file…",
+  "pagedetail_recapture_queued": "En file !",
+  "pagedetail_recapture_error": "échec de la mise en file de la recapture",
+  "pagedetail_delete": "Supprimer la page",
+  "pagedetail_delete_confirm": "Supprimer « {title} » ? Cette action est irréversible depuis le tableau de bord.",
+  "pagedetail_delete_error": "échec de la suppression de la page"
 }

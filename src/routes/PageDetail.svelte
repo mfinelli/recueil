@@ -16,20 +16,30 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
 <!-- Now the full read/write loop: tag add/remove, collection add/remove,
-     the excluded_from_mirror toggle, and per-capture language correction
-     all call their real backend endpoints. All of page/collections/
-     languageOptions are updated optimistically from each write's own
-     response rather than refetching the whole page afterward -- a normal
-     tradeoff for a single-user personal tool, not something defended
-     against concurrent-editor conflicts.
+     the excluded_from_mirror toggle, title editing, delete, manual
+     recapture, and per-capture language correction all call their real
+     backend endpoints. All of page/collections/languageOptions are
+     updated optimistically from each write's own response rather than
+     refetching the whole page afterward -- a normal tradeoff for a
+     single-user personal tool, not something defended against
+     concurrent-editor conflicts.
+
+     Recapture (POST /pages/{id}/recapture) doesn't touch `page` at all --
+     it only re-enqueues the latest capture's URL for a device to pick up
+     later, so its own button just shows a transient "queued" confirmation,
+     same pattern as Devices.svelte's copy-to-clipboard button. Delete
+     navigates back to the library on success, same as Devices'/Tags' own
+     confirm()-gated deletes but the first one on this screen that leaves the
+     page entirely afterward.
 
      Capture rows now link to the in-app reader view (/captures/{id}) --
      the raw archived HTML itself still opens as a plain new-tab link, but
      from inside that reader view now, not directly from this list. -->
 <script lang="ts">
-  import { link } from "svelte-spa-router";
+  import { link, push } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
   import AppHeader from "../components/AppHeader.svelte";
+  import Pencil from "@lucide/svelte/icons/pencil";
   import type {
     PageDetail,
     CaptureSummary,
@@ -61,6 +71,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let addingToCollection = $state(false);
   let togglingMirror = $state(false);
   let savingLanguageFor = $state<number | null>(null);
+  let editingTitle = $state(false);
+  let titleInput = $state("");
+  let savingTitle = $state(false);
+  let recapturing = $state(false);
+  let recaptureQueued = $state(false);
+  let deleting = $state(false);
 
   $effect(() => {
     const id = params.id;
@@ -261,6 +277,83 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  function startEditingTitle() {
+    if (!page) return;
+    titleInput = page.title ?? page.normalized_url;
+    editingTitle = true;
+  }
+
+  function cancelEditingTitle() {
+    editingTitle = false;
+  }
+
+  async function saveTitle(event: SubmitEvent) {
+    event.preventDefault();
+    if (!page) return;
+    const trimmed = titleInput.trim();
+    if (!trimmed) return;
+    savingTitle = true;
+    actionError = null;
+    try {
+      const updated = await apiJSON<PageDetail>(`/pages/${page.id}`, {
+        method: "PATCH",
+        body: { title: trimmed },
+      });
+      page.title = updated.title;
+      editingTitle = false;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_title_error();
+    } finally {
+      savingTitle = false;
+    }
+  }
+
+  // Fire-and-forget from the dashboard's perspective: this only asks a
+  // device to redo the capture, so there's nothing on `page` itself to update
+  // afterward -- just a transient "queued" confirmation, same pattern as
+  // Devices.svelte's own copy-to-clipboard button.
+  async function recapture() {
+    if (!page) return;
+    recapturing = true;
+    actionError = null;
+    try {
+      await apiJSON(`/pages/${page.id}/recapture`, { method: "POST" });
+      recaptureQueued = true;
+      setTimeout(() => {
+        recaptureQueued = false;
+      }, 2000);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_recapture_error();
+    } finally {
+      recapturing = false;
+    }
+  }
+
+  async function deletePage() {
+    if (!page) return;
+    if (
+      !confirm(
+        m.pagedetail_delete_confirm({
+          title: page.title ?? page.normalized_url,
+        }),
+      )
+    )
+      return;
+
+    deleting = true;
+    actionError = null;
+    try {
+      await apiJSON(`/pages/${page.id}`, { method: "DELETE" });
+      await push("/");
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_delete_error();
+      deleting = false;
+    }
+  }
+
   async function updateCaptureLanguage(
     capture: CaptureSummary,
     newLanguage: string,
@@ -292,7 +385,34 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {:else if loadError}
     <p class="status error" role="alert">{loadError}</p>
   {:else if page}
-    <h1>{page.title ?? page.normalized_url}</h1>
+    {#if editingTitle}
+      <form class="title-edit" onsubmit={saveTitle}>
+        <input
+          type="text"
+          placeholder={m.pagedetail_title_placeholder()}
+          bind:value={titleInput}
+          disabled={savingTitle}
+        />
+        <button type="submit" disabled={savingTitle || !titleInput.trim()}
+          >{m.common_save()}</button
+        >
+        <button
+          type="button"
+          onclick={cancelEditingTitle}
+          disabled={savingTitle}>{m.common_cancel()}</button
+        >
+      </form>
+    {:else}
+      <h1>
+        {page.title ?? page.normalized_url}
+        <button
+          type="button"
+          class="icon-button"
+          aria-label={m.pagedetail_edit_title_aria()}
+          onclick={startEditingTitle}><Pencil size={16} /></button
+        >
+      </h1>
+    {/if}
     <a
       class="source-url"
       href={page.normalized_url}
@@ -304,15 +424,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <p class="status error" role="alert">{actionError}</p>
     {/if}
 
-    <label class="mirror-toggle">
-      <input
-        type="checkbox"
-        checked={page.excluded_from_mirror}
-        disabled={togglingMirror}
-        onchange={toggleExcludedFromMirror}
-      />
-      {m.pagedetail_mirror_toggle_label()}
-    </label>
+    <div class="page-actions">
+      <label class="mirror-toggle">
+        <input
+          type="checkbox"
+          checked={page.excluded_from_mirror}
+          disabled={togglingMirror}
+          onchange={toggleExcludedFromMirror}
+        />
+        {m.pagedetail_mirror_toggle_label()}
+      </label>
+
+      <button type="button" onclick={recapture} disabled={recapturing}
+        >{recaptureQueued
+          ? m.pagedetail_recapture_queued()
+          : recapturing
+            ? m.pagedetail_recapture_queuing()
+            : m.pagedetail_recapture()}</button
+      >
+
+      <button
+        type="button"
+        class="danger"
+        onclick={deletePage}
+        disabled={deleting}>{m.pagedetail_delete()}</button
+      >
+    </div>
 
     <section>
       <h2>{m.pagedetail_tags_heading()}</h2>
@@ -462,6 +599,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   h1 {
     margin: 0 0 0.25rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .icon-button {
+    padding: 0.25rem;
+    border: none;
+    background: none;
+    color: var(--ink-muted);
+    line-height: 1;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--ink);
+    }
+  }
+
+  .title-edit {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+
+    input {
+      flex: 1;
+    }
   }
 
   .source-url {
@@ -476,9 +639,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    margin-bottom: 1.5rem;
     font-size: 0.875rem;
     color: var(--ink-muted);
+  }
+
+  .page-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+  }
+
+  .danger {
+    color: var(--accent);
+    border-color: var(--accent);
+
+    &:hover:not(:disabled) {
+      background: var(--accent);
+      color: var(--paper);
+    }
   }
 
   section {

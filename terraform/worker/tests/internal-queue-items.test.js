@@ -18,16 +18,32 @@
 
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { handleListFailedQueueItems, handleRetryQueueItem } from "../index.js";
+import {
+  handleListFailedQueueItems,
+  handleRetryQueueItem,
+  handleServiceEnqueue,
+} from "../index.js";
 
 let nextUserId = 1;
 
+/**
+ * @param {string} method
+ * @param {string} path
+ * @param {Record<string, string>} [headers]
+ * @param {unknown} [body]
+ */
 function serviceRequest(
   method,
   path,
   headers = { "X-Service-Key": "test-service-secret" },
+  body,
 ) {
-  return new Request(`https://example.com${path}`, { method, headers });
+  /** @type {RequestInit} */
+  const init = { method, headers };
+  if (body !== undefined) {
+    init.body = JSON.stringify(body);
+  }
+  return new Request(`https://example.com${path}`, init);
 }
 
 async function seedUser() {
@@ -304,6 +320,124 @@ describe("handleRetryQueueItem", () => {
       ),
       env,
       "retry-me",
+    );
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("handleServiceEnqueue", () => {
+  it("enqueues a new item with no device token attribution", async () => {
+    const userId = await seedUser();
+
+    const response = await handleServiceEnqueue(
+      serviceRequest(
+        "POST",
+        "/internal/queue-items",
+        { "X-Service-Key": "test-service-secret" },
+        {
+          id: "33333333-3333-3333-3333-333333333333",
+          user_id: userId,
+          url: "https://example.com/recapture-me",
+        },
+      ),
+      env,
+    );
+    expect(response.status).toBe(204);
+
+    const row = await env.DB.prepare(
+      "SELECT user_id, url, status, added_by_token_id FROM queue_items WHERE id = ?",
+    )
+      .bind("33333333-3333-3333-3333-333333333333")
+      .first();
+    expect(row).toEqual({
+      user_id: userId,
+      url: "https://example.com/recapture-me",
+      status: "pending",
+      added_by_token_id: null,
+    });
+  });
+
+  it("a retried enqueue with the same id is idempotent (no error, no duplicate row)", async () => {
+    const userId = await seedUser();
+    const body = {
+      id: "44444444-4444-4444-4444-444444444444",
+      user_id: userId,
+      url: "https://example.com/a",
+    };
+
+    const r1 = await handleServiceEnqueue(
+      serviceRequest(
+        "POST",
+        "/internal/queue-items",
+        { "X-Service-Key": "test-service-secret" },
+        body,
+      ),
+      env,
+    );
+    const r2 = await handleServiceEnqueue(
+      serviceRequest(
+        "POST",
+        "/internal/queue-items",
+        { "X-Service-Key": "test-service-secret" },
+        body,
+      ),
+      env,
+    );
+    expect(r1.status).toBe(204);
+    expect(r2.status).toBe(204);
+
+    const count = await env.DB.prepare(
+      "SELECT count(*) as n FROM queue_items WHERE id = ?",
+    )
+      .bind(body.id)
+      .first();
+    expect(count).toEqual({ n: 1 });
+  });
+
+  it("requires the service key", async () => {
+    const response = await handleServiceEnqueue(
+      serviceRequest(
+        "POST",
+        "/internal/queue-items",
+        {},
+        { id: "x", user_id: 1, url: "https://example.com" },
+      ),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects the wrong service key", async () => {
+    const response = await handleServiceEnqueue(
+      serviceRequest(
+        "POST",
+        "/internal/queue-items",
+        { "X-Service-Key": "wrong" },
+        { id: "x", user_id: 1, url: "https://example.com" },
+      ),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it.each([
+    ["missing id", { user_id: 1, url: "https://example.com" }],
+    ["missing user_id", { id: "x", url: "https://example.com" }],
+    [
+      "non-integer user_id",
+      { id: "x", user_id: "one", url: "https://example.com" },
+    ],
+    ["missing url", { id: "x", user_id: 1 }],
+    ["invalid url", { id: "x", user_id: 1, url: "not-a-url" }],
+  ])("rejects: %s", async (name, body) => {
+    const response = await handleServiceEnqueue(
+      serviceRequest(
+        "POST",
+        "/internal/queue-items",
+        { "X-Service-Key": "test-service-secret" },
+        body,
+      ),
+      env,
     );
     expect(response.status).toBe(400);
   });
