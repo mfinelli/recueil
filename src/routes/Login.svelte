@@ -161,6 +161,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     border: 1px solid var(--rule);
     border-radius: 4px;
     background: var(--paper);
+    box-shadow: inset 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
     color: var(--ink);
     font: inherit;
 
