@@ -257,7 +257,7 @@ explicitly (with an icon, here `Upload`) rather than labeling every row equally.
 | Screen                         | Status                                                                          |
 | ------------------------------ | ------------------------------------------------------------------------------- |
 | `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out |
-| `Footer` (shared)              | Done — on every page via `App.svelte`, real version/commit from `GET /info`     |
+| `Footer` (shared)              | Built, not wired in — see IMPLEMENTATION.md's Phase 12 entry                    |
 | Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
 | Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
 | PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures               |

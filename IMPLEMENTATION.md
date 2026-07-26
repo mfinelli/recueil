@@ -2316,13 +2316,54 @@ narrative first.
   already exists for. Flagged as backend work and picked up separately when the
   `Settings` screen's own visual pass comes around; see `DESIGN_SYSTEM.md`'s
   Open Items.
+- **Login/Register/Setup**: shared `PasswordInput.svelte` (show/hide toggle,
+  `tabindex="-1"` on the toggle button so Tab goes straight from one password
+  field to the next instead of landing on the eye icon), a register link on
+  Login gated on `session.openRegistration` (already-shipped backend flag), a
+  forgot-password link built and gated behind an always-false constant rather
+  than commented out (password reset itself stays CLI-only, for now — see
+  `DESIGN_SYSTEM.md`'s Open Items), and a format-hint placeholder
+  (`rcl_bootstrap_…`) on Setup's bootstrap-token field.
+- **Library**: `PageList.svelte`'s favicon/thumbnail failure tracking split into
+  two independent `SvelteSet`s (a single shared one silently broke once grid
+  view started rendering both images for the same page), `favicon_path` checked
+  before ever requesting the image instead of relying solely on `onerror`, a
+  `Globe` fallback icon for a missing/broken favicon in both list and grid, grid
+  view gaining a favicon + truncated URL line to match list view's information
+  density, and dotted-rule list dividers (the mixin had existed since the
+  shared-foundation round but this was its first real use).
+- **`Footer.svelte`**: built (brand/copyright/license, GitHub/recueil.app links,
+  version/commit from the already-existing unauthenticated `GET /info`), then
+  not actually wired into the app after seeing it live — landed standalone and
+  unused rather than discarded, in case the decision changes.
+- **`PageDetail`**: the biggest single-screen visual pass so far. Real bugs
+  caught during review, not just style: the source URL was using `var(--focus)`
+  (reserved for focus rings only, per `DESIGN_SYSTEM.md`'s own rule) to signal
+  "this leaves the app," replaced with the standard mono/muted treatment plus an
+  explicit `ExternalLink` icon. Tags/Collections each gained an independent
+  edit-mode toggle (pencil ↔ checkmark) hiding the remove buttons/add-forms
+  behind it — pills-only by default. Collection pills are real links,
+  reconstructed client-side from the already-fetched full collection list by
+  walking the `parent_id` chain (no backend change needed, since routes.ts
+  wildcards `/collections/*` to the full nested path, not just one collection's
+  own slug); tag pills needed an actual small backend addition instead
+  (`tags.slug` added to `ListPageTags`'s `SELECT` and `pageTagResponse`, since
+  `PageTag` had never exposed a slug anywhere). The mirror-exclusion checkbox
+  was inverted to its positive framing ("Sync with my browser's bookmarks,"
+  checked by default) — the existing wording wasn't wrong, just backend jargon
+  instead of what the toggle actually does for the person looking at it.
+  Recapture/Delete moved to their own row below Captures, separated from the
+  sync toggle, and Recapture now disables itself during its own "Queued!"
+  confirmation window (re-queuing the same URL would just be a no-op anyway).
+  Capture rows drop the source label entirely for `extension` captures (the
+  overwhelming default) and only call out `manual_upload` explicitly, with an
+  icon — see `DESIGN_SYSTEM.md`'s new "De-emphasizing the common case" pattern.
 
 ### What's left
 
-The rest of the dashboard's screens, one at a time, mockup-first: Login/Setup
-next, then Library, PageDetail, the Collections/Tags family, Devices/Queue/
-Settings. `DESIGN_SYSTEM.md` gets updated in place as new patterns come up,
-rather than waiting until the whole pass is done.
+The remaining screens, one at a time, mockup-first: the Collections/Tags family,
+then Devices/Queue/Settings. `DESIGN_SYSTEM.md` gets updated in place as new
+patterns come up, rather than waiting until the whole pass is done.
 
 ## Phase 13 (PageDetail gaps: delete, title override, manual recapture)
 
