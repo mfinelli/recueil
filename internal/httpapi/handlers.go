@@ -83,13 +83,16 @@ type pairingTokenResponse struct {
 }
 
 type setupStatusResponse struct {
-	NeedsSetup bool `json:"needs_setup"`
+	NeedsSetup       bool `json:"needs_setup"`
+	OpenRegistration bool `json:"open_registration"`
 }
 
 // GET /api/setup-status: unauthenticated -- lets the dashboard's first load
 // distinguish "show the setup screen" from "show the login screen" without
 // guessing or having to attempt POST /api/setup speculatively just to read
-// its 409. Deliberately doesn't leak anything beyond the boolean (not a
+// its 409. Also carries OpenRegistration (server config, not user data) so
+// Login knows whether to link to /register without a second unauthenticated
+// round-trip. Doesn't leak anything beyond these two booleans (not a
 // username, not a count) -- an unauthenticated endpoint has no other reason
 // to exist here.
 func (s *Server) SetupStatus(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +101,10 @@ func (s *Server) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, setupStatusResponse{NeedsSetup: count == 0})
+	writeJSON(w, http.StatusOK, setupStatusResponse{
+		NeedsSetup:       count == 0,
+		OpenRegistration: s.EnableOpenRegistration,
+	})
 }
 
 // POST /api/setup: creates the first admin account, gated by the bootstrap

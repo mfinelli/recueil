@@ -33,6 +33,17 @@
   "login_error_generic": "login failed",
   "login_signing_in": "Signing in…",
   "login_sign_in": "Sign in",
+  "login_register_prompt": "Don't have an account?",
+  "login_register_link": "Register",
+
+  "register_subtitle": "Create an account to get started.",
+  "register_confirm_password": "Confirm password",
+  "register_error_password_mismatch": "passwords do not match",
+  "register_error_generic": "registration failed",
+  "register_creating": "Creating…",
+  "register_create_account": "Create account",
+  "register_login_prompt": "Already have an account?",
+  "register_login_link": "Sign in",
 
   "setup_subtitle": "Create the first admin account to get started.",
   "setup_bootstrap_token": "Bootstrap token",

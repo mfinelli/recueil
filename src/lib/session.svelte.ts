@@ -16,11 +16,12 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Bundles "am I logged in" and "does this instance need first-run setup"
-// into one module: both are read together, once, at app bootstrap, to
-// decide which of Setup/Login/the real app to show first -- splitting them
-// into two single-purpose stores would just mean coordinating two async
-// reads instead of one for that one shared use.
+// Bundles "am I logged in", "does this instance need first-run setup", and
+// "is open registration enabled" into one module: all three are read
+// together, once, at app bootstrap, to decide which of Setup/Login/Register/
+// the real app to show first -- splitting them into separate single-purpose
+// stores would just mean coordinating multiple async reads instead of one
+// for that one shared use.
 import { apiFetch, apiJSON } from "./api";
 import { setCachedLanguage } from "./locale";
 
@@ -33,9 +34,18 @@ export interface CurrentUser {
 class SessionState {
   user = $state<CurrentUser | null>(null);
   needsSetup = $state(false);
+  openRegistration = $state(false);
 
   async login(username: string, password: string): Promise<void> {
     this.user = await apiJSON<CurrentUser>("/auth/login", {
+      method: "POST",
+      body: { username, password },
+    });
+    this.needsSetup = false;
+  }
+
+  async register(username: string, password: string): Promise<void> {
+    this.user = await apiJSON<CurrentUser>("/auth/register", {
       method: "POST",
       body: { username, password },
     });
@@ -97,8 +107,12 @@ async function bootstrap(): Promise<void> {
     session.user = (await meResult.value.json()) as CurrentUser;
   }
   if (statusResult.status === "fulfilled" && statusResult.value.ok) {
-    const body = (await statusResult.value.json()) as { needs_setup: boolean };
+    const body = (await statusResult.value.json()) as {
+      needs_setup: boolean;
+      open_registration: boolean;
+    };
     session.needsSetup = body.needs_setup;
+    session.openRegistration = body.open_registration;
   }
   if (settingsResult.status === "fulfilled" && settingsResult.value.ok) {
     const body = (await settingsResult.value.json()) as {

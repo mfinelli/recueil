@@ -284,6 +284,22 @@ func TestSetupStatus(t *testing.T) {
 		require.NoError(t, json.NewDecoder(resp2.Body).Decode(&got))
 		assert.False(t, got.NeedsSetup)
 	})
+
+	// newTestServer wires EnableOpenRegistration=true (see its own doc
+	// comment) -- this just confirms SetupStatus actually surfaces the
+	// value it was given rather than hardcoding it, not the config
+	// default itself (that's TestRegisterDisabledByDefault's job).
+	t.Run("open_registration reflects the server's configured value", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+
+		resp, err := http.Get(server.URL + "/api/setup-status")
+		require.NoError(t, err)
+		var got struct {
+			OpenRegistration bool `json:"open_registration"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.True(t, got.OpenRegistration)
+	})
 }
 
 func TestSetup(t *testing.T) {

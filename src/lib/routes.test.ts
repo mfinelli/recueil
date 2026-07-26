@@ -44,7 +44,12 @@ vi.stubGlobal(
 
 import { push } from "svelte-spa-router";
 import { session } from "./session.svelte";
-import { requireSetup, requireGuest, requireAuth } from "./routes";
+import {
+  requireSetup,
+  requireGuest,
+  requireOpenRegistration,
+  requireAuth,
+} from "./routes";
 
 const pushMock = vi.mocked(push);
 
@@ -58,6 +63,7 @@ beforeEach(() => {
   pushMock.mockClear();
   session.user = null;
   session.needsSetup = false;
+  session.openRegistration = false;
 });
 
 describe("requireSetup", () => {
@@ -102,6 +108,40 @@ describe("requireGuest", () => {
     session.user = { id: 1, username: "alice", role: "admin" };
     expect(requireGuest(fakeDetail)).toBe(false);
     expect(pushMock).toHaveBeenCalledWith("/");
+  });
+});
+
+describe("requireOpenRegistration", () => {
+  it("allows the route for a logged-out user once setup is done and registration is enabled", () => {
+    session.needsSetup = false;
+    session.user = null;
+    session.openRegistration = true;
+    expect(requireOpenRegistration(fakeDetail)).toBe(true);
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("redirects to /setup when setup is still needed, even before checking anything else", () => {
+    session.needsSetup = true;
+    session.user = null;
+    session.openRegistration = true;
+    expect(requireOpenRegistration(fakeDetail)).toBe(false);
+    expect(pushMock).toHaveBeenCalledWith("/setup");
+  });
+
+  it("redirects an already-logged-in user away from /register", () => {
+    session.needsSetup = false;
+    session.user = { id: 1, username: "alice", role: "admin" };
+    session.openRegistration = true;
+    expect(requireOpenRegistration(fakeDetail)).toBe(false);
+    expect(pushMock).toHaveBeenCalledWith("/");
+  });
+
+  it("redirects to /login when open registration is disabled", () => {
+    session.needsSetup = false;
+    session.user = null;
+    session.openRegistration = false;
+    expect(requireOpenRegistration(fakeDetail)).toBe(false);
+    expect(pushMock).toHaveBeenCalledWith("/login");
   });
 });
 

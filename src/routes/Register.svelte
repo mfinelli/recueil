@@ -1,5 +1,5 @@
 <!--
-recueil: self-hosted webpage bookmarker and archiver
+recueil: self-hosted webpage bookmarking and archiver
 Copyright © 2026 Mario Finelli
 
 This program is free software: you can redistribute it and/or modify
@@ -15,6 +15,13 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
+<!-- Open registration: only reachable at all when the server has
+     enable_open_registration set (see lib/routes.ts's requireOpenRegistration
+     guard, which redirects to /login otherwise regardless of what's typed
+     into the URL bar). Same shape as Setup.svelte minus the bootstrap-token
+     field -- self-hosted, no email verification, no email field on the user
+     at all -- and lands the new member straight in the app on success, same
+     as Setup does for the first admin. -->
 <script lang="ts">
   import { push } from "svelte-spa-router";
   import { session } from "../lib/session.svelte";
@@ -23,18 +30,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   let username = $state("");
   let password = $state("");
+  let confirmPassword = $state("");
   let submitting = $state(false);
   let error = $state<string | null>(null);
 
   async function handleSubmit(event: SubmitEvent) {
     event.preventDefault();
+    if (password !== confirmPassword) {
+      error = m.register_error_password_mismatch();
+      return;
+    }
     error = null;
     submitting = true;
     try {
-      await session.login(username, password);
+      await session.register(username, password);
       await push("/");
     } catch (err) {
-      error = err instanceof ApiError ? err.message : m.login_error_generic();
+      error =
+        err instanceof ApiError ? err.message : m.register_error_generic();
     } finally {
       submitting = false;
     }
@@ -44,6 +57,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <main class="screen">
   <form class="card" onsubmit={handleSubmit}>
     <h1>recueil</h1>
+    <p class="sub">{m.register_subtitle()}</p>
 
     <label for="username">{m.common_username()}</label>
     <input
@@ -59,8 +73,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <input
       id="password"
       type="password"
-      autocomplete="current-password"
+      autocomplete="new-password"
       bind:value={password}
+      required
+      disabled={submitting}
+    />
+
+    <label for="confirm-password">{m.register_confirm_password()}</label>
+    <input
+      id="confirm-password"
+      type="password"
+      autocomplete="new-password"
+      bind:value={confirmPassword}
       required
       disabled={submitting}
     />
@@ -70,15 +94,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {/if}
 
     <button type="submit" disabled={submitting}
-      >{submitting ? m.login_signing_in() : m.login_sign_in()}</button
+      >{submitting
+        ? m.register_creating()
+        : m.register_create_account()}</button
     >
 
-    {#if session.openRegistration}
-      <p class="alt-action">
-        {m.login_register_prompt()}
-        <a href="#/register">{m.login_register_link()}</a>
-      </p>
-    {/if}
+    <p class="alt-action">
+      {m.register_login_prompt()}
+      <a href="#/login">{m.register_login_link()}</a>
+    </p>
   </form>
 </main>
 
@@ -103,7 +127,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   h1 {
+    margin: 0;
+  }
+
+  .sub {
     margin: 0 0 1rem;
+    color: var(--ink-muted);
   }
 
   label {

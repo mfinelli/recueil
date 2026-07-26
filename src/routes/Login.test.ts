@@ -47,6 +47,15 @@ afterEach(() => {
 });
 
 describe("Login", () => {
+  afterEach(() => {
+    // Direct mutation, not a fresh session.svelte import -- Login reads
+    // session.openRegistration reactively, so resetting it here (rather
+    // than the heavier vi.resetModules()/re-import dance
+    // session.svelte.test.ts uses for bootstrap coverage) is enough to
+    // keep this one field from leaking between tests in this file.
+    session.openRegistration = false;
+  });
+
   it("renders the username and password fields and a sign-in button", () => {
     render(Login);
 
@@ -54,6 +63,22 @@ describe("Login", () => {
     expect(screen.getByLabelText("Password")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("doesn't render a register link when open registration is disabled", () => {
+    session.openRegistration = false;
+    render(Login);
+
+    expect(screen.queryByRole("link", { name: "Register" })).toBeNull();
+  });
+
+  it("renders a register link when open registration is enabled", () => {
+    session.openRegistration = true;
+    render(Login);
+
+    const link = screen.getByRole("link", { name: "Register" });
+    expect(link).toBeTruthy();
+    expect(link).toHaveProperty("hash", "#/register");
   });
 
   it("submits the entered username/password and redirects to / on success", async () => {
