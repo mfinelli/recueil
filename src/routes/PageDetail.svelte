@@ -15,10 +15,9 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
-<!-- Now the full read/write loop: tag add/remove, collection add/remove,
-     the excluded_from_mirror toggle, title editing, delete, manual
-     recapture, and per-capture language correction all call their real
-     backend endpoints. All of page/collections/languageOptions are
+<!-- The full read/write loop: tag add/remove, collection add/remove, the
+     excluded_from_mirror toggle, title editing, delete, and manual
+     recapture all call their real backend endpoints. page/collections are
      updated optimistically from each write's own response rather than
      refetching the whole page afterward -- a normal tradeoff for a
      single-user personal tool, not something defended against
@@ -49,8 +48,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
-  import { languageDisplayName } from "../lib/languageNames";
-  import { getLocale } from "../paraglide/runtime";
+  import { formatBytes } from "../lib/format";
   import AppHeader from "../components/AppHeader.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
@@ -65,11 +63,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import Upload from "@lucide/svelte/icons/upload";
   import type {
     PageDetail,
-    CaptureSummary,
     TagCreated,
     Collection,
     CollectionListResponse,
-    TextSearchConfigsResponse,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -81,19 +77,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let actionError = $state<string | null>(null);
 
   // Supplementary metadata for the write-action UI (the "add to
-  // collection" picker's options, the language-correction dropdown's
-  // valid values) -- fetched alongside the page itself, but best-effort:
-  // a failure here shouldn't block viewing the page, just leave the
-  // relevant picker with no/fewer options.
+  // collection" picker's options) -- fetched alongside the page itself,
+  // but best-effort: a failure here shouldn't block viewing the page,
+  // just leave the picker with fewer options.
   let allCollections = $state<Collection[]>([]);
-  let languageOptions = $state<string[]>([]);
 
   let tagInput = $state("");
   let addingTag = $state(false);
   let selectedCollectionId = $state("");
   let addingToCollection = $state(false);
   let togglingMirror = $state(false);
-  let savingLanguageFor = $state<number | null>(null);
   let editingTitle = $state(false);
   let titleInput = $state("");
   let savingTitle = $state(false);
@@ -127,8 +120,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     Promise.allSettled([
       apiJSON<PageDetail>(`/pages/${id}`),
       apiJSON<CollectionListResponse>("/collections"),
-      apiJSON<TextSearchConfigsResponse>("/text-search-configs"),
-    ]).then(([pageResult, collectionsResult, languagesResult]) => {
+    ]).then(([pageResult, collectionsResult]) => {
       if (pageResult.status === "fulfilled") {
         page = pageResult.value;
       } else {
@@ -140,10 +132,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       allCollections =
         collectionsResult.status === "fulfilled"
           ? collectionsResult.value.collections
-          : [];
-      languageOptions =
-        languagesResult.status === "fulfilled"
-          ? languagesResult.value.languages
           : [];
       loading = false;
     });
@@ -157,12 +145,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       hour: "numeric",
       minute: "2-digit",
     });
-  }
-
-  function formatBytes(n: number): string {
-    if (n < 1024) return m.unit_bytes({ n: String(n) });
-    if (n < 1024 * 1024) return m.unit_kilobytes({ n: (n / 1024).toFixed(1) });
-    return m.unit_megabytes({ n: (n / (1024 * 1024)).toFixed(1) });
   }
 
   async function addTag(event: SubmitEvent) {
@@ -419,27 +401,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       deleting = false;
     }
   }
-
-  async function updateCaptureLanguage(
-    capture: CaptureSummary,
-    newLanguage: string,
-  ) {
-    if (newLanguage === capture.language) return;
-    savingLanguageFor = capture.id;
-    actionError = null;
-    try {
-      await apiJSON(`/captures/${capture.id}/language`, {
-        method: "PATCH",
-        body: { language: newLanguage },
-      });
-      capture.language = newLanguage;
-    } catch (err) {
-      actionError =
-        err instanceof ApiError ? err.message : m.pagedetail_language_error();
-    } finally {
-      savingLanguageFor = null;
-    }
-  }
 </script>
 
 <main class="screen">
@@ -681,25 +642,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               {formatBytes(capture.html_uncompressed_size_bytes)}
             </span>
           </a>
-          {#if languageOptions.length > 0}
-            <label class="language-picker">
-              {m.common_language()}
-              <select
-                value={capture.language}
-                disabled={savingLanguageFor === capture.id}
-                onchange={(e) =>
-                  updateCaptureLanguage(capture, e.currentTarget.value)}
-              >
-                {#each languageOptions as lang (lang)}
-                  <option value={lang}
-                    >{lang === "simple"
-                      ? m.pagedetail_language_other()
-                      : languageDisplayName(lang, getLocale())}</option
-                  >
-                {/each}
-              </select>
-            </label>
-          {/if}
         </li>
       {/each}
     </ul>
@@ -1117,19 +1059,5 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     color: var(--ink-muted);
     font-size: 0.8125rem;
     white-space: nowrap;
-  }
-
-  .language-picker {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-    color: var(--ink-muted);
-    font-size: 0.75rem;
-    white-space: nowrap;
-
-    select {
-      padding: 0.125rem 0.25rem;
-      font-size: 0.75rem;
-    }
   }
 </style>

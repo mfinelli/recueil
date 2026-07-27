@@ -34,32 +34,74 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      success (the background job runner picks the reset job up on its own
      schedule, same as PageDetail's recapture action never touches `page`), so
      each just shows a transient "Queued!" confirmation, same pattern as
-     Devices.svelte/PageDetail.svelte's copy/recapture buttons. -->
+     Devices.svelte/PageDetail.svelte's copy/recapture buttons. Each is also
+     hidden once the capture's own stored version/model already matches
+     GET /api/capture-config's current one -- regenerating would just
+     reproduce what's already there. That comparison is best-effort: if
+     capture-config fails to load, both buttons default to showing rather
+     than silently disappearing. -->
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
+  import ExternalLink from "@lucide/svelte/icons/external-link";
+  import Archive from "@lucide/svelte/icons/archive";
+  import Sparkles from "@lucide/svelte/icons/sparkles";
+  import RotateCw from "@lucide/svelte/icons/rotate-cw";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Copy from "@lucide/svelte/icons/copy";
   import { apiJSON, ApiError } from "../lib/api";
+  import { formatBytes } from "../lib/format";
+  import { languageDisplayName } from "../lib/languageNames";
+  import { getLocale } from "../paraglide/runtime";
   import AppHeader from "../components/AppHeader.svelte";
-  import type { CaptureDetail } from "../lib/types";
+  import type {
+    CaptureDetail,
+    CaptureConfig,
+    TextSearchConfigsResponse,
+  } from "../lib/types";
   import { m } from "../paraglide/messages";
 
   let { params }: { params: { id: string } } = $props();
 
+  const FONT_PREF_KEY = "recueil:capture-reader-font";
+  type ReaderFont = "sans" | "serif";
+
+  function loadFontPref(): ReaderFont {
+    return localStorage.getItem(FONT_PREF_KEY) === "serif" ? "serif" : "sans";
+  }
+
+  let readerFont = $state<ReaderFont>(loadFontPref());
+
+  function setReaderFont(font: ReaderFont) {
+    readerFont = font;
+    localStorage.setItem(FONT_PREF_KEY, font);
+  }
+
   let capture = $state<CaptureDetail | null>(null);
+  let captureConfig = $state<CaptureConfig | null>(null);
+  let languageOptions = $state<string[]>([]);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
 
+  let faviconFailed = $state(false);
+  let savingLanguage = $state(false);
   let deleting = $state(false);
   let regeneratingSummary = $state(false);
   let summaryQueued = $state(false);
   let regeneratingReadability = $state(false);
   let readabilityQueued = $state(false);
+  let copiedField = $state<string | null>(null);
 
   $effect(() => {
     const id = params.id;
     loading = true;
     loadError = null;
+    actionError = null;
     capture = null;
+    faviconFailed = false;
+
     apiJSON<CaptureDetail>(`/captures/${id}`)
       .then((res) => {
         capture = res;
@@ -71,6 +113,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       .finally(() => {
         loading = false;
       });
+
+    // Both best-effort and independent of the main load above: a failure
+    // in either just means the regenerate buttons default to showing
+    // (capture-config) or the language picker has no options
+    // (text-search-configs), not a blocking error for the whole screen.
+    apiJSON<CaptureConfig>("/capture-config")
+      .then((res) => {
+        captureConfig = res;
+      })
+      .catch(() => {
+        captureConfig = null;
+      });
+
+    apiJSON<TextSearchConfigsResponse>("/text-search-configs")
+      .then((res) => {
+        languageOptions = res.languages;
+      })
+      .catch(() => {
+        languageOptions = [];
+      });
   });
 
   function formatDateTime(iso: string): string {
@@ -81,6 +143,57 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  function sourceLabel(source: string): string {
+    return source === "manual_upload"
+      ? m.capturereader_source_manual_upload()
+      : m.capturereader_source_extension();
+  }
+
+  // Regenerating would just reproduce what's already stored -- hide the
+  // button rather than offer an action that does nothing. Any difference
+  // (including capture's own field being null, i.e. never run) shows it.
+  // captureConfig === null (still loading, or the fetch failed) also shows
+  // it -- fail open, don't hide a real capability just because the
+  // comparison endpoint had a hiccup.
+  function showReadabilityRegenerate(c: CaptureDetail): boolean {
+    return (
+      captureConfig === null ||
+      c.readability_version !== captureConfig.readability_version
+    );
+  }
+
+  function showSummaryRegenerate(c: CaptureDetail): boolean {
+    return captureConfig === null || c.ai_model !== captureConfig.ai_model;
+  }
+
+  async function updateLanguage(newLanguage: string) {
+    if (!capture || newLanguage === capture.language) return;
+    savingLanguage = true;
+    actionError = null;
+    try {
+      await apiJSON(`/captures/${capture.id}/language`, {
+        method: "PATCH",
+        body: { language: newLanguage },
+      });
+      capture.language = newLanguage;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.capturereader_language_error();
+    } finally {
+      savingLanguage = false;
+    }
+  }
+
+  async function copyToClipboard(field: string, value: string) {
+    await navigator.clipboard.writeText(value);
+    copiedField = field;
+    setTimeout(() => {
+      copiedField = null;
+    }, 2000);
   }
 
   async function deleteCapture() {
@@ -150,75 +263,276 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   {#if loading}
     <p class="status">{m.common_loading()}</p>
   {:else if loadError}
-    <p class="status error" role="alert">{loadError}</p>
+    <div class="status-error" role="alert">
+      <AlertCircle size={28} />
+      <span>{loadError}</span>
+    </div>
   {:else if capture}
-    <a class="back" href={`/pages/${capture.page_id}`} use:link
-      >&larr; {m.capturereader_back()}</a
-    >
+    <a class="back" href={`/pages/${capture.page_id}`} use:link>
+      <ChevronLeft size={14} />
+      {m.capturereader_back()}
+    </a>
 
-    <h1>{capture.title ?? capture.raw_url}</h1>
-    <div class="byline">
-      <span
-        >{m.capturereader_captured_at({
-          date: formatDateTime(capture.captured_at),
-        })}</span
-      >
-      <a href={capture.raw_url} target="_blank" rel="noreferrer"
-        >{m.capturereader_original_url()}</a
-      >
-      <a
-        href={`/api/captures/${capture.id}/html`}
-        target="_blank"
-        rel="noreferrer">{m.capturereader_view_archived()}</a
-      >
+    <div class="title-row">
+      {#if capture.favicon_path !== null && !faviconFailed}
+        <img
+          class="favicon"
+          src={`/api/captures/${capture.id}/favicon`}
+          alt=""
+          loading="lazy"
+          onerror={() => (faviconFailed = true)}
+        />
+      {/if}
+      <h1>{capture.title ?? capture.raw_url}</h1>
     </div>
 
+    <div class="byline">
+      <span class="captured-line">
+        <span class="captured-at">
+          {m.capturereader_captured_via({
+            date: formatDateTime(capture.captured_at),
+            source: sourceLabel(capture.source),
+          })}
+        </span>
+      </span>
+      <a
+        class="raw-url"
+        href={capture.raw_url}
+        target="_blank"
+        rel="noreferrer"
+      >
+        <ExternalLink size={12} />
+        {capture.raw_url}
+      </a>
+    </div>
+    <a
+      class="archived-link"
+      href={`/api/captures/${capture.id}/html`}
+      target="_blank"
+      rel="noreferrer"
+    >
+      <Archive size={12} />
+      {m.capturereader_view_archived()}
+    </a>
+
     {#if actionError}
-      <p class="status error" role="alert">{actionError}</p>
+      <p class="status error" role="alert">
+        <AlertCircle size={15} />
+        <span>{actionError}</span>
+      </p>
     {/if}
 
-    <div class="actions">
-      <button
-        type="button"
-        onclick={regenerateReadability}
-        disabled={regeneratingReadability}
-        >{readabilityQueued
-          ? m.capturereader_regenerate_readability_queued()
-          : regeneratingReadability
-            ? m.capturereader_regenerate_readability_queuing()
-            : m.capturereader_regenerate_readability()}</button
-      >
-      <button
-        type="button"
-        onclick={regenerateSummary}
-        disabled={regeneratingSummary}
-        >{summaryQueued
-          ? m.capturereader_regenerate_summary_queued()
-          : regeneratingSummary
-            ? m.capturereader_regenerate_summary_queuing()
-            : m.capturereader_regenerate_summary()}</button
-      >
+    {#if capture.ai_summary}
+      <div class="summary">
+        <Sparkles size={16} />
+        <div class="summary-body">
+          <div class="summary-header">
+            <span class="eyebrow">{m.capturereader_ai_summary_heading()}</span>
+            <span class="summary-model">
+              {capture.ai_model}
+              {#if showSummaryRegenerate(capture)}
+                <button
+                  type="button"
+                  class="regen-btn"
+                  aria-label={summaryQueued
+                    ? m.capturereader_regenerate_summary_queued()
+                    : m.capturereader_regenerate_summary()}
+                  disabled={regeneratingSummary || summaryQueued}
+                  onclick={regenerateSummary}
+                >
+                  <RotateCw size={12} />
+                </button>
+              {/if}
+            </span>
+          </div>
+          <p>{capture.ai_summary}</p>
+        </div>
+      </div>
+    {/if}
+
+    <div class="reader-controls">
+      <div class="font-toggle" role="group">
+        <button
+          class:active={readerFont === "sans"}
+          onclick={() => setReaderFont("sans")}
+          >{m.capturereader_font_sans()}</button
+        >
+        <button
+          class:active={readerFont === "serif"}
+          onclick={() => setReaderFont("serif")}
+          >{m.capturereader_font_serif()}</button
+        >
+      </div>
+      {#if languageOptions.length > 0}
+        <label class="lang-picker">
+          {m.common_language()}
+          <select
+            value={capture.language}
+            disabled={savingLanguage}
+            onchange={(e) => updateLanguage(e.currentTarget.value)}
+          >
+            {#each languageOptions as lang (lang)}
+              <option value={lang}
+                >{lang === "simple"
+                  ? m.pagedetail_language_other()
+                  : languageDisplayName(lang, getLocale())}</option
+              >
+            {/each}
+          </select>
+        </label>
+      {/if}
+    </div>
+
+    {#if capture.reader_text}
+      <div class="reader-text" class:serif={readerFont === "serif"}>
+        {capture.reader_text}
+      </div>
+    {:else}
+      <p class="status">{m.capturereader_no_text()}</p>
+    {/if}
+
+    <div class="readability-footer">
+      {m.capturereader_readability_label()}
+      {capture.readability_version ?? "—"}
+      {#if showReadabilityRegenerate(capture)}
+        <button
+          type="button"
+          class="regen-btn"
+          aria-label={readabilityQueued
+            ? m.capturereader_regenerate_readability_queued()
+            : m.capturereader_regenerate_readability()}
+          disabled={regeneratingReadability || readabilityQueued}
+          onclick={regenerateReadability}
+        >
+          <RotateCw size={12} />
+        </button>
+      {/if}
+    </div>
+
+    <div class="details">
+      <span class="eyebrow">{m.capturereader_details_heading()}</span>
+      <div class="details-row">
+        <span class="label">{m.capturereader_archive_label()}</span>
+        <span class="value"
+          >{m.capturereader_archive_size({
+            compressed: formatBytes(capture.html_compressed_size_bytes),
+            uncompressed: formatBytes(capture.html_uncompressed_size_bytes),
+          })}</span
+        >
+      </div>
+      <div class="details-row">
+        <span class="label">{m.capturereader_archive_sha256_label()}</span>
+        <span class="value hash-row">
+          <span class="hash" title={capture.content_hash}
+            >{capture.content_hash.slice(0, 12)}…</span
+          >
+          <button
+            type="button"
+            class="copy-btn"
+            aria-label={m.capturereader_copy_aria({
+              name: m.capturereader_archive_sha256_label(),
+            })}
+            onclick={() => copyToClipboard("archive", capture!.content_hash)}
+          >
+            {#if copiedField === "archive"}
+              <span class="copied">{m.capturereader_copied()}</span>
+            {:else}
+              <Copy size={10} />
+            {/if}
+          </button>
+        </span>
+      </div>
+      {#if capture.thumbnail_path !== null}
+        <div class="details-row">
+          <span class="label">{m.capturereader_thumbnail_label()}</span>
+          <span class="value"
+            >{capture.thumbnail_size_bytes !== null
+              ? formatBytes(capture.thumbnail_size_bytes)
+              : "—"}</span
+          >
+        </div>
+        {#if capture.thumbnail_hash !== null}
+          <div class="details-row">
+            <span class="label">{m.capturereader_thumbnail_sha256_label()}</span
+            >
+            <span class="value hash-row">
+              <span class="hash" title={capture.thumbnail_hash}
+                >{capture.thumbnail_hash.slice(0, 12)}…</span
+              >
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={m.capturereader_copy_aria({
+                  name: m.capturereader_thumbnail_sha256_label(),
+                })}
+                onclick={() =>
+                  copyToClipboard("thumbnail", capture!.thumbnail_hash!)}
+              >
+                {#if copiedField === "thumbnail"}
+                  <span class="copied">{m.capturereader_copied()}</span>
+                {:else}
+                  <Copy size={10} />
+                {/if}
+              </button>
+            </span>
+          </div>
+        {/if}
+      {/if}
+      {#if capture.favicon_path !== null}
+        <div class="details-row">
+          <span class="label">{m.capturereader_favicon_label()}</span>
+          <span class="value"
+            >{capture.favicon_size_bytes !== null
+              ? formatBytes(capture.favicon_size_bytes)
+              : "—"}</span
+          >
+        </div>
+        {#if capture.favicon_hash !== null}
+          <div class="details-row">
+            <span class="label">{m.capturereader_favicon_sha256_label()}</span>
+            <span class="value hash-row">
+              <span class="hash" title={capture.favicon_hash}
+                >{capture.favicon_hash.slice(0, 12)}…</span
+              >
+              <button
+                type="button"
+                class="copy-btn"
+                aria-label={m.capturereader_copy_aria({
+                  name: m.capturereader_favicon_sha256_label(),
+                })}
+                onclick={() =>
+                  copyToClipboard("favicon", capture!.favicon_hash!)}
+              >
+                {#if copiedField === "favicon"}
+                  <span class="copied">{m.capturereader_copied()}</span>
+                {:else}
+                  <Copy size={10} />
+                {/if}
+              </button>
+            </span>
+          </div>
+        {/if}
+      {/if}
+    </div>
+
+    <div class="actions-row">
       <button
         type="button"
         class="danger"
         onclick={deleteCapture}
-        disabled={deleting}>{m.capturereader_delete()}</button
+        disabled={deleting}
       >
+        <Trash2 size={14} />
+        {m.capturereader_delete()}
+      </button>
     </div>
-
-    {#if capture.ai_summary}
-      <p class="summary">{capture.ai_summary}</p>
-    {/if}
-
-    {#if capture.reader_text}
-      <div class="reader-text">{capture.reader_text}</div>
-    {:else}
-      <p class="status">{m.capturereader_no_text()}</p>
-    {/if}
   {/if}
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 38rem;
     margin: 0 auto;
@@ -226,7 +540,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .back {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     margin-bottom: 1.5rem;
     color: var(--ink-muted);
     text-decoration: none;
@@ -235,9 +551,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:hover {
       color: var(--ink);
     }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     color: var(--ink-muted);
 
     &.error {
@@ -245,71 +568,364 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  .actions {
+  // Matches Library/PageDetail's own load-error treatment exactly.
+  .status-error {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-    margin-bottom: 1.5rem;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
+    color: var(--accent);
+    text-align: center;
 
-    button {
-      padding: 0.4rem 0.75rem;
-      border: 1px solid var(--rule);
-      border-radius: 0.25rem;
-      background: var(--paper-raised);
-      color: var(--ink);
-      font: inherit;
-      font-size: 0.8125rem;
-      cursor: pointer;
-
-      &:disabled {
-        opacity: 0.6;
-        cursor: default;
-      }
-    }
-
-    .danger {
-      color: var(--accent);
-      border-color: var(--accent);
-
-      &:hover:not(:disabled) {
-        background: var(--accent);
-        color: var(--paper);
-      }
+    :global(svg) {
+      opacity: 0.6;
     }
   }
 
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .favicon {
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    flex: none;
+  }
+
   h1 {
-    margin: 0 0 0.5rem;
-    font-size: 1.5rem;
+    @include type.heading;
+    font-size: 1.6rem;
     line-height: 1.25;
+    margin: 0;
   }
 
   .byline {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.25rem 0.75rem;
-    margin-bottom: 1.5rem;
+    align-items: baseline;
+    gap: 0.3rem 1rem;
+    margin-bottom: 0.4rem;
     color: var(--ink-muted);
     font-size: 0.8125rem;
+  }
 
-    a {
-      color: var(--focus);
+  .byline .captured-at {
+    @include type.data-mono;
+    font-size: 0.78rem;
+  }
+
+  .raw-url {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    @include type.data-mono;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    text-decoration: none;
+    word-break: break-all;
+
+    &:hover {
+      color: var(--accent);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .archived-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-bottom: 1.5rem;
+    color: var(--ink-muted);
+    text-decoration: none;
+    font-size: 0.8125rem;
+
+    &:hover {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
   .summary {
-    padding: 0.75rem 1rem;
-    margin-bottom: 1.5rem;
-    border-left: 3px solid var(--rule);
+    display: flex;
+    gap: 0.6rem;
+    padding: 0.85rem 1rem;
+    margin-bottom: 1.75rem;
+    border-radius: 4px;
+    border: 1px solid color-mix(in srgb, var(--brass) 40%, var(--rule));
     background: var(--paper-raised);
+
+    :global(> svg) {
+      flex: none;
+      color: var(--brass);
+      margin-top: 0.2rem;
+    }
+  }
+
+  .summary-body {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .summary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+  }
+
+  .summary-body .eyebrow {
+    @include type.eyebrow;
+  }
+
+  .summary-model {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    @include type.data-mono;
+    font-size: 0.68rem;
     color: var(--ink-muted);
+  }
+
+  .summary-body p {
+    margin: 0;
+    color: var(--ink);
     font-style: italic;
     font-size: 0.9375rem;
+    line-height: 1.55;
+  }
+
+  .regen-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.3rem;
+    height: 1.3rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink-muted);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      color: var(--accent);
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .reader-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1.1rem;
+  }
+
+  .font-toggle {
+    display: flex;
+    width: fit-content;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+
+    button {
+      border: none;
+      border-radius: 0;
+      background: var(--paper-raised);
+      padding: 0.35rem 0.65rem;
+      font: inherit;
+      font-size: 0.78rem;
+      color: var(--ink-muted);
+      cursor: pointer;
+
+      &.active {
+        background: var(--accent-success);
+        color: var(--paper);
+      }
+
+      &:focus-visible {
+        @include mix.focus-ring;
+      }
+    }
+
+    button + button {
+      border-left: 1px solid var(--rule);
+    }
+  }
+
+  .lang-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--ink-muted);
+    font-size: 0.78rem;
+
+    select {
+      padding: 0.3rem 0.5rem;
+      font-size: 0.78rem;
+      @include type.data-mono;
+      border: 1px solid var(--rule);
+      border-radius: 4px;
+      background: var(--paper-raised);
+      color: var(--ink);
+
+      &:focus-visible {
+        @include mix.focus-ring;
+      }
+    }
   }
 
   .reader-text {
+    max-width: 42rem;
     white-space: pre-wrap;
     font-size: 1.0625rem;
-    line-height: 1.65;
+    line-height: 1.7;
+    color: var(--ink);
+
+    &.serif {
+      font-family: Georgia, Cambria, "Times New Roman", Times, serif;
+    }
+  }
+
+  .readability-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px dotted var(--rule);
+    color: var(--ink-muted);
+    @include type.data-mono;
+    font-size: 0.72rem;
+  }
+
+  .details {
+    margin-top: 2rem;
+    padding: 1rem 1.1rem;
+    @include mix.card-surface;
+  }
+
+  .details .eyebrow {
+    @include type.eyebrow;
+    display: block;
+    margin-bottom: 0.6rem;
+  }
+
+  .details-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    @include mix.dotted-rule;
+    font-size: 0.8rem;
+
+    &:last-child {
+      border-bottom: none;
+    }
+  }
+
+  .details-row .label {
+    color: var(--ink-muted);
+  }
+
+  .details-row .value {
+    @include type.data-mono;
+    font-size: 0.78rem;
+  }
+
+  .hash-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .hash {
+    cursor: default;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 1.1rem;
+    padding: 0 0.3rem;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--ink-muted);
+    cursor: pointer;
+
+    &:hover {
+      color: var(--accent);
+      background: rgba(0, 0, 0, 0.05);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .copied {
+    @include type.data-mono;
+    font-size: 0.65rem;
+    color: var(--accent-success);
+  }
+
+  .actions-row {
+    display: flex;
+    margin-top: 2rem;
+    padding-top: 0.9rem;
+    border-top: 1px dotted var(--rule);
+  }
+
+  button.danger {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.75rem;
+    border: 1px solid var(--accent);
+    border-radius: 0.25rem;
+    background: var(--paper-raised);
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.8125rem;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--accent);
+      color: var(--paper);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: default;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 </style>

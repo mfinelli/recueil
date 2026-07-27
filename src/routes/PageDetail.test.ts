@@ -372,11 +372,11 @@ describe("PageDetail", () => {
     await fireEvent.input(input, { target: { value: "Cooking" } });
     await fireEvent.click(screen.getByRole("button", { name: "Create & add" }));
 
-    expect(apiJSONMock).toHaveBeenNthCalledWith(4, "/collections", {
+    expect(apiJSONMock).toHaveBeenNthCalledWith(3, "/collections", {
       method: "POST",
       body: { name: "Cooking" },
     });
-    expect(apiJSONMock).toHaveBeenNthCalledWith(5, "/pages/42/collections", {
+    expect(apiJSONMock).toHaveBeenNthCalledWith(4, "/pages/42/collections", {
       method: "POST",
       body: { collection_id: 7 },
     });
@@ -511,66 +511,6 @@ describe("PageDetail", () => {
     // knowing about for any other one-way-bound control following this
     // same pattern.
     expect(checkbox).toHaveProperty("checked", false);
-  });
-
-  it("updates a capture's language on success", async () => {
-    render42({ languages: ["en", "fr", "de"] });
-    const select = await screen.findByRole("combobox", { name: "Language" });
-
-    apiJSONMock.mockResolvedValueOnce(undefined);
-    await fireEvent.change(select, { target: { value: "fr" } });
-
-    expect(apiJSONMock).toHaveBeenCalledWith("/captures/100/language", {
-      method: "PATCH",
-      body: { language: "fr" },
-    });
-    expect(select).toHaveProperty("value", "fr");
-  });
-
-  it("shows an error when the language update fails, but doesn't correct the select's now-stale value", async () => {
-    render42({ languages: ["en", "fr", "de"] });
-    const select = await screen.findByRole("combobox", { name: "Language" });
-
-    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "update rejected"));
-    await fireEvent.change(select, { target: { value: "fr" } });
-
-    expect(await screen.findByText("update rejected")).toBeTruthy();
-    // Same finding as the mirror-toggle test above: capture.language is
-    // only written on success, so the one-way `value={capture.language}`
-    // binding never re-fires on a failed update (the value it's tracking
-    // never changed), leaving the <select>'s own DOM value at whatever
-    // the change event already set it to ("fr") rather than reverting to
-    // the still-actual "en".
-    expect(select).toHaveProperty("value", "fr");
-  });
-
-  // The dashboard's own locale is "en" in every test in this file (no
-  // session/settings mocked, so getLocale() falls through to
-  // paraglide's baseLocale) -- these two assert on the *labels* shown
-  // for each <option>, not the underlying values (already covered
-  // above), which is the part lib/languageNames.ts and PageDetail's own
-  // "simple" special-case actually change. Unlike the tests above,
-  // these need real pg_ts_config names ("english", not "en") -- that's
-  // what lib/languageNames.ts's own CONFIG_TO_BCP47 map is keyed on,
-  // and what GET /api/text-search-configs actually returns.
-  it("labels each language option in the dashboard's own locale, not the raw pg_ts_config name", async () => {
-    render42({ languages: ["english", "french", "german"] });
-    const select = await screen.findByRole("combobox", { name: "Language" });
-
-    const labels = Array.from(select.querySelectorAll("option")).map(
-      (o) => o.textContent,
-    );
-    expect(labels).toEqual(["English", "French", "German"]);
-  });
-
-  it('relabels "simple" as "Other" rather than translating it as a language', async () => {
-    render42({ languages: ["english", "simple"] });
-    const select = await screen.findByRole("combobox", { name: "Language" });
-
-    const labels = Array.from(select.querySelectorAll("option")).map(
-      (o) => o.textContent,
-    );
-    expect(labels).toEqual(["English", "Other"]);
   });
 
   it("edits the title, saving on success", async () => {

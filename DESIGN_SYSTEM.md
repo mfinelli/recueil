@@ -240,6 +240,17 @@ labeling it on every row is noise, not information. When a field has a
 heavily-skewed distribution of values, consider surfacing only the uncommon one
 explicitly (with an icon, here `Upload`) rather than labeling every row equally.
 
+### Hiding an action when it would be a no-op
+
+`CaptureReader`'s two regenerate buttons (readability extraction, AI summary)
+each hide themselves once the capture's own stored version/model already matches
+`GET /api/capture-config`'s currently-running one — regenerating would just
+reproduce what's already there. The comparison fails open: if `/capture-config`
+itself fails to load, both buttons default to showing rather than silently
+disappearing, since a missing capability is worse than an
+occasionally-unnecessary one. Reach for this same fail-open shape for any future
+"hide when redundant" control gated on a second, independent fetch.
+
 ## Open items
 
 - **Dark mode toggle**: currently automatic via `prefers-color-scheme` only, no
@@ -261,6 +272,7 @@ explicitly (with an icon, here `Upload`) rather than labeling every row equally.
 | Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
 | Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
 | PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures               |
+| CaptureReader                  | Done — sans/serif toggle, capture-config-driven regenerate hide-logic           |
 | Collections / CollectionDetail | Not started                                                                     |
 | Tags / TagDetail               | Not started                                                                     |
 | Devices                        | Not started                                                                     |

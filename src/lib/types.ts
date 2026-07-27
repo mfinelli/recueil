@@ -229,3 +229,16 @@ export interface InfoResponse {
   commit: string;
   date: string;
 }
+
+// GET /api/capture-config -- this running agent's currently-configured
+// readability_version/ai_model, i.e. what a regenerate would actually
+// produce right now. Compared against a capture's own already-stored
+// readability_version/ai_model to decide whether to show a regenerate
+// button (equal means regenerating would just reproduce what's already
+// there). Both nullable independently of the capture's own fields --
+// null here means "not configured" (or AI disabled entirely), not "same
+// as the capture."
+export interface CaptureConfig {
+  readability_version: string | null;
+  ai_model: string | null;
+}
