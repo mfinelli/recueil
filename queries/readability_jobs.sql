@@ -111,3 +111,19 @@ WHERE readability_jobs.id = $1
   AND pages.id = captures.page_id
   AND pages.user_id = $2
 RETURNING readability_jobs.id;
+
+-- name: RegenerateReadabilityJobForCapture :one
+-- RegenerateAIJobForCapture's twin for readability -- keyed by
+-- capture_id (not the job's own id), works from any status, a deliberate
+-- redo request rather than error recovery, so attempts/completed_at get
+-- the same clean-slate reset. Does NOT also touch this capture's ai_jobs
+-- row: readability regenerating doesn't automatically re-queue AI enrichment
+-- too.
+UPDATE readability_jobs
+SET status = 'pending', attempts = 0, next_attempt_at = NULL, error = NULL, claimed_at = NULL, completed_at = NULL
+FROM captures, pages
+WHERE readability_jobs.capture_id = $1
+  AND captures.id = readability_jobs.capture_id
+  AND pages.id = captures.page_id
+  AND pages.user_id = $2
+RETURNING readability_jobs.id;

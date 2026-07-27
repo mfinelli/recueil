@@ -101,3 +101,23 @@ WHERE ai_jobs.id = $1
   AND pages.id = captures.page_id
   AND pages.user_id = $2
 RETURNING ai_jobs.id;
+
+-- name: RegenerateAIJobForCapture :one
+-- Unlike ManualRetryAIJobForUser (which only works on an already-failed
+-- job, keyed by the job's own id, from the Queue screen's failed-job
+-- review), this is the dashboard's PageDetail/reader-view "regenerate
+-- summary" button: keyed by capture_id, works from any status (not just
+-- 'failed') -- a deliberate redo request, not error recovery, so
+-- attempts/completed_at are reset to a clean slate too rather than
+-- carrying over whatever a previous run left behind. captures.ai_summary/
+-- ai_model themselves are left untouched here -- the ai.Runner's own
+-- SetCaptureAI overwrites them once this re-run actually completes, same
+-- as it always does.
+UPDATE ai_jobs
+SET status = 'pending', attempts = 0, next_attempt_at = NULL, error = NULL, claimed_at = NULL, completed_at = NULL
+FROM captures, pages
+WHERE ai_jobs.capture_id = $1
+  AND captures.id = ai_jobs.capture_id
+  AND pages.id = captures.page_id
+  AND pages.user_id = $2
+RETURNING ai_jobs.id;

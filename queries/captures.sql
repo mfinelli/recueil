@@ -98,3 +98,25 @@ SELECT * FROM captures WHERE source_capture_id = $1;
 -- regenerated a different value than the one the caller originally submitted.
 UPDATE captures SET source_capture_id = NULL, updated_at = NOW()
 WHERE id = $1;
+
+-- name: DeleteCapture :execrows
+-- Same ownership-scoping as GetCaptureByIDForUser/SetCaptureLanguage
+-- (captures has no user_id of its own) -- DELETE's own USING-clause
+-- equivalent of the join/FROM those two use for SELECT/UPDATE
+-- respectively. Cascades to this capture's screenshot/readability/AI job
+-- rows via the schema's own ON DELETE CASCADE chain, same as DeletePage's
+-- reasoning for pages -- nothing else to clean up in Postgres. Same
+-- deliberately-orphaned-on-disk-files reasoning as DeletePage too.
+--
+-- The caller (DeleteCapture in internal/httpapi) is responsible for the
+-- "a page left with zero captures is deleted too" policy this alone
+-- doesn't enforce -- see CountCapturesByPage, called in the same
+-- transaction.
+DELETE FROM captures USING pages
+WHERE captures.page_id = pages.id AND captures.id = $1 AND pages.user_id = $2;
+
+-- name: CountCapturesByPage :one
+-- Not scoped by user_id (captures has no such column, same as
+-- ListCapturesByPage) -- the caller already owns page_id from an
+-- ownership-checked read before this ever runs.
+SELECT count(*) FROM captures WHERE page_id = $1;

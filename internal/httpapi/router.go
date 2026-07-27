@@ -31,8 +31,11 @@
 // strictly self-scoped, same reasoning), session-protected library
 // browsing/search (GET /api/pages, GET/PATCH/DELETE /api/pages/{id},
 // POST /api/pages/{id}/recapture, session-protected capture detail/HTML/language
-// correction (GET /api/captures/{id}, GET /api/captures/{id}/html,
-// PATCH /api/captures/{id}/language, GET /api/text-search-configs), and
+// correction (GET /api/captures/{id}, DELETE /api/captures/{id} -- a
+// page left with zero captures is deleted too, GET /api/captures/{id}/html,
+// PATCH /api/captures/{id}/language, POST /api/captures/{id}/
+// regenerate-summary, POST /api/captures/{id}/regenerate-readability,
+// GET /api/text-search-configs, GET /api/capture-config), and
 // session-protected tags/collections (GET /api/tags,
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
 // /api/collections, and page<->collection membership under
@@ -147,9 +150,13 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/pages/{id}/favicon", s.GetPageFavicon)
 			r.Get("/pages/{id}/thumbnail", s.GetPageThumbnail)
 			r.Get("/captures/{id}", s.GetCapture)
+			r.Delete("/captures/{id}", s.DeleteCapture)
 			r.Get("/captures/{id}/html", s.GetCaptureHTML)
 			r.Patch("/captures/{id}/language", s.PatchCaptureLanguage)
+			r.Post("/captures/{id}/regenerate-summary", s.RegenerateAISummary)
+			r.Post("/captures/{id}/regenerate-readability", s.RegenerateReadability)
 			r.Get("/text-search-configs", s.ListTextSearchConfigs)
+			r.Get("/capture-config", s.GetCaptureConfig)
 			r.Get("/tags", s.ListTags)
 			r.Patch("/tags/{id}", s.RenameTag)
 			r.Delete("/tags/{id}", s.DeleteTag)

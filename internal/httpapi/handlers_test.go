@@ -80,7 +80,13 @@ func testPairingKey(t *testing.T) auth.PairingKey {
 // write into it themselves via internal/archive directly, same as
 // production would), and a fresh bootstrap token. One shared URL for
 // both Worker clients mirrors production, where they're both pointed at
-// the same real Worker deployment (cfg.WorkerURL).
+// the same real Worker deployment (cfg.WorkerURL). Also wires fixed
+// "test-readability-version"/"test-ai-model" strings (real production
+// values a `make`-built binary/enabled AI enrichment would report) --
+// GetCaptureConfig's own tests assert against these exact values, and
+// every other one of this helper's ~40 other callers is unaffected by
+// what these two are, same as they're unaffected by the exact bootstrap
+// token value.
 func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *httptest.Server, rawBootstrapToken string) {
 	t.Helper()
 	q := db.New(pool)
@@ -96,7 +102,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	// happy-path coverage, keep exercising the real /api/auth/register
 	// flow unchanged. TestRegisterDisabledByDefault covers the
 	// default-false gate directly against its own server.
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -122,7 +128,7 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -215,7 +221,7 @@ func TestNewRouter_DashboardSPA(t *testing.T) {
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
@@ -451,7 +457,7 @@ func TestRegisterDisabledByDefault(t *testing.T) {
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -1863,6 +1869,87 @@ func TestGetCapture(t *testing.T) {
 		assert.Equal(t, "the full article text", got.ReaderText)
 	})
 
+	// dbtest.CreateCapture leaves readability_version/thumbnail_*/
+	// favicon_* all NULL (no screenshot/readability job has actually run
+	// against this test row), and content_hash is always set (it's
+	// captured at ingest time, not by a later job) -- these two subtests
+	// cover both the "field genuinely wasn't tracked before" case (now
+	// null, not silently missing from the JSON) and the "field has a
+	// real value" case together, rather than repeating the whole
+	// request/decode dance four times over for each individually.
+	t.Run("previously-omitted nullable fields are null when unset", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/detail-nulls")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ReadabilityVersion *string `json:"readability_version"`
+			ContentHash        string  `json:"content_hash"`
+			ThumbnailSizeBytes *int32  `json:"thumbnail_size_bytes"`
+			ThumbnailHash      *string `json:"thumbnail_hash"`
+			FaviconSizeBytes   *int32  `json:"favicon_size_bytes"`
+			FaviconHash        *string `json:"favicon_hash"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Nil(t, got.ReadabilityVersion)
+		assert.Equal(t, capture.ContentHash, got.ContentHash)
+		assert.NotEmpty(t, got.ContentHash)
+		assert.Nil(t, got.ThumbnailSizeBytes)
+		assert.Nil(t, got.ThumbnailHash)
+		assert.Nil(t, got.FaviconSizeBytes)
+		assert.Nil(t, got.FaviconHash)
+	})
+
+	t.Run("previously-omitted nullable fields surface their real values once set", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/detail-values")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		require.NoError(t, q.SetCaptureReadability(ctx, db.SetCaptureReadabilityParams{
+			ID: capture.ID, ReaderText: pgtype.Text{String: "text", Valid: true},
+			ReaderTextHash:     pgtype.Text{String: "text-hash", Valid: true},
+			ReadabilityVersion: pgtype.Text{String: "1.2.3", Valid: true},
+		}))
+		_, err := pool.Exec(ctx, `UPDATE captures SET
+			thumbnail_size_bytes = 12345, thumbnail_hash = $1,
+			favicon_size_bytes = 678, favicon_hash = $2
+			WHERE id = $3`, "thumb-hash", "favicon-hash", capture.ID)
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ReadabilityVersion *string `json:"readability_version"`
+			ThumbnailSizeBytes *int32  `json:"thumbnail_size_bytes"`
+			ThumbnailHash      *string `json:"thumbnail_hash"`
+			FaviconSizeBytes   *int32  `json:"favicon_size_bytes"`
+			FaviconHash        *string `json:"favicon_hash"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.ReadabilityVersion)
+		assert.Equal(t, "1.2.3", *got.ReadabilityVersion)
+		require.NotNil(t, got.ThumbnailSizeBytes)
+		assert.EqualValues(t, 12345, *got.ThumbnailSizeBytes)
+		require.NotNil(t, got.ThumbnailHash)
+		assert.Equal(t, "thumb-hash", *got.ThumbnailHash)
+		require.NotNil(t, got.FaviconSizeBytes)
+		assert.EqualValues(t, 678, *got.FaviconSizeBytes)
+		require.NotNil(t, got.FaviconHash)
+		assert.Equal(t, "favicon-hash", *got.FaviconHash)
+	})
+
 	t.Run("another user's capture returns 404", func(t *testing.T) {
 		owner := dbtest.CreateUser(t, pool, "member")
 		requester := dbtest.CreateUser(t, pool, "member")
@@ -1975,6 +2062,262 @@ func TestGetCaptureHTML(t *testing.T) {
 	})
 }
 
+func TestDeleteCapture(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("deletes one of several captures, leaving the page and the rest alone", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/delete-one-of-many")
+		keep := dbtest.CreateCapture(t, pool, page.ID)
+		toDelete := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/captures/%d", toDelete.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		_, err := q.GetCaptureByID(ctx, toDelete.ID)
+		assert.Error(t, err, "deleted capture should be gone")
+		_, err = q.GetCaptureByID(ctx, keep.ID)
+		assert.NoError(t, err, "the other capture should be untouched")
+		_, err = q.GetPageByID(ctx, page.ID)
+		assert.NoError(t, err, "page should still exist -- it still has one capture left")
+	})
+
+	t.Run("deleting a page's last capture deletes the page too", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/delete-last-capture")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		_, err := q.GetCaptureByID(ctx, capture.ID)
+		assert.Error(t, err, "capture should be gone")
+		_, err = q.GetPageByID(ctx, page.ID)
+		assert.Error(t, err, "page with zero captures left should be gone too")
+	})
+
+	t.Run("another user's capture returns 404, and nothing is deleted", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/delete-not-yours")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/captures/%d", capture.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		_, err := db.New(pool).GetCaptureByID(context.Background(), capture.ID)
+		assert.NoError(t, err, "capture should be untouched")
+	})
+
+	t.Run("a nonexistent capture id returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/captures/9999999", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a non-numeric id returns 400", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/captures/not-a-number", cookie)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/captures/1", http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestRegenerateAISummary(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("resets an ai_jobs row to pending regardless of its current status", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/regen-summary")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		require.NoError(t, q.CreateAIJob(ctx, capture.ID))
+		job, err := q.GetAIJobByCaptureID(ctx, capture.ID)
+		require.NoError(t, err)
+		// Simulate a job that already ran, failed a couple of times, and
+		// permanently failed -- exactly the state a "regenerate" click
+		// should be able to reset from, unlike ManualRetryAIJobForUser
+		// which only works from 'failed' too, but this endpoint isn't
+		// that one.
+		require.NoError(t, q.FailAIJob(ctx, db.FailAIJobParams{ID: job.ID, Attempts: 3, Error: pgtype.Text{String: "boom", Valid: true}}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/captures/%d/regenerate-summary", capture.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			JobID int64 `json:"job_id"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, job.ID, got.JobID)
+
+		reset, err := q.GetAIJobByCaptureID(ctx, capture.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "pending", reset.Status)
+		assert.Equal(t, int32(0), reset.Attempts)
+		assert.False(t, reset.Error.Valid)
+		assert.False(t, reset.CompletedAt.Valid)
+		assert.False(t, reset.ClaimedAt.Valid)
+	})
+
+	t.Run("a capture whose readability never succeeded (no ai_jobs row yet) returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/regen-summary-no-job")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/captures/%d/regenerate-summary", capture.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("another user's capture returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/regen-summary-not-yours")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		require.NoError(t, db.New(pool).CreateAIJob(context.Background(), capture.ID))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/captures/%d/regenerate-summary", capture.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Post(server.URL+"/api/captures/1/regenerate-summary", "application/json", http.NoBody)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestRegenerateReadability(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("resets a readability_jobs row to pending regardless of its current status", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/regen-readability")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		// dbtest.CreateCapture doesn't create a readability_jobs row
+		// itself (unlike real ingestion) -- create one directly, then
+		// mark it done, to prove regenerate works from a *successful*
+		// prior run too, not just from 'failed' the way
+		// ManualRetryReadabilityJobForUser is restricted to.
+		require.NoError(t, q.CreateReadabilityJob(ctx, capture.ID))
+		job, err := q.GetReadabilityJobByCaptureID(ctx, capture.ID)
+		require.NoError(t, err)
+		require.NoError(t, q.MarkReadabilityJobDone(ctx, job.ID))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/captures/%d/regenerate-readability", capture.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			JobID int64 `json:"job_id"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, job.ID, got.JobID)
+
+		reset, err := q.GetReadabilityJobByCaptureID(ctx, capture.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "pending", reset.Status)
+		assert.False(t, reset.CompletedAt.Valid)
+	})
+
+	t.Run("doesn't touch this capture's ai_jobs row", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/regen-readability-no-ai-requeue")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		require.NoError(t, q.CreateReadabilityJob(ctx, capture.ID))
+		require.NoError(t, q.CreateAIJob(ctx, capture.ID))
+		aiJob, err := q.GetAIJobByCaptureID(ctx, capture.ID)
+		require.NoError(t, err)
+		require.NoError(t, q.MarkAIJobDone(ctx, aiJob.ID))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/captures/%d/regenerate-readability", capture.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		stillDone, err := q.GetAIJobByCaptureID(ctx, capture.ID)
+		require.NoError(t, err)
+		assert.Equal(t, "done", stillDone.Status, "regenerate-readability must not requeue the AI job")
+	})
+
+	t.Run("another user's capture returns 404", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/regen-readability-not-yours")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		require.NoError(t, db.New(pool).CreateReadabilityJob(context.Background(), capture.ID))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookie(t, server, http.MethodPost, fmt.Sprintf("/api/captures/%d/regenerate-readability", capture.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a nonexistent capture id returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodPost, "/api/captures/9999999/regenerate-readability", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Post(server.URL+"/api/captures/1/regenerate-readability", "application/json", http.NoBody)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
 func TestPatchCaptureLanguage(t *testing.T) {
 	pool := dbtest.Setup(t)
 
@@ -2063,6 +2406,75 @@ func TestListTextSearchConfigs(t *testing.T) {
 	t.Run("without a session cookie returns 401", func(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		resp, err := http.Get(server.URL + "/api/text-search-configs")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestGetCaptureConfig(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("reports this server's own configured readability_version/ai_model", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		// newTestServer wires "test-readability-version"/"test-ai-model"
+		// (see its own doc comment) -- this just confirms GetCaptureConfig
+		// actually surfaces whatever it was given rather than hardcoding
+		// anything, same reasoning as SetupStatus's own
+		// open_registration-reflects-configured-value test.
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/capture-config", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ReadabilityVersion *string `json:"readability_version"`
+			AIModel            *string `json:"ai_model"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.ReadabilityVersion)
+		assert.Equal(t, "test-readability-version", *got.ReadabilityVersion)
+		require.NotNil(t, got.AIModel)
+		assert.Equal(t, "test-ai-model", *got.AIModel)
+	})
+
+	t.Run("reports null, not empty string, for an unconfigured value", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		m := mirror.NewClient(unreachable, "test-secret")
+		d := devices.NewClient(unreachable, "test-secret")
+		qi := queueitems.NewClient(unreachable, "test-secret")
+		store := archive.New(t.TempDir())
+		bootstrap, _, err := auth.NewBootstrapTokenHolder()
+		require.NoError(t, err)
+
+		// Deliberately "", "" here -- a dev build (no `make`-injected
+		// readability_version) with AI enrichment disabled entirely
+		// (cmd/server.go's own empty-AIBaseURL-means-disabled reasoning).
+		s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true, "", "")
+		logger := httplog.NewLogger("recueil-test")
+		logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
+		require.NoError(t, err)
+		server := httptest.NewServer(r)
+		t.Cleanup(server.Close)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/capture-config", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ReadabilityVersion *string `json:"readability_version"`
+			AIModel            *string `json:"ai_model"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Nil(t, got.ReadabilityVersion)
+		assert.Nil(t, got.AIModel)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/capture-config")
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})

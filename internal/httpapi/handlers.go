@@ -55,10 +55,21 @@ type Server struct {
 	CookieSecure           bool
 	PairingKey             auth.PairingKey
 	EnableOpenRegistration bool
+
+	// ReadabilityVersion/AIModel are this running agent's currently
+	// configured values -- the same readability.Params.Version/
+	// ai.Params.Model the background job runner itself was constructed
+	// with, threaded through here purely for GetCaptureConfig to report.
+	ReadabilityVersion string
+	AIModel            string
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool) *Server {
-	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration}
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel string) *Server {
+	return &Server{
+		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap,
+		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
+		ReadabilityVersion: readabilityVersion, AIModel: aiModel,
+	}
 }
 
 type credentials struct {
@@ -772,6 +783,28 @@ func textOrNil(t pgtype.Text) *string {
 	return &t.String
 }
 
+// int4OrNil is textOrNil's twin for pgtype.Int4 -- thumbnail_size_bytes
+// and favicon_size_bytes are both nullable (no thumbnail/favicon
+// captured yet), same reasoning as their sibling *_path/*_hash columns.
+func int4OrNil(i pgtype.Int4) *int32 {
+	if !i.Valid {
+		return nil
+	}
+	return &i.Int32
+}
+
+// stringOrNil is textOrNil's twin for a plain Go string that isn't a
+// pgtype at all -- Server.ReadabilityVersion/AIModel specifically, where
+// "" means "not configured" (see GetCaptureConfig's own doc comment) and
+// should read as JSON null, not an empty string, same nullability
+// convention as everything else in this API.
+func stringOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
 // textOrNull is textOrNil's inverse -- internal/ingest has its own
 // identically-named, identically-shaped helper, but that one's unexported
 // in a different package, so this is a deliberate package-local twin, not
@@ -1244,8 +1277,14 @@ type captureDetailResponse struct {
 	RawURL                    string    `json:"raw_url"`
 	Title                     *string   `json:"title"`
 	ThumbnailPath             *string   `json:"thumbnail_path"`
+	ThumbnailSizeBytes        *int32    `json:"thumbnail_size_bytes"`
+	ThumbnailHash             *string   `json:"thumbnail_hash"`
 	FaviconPath               *string   `json:"favicon_path"`
+	FaviconSizeBytes          *int32    `json:"favicon_size_bytes"`
+	FaviconHash               *string   `json:"favicon_hash"`
 	ReaderText                *string   `json:"reader_text"`
+	ReadabilityVersion        *string   `json:"readability_version"`
+	ContentHash               string    `json:"content_hash"`
 	AISummary                 *string   `json:"ai_summary"`
 	AIModel                   *string   `json:"ai_model"`
 	Language                  string    `json:"language"`
@@ -1256,11 +1295,18 @@ type captureDetailResponse struct {
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
+// captureDetailResponseFromCapture maps every column captures actually
+// has (GetCaptureByIDForUser is a `SELECT captures.*`) into the JSON
+// shape GetCapture returns -- content_hash (the HTML archive's own
+// sha256, not nullable) plus readability_version/thumbnail_size_bytes/
+// thumbnail_hash/favicon_size_bytes/favicon_hash.
 func captureDetailResponseFromCapture(c *db.Capture) captureDetailResponse {
 	return captureDetailResponse{
 		ID: c.ID, PageID: c.PageID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
-		ThumbnailPath: textOrNil(c.ThumbnailPath), FaviconPath: textOrNil(c.FaviconPath),
-		ReaderText: textOrNil(c.ReaderText), AISummary: textOrNil(c.AiSummary), AIModel: textOrNil(c.AiModel),
+		ThumbnailPath: textOrNil(c.ThumbnailPath), ThumbnailSizeBytes: int4OrNil(c.ThumbnailSizeBytes), ThumbnailHash: textOrNil(c.ThumbnailHash),
+		FaviconPath: textOrNil(c.FaviconPath), FaviconSizeBytes: int4OrNil(c.FaviconSizeBytes), FaviconHash: textOrNil(c.FaviconHash),
+		ReaderText: textOrNil(c.ReaderText), ReadabilityVersion: textOrNil(c.ReadabilityVersion), ContentHash: c.ContentHash,
+		AISummary: textOrNil(c.AiSummary), AIModel: textOrNil(c.AiModel),
 		Language: c.Language, HTMLCompressedSizeBytes: c.HtmlCompressedSizeBytes, HTMLUncompressedSizeBytes: c.HtmlUncompressedSizeBytes,
 		CapturedAt: c.CapturedAt.Time, CreatedAt: c.CreatedAt.Time, UpdatedAt: c.UpdatedAt.Time,
 	}
@@ -1288,6 +1334,167 @@ func (s *Server) GetCapture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(&capture))
+}
+
+// DELETE /api/captures/{id}: the policy is that no page is
+// ever left with zero captures -- deleting a page's last remaining
+// capture deletes the page itself, in the same transaction, rather than
+// leaving an empty, un-browsable page behind. Ownership is re-verified
+// by DeleteCapture's own USING-clause join (not just trusted from an
+// earlier read), same as every other delete/update in this file.
+func (s *Server) DeleteCapture(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+	ctx := r.Context()
+
+	// Read first, outside the transaction: DeleteCapture's own USING
+	// join re-checks ownership at delete time regardless, but this read
+	// is what gives us page_id to check afterward, and lets a
+	// wrong/not-owned id 404 immediately without ever opening a
+	// transaction for it.
+	capture, err := s.Queries.GetCaptureByIDForUser(ctx, db.GetCaptureByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		log.Printf("warning: failed to begin transaction deleting capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	rowsAffected, err := qtx.DeleteCapture(ctx, db.DeleteCaptureParams{ID: id, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		// Ownership/existence changed between the read above and here
+		// (e.g. a concurrent delete) -- genuinely rare, but correct to
+		// report as gone rather than silently succeeding.
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	remaining, err := qtx.CountCapturesByPage(ctx, capture.PageID)
+	if err != nil {
+		log.Printf("warning: failed to count remaining captures for page %d: %v", capture.PageID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if remaining == 0 {
+		if _, err := qtx.DeletePage(ctx, db.DeletePageParams{ID: capture.PageID, UserID: user.ID}); err != nil {
+			log.Printf("warning: failed to delete now-capture-less page %d: %v", capture.PageID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("warning: failed to commit transaction deleting capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// regeneratedJobResponse is both regenerate endpoints' response shape --
+// just enough for the dashboard to confirm the right job got reset,
+// without re-fetching the whole capture (the reader view's own $effect
+// re-fetches captures separately if it wants updated status).
+type regeneratedJobResponse struct {
+	JobID int64 `json:"job_id"`
+}
+
+// POST /api/captures/{id}/regenerate-summary: resets this capture's
+// ai_jobs row back to pending regardless of its current status -- the
+// ai.Runner's own polling loop (already running, no new processing logic
+// needed here) picks it up and overwrites ai_summary/ai_model once it
+// completes, same as it always does. 404s if readability itself never
+// succeeded for this capture (no ai_jobs row exists yet), same status a
+// bad/not-owned capture id gets; the dashboard doesn't need to tell those
+// two apart, both just mean "nothing to regenerate here."
+func (s *Server) RegenerateAISummary(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+
+	jobID, err := s.Queries.RegenerateAIJobForCapture(r.Context(), db.RegenerateAIJobForCaptureParams{CaptureID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no AI job to regenerate for this capture")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, regeneratedJobResponse{JobID: jobID})
+}
+
+// POST /api/captures/{id}/regenerate-readability: RegenerateAISummary's
+// twin for readability_jobs -- a readability_jobs row always exists
+// already (created at ingest time, unlike ai_jobs), so this 404s only for
+// a genuinely bad/not-owned capture id, never "nothing to regenerate."
+// Does NOT also re-queue this capture's AI job: today there's no extra state
+// to track that decision by -- if the reader text changes, a stale AI summary
+// is left exactly as stale as it was before this endpoint existed, and a
+// separate, explicit regenerate-summary click is what actually refreshes it.
+func (s *Server) RegenerateReadability(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+
+	jobID, err := s.Queries.RegenerateReadabilityJobForCapture(r.Context(), db.RegenerateReadabilityJobForCaptureParams{CaptureID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, regeneratedJobResponse{JobID: jobID})
+}
+
+type captureConfigResponse struct {
+	ReadabilityVersion *string `json:"readability_version"`
+	AIModel            *string `json:"ai_model"`
+}
+
+// GET /api/capture-config: this running agent's currently configured
+// readability_version/ai_model -- what a regenerate would actually produce
+// right now, for the dashboard to eventually compare against a capture's own
+// already-stored readability_version/ai_model and decide whether to
+// show/hide/disable its regenerate buttons. Empty string means "not
+// configured" (or AI enrichment disabled entirely) and is reported as null,
+// not "".
+func (s *Server) GetCaptureConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, captureConfigResponse{
+		ReadabilityVersion: stringOrNil(s.ReadabilityVersion),
+		AIModel:            stringOrNil(s.AIModel),
+	})
 }
 
 // acceptsZstd does an exact-token check against Accept-Encoding --
