@@ -2438,3 +2438,84 @@ the Worker boundary.
   on success (same pattern as Devices.svelte's copy-to-clipboard button) —
   there's nothing on the page's own state to update, since this never touches
   `page` at all, only the queue.
+
+### `DELETE /api/captures/{id}`
+
+- New `DeleteCapture` query — captures has no `user_id` of its own, so ownership
+  is scoped via `DELETE ... USING pages` (the DELETE equivalent of the join
+  `GetCaptureByIDForUser`/`SetCaptureLanguage` already use for SELECT/UPDATE),
+  same reasoning, new syntax for the new statement type. Cascades to this
+  capture's screenshot/readability/AI job rows via the schema's own
+  `ON DELETE CASCADE` chain, same as `DeletePage`'s own reasoning — and leaves
+  on-disk archive files orphaned for the same reason `DeletePage` does
+  (content-hash addressing, possible sharing across captures/pages; see
+  DESIGN.md §15's Phase 13 entry) — no new decision needed on either front, both
+  already settled there.
+- **Extends the no-empty-pages policy down one level, per your call**: deleting
+  a page's _last_ remaining capture deletes the page itself too, in the same
+  transaction. `internal/httpapi.DeleteCapture` reads the capture first
+  (confirms ownership, gets `page_id`), opens a transaction, deletes the
+  capture, calls the new `CountCapturesByPage`, and calls the already-existing
+  `DeletePage` query if the count comes back zero — all committed together, so a
+  page is never observably left at zero captures even for an instant.
+- Frontend: a "Delete capture" button on the reader view, `confirm()`-gated
+  (same pattern as PageDetail/Tags/Collections' own deletes). Always navigates
+  to `/` (the library) on success, deliberately not back to the page detail —
+  the response alone doesn't say whether the page survived or got deleted along
+  with its last capture, and guessing wrong would mean landing on a 404; `/` is
+  always valid either way.
+
+### Regenerate summary / regenerate readability
+
+- `POST /api/captures/{id}/regenerate-summary` and
+  `POST /api/captures/{id}/regenerate-readability`: new
+  `RegenerateAIJobForCapture`/ `RegenerateReadabilityJobForCapture` queries,
+  each resetting the relevant job row (`ai_jobs`/`readability_jobs`) back to
+  `status = 'pending'` — attempts, `error`, `claimed_at`, `completed_at` all
+  reset to a clean slate too, since this is a deliberate user-requested redo,
+  not error recovery (unlike the existing
+  `ManualRetryAIJobForUser`/`ManualRetryReadabilityJobForUser`, both restricted
+  to already-`failed` jobs from the Queue screen's own failed-item review —
+  these two work from _any_ prior status, keyed by `capture_id` itself rather
+  than the job's own id). The already-running `ai.Runner`/ readability job
+  runner picks either up on its own normal polling schedule — no new processing
+  logic anywhere.
+- `regenerate-summary` 404s gracefully if readability itself never succeeded for
+  this capture (no `ai_jobs` row exists yet — that row is only created once the
+  readability job succeeds once). `regenerate-readability` always has a row to
+  reset (`readability_jobs` is created at ingest time, unconditionally), so it
+  only 404s for a genuinely bad/not-owned capture id.
+- **Regenerate-readability deliberately does NOT requeue the AI job** — today
+  there's no extra state (e.g. a "readability changed since this summary was
+  generated" flag) to make that decision by, so a stale AI summary is left
+  exactly as stale as it was before this endpoint existed; a separate, explicit
+  regenerate-summary click is what actually refreshes it. If tracking that
+  staleness ever becomes real work worth doing (a new column, most likely),
+  automatically requeuing the AI job too becomes the natural thing to reconsider
+  at the same time.
+- Frontend: both are fire-and-forget from the reader view's own perspective —
+  neither touches the rendered capture at all on success, so each just shows a
+  transient "Queued!" confirmation (same pattern as PageDetail's own recapture
+  button), not a state change to watch for.
+
+### `GET /api/capture-config`
+
+- Reports this running agent's currently-configured `readability_version` and
+  `ai_model` — the exact same values already threaded into
+  `readability.Params`/`ai.Params` at `cmd/agent.go` startup, now also threaded
+  into `httpapi.Server` (`cmd/server.go`'s own call to `httpapi.NewServer` grew
+  two trailing string params for it). `ai_model` is reported as unset (`null`,
+  not `cfg.AIModel`'s literal value) whenever `cfg.AIBaseURL` is empty — AI
+  enrichment being toggled off entirely doesn't necessarily mean `cfg.AIModel`
+  itself was ever cleared, so this reads the same is-it-actually-enabled signal
+  `cmd/agent.go` itself already uses, not just the model string in isolation.
+
+### Task A: previously-untracked-in-the-API fields
+
+- `GET /api/captures/{id}`'s response gained six fields that were already real
+  columns in Postgres and simply never made it into `captureDetailResponse`:
+  `readability_version`, `content_hash` (not nullable — set at ingest time, not
+  by a later job), `thumbnail_size_bytes`, `thumbnail_hash`,
+  `favicon_size_bytes`, `favicon_hash`. Pure DTO/mapping work — no migration, no
+  new query beyond the existing `SELECT captures.*`. New `int4OrNil` helper
+  (`textOrNil`'s twin for `pgtype.Int4`) for the two `*_size_bytes` fields.

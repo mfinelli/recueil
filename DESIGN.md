@@ -2671,13 +2671,23 @@ language-specific by nature.
   Korean: languages Postgres has no snowball stemmer for at all, since they need
   segmentation rather than stemming), or the mapped candidate doesn't actually
   exist on this Postgres instance.
-- **The dashboard (not yet built) can let a user correct a capture's detected
-  language after the fact**, choosing from whatever configs this Postgres
-  instance actually has, or "other" (mapping to `simple`) — a plain
+- **The dashboard lets a user correct a capture's detected language after the
+  fact** (`PatchCaptureLanguage`, Phase 6), choosing from whatever configs this
+  Postgres instance actually has, or "Other" (mapping to `simple`; relabeled
+  from the raw config name in Phase 14 — "simple" isn't a real language, and
+  showing Postgres's own internal name for "no stemming" as if it were one just
+  reads as a stray option nobody explained) — a plain
   `UPDATE captures SET language = ...`, which Postgres automatically recomputes
   `reader_text_tsv` (and its GIN index) for as part of that same statement, the
   same way it already does whenever `reader_text` itself changes (e.g.
   re-extraction, §6a). No manual reindex, no extra synchronization code needed.
+  Every other option's own label is translated into the dashboard's current
+  locale (Phase 14, `lib/languageNames.ts`) rather than shown as Postgres's raw
+  config name — the opposite direction from Settings' language picker (which
+  shows each option self-named, since there you're choosing your own language
+  and need to recognize it among others; here you're already reading the
+  dashboard in your language and labeling someone else's content, so the labels
+  themselves should match).
 
 ```sql
 CREATE TABLE tags (
@@ -3833,3 +3843,27 @@ What remains open is purely implementation-phase, not architectural:
   operator-only tooling over dashboard automation), that walks every capture's
   referenced hash and removes anything on disk with no remaining referent — not
   built this round, tracked here as the next piece of this same gap.
+- **Resolved this round: the capture reader view (`/captures/{id}`, Phase 13's
+  "Capture rows now link to..." note) gained the same delete/regenerate loop
+  PageDetail's own Phase 13 gave pages.** `DELETE /api/captures/{id}` extends
+  this project's no-empty-pages policy down a level: deleting a page's _last_
+  capture deletes the page too, in the same transaction
+  (`internal/httpapi.DeleteCapture`), rather than leaving a zero-capture page
+  around as a new edge case nothing else in this project anticipates.
+  `POST /api/captures/{id}/regenerate-summary` and
+  `POST /api/captures/{id}/regenerate-readability` both just reset the relevant
+  job row back to `pending` (`ai_jobs`/`readability_jobs` respectively) and let
+  the already-running `ai.Runner`/readability job runner pick it up on their own
+  schedule — no new processing logic, same "enqueue, don't do the work here"
+  shape as Phase 13's own recapture. Regenerate-readability deliberately does
+  **not** also requeue the AI job: today there's no extra state to track that
+  decision by, so a stale AI summary just stays exactly as stale as it already
+  was until someone clicks regenerate-summary too, separately. Also added
+  `GET /api/capture-config`, reporting this running agent's own
+  currently-configured `readability_version`/`ai_model` (the same values
+  `cmd/agent.go` threads into `readability.Params`/`ai.Params`). Separately,
+  task A of this same round exposed six columns (`readability_version`,
+  `content_hash`, `thumbnail_size_bytes`, `thumbnail_hash`,
+  `favicon_size_bytes`, `favicon_hash`) that were already tracked in Postgres
+  but never surfaced in `GET /api/captures/{id}`'s own response — DTO/mapping
+  work only, no schema change, no new decision to record here.
