@@ -182,7 +182,7 @@ type enqueuePayload struct {
 	URL    string `json:"url"`
 }
 
-// Enqueue adds a fresh queue_items row for url, to be picked up by
+// Enqueue adds a fresh queue_items row for rawURL, to be picked up by
 // whichever device next polls GET /queue -- exactly the same queue a
 // device's own share-sheet/extension enqueue feeds, just entered on the
 // backend's behalf rather than a device's. This is the dashboard's
@@ -195,8 +195,8 @@ type enqueuePayload struct {
 // left NULL on the Worker's side (there's no device token to attribute this
 // enqueue to), which the queue_items schema already allows for exactly this
 // reason.
-func (c *Client) Enqueue(ctx context.Context, userID int64, url string) error {
-	body, err := json.Marshal(enqueuePayload{ID: uuid.NewString(), UserID: userID, URL: url})
+func (c *Client) Enqueue(ctx context.Context, userID int64, rawURL string) error {
+	body, err := json.Marshal(enqueuePayload{ID: uuid.NewString(), UserID: userID, URL: rawURL})
 	if err != nil {
 		return err
 	}
