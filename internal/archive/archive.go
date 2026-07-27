@@ -19,7 +19,10 @@
 // Package archive is the local, canonical disk store for everything
 // belonging to a capture: the HTML itself, and now optionally a favicon,
 // eventually a screenshot. Paths are returned relative to the Store's
-// configured root.
+// configured root. Walk/Remove (added for internal/gc) round this out
+// with a way to enumerate and delete files by that same relative path,
+// without leaking the root itself or the sharding scheme's directory
+// depth to callers outside this package.
 //
 // Every asset for one capture lives together under a single directory,
 // sharded by the first four hex characters of the capture's own html
@@ -54,6 +57,7 @@ package archive
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -247,6 +251,62 @@ func (s *Store) Open(relPath string) (io.ReadCloser, error) {
 	}
 
 	return &decodingReadCloser{dec: dec, f: f}, nil
+}
+
+// Walk calls fn once for every regular file under the Store's root, with
+// relPath in the same root-relative shape WriteHTML/WriteAsset return and
+// Open/OpenRaw/Remove accept, plus the file's size in bytes. Purely a
+// read-only directory listing -- deciding which of those files are still
+// referenced by anything, and actually removing the ones that aren't, is
+// entirely the caller's job (internal/gc): archive has no business
+// knowing what Postgres still points at, only how its own files are laid
+// out on disk. If fn returns an error, the walk stops immediately and
+// that error is returned; a nil error from fn continues to the next file.
+func (s *Store) Walk(fn func(relPath string, sizeBytes int64) error) error {
+	return filepath.WalkDir(s.root, func(absPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		relPath, err := filepath.Rel(s.root, absPath)
+		if err != nil {
+			return err
+		}
+		return fn(relPath, info.Size())
+	})
+}
+
+// Remove deletes the file at relPath, then climbs back up removing each
+// now-empty parent directory in turn -- CaptureDir's three levels of
+// sharding (hash[0:2]/hash[2:4]/hash) collapsed back down once nothing
+// inside them is left, rather than accumulating empty directory entries
+// forever as captures get garbage-collected over the life of an
+// instance. os.Remove refuses to remove a non-empty directory, which is
+// exactly the signal to stop climbing -- silently treated as "stop
+// here," not an error, since "some sibling capture's directory is still
+// in here" is the expected, common case, not a failure. Climbing never
+// goes above the Store's own root.
+func (s *Store) Remove(relPath string) error {
+	absPath := filepath.Join(s.root, relPath)
+	if err := os.Remove(absPath); err != nil {
+		return fmt.Errorf("archive: removing %q: %w", relPath, err)
+	}
+
+	dir := filepath.Dir(absPath)
+	for dir != s.root && strings.HasPrefix(dir, s.root) {
+		if err := os.Remove(dir); err != nil {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+
+	return nil
 }
 
 // decodingReadCloser adapts *zstd.Decoder (whose Close method returns no

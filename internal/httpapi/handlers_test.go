@@ -2106,6 +2106,69 @@ func TestDeleteCapture(t *testing.T) {
 		assert.Error(t, err, "page with zero captures left should be gone too")
 	})
 
+	t.Run("deleting the page's current favicon-source capture refreshes pages.favicon_path from the new latest capture", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/delete-refreshes-favicon")
+		older := dbtest.CreateCapture(t, pool, page.ID)
+		// GetLatestCaptureByPage orders by captured_at DESC with no
+		// tiebreaker column (same caveat as TestRecapturePage's own
+		// "more than one capture" test) -- the sleep guarantees newer
+		// really is later.
+		time.Sleep(2 * time.Millisecond)
+		newer := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		_, err := pool.Exec(ctx, `UPDATE captures SET favicon_path = $1 WHERE id = $2`, "archive/older-favicon.png", older.ID)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, `UPDATE captures SET favicon_path = $1 WHERE id = $2`, "archive/newer-favicon.png", newer.ID)
+		require.NoError(t, err)
+		// Simulates UpsertPage's own denormalization at ingest time --
+		// the page's favicon currently reflects the newer (about to be
+		// deleted) capture's own favicon, not the older one's.
+		_, err = pool.Exec(ctx, `UPDATE pages SET favicon_path = $1 WHERE id = $2`, "archive/newer-favicon.png", page.ID)
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/captures/%d", newer.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		refreshedPage, err := q.GetPageByID(ctx, page.ID)
+		require.NoError(t, err)
+		require.True(t, refreshedPage.FaviconPath.Valid)
+		assert.Equal(t, "archive/older-favicon.png", refreshedPage.FaviconPath.String,
+			"page's favicon should now come from the sole remaining capture, not the deleted one")
+	})
+
+	t.Run("deleting an older, non-favicon-source capture leaves the page's favicon untouched", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/delete-doesnt-disturb-favicon")
+		older := dbtest.CreateCapture(t, pool, page.ID)
+		time.Sleep(2 * time.Millisecond)
+		newer := dbtest.CreateCapture(t, pool, page.ID)
+
+		q := db.New(pool)
+		ctx := context.Background()
+		_, err := pool.Exec(ctx, `UPDATE captures SET favicon_path = $1 WHERE id = $2`, "archive/newer-favicon.png", newer.ID)
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, `UPDATE pages SET favicon_path = $1 WHERE id = $2`, "archive/newer-favicon.png", page.ID)
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/captures/%d", older.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		refreshedPage, err := q.GetPageByID(ctx, page.ID)
+		require.NoError(t, err)
+		require.True(t, refreshedPage.FaviconPath.Valid)
+		assert.Equal(t, "archive/newer-favicon.png", refreshedPage.FaviconPath.String,
+			"still recomputed from GetLatestCaptureByPage, but that's unaffected by deleting the older capture, so it's a no-op write to the same value")
+	})
+
 	t.Run("another user's capture returns 404, and nothing is deleted", func(t *testing.T) {
 		owner := dbtest.CreateUser(t, pool, "member")
 		requester := dbtest.CreateUser(t, pool, "member")

@@ -3867,3 +3867,25 @@ What remains open is purely implementation-phase, not architectural:
   `favicon_size_bytes`, `favicon_hash`) that were already tracked in Postgres
   but never surfaced in `GET /api/captures/{id}`'s own response — DTO/mapping
   work only, no schema change, no new decision to record here.
+- `recueil gc` CLI command: `internal/gc.Runner.Run` is the actual sweep: read
+  every path Postgres still references (`ListReferencedArchivePaths`, spanning
+  `captures.{html,thumbnail,favicon}_path` **and** `pages.favicon_path` — see
+  below for why the latter matters on its own), walk every file
+  `archive.Store`'s root actually contains (`Store.Walk`, new), and remove
+  whatever isn't in that live set (`Store.Remove`, new — also prunes each
+  now-empty parent shard directory it leaves behind, `hash[0:2]/hash[2:4]/hash`
+  collapsed back down once nothing's left in them). A `--dry-run` flag reports
+  the same scan/removal counts and byte total without calling `Store.Remove` at
+  all. Also, since `pages.favicon_path` is a denormalized copy of whichever
+  capture last provided one (`UpsertPage`, same pattern as `pages.title`) —
+  deleting _that_ capture (while the page survives via others) used to leave it
+  pointing at a path no capture row referenced anymore. `DeleteCapture` now
+  refreshes it from `GetLatestCaptureByPage` whenever the page isn't also being
+  deleted (new `SetPageFavicon` query) — always recomputed, not just when the
+  deleted capture happens to be the source, since detecting which case that is
+  would be more complex than just doing the recomputation unconditionally (a
+  no-op write when it wasn't the source). `ListReferencedArchivePaths` still
+  includes `pages.favicon_path` in its own right regardless —
+  belt-and-suspenders, not a substitute for the real fix, since the live-set
+  query shouldn't have to lean on that recomputation always having happened
+  correctly everywhere it could matter.

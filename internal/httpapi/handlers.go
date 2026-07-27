@@ -1401,6 +1401,27 @@ func (s *Server) DeleteCapture(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
+	} else {
+		// pages.favicon_path is a denormalized copy of whichever capture
+		// last provided one (see SetPageFavicon's own doc comment) --
+		// if the just-deleted capture was that source, the page would
+		// otherwise be left pointing at a path no surviving capture
+		// references anymore. Always recomputed from whatever's now
+		// the page's actual latest capture (this is a no-op write when
+		// the deleted capture wasn't the source in the first place, not
+		// just when it was -- simpler and just as correct as detecting
+		// which case this is first).
+		latest, err := qtx.GetLatestCaptureByPage(ctx, capture.PageID)
+		if err != nil {
+			log.Printf("warning: failed to look up new latest capture for page %d: %v", capture.PageID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if err := qtx.SetPageFavicon(ctx, db.SetPageFaviconParams{FaviconPath: latest.FaviconPath, ID: capture.PageID}); err != nil {
+			log.Printf("warning: failed to refresh favicon for page %d: %v", capture.PageID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

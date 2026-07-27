@@ -2519,3 +2519,38 @@ the Worker boundary.
   `favicon_size_bytes`, `favicon_hash`. Pure DTO/mapping work — no migration, no
   new query beyond the existing `SELECT captures.*`. New `int4OrNil` helper
   (`textOrNil`'s twin for `pgtype.Int4`) for the two `*_size_bytes` fields.
+
+### `internal/gc`: the actual sweep
+
+- `Runner.Run(ctx, dryRun)`: reads the complete "live set" of on-disk paths
+  Postgres still references (new `ListReferencedArchivePaths` query — see its
+  own section below for why it's not just `captures.*_path`), then walks every
+  file `archive.Store`'s root actually contains (new `Store.Walk`), removing
+  whatever isn't in that live set (new `Store.Remove`) unless `dryRun` is true,
+  in which case nothing is actually touched — only counted.
+- Individual remove failures (permissions, a concurrent modification) are logged
+  and counted (`Result.RemoveErrors`), not fatal to the run — the sweep
+  continues to the next file, same "log and keep going" philosophy
+  `internal/ingest`/`internal/mirror` already apply at their own per-item level.
+  Only a failure reading the live-set query, or a fundamental failure walking
+  the store's own root at all, aborts the whole run.
+- `Result` reports files scanned/removed and bytes reclaimed either way (real,
+  already-freed space when `dryRun` is false; what _would_ be freed when it's
+  true) — `cmd/gc.go` prints this as a one-line summary.
+
+### `archive.Store` gains `Walk`/`Remove`
+
+- `Walk(fn)`: lists every regular file under the store's root, giving each one's
+  path in the same root-relative shape `WriteHTML`/`WriteAsset` already return
+  and `Open`/`OpenRaw` already accept, plus its size in bytes. Purely read-only
+  — deciding what's still referenced is `internal/gc`'s job, not something
+  `archive` should know (it has no visibility into Postgres at all).
+- `Remove(relPath)`: deletes the file, then climbs back up removing each
+  now-empty parent directory in turn — `CaptureDir`'s own three levels of
+  sharding (`hash[0:2]/hash[2:4]/hash`) collapsed back down once nothing's left
+  in them, rather than accumulating empty directory entries forever as captures
+  get GC'd over an instance's lifetime. `os.Remove` refusing to remove a
+  still-non-empty directory is the natural signal to stop climbing (a sibling
+  capture's own directory still living under the same `hash[0:2]/hash[2:4]`
+  shard prefix is the expected, common case, not a failure) — climbing never
+  goes above the store's root.

@@ -103,6 +103,11 @@ UPDATE pages SET title = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
+-- name: SetPageFavicon :exec
+-- Called by DeleteCapture (internal/httpapi), not by any dashboard
+-- endpoint of its own.
+UPDATE pages SET favicon_path = $1, updated_at = NOW() WHERE id = $2;
+
 -- name: DeletePage :execrows
 -- Cascades to captures (and, transitively, their screenshot/readability/AI
 -- jobs), page_tags, and page_collections rows via the schema's own
