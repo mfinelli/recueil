@@ -274,7 +274,7 @@ occasionally-unnecessary one. Reach for this same fail-open shape for any future
 | PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures               |
 | CaptureReader                  | Done — sans/serif toggle, capture-config-driven regenerate hide-logic           |
 | Collections / CollectionDetail | Not started                                                                     |
-| Tags / TagDetail               | Not started                                                                     |
+| Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited        |
 | Devices                        | Not started                                                                     |
 | Queue                          | Not started                                                                     |
 | Settings                       | Not started                                                                     |

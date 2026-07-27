@@ -27,6 +27,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      lookup against the full tag list to get a name for the heading. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import PageList from "../components/PageList.svelte";
   import { apiJSON, ApiError } from "../lib/api";
@@ -61,12 +63,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <a class="back" href="/tags" use:link>{m.tagdetail_back()}</a>
+  <a class="back" href="/tags" use:link>
+    <ChevronLeft size={14} />
+    {m.tagdetail_back()}
+  </a>
 
   {#if loading}
     <p class="status">{m.common_loading()}</p>
   {:else if error}
-    <p class="status error" role="alert">{error}</p>
+    <div class="status-block error" role="alert">
+      <AlertCircle size={28} />
+      <span>{error}</span>
+    </div>
   {:else}
     <h1>{tag?.name}</h1>
     <PageList {pages} emptyMessage={m.tagdetail_no_pages()} />
@@ -74,6 +82,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 64rem;
     margin: 0 auto;
@@ -81,26 +92,44 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .back {
-    display: inline-block;
-    margin-bottom: 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-bottom: 1.5rem;
     color: var(--ink-muted);
-    font-size: 0.875rem;
     text-decoration: none;
+    font-size: 0.875rem;
 
     &:hover {
       color: var(--ink);
     }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   h1 {
+    @include type.heading;
+    font-size: 1.6rem;
     margin: 0 0 1.25rem;
   }
 
   .status {
     color: var(--ink-muted);
+  }
 
-    &.error {
-      color: var(--accent);
+  .status-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
+    color: var(--accent);
+    text-align: center;
+
+    :global(svg) {
+      opacity: 0.6;
     }
   }
 </style>
