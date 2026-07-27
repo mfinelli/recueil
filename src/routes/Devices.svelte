@@ -18,8 +18,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <!-- Pairing token and paired devices live on the same screen -- they're
      the two halves of the same story (get a device paired, then see/revoke
      what's paired). The pairing token is shown plainly, not once-then-
-     hashed. -->
+     hashed.
+
+     Each device gets a small type icon (Puzzle/Terminal/Zap/AppWindow for
+     extension/cli/shortcut/pwa) with a title tooltip -- none of the four
+     is unambiguous as a bare icon on its own, so the tooltip carries the
+     same "hover to confirm" role Collections' add-sub-collection button
+     already established, rather than adding visible text back. -->
 <script lang="ts">
+  import type { Component } from "svelte";
+  import Copy from "@lucide/svelte/icons/copy";
+  import Check from "@lucide/svelte/icons/check";
+  import RotateCw from "@lucide/svelte/icons/rotate-cw";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Plus from "@lucide/svelte/icons/plus";
+  import Smartphone from "@lucide/svelte/icons/smartphone";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
+  import Puzzle from "@lucide/svelte/icons/puzzle";
+  import Terminal from "@lucide/svelte/icons/terminal";
+  import Zap from "@lucide/svelte/icons/zap";
+  import AppWindow from "@lucide/svelte/icons/app-window";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type {
@@ -28,6 +46,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     PairingTokenResponse,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
+
+  const TYPE_ICONS: Record<Device["device_type"], Component> = {
+    extension: Puzzle,
+    cli: Terminal,
+    shortcut: Zap,
+    pwa: AppWindow,
+  };
+
+  function typeIcon(type: Device["device_type"]) {
+    return TYPE_ICONS[type] ?? Smartphone;
+  }
+
+  function typeLabel(type: Device["device_type"]): string {
+    switch (type) {
+      case "extension":
+        return m.devices_type_extension();
+      case "cli":
+        return m.devices_type_cli();
+      case "shortcut":
+        return m.devices_type_shortcut();
+      case "pwa":
+        return m.devices_type_pwa();
+      default:
+        return type;
+    }
+  }
 
   let pairingToken = $state<string | null>(null);
   let pairingTokenLoading = $state(true);
@@ -152,17 +196,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>{m.nav_devices()}</h1>
+  <p class="page-heading">{m.nav_devices()}</p>
 
   {#if loadError}
-    <p class="status error" role="alert">{loadError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{loadError}</span>
+    </p>
   {/if}
   {#if actionError}
-    <p class="status error" role="alert">{actionError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{actionError}</span>
+    </p>
   {/if}
 
   <section>
-    <h2>{m.devices_pairing_token_heading()}</h2>
+    <p class="eyebrow">{m.devices_pairing_token_heading()}</p>
     <p class="hint">
       {m.devices_pairing_token_hint()}
     </p>
@@ -172,9 +222,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {#if pairingToken}
         <div class="token-row">
           <code class="token">{pairingToken}</code>
-          <button type="button" onclick={copyPairingToken}
-            >{copied ? m.devices_copied() : m.devices_copy()}</button
+          <button
+            type="button"
+            class="copy-btn"
+            class:copied
+            aria-label={copied ? m.devices_copied() : m.devices_copy_aria()}
+            onclick={copyPairingToken}
           >
+            {#if copied}
+              <Check size={13} />
+              {m.devices_copied()}
+            {:else}
+              <Copy size={13} />
+            {/if}
+          </button>
         </div>
       {:else}
         <p class="status">{m.devices_no_token()}</p>
@@ -185,6 +246,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           onclick={regeneratePairingToken}
           disabled={regenerating}
         >
+          {#if pairingToken}
+            <RotateCw size={13} />
+          {:else}
+            <Plus size={13} />
+          {/if}
           {pairingToken ? m.devices_regenerate() : m.devices_generate()}
         </button>
         {#if pairingToken}
@@ -192,45 +258,62 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             type="button"
             class="danger"
             onclick={revokePairingToken}
-            disabled={revokingPairing}>{m.devices_revoke()}</button
+            disabled={revokingPairing}
           >
+            <Trash2 size={13} />
+            {m.devices_revoke()}
+          </button>
         {/if}
       </div>
     {/if}
   </section>
 
   <section>
-    <h2>{m.devices_paired_heading()}</h2>
+    <p class="eyebrow">{m.devices_paired_heading()}</p>
     {#if devicesLoading}
       <p class="status">{m.common_loading()}</p>
     {:else if devices.length === 0}
-      <p class="status">{m.devices_no_devices()}</p>
+      <div class="status-block">
+        <Smartphone size={24} />
+        <span>{m.devices_no_devices()}</span>
+      </div>
     {:else}
       <ul class="devices">
         {#each devices as device (device.id)}
+          {@const TypeIcon = typeIcon(device.device_type)}
           <li>
-            <div class="device-info">
-              <span class="name">{device.device_name}</span>
-              <span class="meta">
-                {device.device_type} ·
-                {m.devices_paired_at({
-                  date: formatDateTime(device.created_at),
-                })}
-                ·
-                {m.devices_last_used_at({
-                  value: device.last_used_at
-                    ? formatDateTime(device.last_used_at)
-                    : m.devices_never(),
-                })}
+            <div class="device-left">
+              <span
+                class="type-icon"
+                role="img"
+                aria-label={typeLabel(device.device_type)}
+                title={typeLabel(device.device_type)}
+              >
+                <TypeIcon size={15} />
               </span>
+              <div class="device-info">
+                <span class="name">{device.device_name}</span>
+                <span class="meta">
+                  {m.devices_paired_at({
+                    date: formatDateTime(device.created_at),
+                  })}
+                  ·
+                  {m.devices_last_used_at({
+                    value: device.last_used_at
+                      ? formatDateTime(device.last_used_at)
+                      : m.devices_never(),
+                  })}
+                </span>
+              </div>
             </div>
             <button
               type="button"
-              class="danger"
+              class="icon-btn"
+              aria-label={m.devices_revoke_aria({ name: device.device_name })}
               onclick={() => revokeDevice(device)}
               disabled={revokingDeviceId === device.id}
             >
-              {m.devices_revoke()}
+              <Trash2 size={14} />
             </button>
           </li>
         {/each}
@@ -240,36 +323,57 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 48rem;
     margin: 0 auto;
     padding: 2rem 1rem;
   }
 
-  h1 {
-    margin: 0 0 1rem;
+  .page-heading {
+    @include type.eyebrow;
+    margin: 0 0 1.25rem;
   }
 
   section {
     margin-bottom: 2rem;
   }
 
-  h2 {
-    font-size: 1rem;
-    margin-bottom: 0.375rem;
+  .eyebrow {
+    @include type.eyebrow;
+    margin: 0 0 0.4rem;
   }
 
   .hint {
-    margin: 0 0 0.75rem;
+    margin: 0 0 0.85rem;
     color: var(--ink-muted);
     font-size: 0.8125rem;
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     color: var(--ink-muted);
 
     &.error {
       color: var(--accent);
+    }
+  }
+
+  .status-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2rem 1rem;
+    color: var(--ink-muted);
+    text-align: center;
+
+    :global(svg) {
+      opacity: 0.6;
     }
   }
 
@@ -282,14 +386,46 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   .token {
     flex: 1;
-    padding: 0.5rem 0.625rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
-    font-family: ui-monospace, monospace;
+    padding: 0.55rem 0.7rem;
+    @include mix.card-surface;
+    @include type.data-mono;
     font-size: 0.8125rem;
+    color: var(--ink);
     overflow-x: auto;
     white-space: nowrap;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
+    width: 2.1rem;
+    height: 2.1rem;
+    flex: none;
+    padding: 0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper-raised);
+    color: var(--ink-muted);
+    font: inherit;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--accent);
+    }
+
+    &.copied {
+      width: auto;
+      padding: 0 0.6rem;
+      color: var(--accent-success);
+      @include type.data-mono;
+      font-size: 0.7rem;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .token-actions {
@@ -298,7 +434,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   button {
-    padding: 0.375rem 0.75rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.75rem;
     border: 1px solid var(--rule);
     border-radius: 0.25rem;
     background: var(--paper-raised);
@@ -312,9 +451,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       cursor: default;
     }
 
-    &.danger:hover:not(:disabled) {
-      border-color: var(--accent);
+    &.danger {
       color: var(--accent);
+      border-color: var(--accent);
+
+      &:hover:not(:disabled) {
+        background: var(--accent);
+        color: var(--paper);
+      }
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
@@ -322,7 +470,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     list-style: none;
     margin: 0;
     padding: 0;
-    border-top: 1px solid var(--rule);
+    border-top: 1px dotted var(--rule);
   }
 
   .devices li {
@@ -330,8 +478,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding: 0.625rem 0.25rem;
-    border-bottom: 1px solid var(--rule);
+    padding: 0.65rem 0.25rem;
+    @include mix.dotted-rule;
+  }
+
+  .device-left {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    min-width: 0;
+  }
+
+  .type-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    flex: none;
+    @include mix.card-surface;
+    border-radius: 50%;
+    color: var(--ink-muted);
   }
 
   .device-info {
@@ -347,7 +514,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .meta {
+    @include type.data-mono;
     color: var(--ink-muted);
     font-size: 0.75rem;
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    flex: none;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink-muted);
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      color: var(--accent);
+      background: var(--paper-raised);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 </style>

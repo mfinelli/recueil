@@ -164,7 +164,7 @@ export interface TextSearchConfigsResponse {
 export interface Device {
   id: number;
   device_name: string;
-  device_type: string;
+  device_type: "extension" | "pwa" | "cli" | "shortcut";
   created_at: string;
   last_used_at: string | null;
 }

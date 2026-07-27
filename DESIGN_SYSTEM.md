@@ -251,6 +251,19 @@ disappearing, since a missing capability is worse than an
 occasionally-unnecessary one. Reach for this same fail-open shape for any future
 "hide when redundant" control gated on a second, independent fetch.
 
+### A `title` attribute alone isn't enough for a meaningful icon
+
+`Devices`' per-device type icon (Puzzle/Terminal/Zap/AppWindow, one of four
+things a bare glyph can't fully disambiguate on its own) needs `role="img"`
+
+- `aria-label` on its wrapper, not just a `title` attribute -- `title` gives
+  sighted mouse users a hover tooltip but isn't reliably exposed to screen
+  readers on a plain non-interactive element. Without it, sighted users would
+  get the device-type info and screen reader users would get nothing. Any icon
+  conveying real information (not just decorating already-present text) needs an
+  explicit `role="img"` + `aria-label`, `title` alone doesn't cover
+  accessibility even though it looks like it should.
+
 ## Open items
 
 - **Dark mode toggle**: currently automatic via `prefers-color-scheme` only, no
@@ -275,6 +288,6 @@ occasionally-unnecessary one. Reach for this same fail-open shape for any future
 | CaptureReader                  | Done — sans/serif toggle, capture-config-driven regenerate hide-logic           |
 | Collections / CollectionDetail | Done — tree-depth guide lines, icon actions, chip-style subcollections          |
 | Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited        |
-| Devices                        | Not started                                                                     |
+| Devices                        | Done — icon copy/regenerate/revoke, per-type device icons                       |
 | Queue                          | Not started                                                                     |
 | Settings                       | Not started                                                                     |

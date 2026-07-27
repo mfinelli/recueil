@@ -114,10 +114,15 @@ describe("Devices", () => {
 
     expect(await screen.findByText("the-pairing-token")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Regenerate" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copy pairing token" }),
+    ).toBeTruthy();
 
     expect(screen.getByText("Alice's phone")).toBeTruthy();
-    expect(screen.getByText(/extension ·/)).toBeTruthy();
+    // Device type is conveyed by the icon (role="img", aria-label) next
+    // to the name now, not a text prefix on the meta line -- see the
+    // dedicated device-type-icon tests below.
+    expect(screen.getByRole("img", { name: "Browser extension" })).toBeTruthy();
   });
 
   it("shows a Generate button and no token when there isn't one yet", async () => {
@@ -156,7 +161,9 @@ describe("Devices", () => {
     mockLoad();
     render(Devices);
 
-    const copyButton = await screen.findByRole("button", { name: "Copy" });
+    const copyButton = await screen.findByRole("button", {
+      name: "Copy pairing token",
+    });
     await fireEvent.click(copyButton);
 
     expect(writeTextMock).toHaveBeenCalledWith("the-pairing-token");
@@ -217,12 +224,9 @@ describe("Devices", () => {
     render(Devices);
 
     apiJSONMock.mockResolvedValueOnce(undefined);
-    const revokeButtons = await screen.findAllByRole("button", {
-      name: "Revoke",
-    });
-    // Two "Revoke" buttons exist once a token and a device both render --
-    // the token's own is first in document order, the device row's second.
-    await fireEvent.click(revokeButtons[1]);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Revoke Alice's phone" }),
+    );
 
     expect(confirmMock).toHaveBeenCalledWith(
       'Revoke "Alice\'s phone"? It will need to be paired again to archive pages.',
@@ -240,10 +244,9 @@ describe("Devices", () => {
     render(Devices);
 
     const before = apiJSONMock.mock.calls.length;
-    const revokeButtons = await screen.findAllByRole("button", {
-      name: "Revoke",
-    });
-    await fireEvent.click(revokeButtons[1]);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Revoke Alice's phone" }),
+    );
 
     expect(apiJSONMock.mock.calls.length).toBe(before);
     expect(screen.getByText("Alice's phone")).toBeTruthy();
@@ -264,5 +267,22 @@ describe("Devices", () => {
     expect(
       await screen.findByText("regeneration failed server-side"),
     ).toBeTruthy();
+  });
+
+  describe("device-type icon", () => {
+    it.each([
+      ["extension", "Browser extension"],
+      ["cli", "Command-line interface"],
+      ["shortcut", "iOS Shortcut"],
+      ["pwa", "Progressive web app"],
+    ] as const)(
+      "labels a %s device as %s, exposed to screen readers via role=img",
+      async (type, label) => {
+        mockLoad({ devices: [{ ...aliceDevice, device_type: type }] });
+        render(Devices);
+
+        expect(await screen.findByRole("img", { name: label })).toBeTruthy();
+      },
+    );
   });
 });
