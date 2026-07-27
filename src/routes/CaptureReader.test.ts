@@ -26,7 +26,7 @@
 // formatted string, so they don't depend on which locale that turns out
 // to be.
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/svelte";
+import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 
 vi.mock("svelte-spa-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("svelte-spa-router")>();
@@ -43,15 +43,21 @@ vi.mock("../lib/api", async (importOriginal) => {
   return { ...actual, apiJSON: vi.fn() };
 });
 
+import { push } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
 import type { CaptureDetail } from "../lib/types";
 import CaptureReader from "./CaptureReader.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
+const pushMock = vi.mocked(push);
+const confirmMock = vi.fn();
+vi.stubGlobal("confirm", confirmMock);
 
 afterEach(() => {
   cleanup();
   apiJSONMock.mockReset();
+  pushMock.mockClear();
+  confirmMock.mockReset();
 });
 
 const baseCapture: CaptureDetail = {
@@ -61,8 +67,14 @@ const baseCapture: CaptureDetail = {
   raw_url: "https://example.com/article",
   title: "An example article",
   thumbnail_path: null,
+  thumbnail_size_bytes: null,
+  thumbnail_hash: null,
   favicon_path: null,
+  favicon_size_bytes: null,
+  favicon_hash: null,
   reader_text: "The full extracted body text of the article.",
+  readability_version: null,
+  content_hash: "test-content-hash",
   ai_summary: null,
   ai_model: null,
   language: "en",
@@ -74,6 +86,18 @@ const baseCapture: CaptureDetail = {
 };
 
 describe("CaptureReader", () => {
+  // Loads baseCapture (or an override) and waits for the heading before
+  // returning -- every delete/regenerate test below needs the loaded
+  // state first, so this avoids repeating that same
+  // render+mockResolvedValueOnce+findByRole dance in each one.
+  async function renderLoaded(overrides: Partial<CaptureDetail> = {}) {
+    apiJSONMock.mockResolvedValueOnce({ ...baseCapture, ...overrides });
+    render(CaptureReader, { params: { id: "42" } });
+    await screen.findByRole("heading", {
+      name: overrides.title ?? baseCapture.title ?? "",
+    });
+  }
+
   it("shows a loading state, then fetches by the id from params", () => {
     apiJSONMock.mockResolvedValueOnce(baseCapture);
     render(CaptureReader, { params: { id: "42" } });
@@ -159,5 +183,109 @@ describe("CaptureReader", () => {
     expect(
       await screen.findByText("A concise AI-generated summary."),
     ).toBeTruthy();
+  });
+
+  it("deletes the capture after confirmation and navigates back to the library", async () => {
+    await renderLoaded();
+
+    confirmMock.mockReturnValue(true);
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Delete capture" }),
+    );
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      "Delete this capture? This can't be undone from the dashboard.",
+    );
+    expect(apiJSONMock).toHaveBeenCalledWith("/captures/42", {
+      method: "DELETE",
+    });
+    await vi.waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith("/");
+    });
+  });
+
+  it("doesn't delete the capture when the confirmation is declined", async () => {
+    await renderLoaded();
+
+    confirmMock.mockReturnValue(false);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Delete capture" }),
+    );
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/captures/42",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the API's own error message when delete fails, without navigating away", async () => {
+    await renderLoaded();
+
+    confirmMock.mockReturnValue(true);
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "delete failed"));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Delete capture" }),
+    );
+
+    expect(await screen.findByText("delete failed")).toBeTruthy();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("queues a summary regeneration, showing a transient confirmation", async () => {
+    await renderLoaded();
+
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Regenerate summary" }),
+    );
+
+    expect(apiJSONMock).toHaveBeenCalledWith(
+      "/captures/42/regenerate-summary",
+      { method: "POST" },
+    );
+    expect(await screen.findByRole("button", { name: "Queued!" })).toBeTruthy();
+  });
+
+  it("shows the API's own error message when queuing a summary regeneration fails", async () => {
+    await renderLoaded();
+
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(404, "no AI job to regenerate for this capture"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Regenerate summary" }),
+    );
+
+    expect(
+      await screen.findByText("no AI job to regenerate for this capture"),
+    ).toBeTruthy();
+  });
+
+  it("queues a readability regeneration, showing a transient confirmation", async () => {
+    await renderLoaded();
+
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Regenerate extracted text" }),
+    );
+
+    expect(apiJSONMock).toHaveBeenCalledWith(
+      "/captures/42/regenerate-readability",
+      { method: "POST" },
+    );
+    expect(await screen.findByRole("button", { name: "Queued!" })).toBeTruthy();
+  });
+
+  it("shows the API's own error message when queuing a readability regeneration fails", async () => {
+    await renderLoaded();
+
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "queue unavailable"));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Regenerate extracted text" }),
+    );
+
+    expect(await screen.findByText("queue unavailable")).toBeTruthy();
   });
 });

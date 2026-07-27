@@ -27,9 +27,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      new tab. It's a full, self-contained snapshot of the original page's
      own layout/CSS/images; an iframe would mean fighting sizing/scrolling
      for the whole viewing session for little benefit over a new tab, which
-     gets native zoom, find-in-page, and the full viewport for free. -->
+     gets native zoom, find-in-page, and the full viewport for free.
+
+     Regenerate-summary/regenerate-readability are both fire-and-forget from
+     this screen's own perspective -- neither touches `capture` at all on
+     success (the background job runner picks the reset job up on its own
+     schedule, same as PageDetail's recapture action never touches `page`), so
+     each just shows a transient "Queued!" confirmation, same pattern as
+     Devices.svelte/PageDetail.svelte's copy/recapture buttons. -->
 <script lang="ts">
-  import { link } from "svelte-spa-router";
+  import { link, push } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
   import AppHeader from "../components/AppHeader.svelte";
   import type { CaptureDetail } from "../lib/types";
@@ -40,6 +47,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let capture = $state<CaptureDetail | null>(null);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
+  let actionError = $state<string | null>(null);
+
+  let deleting = $state(false);
+  let regeneratingSummary = $state(false);
+  let summaryQueued = $state(false);
+  let regeneratingReadability = $state(false);
+  let readabilityQueued = $state(false);
 
   $effect(() => {
     const id = params.id;
@@ -67,6 +81,66 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  async function deleteCapture() {
+    if (!capture) return;
+    if (!confirm(m.capturereader_delete_confirm())) return;
+
+    deleting = true;
+    actionError = null;
+    try {
+      await apiJSON(`/captures/${capture.id}`, { method: "DELETE" });
+      await push("/");
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.capturereader_delete_error();
+      deleting = false;
+    }
+  }
+
+  async function regenerateSummary() {
+    if (!capture) return;
+    regeneratingSummary = true;
+    actionError = null;
+    try {
+      await apiJSON(`/captures/${capture.id}/regenerate-summary`, {
+        method: "POST",
+      });
+      summaryQueued = true;
+      setTimeout(() => {
+        summaryQueued = false;
+      }, 2000);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.capturereader_regenerate_summary_error();
+    } finally {
+      regeneratingSummary = false;
+    }
+  }
+
+  async function regenerateReadability() {
+    if (!capture) return;
+    regeneratingReadability = true;
+    actionError = null;
+    try {
+      await apiJSON(`/captures/${capture.id}/regenerate-readability`, {
+        method: "POST",
+      });
+      readabilityQueued = true;
+      setTimeout(() => {
+        readabilityQueued = false;
+      }, 2000);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.capturereader_regenerate_readability_error();
+    } finally {
+      regeneratingReadability = false;
+    }
   }
 </script>
 
@@ -96,6 +170,39 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         href={`/api/captures/${capture.id}/html`}
         target="_blank"
         rel="noreferrer">{m.capturereader_view_archived()}</a
+      >
+    </div>
+
+    {#if actionError}
+      <p class="status error" role="alert">{actionError}</p>
+    {/if}
+
+    <div class="actions">
+      <button
+        type="button"
+        onclick={regenerateReadability}
+        disabled={regeneratingReadability}
+        >{readabilityQueued
+          ? m.capturereader_regenerate_readability_queued()
+          : regeneratingReadability
+            ? m.capturereader_regenerate_readability_queuing()
+            : m.capturereader_regenerate_readability()}</button
+      >
+      <button
+        type="button"
+        onclick={regenerateSummary}
+        disabled={regeneratingSummary}
+        >{summaryQueued
+          ? m.capturereader_regenerate_summary_queued()
+          : regeneratingSummary
+            ? m.capturereader_regenerate_summary_queuing()
+            : m.capturereader_regenerate_summary()}</button
+      >
+      <button
+        type="button"
+        class="danger"
+        onclick={deleteCapture}
+        disabled={deleting}>{m.capturereader_delete()}</button
       >
     </div>
 
@@ -135,6 +242,39 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
     &.error {
       color: var(--accent);
+    }
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+
+    button {
+      padding: 0.4rem 0.75rem;
+      border: 1px solid var(--rule);
+      border-radius: 0.25rem;
+      background: var(--paper-raised);
+      color: var(--ink);
+      font: inherit;
+      font-size: 0.8125rem;
+      cursor: pointer;
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+    }
+
+    .danger {
+      color: var(--accent);
+      border-color: var(--accent);
+
+      &:hover:not(:disabled) {
+        background: var(--accent);
+        color: var(--paper);
+      }
     }
   }
 

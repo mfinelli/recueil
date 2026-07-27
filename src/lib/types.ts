@@ -61,8 +61,14 @@ export interface CaptureDetail {
   raw_url: string;
   title: string | null;
   thumbnail_path: string | null;
+  thumbnail_size_bytes: number | null;
+  thumbnail_hash: string | null;
   favicon_path: string | null;
+  favicon_size_bytes: number | null;
+  favicon_hash: string | null;
   reader_text: string | null;
+  readability_version: string | null;
+  content_hash: string;
   ai_summary: string | null;
   ai_model: string | null;
   language: string;
