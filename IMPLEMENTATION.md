@@ -2554,3 +2554,16 @@ the Worker boundary.
   capture's own directory still living under the same `hash[0:2]/hash[2:4]`
   shard prefix is the expected, common case, not a failure) — climbing never
   goes above the store's root.
+
+### dark mode / theme preference
+
+A `Settings`-screen preference (automatic/light/dark), the shape this project
+had already sketched out (see DESIGN.md's own "Resolved this round" entry for
+the full writeup, including how the flash-of-wrong-theme problem was actually
+solved — the short version below).
+
+- `src/lib/theme.ts` (new): `applyTheme(theme)` — sets/clears
+  `document.documentElement.dataset.theme` and keeps a `localStorage` cache
+  (`"recueil-theme"`) in sync. Much simpler than `locale.ts`'s module: nothing
+  needs Paraglide's repeated-synchronous-read shape here, this is just one DOM
+  mutation plus a cache write.

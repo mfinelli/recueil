@@ -19,8 +19,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import Router from "svelte-spa-router";
   import { setLucideProps } from "@lucide/svelte";
   import routes from "./lib/routes";
-  import { sessionReady } from "./lib/session.svelte";
+  import { session, sessionReady } from "./lib/session.svelte";
   import { getLocale, getTextDirection } from "./paraglide/runtime";
+  import { applyTheme } from "./lib/theme";
 
   // One default for every icon on the dashboard (18px, 2px stroke) via
   // @lucide/svelte's own context API -- individual call sites still pass
@@ -37,15 +38,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // populated locale.ts's cache from GET /settings, so getLocale() here
   // already reflects the custom-userSettings/preferredLanguage/baseLocale
   // strategy chain, not just the static fallback.
-  async function applyDocumentLocale() {
+  //
+  // applyTheme() here is NOT what prevents a flash of the wrong theme --
+  // that's index.html's inline blocking script, which already applies
+  // a cached override (if any) before this file, or any of this app's
+  // real JS, ever runs. This call is the reconciliation step: it
+  // overwrites whatever that cache guessed with the backend's actual,
+  // authoritative value (session.theme, populated by the same GET
+  // /settings bootstrap read as the locale above) and refreshes the
+  // cache to match -- covering a stale/missing cache (a different
+  // account previously used in this browser, first visit ever, the
+  // preference changed on another device) without that case lingering
+  // past this one reconciliation.
+  async function applyDocumentPreferences() {
     await sessionReady;
     document.documentElement.lang = getLocale();
     document.documentElement.dir = getTextDirection();
+    applyTheme(session.theme);
   }
-  const documentLocaleReady = applyDocumentLocale();
+  const documentPreferencesReady = applyDocumentPreferences();
 </script>
 
-{#await Promise.all([sessionReady, documentLocaleReady])}
+{#await Promise.all([sessionReady, documentPreferencesReady])}
   <main class="boot">
     <p>Loading…</p>
   </main>

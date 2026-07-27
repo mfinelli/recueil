@@ -35,6 +35,10 @@ class SessionState {
   user = $state<CurrentUser | null>(null);
   needsSetup = $state(false);
   openRegistration = $state(false);
+  // null means "automatic". Read once by App.svelte after sessionReady;
+  // nothing else in the app needs to read this reactively, so it's a plain
+  // field here rather than anything more elaborate.
+  theme = $state<string | null>(null);
 
   async login(username: string, password: string): Promise<void> {
     this.user = await apiJSON<CurrentUser>("/auth/login", {
@@ -83,11 +87,13 @@ export const session = new SessionState();
 // another on. /settings feeds locale.ts's cache (see its own comment) so
 // Paraglide's custom-userSettings strategy already has an answer by the
 // time App.svelte mounts the Router and any component calls an m.*()
-// message function. A guest (no session yet) gets a 401 here, same as
-// /auth/me -- that's a normal, expected outcome (falls through to the
-// preferredLanguage/baseLocale strategies), not a load failure, so it's
+// message function, and populates session.theme for App.svelte's
+// applyTheme() call at that same point. A guest (no session yet) gets a
+// 401 here, same as /auth/me -- that's a normal, expected outcome (falls
+// through to the preferredLanguage/baseLocale strategies, and to
+// automatic/prefers-color-scheme for theme), not a load failure, so it's
 // not distinguished from any other failure mode below; either way the
-// cache is simply left unset.
+// cache/session.theme are simply left unset.
 //
 // Tolerant of any of the three failing outright (backend unreachable, a
 // transient network error): Promise.allSettled means one rejection can't
@@ -117,9 +123,28 @@ async function bootstrap(): Promise<void> {
   if (settingsResult.status === "fulfilled" && settingsResult.value.ok) {
     const body = (await settingsResult.value.json()) as {
       language: string | null;
+      theme: string | null;
     };
     setCachedLanguage(body.language);
+    session.theme = body.theme;
   }
 }
 
 export const sessionReady: Promise<void> = bootstrap();
+
+// Called after a successful login/register/completeSetup, in place of an
+// SPA-only push("/") -- bootstrap() above runs exactly once, at module-load
+// time, before anyone's necessarily logged in yet, so session.theme and
+// locale.ts's language cache both reflect whatever (if anything) was true
+// *before* this sign-in, not the newly-authenticated user's  saved
+// preferences. A plain client-side route change never re-runs bootstrap, so
+// those two would silently stay wrong. A real page reload re-runs everything
+// from scratch (the inline theme script in index.html, this file's
+// bootstrap, and App.svelte's post-sessionReady reconciliation), the
+// same mechanism Settings.svelte's language change already relies on (this
+// just applies that same fix to the sign-in moment too, not only to changing
+// the preference once already signed in).
+export function reloadIntoLibrary(): void {
+  window.location.hash = "/";
+  window.location.reload();
+}

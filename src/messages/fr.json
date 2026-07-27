@@ -21,16 +21,21 @@
   "common_show_password": "Afficher le mot de passe",
   "common_hide_password": "Masquer le mot de passe",
   "common_language": "Langue",
+  "common_theme": "Thème",
 
   "unit_bytes": "{n} o",
   "unit_kilobytes": "{n} Ko",
   "unit_megabytes": "{n} Mo",
 
   "settings_language_hint": "Modifie la langue d'affichage du tableau de bord.",
+  "settings_theme_hint": "Modifie le thème de couleur du tableau de bord.",
   "settings_saved": "Enregistré",
   "settings_load_error": "échec du chargement des paramètres",
   "settings_save_error": "échec de l'enregistrement des paramètres",
   "language_option_automatic": "Automatique (langue du navigateur)",
+  "theme_option_automatic": "Automatique (paramètre système)",
+  "theme_option_light": "Clair",
+  "theme_option_dark": "Sombre",
 
   "login_error_generic": "échec de la connexion",
   "login_signing_in": "Connexion…",

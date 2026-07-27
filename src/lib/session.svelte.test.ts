@@ -80,6 +80,46 @@ describe("session bootstrap", () => {
     expect(session.openRegistration).toBe(true);
   });
 
+  it("populates session.theme from GET /settings", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
+      if (url.endsWith("/settings"))
+        return Promise.resolve(jsonResponse({ language: null, theme: "dark" }));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.theme).toBe("dark");
+  });
+
+  it("leaves session.theme null when the settings request fails", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
+      if (url.endsWith("/settings"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.theme).toBeNull();
+  });
+
   it("needsSetup is true and user is null on a fresh instance with no users yet", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/auth/me"))

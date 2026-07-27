@@ -444,20 +444,24 @@ type userSettingsResponse struct {
 	// from an explicit empty-string language, matching textOrNil's own
 	// convention elsewhere in this file (title/favicon_path/etc.).
 	Language *string `json:"language"`
+	// nil means "automatic" -- follow the browser's prefers-color-scheme.
+	// "light"/"dark" are the only other possible values (enforced by the
+	// theme CHECK constraint at the database level, not just here).
+	Theme *string `json:"theme"`
 }
 
 func userSettingsResponseFromSettings(s *db.UserSetting) userSettingsResponse {
-	return userSettingsResponse{Language: textOrNil(s.Language)}
+	return userSettingsResponse{Language: textOrNil(s.Language), Theme: textOrNil(s.Theme)}
 }
 
 // GET /api/settings: the calling user's dashboard preferences. A user who
 // has never PATCHed their settings has no row in user_settings at all (see
 // UpsertUserSettings's own doc comment for why there's no row-per-user
-// backfill) -- that's treated identically to a row that exists with
-// language explicitly NULL, both rendering as {"language": null}, since
+// backfill) -- that's treated identically to a row that exists with a
+// field explicitly NULL, both rendering as null for that field, since
 // from the API's point of view "never set" and "explicitly cleared" mean
-// the same thing: no override, fall back to auto-detection once the
-// dashboard actually has one.
+// the same thing: no override, fall back to auto-detection (browser
+// language / prefers-color-scheme respectively).
 func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -483,17 +487,18 @@ func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) {
 var languageTagPattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Z]{2})?$`)
 
 type patchSettingsRequest struct {
-	// Not a pointer, unlike patchPageRequest's per-field pointers -- this
-	// endpoint has exactly one field today, so there's no "which fields
-	// were provided" question a pointer would answer. An empty string
-	// clears the override back to NULL/auto-detect; anything else must
-	// match languageTagPattern. If a second setting is ever added here,
-	// this request shape (and PatchPage's pointer pattern) is the thing to
-	// revisit then, not before.
+	// Neither field is a pointer, unlike patchPageRequest's per-field
+	// pointers -- both are always sent together, full-replace, on every
+	// PATCH (this is one Settings screen with both preferences already
+	// loaded into the same form, so there's never a real "update just
+	// one without knowing the other" case to support). An empty string
+	// clears either field back to NULL/automatic; anything else must be
+	// a real language tag (Language) or exactly "light"/"dark" (Theme).
 	Language string `json:"language"`
+	Theme    string `json:"theme"`
 }
 
-// PATCH /api/settings: full-replace semantics for the language field (see
+// PATCH /api/settings: full-replace semantics for both fields (see
 // patchSettingsRequest's own doc comment). Upserts rather than requiring a
 // prior GET/row to exist -- a user's very first settings change is exactly
 // as valid as their hundredth.
@@ -513,9 +518,13 @@ func (s *Server) PatchSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid language tag")
 		return
 	}
+	if req.Theme != "" && req.Theme != "light" && req.Theme != "dark" {
+		writeError(w, http.StatusBadRequest, "invalid theme")
+		return
+	}
 
 	settings, err := s.Queries.UpsertUserSettings(r.Context(), db.UpsertUserSettingsParams{
-		UserID: user.ID, Language: textOrNull(req.Language),
+		UserID: user.ID, Language: textOrNull(req.Language), Theme: textOrNull(req.Theme),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")

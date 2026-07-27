@@ -181,6 +181,7 @@ export interface PairingTokenResponse {
 // row yet" and "explicitly cleared".
 export interface UserSettings {
   language: string | null;
+  theme: string | null;
 }
 
 // GET /api/queue-items' item shape (only status=failed is currently

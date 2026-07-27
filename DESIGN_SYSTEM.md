@@ -49,9 +49,12 @@ later, but that's tracked separately.
 
 ### Color
 
-Defined in `src/styles/_tokens.scss` as CSS custom properties on `:root`, with a
-`prefers-color-scheme: dark` override block. No manual light/dark toggle exists
-yet — see "Open items" below.
+Defined in `src/styles/_tokens.scss` as CSS custom properties on `:root`, via
+two Sass mixins (`light-palette`/`dark-palette`) rather than the values written
+out twice. Three states: automatic (`prefers-color-scheme: dark`), or an
+explicit `[data-theme="light"|"dark"]` override (higher-specificity attribute
+selector, always wins regardless of the OS's preference) driven by
+a`Settings`-screen preference.
 
 | Token              | Light     | Dark      | Use for                              |
 | ------------------ | --------- | --------- | ------------------------------------ |
@@ -266,13 +269,6 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
 
 ## Open items
 
-- **Dark mode toggle**: currently automatic via `prefers-color-scheme` only, no
-  manual override. Leaning toward a `Settings`-screen preference
-  (system/light/dark) following the exact shape of the existing `language`
-  preference in `user_settings` rather than a header toggle. Whichever surface
-  lands it, applying the resolved theme needs to happen before first paint (the
-  same place `App.svelte` currently resolves the locale, after `sessionReady`)
-  to avoid a flash of the wrong theme.
 - **Password reset**: CLI-only for now rather than a self-service email flow.
   Login's forgot-password link exists in the markup already, but gated off.
 

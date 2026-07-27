@@ -21,16 +21,21 @@
   "common_show_password": "Show password",
   "common_hide_password": "Hide password",
   "common_language": "Language",
+  "common_theme": "Theme",
 
   "unit_bytes": "{n} B",
   "unit_kilobytes": "{n} KB",
   "unit_megabytes": "{n} MB",
 
   "settings_language_hint": "Changes the dashboard's display language.",
+  "settings_theme_hint": "Changes the dashboard's color theme.",
   "settings_saved": "Saved",
   "settings_load_error": "failed to load settings",
   "settings_save_error": "failed to save settings",
   "language_option_automatic": "Automatic (browser language)",
+  "theme_option_automatic": "Automatic (system setting)",
+  "theme_option_light": "Light",
+  "theme_option_dark": "Dark",
 
   "login_error_generic": "login failed",
   "login_signing_in": "Signing in…",

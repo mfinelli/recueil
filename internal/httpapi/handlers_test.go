@@ -1359,9 +1359,11 @@ func TestGetSettings(t *testing.T) {
 
 		var got struct {
 			Language *string `json:"language"`
+			Theme    *string `json:"theme"`
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		assert.Nil(t, got.Language)
+		assert.Nil(t, got.Theme)
 	})
 
 	t.Run("returns a previously set language", func(t *testing.T) {
@@ -1384,6 +1386,23 @@ func TestGetSettings(t *testing.T) {
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		require.NotNil(t, got.Language)
 		assert.Equal(t, "fr", *got.Language)
+	})
+
+	t.Run("returns a previously set theme", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie, `{"theme":"dark"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		resp = requestWithCookie(t, server, http.MethodGet, "/api/settings", cookie)
+		var got struct {
+			Theme *string `json:"theme"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Theme)
+		assert.Equal(t, "dark", *got.Theme)
 	})
 }
 
@@ -1477,6 +1496,94 @@ func TestPatchSettings(t *testing.T) {
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		assert.Nil(t, got.Language)
+	})
+
+	t.Run("sets the theme on first patch (no prior row)", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie, `{"theme":"light"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Theme *string `json:"theme"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Theme)
+		assert.Equal(t, "light", *got.Theme)
+	})
+
+	t.Run("an empty theme clears back to null (automatic)", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		setResp := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie, `{"theme":"dark"}`)
+		require.Equal(t, http.StatusOK, setResp.StatusCode)
+
+		clearResp := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie, `{"theme":""}`)
+		assert.Equal(t, http.StatusOK, clearResp.StatusCode)
+
+		var got struct {
+			Theme *string `json:"theme"`
+		}
+		require.NoError(t, json.NewDecoder(clearResp.Body).Decode(&got))
+		assert.Nil(t, got.Theme)
+	})
+
+	t.Run("a theme value other than light/dark/empty is rejected", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie, `{"theme":"solarized"}`)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("language and theme can be set together in one request", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie,
+			`{"language":"fr","theme":"dark"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Language *string `json:"language"`
+			Theme    *string `json:"theme"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Language)
+		assert.Equal(t, "fr", *got.Language)
+		require.NotNil(t, got.Theme)
+		assert.Equal(t, "dark", *got.Theme)
+	})
+
+	t.Run("patching only theme doesn't clear an already-set language, and vice versa is NOT true -- both are always full-replace", func(t *testing.T) {
+		// This test's name is the point: patchSettingsRequest's two
+		// fields are NOT independent pointers -- sending {"theme":
+		// "dark"} without "language" clears language back to null too.
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		setBoth := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie,
+			`{"language":"fr","theme":"light"}`)
+		require.Equal(t, http.StatusOK, setBoth.StatusCode)
+
+		themeOnly := requestWithCookieBody(t, server, http.MethodPatch, "/api/settings", cookie, `{"theme":"dark"}`)
+		require.Equal(t, http.StatusOK, themeOnly.StatusCode)
+
+		var got struct {
+			Language *string `json:"language"`
+			Theme    *string `json:"theme"`
+		}
+		require.NoError(t, json.NewDecoder(themeOnly.Body).Decode(&got))
+		assert.Nil(t, got.Language, "omitting language in this second request cleared it, by design")
+		require.NotNil(t, got.Theme)
+		assert.Equal(t, "dark", *got.Theme)
 	})
 }
 

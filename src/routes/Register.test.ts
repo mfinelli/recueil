@@ -19,30 +19,31 @@
 // Same shape as Setup.test.ts (itself same shape as Login.test.ts) --
 // Register has the same client-side password-confirmation check as Setup,
 // minus the bootstrap-token field neither Login nor Register need.
+// reloadIntoLibrary is mocked (the real one calls window.location.reload(),
+// which jsdom doesn't implement) -- see Login.test.ts's comment.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
-
-vi.mock("svelte-spa-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("svelte-spa-router")>();
-  return { ...actual, push: vi.fn() };
-});
 
 vi.stubGlobal(
   "fetch",
   vi.fn().mockResolvedValue(new Response("{}", { status: 200 })),
 );
 
-import { push } from "svelte-spa-router";
-import { session } from "../lib/session.svelte";
+vi.mock("../lib/session.svelte", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/session.svelte")>();
+  return { ...actual, reloadIntoLibrary: vi.fn() };
+});
+
+import { session, reloadIntoLibrary } from "../lib/session.svelte";
 import { ApiError } from "../lib/api";
 import Register from "./Register.svelte";
 
-const pushMock = vi.mocked(push);
+const reloadIntoLibraryMock = vi.mocked(reloadIntoLibrary);
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  pushMock.mockClear();
+  reloadIntoLibraryMock.mockClear();
 });
 
 // All three fields are `required` -- jsdom's own constraint validation
@@ -101,10 +102,10 @@ describe("Register", () => {
 
     expect(await screen.findByText("passwords do not match")).toBeTruthy();
     expect(registerSpy).not.toHaveBeenCalled();
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(reloadIntoLibraryMock).not.toHaveBeenCalled();
   });
 
-  it("submits the username/password and redirects to / on success", async () => {
+  it("submits the username/password and reloads into the library on success", async () => {
     const registerSpy = vi
       .spyOn(session, "register")
       .mockResolvedValue(undefined);
@@ -116,7 +117,7 @@ describe("Register", () => {
     );
 
     expect(registerSpy).toHaveBeenCalledWith("member", "correct-password");
-    expect(pushMock).toHaveBeenCalledWith("/");
+    expect(reloadIntoLibraryMock).toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -132,7 +133,7 @@ describe("Register", () => {
     );
 
     expect(await screen.findByText("username already taken")).toBeTruthy();
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(reloadIntoLibraryMock).not.toHaveBeenCalled();
   });
 
   it("falls back to a generic error message for a non-ApiError failure", async () => {
@@ -145,7 +146,7 @@ describe("Register", () => {
     );
 
     expect(await screen.findByText("registration failed")).toBeTruthy();
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(reloadIntoLibraryMock).not.toHaveBeenCalled();
   });
 
   it("disables the fields and shows a pending state while the request is in flight", async () => {

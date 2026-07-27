@@ -22,6 +22,35 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+         Synchronous, blocking, and NOT type="module" (which would be deferred
+         until after parsing, defeating the entire point) -- this is the one
+         piece of this app that actually runs before first paint, so it's the
+         only place a manual light/dark theme override can be applied without
+         a flash of the wrong theme while the real session/settings fetch
+         (src/lib/session.svelte.ts's bootstrap) is still in flight.
+         "automatic" (no override) intentionally does nothing here -- the
+         plain `prefers-color-scheme` media query in src/styles/_tokens.scss
+         already handles that case with zero JS and zero flash regardless of
+         this script's own timing.
+
+         "recueil-theme" is src/lib/theme.ts's STORAGE_KEY, duplicated here as
+         a literal on purpose -- this script can't import that module (any
+         module import would defer it past first paint too). Keep the two in
+         sync by hand if that key ever changes. -->
+    <script>
+      try {
+        var recueilCachedTheme = localStorage.getItem("recueil-theme");
+        if (recueilCachedTheme === "light" || recueilCachedTheme === "dark") {
+          document.documentElement.dataset.theme = recueilCachedTheme;
+        }
+      } catch (e) {
+        // Storage disabled/unavailable (private browsing in some
+        // browsers, an extension blocking it, etc.) -- automatic
+        // theming still works fine via the media query alone; just no
+        // cached preference to apply this early.
+      }
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>recueil</title>
   </head>

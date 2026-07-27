@@ -16,9 +16,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
 <script lang="ts">
-  import { push } from "svelte-spa-router";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
-  import { session } from "../lib/session.svelte";
+  import { session, reloadIntoLibrary } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
   import { m } from "../paraglide/messages";
   import PasswordInput from "../components/PasswordInput.svelte";
@@ -39,7 +38,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     submitting = true;
     try {
       await session.login(username, password);
-      await push("/");
+      reloadIntoLibrary();
     } catch (err) {
       error = err instanceof ApiError ? err.message : m.login_error_generic();
     } finally {

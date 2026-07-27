@@ -3889,3 +3889,24 @@ What remains open is purely implementation-phase, not architectural:
   belt-and-suspenders, not a substitute for the real fix, since the live-set
   query shouldn't have to lean on that recomputation always having happened
   correctly everywhere it could matter.
+- **Resolved this round: dark mode is a real `Settings`-screen preference, not
+  just automatic `prefers-color-scheme`.** `user_settings.theme` — same
+  `NULL`-means-automatic convention, same full-replace `PATCH /api/settings`
+  shape (both `language` and `theme` sent together on every save; see
+  `patchSettingsRequest`'s own doc comment for why that stayed the deliberate
+  choice once a second field showed up, not pointer-based partial updates), same
+  CHECK-constraint treatment §10's schema already gives closed enums like
+  `role`/`status` (unlike `language`, which is deliberately open-ended and
+  validated at the application layer instead — see its own migration comment).
+  `src/styles/_tokens.scss` gained `[data-theme="light"|"dark"]` attribute
+  selectors (higher specificity than the existing `prefers-color-scheme` media
+  query's bare `:root`, so an explicit override always wins) alongside two Sass
+  mixins so the light/dark palettes are each defined once, not duplicated
+  between the automatic and explicit paths.
+  - One accepted gap: the `localStorage` cache is global per browser, not scoped
+    per account — two different users sharing one browser (a real scenario for a
+    self-hosted, multi-account tool) could see one frame of the _other_
+    account's last-applied theme before the real value loads and corrects it.
+    Same tradeoff every other production site using this exact technique already
+    accepts; not worth an account-scoped cache key for a one-frame, purely
+    cosmetic edge case.

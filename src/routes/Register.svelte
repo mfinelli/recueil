@@ -23,9 +23,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      at all -- and lands the new member straight in the app on success, same
      as Setup does for the first admin. -->
 <script lang="ts">
-  import { push } from "svelte-spa-router";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
-  import { session } from "../lib/session.svelte";
+  import { session, reloadIntoLibrary } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
   import { m } from "../paraglide/messages";
   import PasswordInput from "../components/PasswordInput.svelte";
@@ -46,7 +45,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     submitting = true;
     try {
       await session.register(username, password);
-      await push("/");
+      reloadIntoLibrary();
     } catch (err) {
       error =
         err instanceof ApiError ? err.message : m.register_error_generic();
