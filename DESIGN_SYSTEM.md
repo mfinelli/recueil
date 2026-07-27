@@ -273,7 +273,7 @@ occasionally-unnecessary one. Reach for this same fail-open shape for any future
 | Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
 | PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures               |
 | CaptureReader                  | Done — sans/serif toggle, capture-config-driven regenerate hide-logic           |
-| Collections / CollectionDetail | Not started                                                                     |
+| Collections / CollectionDetail | Done — tree-depth guide lines, icon actions, chip-style subcollections          |
 | Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited        |
 | Devices                        | Not started                                                                     |
 | Queue                          | Not started                                                                     |

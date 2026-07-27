@@ -202,7 +202,7 @@ describe("Collections", () => {
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
     await fireEvent.click(
-      within(row).getByRole("button", { name: "+ Sub-collection" }),
+      within(row).getByRole("button", { name: "Add sub-collection to Zebra" }),
     );
 
     const childInput = within(row).getByPlaceholderText("Sub-collection name…");
@@ -227,7 +227,9 @@ describe("Collections", () => {
     render(Collections);
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename Zebra" }),
+    );
 
     const renameInput = within(row).getByDisplayValue("Zebra");
     apiJSONMock.mockResolvedValueOnce({
@@ -251,7 +253,9 @@ describe("Collections", () => {
     render(Collections);
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename Zebra" }),
+    );
 
     expect(within(row).getByDisplayValue("Stripy horses.")).toBeTruthy();
   });
@@ -261,7 +265,9 @@ describe("Collections", () => {
     render(Collections);
 
     const row = (await screen.findByText("Sub")).closest("li") as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename Sub" }),
+    );
 
     const renameInput = within(row).getByDisplayValue("Sub");
     await fireEvent.input(renameInput, { target: { value: "Side Dishes" } });
@@ -278,7 +284,9 @@ describe("Collections", () => {
     render(Collections);
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename Zebra" }),
+    );
     await fireEvent.click(
       within(row).getByRole("button", { name: "URL: /collections/zebra" }),
     );
@@ -311,7 +319,9 @@ describe("Collections", () => {
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
     apiJSONMock.mockResolvedValueOnce(undefined);
-    await fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Delete Zebra" }),
+    );
 
     expect(confirmMock).toHaveBeenCalledWith(
       'Delete "Zebra"? Pages stay archived, but they\'ll no longer be in this collection.',
@@ -333,7 +343,7 @@ describe("Collections", () => {
     // Sub's nested row underneath it (also has its own "Delete" button).
     const zebraRowActions = row.querySelector(".row-actions") as HTMLElement;
     await fireEvent.click(
-      within(zebraRowActions).getByRole("button", { name: "Delete" }),
+      within(zebraRowActions).getByRole("button", { name: "Delete Zebra" }),
     );
 
     expect(confirmMock).toHaveBeenCalledWith(
@@ -351,7 +361,9 @@ describe("Collections", () => {
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
     const before = apiJSONMock.mock.calls.length;
-    await fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Delete Zebra" }),
+    );
 
     expect(apiJSONMock.mock.calls.length).toBe(before);
     expect(screen.getByText("Zebra")).toBeTruthy();
@@ -364,9 +376,67 @@ describe("Collections", () => {
 
     const row = (await screen.findByText("Zebra")).closest("li") as HTMLElement;
     apiJSONMock.mockRejectedValueOnce(new ApiError(409, "still in use"));
-    await fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Delete Zebra" }),
+    );
 
     expect(await screen.findByText("still in use")).toBeTruthy();
     expect(screen.getByText("Zebra")).toBeTruthy();
+  });
+
+  it("shows a collection's description in the tree view, not only while editing", async () => {
+    mockLoad([{ ...zebra, description: "Stripy horses." }]);
+    render(Collections);
+
+    expect(await screen.findByText("Stripy horses.")).toBeTruthy();
+  });
+
+  it("shows each collection's full slug path in the tree view, matching Tags' own convention", async () => {
+    mockLoad([zebra, zebraSub]);
+    render(Collections);
+
+    await screen.findByText("Zebra");
+    expect(screen.getByText("/collections/zebra")).toBeTruthy();
+    // Sub's path includes its parent's slug, not just its own
+    expect(screen.getByText("/collections/zebra/sub")).toBeTruthy();
+  });
+
+  it("shows no description line at all for a collection that doesn't have one", async () => {
+    mockLoad([zebra]);
+    render(Collections);
+
+    await screen.findByText("Zebra");
+    // basePage/zebra's description is null -- there should be nothing
+    // rendered for it, not an empty element.
+    const row = screen.getByText("Zebra").closest("li") as HTMLElement;
+    expect(row.querySelector(".node-description")).toBeNull();
+  });
+
+  it("renders the add-child form directly after the row that opened it, before that node's existing children", async () => {
+    mockLoad([zebra, zebraSub]);
+    render(Collections);
+
+    const zebraRow = (await screen.findByText("Zebra")).closest(
+      "li",
+    ) as HTMLElement;
+    await fireEvent.click(
+      within(zebraRow).getByRole("button", {
+        name: "Add sub-collection to Zebra",
+      }),
+    );
+
+    // Zebra's <li> contains: its own .row, then the new child-form,
+    // then the nested <ul> holding Sub -- in that order. Confirms the
+    // form renders where a person clicked.
+    const directChildren = Array.from(zebraRow.children);
+    const formIndex = directChildren.findIndex((el) =>
+      el.classList.contains("child-form"),
+    );
+    const nestedListIndex = directChildren.findIndex(
+      (el) => el.tagName === "UL",
+    );
+    expect(formIndex).toBeGreaterThan(-1);
+    expect(nestedListIndex).toBeGreaterThan(-1);
+    expect(formIndex).toBeLessThan(nestedListIndex);
   });
 });
