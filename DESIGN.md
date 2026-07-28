@@ -1231,6 +1231,7 @@ CREATE TABLE sessions (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   session_hash TEXT NOT NULL,
   user_id BIGINT NOT NULL,
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ NOT NULL,
@@ -1242,14 +1243,21 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 ```
 
 Sessions have a 30-day absolute TTL (`expires_at`) and no idle-timeout expiry —
-`last_seen_at` is updated on every authenticated request but isn't currently
-read by any feature; it's kept for a plausible future "your active sessions"
-dashboard view rather than actively driving expiry logic today. Logout deletes
-the row. This is simpler than reusing the device-token mechanism and avoids
-needing a `tokens` table in Postgres — the earlier design's ambiguity about
-"does the backend keep its own copy of tokens" is resolved by not needing one;
-`sessions` and D1's `tokens` are two distinct, independently-revocable
-credential systems for two distinct kinds of client.
+`last_seen_at` is updated on every authenticated request. Logout deletes the
+row. This is simpler than reusing the device-token mechanism and avoids needing
+a `tokens` table in Postgres — the earlier design's ambiguity about "does the
+backend keep its own copy of tokens" is resolved by not needing one; `sessions`
+and D1's `tokens` are two distinct, independently-revocable credential systems
+for two distinct kinds of client.
+
+**`user_agent` (Active Sessions dashboard view) is exactly the "plausible
+future" this table's own original design already anticipated**: captured once at
+sign-in (the request's `User-Agent` header, verbatim, `startSession`), parsed
+fresh on every _read_ rather than split into columns at write time. No IP
+address column at all — a self-hosted tool's own IP-derived "location" would be
+meaningless at best, and there's no trusted-proxy configuration in this app to
+safely attribute an IP to the real client rather than a reverse proxy in front
+of it anyway.
 
 ### Manage Devices dashboard screen
 
@@ -1314,6 +1322,31 @@ until its next request to the Worker, at which point the token lookup fails and
 it gets a 401 — at that point it needs to be re-paired. There's no mechanism
 (and none is planned) to immediately invalidate an in-flight session on the
 device side.
+
+### Active Sessions dashboard screen
+
+The `sessions` table's `user_agent` column (see above) plus a small set of new
+self-scoped endpoints — no Worker/D1 involvement at all, unlike Manage Devices:
+sessions have always lived entirely in Postgres.
+
+- **User-Agent parsing via `github.com/medama-io/go-useragent`, not
+  hand-rolled.** a browser/OS User-Agent parser needs to track an
+  actively-shifting landscape (new browser versions, Chrome's own User-Agent
+  Reduction effort, etc.) that a one-off regex would need ongoing maintenance to
+  keep up with in a way a maintained library already does.
+- **Parsed at read time, not write time** — `sessionResponseFromSession`
+  (`internal/httpapi`) calls the parser fresh on every `GET /api/sessions`,
+  rather than storing browser/OS/device-class as their own columns when the
+  session row is created.
+- **The current session is never revocable through this endpoint at all** —
+  `DeleteSession` checks the request's own session id (a new
+  `auth.SessionIDFromContext`, threaded through `RequireSession`'s middleware
+  alongside the existing user) against the one being deleted and refuses (400)
+  if they match. Signing out (the existing `POST /api/auth/logout` flow) is the
+  correct, already-understood way to end your own current session; letting this
+  endpoint delete it too would mean the DELETE request itself succeeds and then
+  the very next request — including whatever the dashboard tried to do next —
+  starts 401ing with no obvious explanation.
 
 ### 5a. Backend ↔ Worker service authentication
 

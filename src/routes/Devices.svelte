@@ -15,16 +15,21 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
-<!-- Pairing token and paired devices live on the same screen -- they're
-     the two halves of the same story (get a device paired, then see/revoke
-     what's paired). The pairing token is shown plainly, not once-then-
-     hashed.
+<!-- Pairing token, paired devices, and active sessions all live on the same
+     screen -- paired devices are the extension/CLI/PWA/Shortcut clients that
+     archive pages on your behalf, sessions are the browsers currently signed
+     in to the dashboard itself; related but genuinely different things, so
+     they're kept as separate sections rather than merged into one list. The
+     pairing token is shown plainly, not once-then-hashed.
 
      Each device gets a small type icon (Puzzle/Terminal/Zap/AppWindow for
      extension/cli/shortcut/pwa) with a title tooltip -- none of the four
      is unambiguous as a bare icon on its own, so the tooltip carries the
      same "hover to confirm" role Collections' add-sub-collection button
-     already established, rather than adding visible text back. -->
+     already established, rather than adding visible text back. Sessions get
+     the same icon+tooltip treatment, picked from the parsed device_class
+     (Monitor/Smartphone/Tablet for desktop/mobile/tablet), with a distinct
+     CircleHelp fallback for anything device_class doesn't recognize. -->
 <script lang="ts">
   import type { Component } from "svelte";
   import Copy from "@lucide/svelte/icons/copy";
@@ -33,6 +38,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Plus from "@lucide/svelte/icons/plus";
   import Smartphone from "@lucide/svelte/icons/smartphone";
+  import Monitor from "@lucide/svelte/icons/monitor";
+  import Tablet from "@lucide/svelte/icons/tablet";
+  import CircleHelp from "@lucide/svelte/icons/circle-help";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import Puzzle from "@lucide/svelte/icons/puzzle";
   import Terminal from "@lucide/svelte/icons/terminal";
@@ -44,6 +52,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     Device,
     DeviceListResponse,
     PairingTokenResponse,
+    Session,
+    SessionListResponse,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -73,6 +83,25 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  const DEVICE_CLASS_ICONS: Partial<
+    Record<Session["device_class"], Component>
+  > = {
+    desktop: Monitor,
+    mobile: Smartphone,
+    tablet: Tablet,
+  };
+
+  function sessionIcon(deviceClass: Session["device_class"]) {
+    return DEVICE_CLASS_ICONS[deviceClass] ?? CircleHelp;
+  }
+
+  function sessionDeviceLabel(session: Session): string {
+    if (session.browser && session.os) {
+      return `${session.browser} · ${session.os}`;
+    }
+    return session.browser || session.os || m.devices_session_unknown_device();
+  }
+
   let pairingToken = $state<string | null>(null);
   let pairingTokenLoading = $state(true);
   let regenerating = $state(false);
@@ -81,6 +110,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   let devices = $state<Device[]>([]);
   let devicesLoading = $state(true);
+
+  let sessions = $state<Session[]>([]);
+  let sessionsLoading = $state(true);
+  let revokingSessionId = $state<number | null>(null);
 
   let loadError = $state<string | null>(null);
   let actionError = $state<string | null>(null);
@@ -118,9 +151,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  async function loadSessions() {
+    sessionsLoading = true;
+    try {
+      const res = await apiJSON<SessionListResponse>("/sessions");
+      sessions = res.sessions;
+    } catch (err) {
+      loadError =
+        err instanceof ApiError ? err.message : m.devices_load_sessions_error();
+    } finally {
+      sessionsLoading = false;
+    }
+  }
+
   $effect(() => {
     loadPairingToken();
     loadDevices();
+    loadSessions();
   });
 
   async function regeneratePairingToken() {
@@ -180,6 +227,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         err instanceof ApiError ? err.message : m.devices_revoke_device_error();
     } finally {
       revokingDeviceId = null;
+    }
+  }
+
+  // No confirm-and-remove path for the current session at all -- it never
+  // renders a revoke control in the first place, so this is only ever called
+  // for one of the *other* sessions.
+  async function revokeSession(session: Session) {
+    if (!confirm(m.devices_revoke_session_confirm())) return;
+    revokingSessionId = session.id;
+    actionError = null;
+    try {
+      await apiJSON(`/sessions/${session.id}`, { method: "DELETE" });
+      sessions = sessions.filter((s) => s.id !== session.id);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.devices_revoke_session_error();
+    } finally {
+      revokingSessionId = null;
     }
   }
 
@@ -315,6 +382,66 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             >
               <Trash2 size={14} />
             </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section>
+    <p class="eyebrow">{m.devices_sessions_heading()}</p>
+    <p class="hint">
+      {m.devices_sessions_hint()}
+    </p>
+    {#if sessionsLoading}
+      <p class="status">{m.common_loading()}</p>
+    {:else}
+      <ul class="devices">
+        {#each sessions as session (session.id)}
+          {@const SessionIcon = sessionIcon(session.device_class)}
+          <li class:current={session.is_current}>
+            <div class="device-left">
+              <span
+                class="type-icon"
+                role="img"
+                aria-label={sessionDeviceLabel(session)}
+                title={sessionDeviceLabel(session)}
+              >
+                <SessionIcon size={15} />
+              </span>
+              <div class="device-info">
+                <span class="name">
+                  {sessionDeviceLabel(session)}
+                  {#if session.is_current}
+                    <span class="current-badge"
+                      >{m.devices_session_current()}</span
+                    >
+                  {/if}
+                </span>
+                <span class="meta">
+                  {m.devices_session_signed_in_at({
+                    date: formatDateTime(session.created_at),
+                  })}
+                  ·
+                  {m.devices_session_last_active_at({
+                    date: formatDateTime(session.last_seen_at),
+                  })}
+                </span>
+              </div>
+            </div>
+            {#if !session.is_current}
+              <button
+                type="button"
+                class="icon-btn"
+                aria-label={m.devices_revoke_session_aria({
+                  device: sessionDeviceLabel(session),
+                })}
+                onclick={() => revokeSession(session)}
+                disabled={revokingSessionId === session.id}
+              >
+                <Trash2 size={14} />
+              </button>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -480,6 +607,35 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     gap: 1rem;
     padding: 0.65rem 0.25rem;
     @include mix.dotted-rule;
+
+    // The current session's row -- a left accent stripe rather than
+    // a filled background, so it reads as "marked," not "selected".
+    &.current {
+      position: relative;
+      padding-left: 0.6rem;
+
+      &::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.15rem;
+        bottom: 0.15rem;
+        width: 2px;
+        background: var(--accent-success);
+      }
+    }
+  }
+
+  .current-badge {
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 1rem;
+    background: var(--accent-success);
+    color: var(--paper);
+    font-weight: 600;
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
   }
 
   .device-left {

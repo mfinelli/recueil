@@ -88,11 +88,23 @@ func SessionExpiry() time.Time {
 
 type contextKey int
 
-const userContextKey contextKey = 0
+const (
+	userContextKey contextKey = iota
+	sessionIDContextKey
+)
 
 func UserFromContext(ctx context.Context) (db.User, bool) {
 	u, ok := ctx.Value(userContextKey).(db.User)
 	return u, ok
+}
+
+// SessionIDFromContext returns the id of the sessions row the current
+// request's cookie resolved to -- distinct from the user, since a user can
+// (and, for this feature, does) have several active sessions at once. Needed
+// anywhere that has to tell "this session" apart from the user's other ones.
+func SessionIDFromContext(ctx context.Context) (int64, bool) {
+	id, ok := ctx.Value(sessionIDContextKey).(int64)
+	return id, ok
 }
 
 var ErrNoSession = errors.New("no valid session")
@@ -112,6 +124,7 @@ func RequireSession(q *db.Queries) func(http.Handler) http.Handler {
 			_ = q.TouchSession(r.Context(), sessionID)
 
 			ctx := context.WithValue(r.Context(), userContextKey, user)
+			ctx = context.WithValue(ctx, sessionIDContextKey, sessionID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

@@ -173,6 +173,21 @@ export interface DeviceListResponse {
   devices: Device[];
 }
 
+export interface Session {
+  id: number;
+  browser: string;
+  browser_version: string;
+  os: string;
+  device_class: "desktop" | "mobile" | "tablet" | "tv" | "bot" | "";
+  created_at: string;
+  last_seen_at: string;
+  is_current: boolean;
+}
+
+export interface SessionListResponse {
+  sessions: Session[];
+}
+
 export interface PairingTokenResponse {
   pairing_token: string;
 }

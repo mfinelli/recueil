@@ -35,6 +35,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/medama-io/go-useragent"
+	"github.com/medama-io/go-useragent/agents"
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
@@ -433,6 +435,131 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("warning: failed to revoke device %d for user %d: %v", tokenID, user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type sessionResponse struct {
+	ID             int64  `json:"id"`
+	Browser        string `json:"browser"`
+	BrowserVersion string `json:"browser_version"`
+	OS             string `json:"os"`
+	// DeviceClass is one of "desktop"/"mobile"/"tablet"/"tv"/"bot" (see
+	// sessionResponseFromSession's own doc comment), or "" if the
+	// session has no user_agent at all or the go-useragent library didn't
+	// recognize it. The dashboard's own icon-picking logic treats "" the
+	// same as any other unrecognized value -- a generic fallback icon,
+	// not an error.
+	DeviceClass string    `json:"device_class"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	// IsCurrent marks the one row that matches the current request's
+	// session cookie (auth.SessionIDFromContext)
+	IsCurrent bool `json:"is_current"`
+}
+
+// sessionResponseFromSession parses user_agent fresh on every call
+// (go-useragent's Parser is cheap -- a trie lookup, no regex, no
+// network, no disk) rather than storing browser/OS/device_class as their own
+// columns at session-creation time. A NULL/empty user_agent parses to every
+// field empty, which the dashboard already treats as "generic/unknown," not
+// an error.
+func sessionResponseFromSession(parser *useragent.Parser, sess *db.Session, isCurrent bool) sessionResponse {
+	resp := sessionResponse{
+		ID: sess.ID, CreatedAt: sess.CreatedAt.Time, LastSeenAt: sess.LastSeenAt.Time, IsCurrent: isCurrent,
+	}
+	if !sess.UserAgent.Valid || sess.UserAgent.String == "" {
+		return resp
+	}
+
+	ua := parser.Parse(sess.UserAgent.String)
+	resp.Browser = ua.Browser().String()
+	resp.BrowserVersion = ua.BrowserVersionMajor()
+	resp.OS = ua.OS().String()
+	switch ua.Device() {
+	case agents.DeviceDesktop:
+		resp.DeviceClass = "desktop"
+	case agents.DeviceMobile:
+		resp.DeviceClass = "mobile"
+	case agents.DeviceTablet:
+		resp.DeviceClass = "tablet"
+	case agents.DeviceTV:
+		resp.DeviceClass = "tv"
+	case agents.DeviceBot:
+		resp.DeviceClass = "bot"
+	}
+	return resp
+}
+
+type sessionListResponse struct {
+	Sessions []sessionResponse `json:"sessions"`
+}
+
+// GET /api/sessions: the calling user's active (unexpired) sessions -- always
+// self-scoped. Most recently active first.
+func (s *Server) ListSessions(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	currentID, _ := auth.SessionIDFromContext(r.Context())
+
+	sessions, err := s.Queries.ListSessionsForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list sessions for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	parser := useragent.NewParser()
+	resp := make([]sessionResponse, len(sessions))
+	for i, sess := range sessions {
+		resp[i] = sessionResponseFromSession(parser, &sess, sess.ID == currentID)
+	}
+
+	writeJSON(w, http.StatusOK, sessionListResponse{Sessions: resp})
+}
+
+// DELETE /api/sessions/{id}: revokes one of the calling user's own
+// *other* sessions -- but never the one this very request is
+// authenticated with. Ending your own current session through this
+// screen would mean the DELETE request itself succeeds and then every
+// subsequent request, including whatever the dashboard tried to do
+// next, starts 401ing with no session left to explain why -- confusing
+// at best. Signing out (POST /api/auth/logout, the existing flow) is
+// the correct, already-well-understood way to end your own current
+// session; this endpoint refuses instead of trying to gracefully handle
+// self-deletion's own aftermath. The dashboard hides the revoke control
+// entirely for the current session's row, so reaching this 400 at all
+// means either a stale tab or a direct API call, not a normal click.
+func (s *Server) DeleteSession(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	sessionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid session id")
+		return
+	}
+
+	if currentID, ok := auth.SessionIDFromContext(r.Context()); ok && currentID == sessionID {
+		writeError(w, http.StatusBadRequest, "sign out to end your current session")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeleteSessionForUser(r.Context(), db.DeleteSessionForUserParams{ID: sessionID, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete session %d for user %d: %v", sessionID, user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
 
@@ -2250,6 +2377,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.U
 	_, err = s.Queries.CreateSession(r.Context(), db.CreateSessionParams{
 		SessionHash: hash,
 		UserID:      user.ID,
+		UserAgent:   textOrNull(r.UserAgent()),
 		ExpiresAt:   pgtype.Timestamptz{Time: auth.SessionExpiry(), Valid: true},
 	})
 	if err != nil {

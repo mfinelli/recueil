@@ -265,7 +265,9 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
   get the device-type info and screen reader users would get nothing. Any icon
   conveying real information (not just decorating already-present text) needs an
   explicit `role="img"` + `aria-label`, `title` alone doesn't cover
-  accessibility even though it looks like it should.
+  accessibility even though it looks like it should. Active Sessions'
+  device-class icon (Monitor/Smartphone/Tablet, plus a `CircleHelp` fallback
+  distinct from Devices' own `Smartphone` default) reuses this exact pattern.
 
 ## Open items
 
@@ -274,16 +276,16 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
 
 ## Screen status
 
-| Screen                         | Status                                                                          |
-| ------------------------------ | ------------------------------------------------------------------------------- |
-| `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out |
-| `Footer` (shared)              | Built, not wired in — see IMPLEMENTATION.md's Phase 12 entry                    |
-| Login / Register / Setup       | Done — shared `PasswordInput` toggle                                            |
-| Library                        | Done — also styles `PageList` (shared with Tag/CollectionDetail, not yet built) |
-| PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures               |
-| CaptureReader                  | Done — sans/serif toggle, capture-config-driven regenerate hide-logic           |
-| Collections / CollectionDetail | Done — tree-depth guide lines, icon actions, chip-style subcollections          |
-| Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited        |
-| Devices                        | Done — icon copy/regenerate/revoke, per-type device icons                       |
-| Queue                          | Not started                                                                     |
-| Settings                       | Not started                                                                     |
+| Screen                         | Status                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------------------------- |
+| `AppHeader` (shared)           | Done — active link, mobile disclosure, animated hamburger toggle, icon sign-out             |
+| `Footer` (shared)              | Built, not wired in — see IMPLEMENTATION.md's Phase 12 entry                                |
+| Login / Register / Setup       | Done — shared `PasswordInput` toggle                                                        |
+| Library                        | Done — also styles `PageList`                                                               |
+| PageDetail                     | Done — edit-mode pencils, sync-toggle, actions row below Captures                           |
+| CaptureReader                  | Done — sans/serif toggle, capture-config-driven regenerate hide-logic                       |
+| Collections / CollectionDetail | Done — tree-depth guide lines, icon actions, chip-style subcollections                      |
+| Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited                    |
+| Devices                        | Done — icon copy/regenerate/revoke, per-type device icons, separate Active Sessions section |
+| Queue                          | Not started                                                                                 |
+| Settings                       | Not started                                                                                 |

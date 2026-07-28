@@ -17,8 +17,8 @@
  */
 
 -- name: CreateSession :one
-INSERT INTO sessions (session_hash, user_id, expires_at)
-VALUES ($1, $2, $3) RETURNING *;
+INSERT INTO sessions (session_hash, user_id, user_agent, expires_at)
+VALUES ($1, $2, $3, $4) RETURNING *;
 
 -- name: GetSessionByHash :one
 SELECT sqlc.embed(s), sqlc.embed(u)
@@ -37,3 +37,9 @@ DELETE FROM sessions WHERE user_id = $1;
 
 -- name: DeleteExpiredSessions :exec
 DELETE FROM sessions WHERE expires_at <= NOW();
+
+-- name: ListSessionsForUser :many
+SELECT * FROM sessions WHERE user_id = $1 ORDER BY last_seen_at DESC;
+
+-- name: DeleteSessionForUser :execrows
+DELETE FROM sessions WHERE id = $1 AND user_id = $2;

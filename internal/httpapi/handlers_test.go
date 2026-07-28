@@ -911,6 +911,225 @@ func TestRevokeDevice(t *testing.T) {
 	})
 }
 
+// createSessionWithUA is sessionCookieFor's twin for tests that need
+// either a specific User-Agent string (to exercise real parsing) or the
+// created session's own id (to build /api/sessions/{id} URLs, or to
+// compare against a response's is_current) -- sessionCookieFor exposes
+// neither, just the cookie.
+func createSessionWithUA(t *testing.T, pool *pgxpool.Pool, user *db.User, userAgent string) (*http.Cookie, db.Session) {
+	t.Helper()
+	raw, hash, err := auth.GenerateSessionToken()
+	require.NoError(t, err)
+	sess := dbtest.CreateSession(t, pool, db.CreateSessionParams{
+		SessionHash: hash, UserID: user.ID,
+		UserAgent: pgtype.Text{String: userAgent, Valid: userAgent != ""},
+		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+	})
+	return &http.Cookie{Name: sessionCookieName, Value: raw}, sess
+}
+
+func TestListSessions(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("lists all of the caller's own sessions, most recently active first", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		_, older := createSessionWithUA(t, pool, &user, "")
+		// ListSessionsForUser orders by last_seen_at DESC with no
+		// tiebreaker -- same caveat as other tests in this file that
+		// depend on ordering (e.g. TestRecapturePage's own "more than
+		// one capture" test).
+		time.Sleep(2 * time.Millisecond)
+		newerCookie, newer := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/sessions", newerCookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Sessions []struct {
+				ID int64 `json:"id"`
+			} `json:"sessions"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Sessions, 2)
+		assert.Equal(t, newer.ID, got.Sessions[0].ID)
+		assert.Equal(t, older.ID, got.Sessions[1].ID)
+	})
+
+	t.Run("marks the current session's own row is_current, and no others", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		_, other := createSessionWithUA(t, pool, &user, "")
+		currentCookie, current := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/sessions", currentCookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Sessions []struct {
+				ID        int64 `json:"id"`
+				IsCurrent bool  `json:"is_current"`
+			} `json:"sessions"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		byID := map[int64]bool{}
+		for _, s := range got.Sessions {
+			byID[s.ID] = s.IsCurrent
+		}
+		assert.True(t, byID[current.ID])
+		assert.False(t, byID[other.ID])
+	})
+
+	t.Run("parses a real user agent into browser/os/device_class", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		cookie, sess := createSessionWithUA(t, pool, &user,
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/sessions", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Sessions []struct {
+				ID             int64  `json:"id"`
+				Browser        string `json:"browser"`
+				BrowserVersion string `json:"browser_version"`
+				OS             string `json:"os"`
+				DeviceClass    string `json:"device_class"`
+			} `json:"sessions"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Sessions, 1)
+		assert.Equal(t, sess.ID, got.Sessions[0].ID)
+		assert.Equal(t, "Chrome", got.Sessions[0].Browser)
+		assert.Equal(t, "118", got.Sessions[0].BrowserVersion)
+		assert.Equal(t, "Windows", got.Sessions[0].OS)
+		assert.Equal(t, "desktop", got.Sessions[0].DeviceClass)
+	})
+
+	t.Run("a missing/unrecognized user agent returns empty fields, not an error", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		cookie, _ := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/sessions", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Sessions []struct {
+				Browser     string `json:"browser"`
+				OS          string `json:"os"`
+				DeviceClass string `json:"device_class"`
+			} `json:"sessions"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Sessions, 1)
+		assert.Empty(t, got.Sessions[0].Browser)
+		assert.Empty(t, got.Sessions[0].OS)
+		assert.Empty(t, got.Sessions[0].DeviceClass)
+	})
+
+	t.Run("another user's sessions never appear", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		_, _ = createSessionWithUA(t, pool, &other, "")
+		cookie, _ := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/sessions", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Sessions []struct {
+				ID int64 `json:"id"`
+			} `json:"sessions"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Len(t, got.Sessions, 1, "only the caller's own session should be listed")
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/sessions")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestDeleteSession(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a member can revoke one of their own other sessions", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		currentCookie, _ := createSessionWithUA(t, pool, &user, "")
+		_, other := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/sessions/%d", other.ID), currentCookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+		remaining, err := db.New(pool).ListSessionsForUser(context.Background(), user.ID)
+		require.NoError(t, err)
+		require.Len(t, remaining, 1)
+		assert.NotEqual(t, other.ID, remaining[0].ID)
+	})
+
+	t.Run("refuses to delete the caller's own current session", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		currentCookie, current := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/sessions/%d", current.ID), currentCookie)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+		remaining, err := db.New(pool).ListSessionsForUser(context.Background(), user.ID)
+		require.NoError(t, err)
+		require.Len(t, remaining, 1, "the current session must still be there")
+	})
+
+	t.Run("a member cannot revoke another user's session even by guessing the id", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		currentCookie, _ := createSessionWithUA(t, pool, &user, "")
+		_, otherSession := createSessionWithUA(t, pool, &other, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/sessions/%d", otherSession.ID), currentCookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+
+		remaining, err := db.New(pool).ListSessionsForUser(context.Background(), other.ID)
+		require.NoError(t, err)
+		assert.Len(t, remaining, 1, "the other user's session should be untouched")
+	})
+
+	t.Run("revoking a nonexistent session id returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		currentCookie, _ := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/sessions/9999999", currentCookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("a non-numeric id returns 400", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		currentCookie, _ := createSessionWithUA(t, pool, &user, "")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/sessions/not-a-number", currentCookie)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/sessions/1", http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
 func TestListFailedQueueItems(t *testing.T) {
 	pool := dbtest.Setup(t)
 

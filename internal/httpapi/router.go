@@ -23,12 +23,13 @@
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
 // strictly self-scoped -- see ListDevices' own doc comment for why
 // cross-user device management isn't a web capability here),
-// session-protected failed-queue-item review/retry (GET /api/queue-items,
-// POST /api/queue-items/{id}/retry, also strictly self-scoped, same
-// reasoning), session-protected failed-job review/retry (GET /api/jobs,
-// POST /api/jobs/{kind}/{id}/retry for the screenshot/readability/AI
-// enrichment jobs -- {kind} one of "screenshot"/"readability"/"ai" -- also
-// strictly self-scoped, same reasoning), session-protected library
+// session-protected Active Sessions (GET /api/sessions, DELETE
+// /api/sessions/{id}, session-protected failed-queue-item review/retry
+// (GET /api/queue-items, POST /api/queue-items/{id}/retry, also strictly
+// self-scoped, same reasoning), session-protected failed-job review/retry
+// (GET /api/jobs, POST /api/jobs/{kind}/{id}/retry for the screenshot/
+// readability/AI enrichment jobs -- {kind} one of "screenshot"/"readability"/
+// "ai" -- also strictly self-scoped, same reasoning), session-protected library
 // browsing/search (GET /api/pages, GET/PATCH/DELETE /api/pages/{id},
 // POST /api/pages/{id}/recapture, session-protected capture detail/HTML/language
 // correction (GET /api/captures/{id}, DELETE /api/captures/{id} -- a
@@ -138,6 +139,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pairing-token", s.RevokePairingToken)
 			r.Get("/devices", s.ListDevices)
 			r.Delete("/devices/{id}", s.RevokeDevice)
+			r.Get("/sessions", s.ListSessions)
+			r.Delete("/sessions/{id}", s.DeleteSession)
 			r.Get("/queue-items", s.ListFailedQueueItems)
 			r.Post("/queue-items/{id}/retry", s.RetryQueueItem)
 			r.Get("/jobs", s.ListFailedJobs)

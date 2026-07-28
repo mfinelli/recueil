@@ -2567,3 +2567,32 @@ solved — the short version below).
   (`"recueil-theme"`) in sync. Much simpler than `locale.ts`'s module: nothing
   needs Paraglide's repeated-synchronous-read shape here, this is just one DOM
   mutation plus a cache write.
+
+### active sessions
+
+A `Devices` screen addition, in its own separate section rather than merged into
+the paired-devices list.
+
+- New `internal/auth.SessionIDFromContext`, threaded through `RequireSession`'s
+  middleware alongside the existing user -- needed anywhere that has to tell
+  "this specific session" apart from the user's other ones (the list's own
+  `is_current` flag, and `DeleteSession`'s refusal to delete the one making the
+  request).
+- `GET /api/sessions` / `DELETE /api/sessions/{id}`: strictly self-scoped, same
+  reasoning `ListDevices`/`RevokeDevice` already settled on. Parsing
+  (`github.com/medama-io/go-useragent`), not stored as its own columns at write
+  time.
+- `DeleteSession` refuses (400) to delete the caller's own current session --
+  checked via `SessionIDFromContext` before the query ever runs, not left to the
+  database to reject. Signing out (`POST /api/auth/logout`, already existing) is
+  the correct way to end that one; the dashboard's own UI doesn't even render a
+  revoke control for that row, so reaching this 400 at all means a stale tab or
+  a direct API call, not a normal click.
+- Frontend: `Devices.svelte` gained a third section, reusing the exact same
+  list/icon/`role="img"`+`aria-label` markup pattern the paired-devices list
+  already established (see `DESIGN_SYSTEM.md`'s own note on this). Icons:
+  `Monitor`/`Smartphone`/`Tablet` by parsed `device_class`, with a `CircleHelp`
+  fallback deliberately distinct from Devices' own `Smartphone` default, for an
+  empty/unrecognized `device_class`. The current session gets a left
+  accent-stripe highlight and a "Current session" badge instead of a revoke
+  button, not a disabled one.
