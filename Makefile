@@ -15,6 +15,7 @@
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 SOURCES := $(shell find . -name '*.go' -not -name '*_test.go')
+FRONTEND := $(shell find src -type f -not -name "*.test.ts")
 MIGRATIONS := $(wildcard migrations/*.sql)
 QUERIES := $(wildcard queries/*.sql)
 
@@ -22,6 +23,7 @@ DATE := date
 GIT := git
 GO := go
 JQ := jq
+PNPM := pnpm
 SQLC := sqlc
 
 ifeq ($(shell uname), Darwin)
@@ -37,7 +39,7 @@ all: recueil
 clean:
 	rm -rf recueil
 
-recueil: $(SOURCES) internal/db/db.go
+recueil: $(SOURCES) internal/db/db.go dist/index.html
 	$(GO) build -o $@ \
 		-trimpath \
 		-mod=readonly \
@@ -50,5 +52,8 @@ recueil: $(SOURCES) internal/db/db.go
 
 internal/db/db.go: $(MIGRATIONS) $(QUERIES) sqlc.yaml
 	$(SQLC) generate
+
+dist/index.html: $(FRONTEND)
+	$(PNPM) run build
 
 .PHONY: all clean
