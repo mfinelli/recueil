@@ -273,6 +273,12 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
 
 - **Password reset**: CLI-only for now rather than a self-service email flow.
   Login's forgot-password link exists in the markup already, but gated off.
+- **Language pill toggle won't scale forever**: `Settings`' language picker is a
+  pill toggle (matching Theme, Library's List/Grid, CaptureReader's Sans/Serif),
+  fine for the two languages supported today but likely to wrap awkwardly once
+  more are added. Revisit with a `<select>` (or a searchable picker) once that
+  becomes a real problem, not preemptively — the swap is contained to one
+  screen.
 
 ## Screen status
 
@@ -288,4 +294,4 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
 | Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited                    |
 | Devices                        | Done — icon copy/regenerate/revoke, per-type device icons, separate Active Sessions section |
 | Queue                          | Not started                                                                                 |
-| Settings                       | Not started                                                                                 |
+| Settings                       | Done — pill toggles for language/theme, dark mode now wired up end to end                   |

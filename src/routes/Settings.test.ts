@@ -73,35 +73,40 @@ afterEach(() => {
   applyThemeMock.mockClear();
 });
 
+function isActive(name: string): boolean {
+  return screen.getByRole("button", { name }).classList.contains("active");
+}
+
 describe("Settings", () => {
-  it("shows a loading state, then both selects once settings load", async () => {
+  it("shows a loading state, then both toggle groups once settings load", async () => {
     apiJSONMock.mockResolvedValueOnce({ language: null, theme: null });
     render(Settings);
 
     // Two sections, each with their own loading indicator now.
     expect(screen.getAllByText("Loading…")).toHaveLength(2);
 
-    const languageSelect = await screen.findByRole("combobox", {
-      name: "Language",
-    });
-    expect(languageSelect).toHaveProperty("value", "");
-    const themeSelect = screen.getByRole("combobox", { name: "Theme" });
-    expect(themeSelect).toHaveProperty("value", "");
+    await screen.findByRole("group", { name: "Language" });
+    expect(isActive("Automatic (browser language)")).toBe(true);
+    expect(isActive("English")).toBe(false);
+    expect(isActive("Français")).toBe(false);
+
+    expect(screen.getByRole("group", { name: "Theme" })).toBeTruthy();
+    expect(isActive("Automatic (system setting)")).toBe(true);
+    expect(isActive("Light")).toBe(false);
+    expect(isActive("Dark")).toBe(false);
+
     expect(apiJSONMock).toHaveBeenCalledWith("/settings");
   });
 
-  it("loads a previously set language and theme into their selects", async () => {
+  it("loads a previously set language and theme, marking the right toggle active", async () => {
     apiJSONMock.mockResolvedValueOnce({ language: "fr", theme: "dark" });
     render(Settings);
 
-    const languageSelect = await screen.findByRole("combobox", {
-      name: "Language",
-    });
-    expect(languageSelect).toHaveProperty("value", "fr");
-    expect(screen.getByRole("combobox", { name: "Theme" })).toHaveProperty(
-      "value",
-      "dark",
-    );
+    await screen.findByRole("group", { name: "Language" });
+    expect(isActive("Français")).toBe(true);
+    expect(isActive("Automatic (browser language)")).toBe(false);
+    expect(isActive("Dark")).toBe(true);
+    expect(isActive("Automatic (system setting)")).toBe(false);
   });
 
   it("shows the API's own error message when loading settings fails with ApiError", async () => {
@@ -111,11 +116,11 @@ describe("Settings", () => {
     render(Settings);
 
     expect(await screen.findByText("database unavailable")).toBeTruthy();
-    // The load error and the selects aren't mutually exclusive in the
+    // The load error and the toggles aren't mutually exclusive in the
     // template -- only `loading` gates them, so both are still shown
     // (at their default values) alongside the error.
-    expect(screen.getByRole("combobox", { name: "Language" })).toBeTruthy();
-    expect(screen.getByRole("combobox", { name: "Theme" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Language" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Theme" })).toBeTruthy();
   });
 
   it("falls back to a generic error message for a non-ApiError load failure", async () => {
@@ -131,8 +136,8 @@ describe("Settings", () => {
       .mockResolvedValueOnce({ language: "fr", theme: null });
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Language" });
-    await fireEvent.change(select, { target: { value: "fr" } });
+    await screen.findByRole("group", { name: "Language" });
+    await fireEvent.click(screen.getByRole("button", { name: "Français" }));
 
     expect(apiJSONMock).toHaveBeenLastCalledWith("/settings", {
       method: "PATCH",
@@ -146,14 +151,25 @@ describe("Settings", () => {
     expect(applyThemeMock).not.toHaveBeenCalled();
   });
 
+  it("doesn't re-save when clicking the language that's already active", async () => {
+    apiJSONMock.mockResolvedValueOnce({ language: "fr", theme: null });
+    render(Settings);
+
+    await screen.findByRole("group", { name: "Language" });
+    const before = apiJSONMock.mock.calls.length;
+    await fireEvent.click(screen.getByRole("button", { name: "Français" }));
+
+    expect(apiJSONMock.mock.calls.length).toBe(before);
+  });
+
   it("shows the API's own error message when saving the language fails with ApiError", async () => {
     apiJSONMock
       .mockResolvedValueOnce({ language: null, theme: null })
       .mockRejectedValueOnce(new ApiError(400, "unsupported language"));
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Language" });
-    await fireEvent.change(select, { target: { value: "fr" } });
+    await screen.findByRole("group", { name: "Language" });
+    await fireEvent.click(screen.getByRole("button", { name: "Français" }));
 
     expect(await screen.findByText("unsupported language")).toBeTruthy();
     expect(applyLanguageOverrideMock).not.toHaveBeenCalled();
@@ -165,8 +181,8 @@ describe("Settings", () => {
       .mockRejectedValueOnce(new Error("network error"));
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Language" });
-    await fireEvent.change(select, { target: { value: "fr" } });
+    await screen.findByRole("group", { name: "Language" });
+    await fireEvent.click(screen.getByRole("button", { name: "Français" }));
 
     expect(await screen.findByText("failed to save settings")).toBeTruthy();
   });
@@ -177,8 +193,8 @@ describe("Settings", () => {
       .mockResolvedValueOnce({ language: null, theme: "dark" });
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Theme" });
-    await fireEvent.change(select, { target: { value: "dark" } });
+    await screen.findByRole("group", { name: "Theme" });
+    await fireEvent.click(screen.getByRole("button", { name: "Dark" }));
 
     expect(apiJSONMock).toHaveBeenLastCalledWith("/settings", {
       method: "PATCH",
@@ -196,10 +212,23 @@ describe("Settings", () => {
       .mockResolvedValueOnce({ language: null, theme: null });
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Theme" });
-    await fireEvent.change(select, { target: { value: "" } });
+    await screen.findByRole("group", { name: "Theme" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Automatic (system setting)" }),
+    );
 
     expect(applyThemeMock).toHaveBeenCalledWith(null);
+  });
+
+  it("doesn't re-save when clicking the theme that's already active", async () => {
+    apiJSONMock.mockResolvedValueOnce({ language: null, theme: "dark" });
+    render(Settings);
+
+    await screen.findByRole("group", { name: "Theme" });
+    const before = apiJSONMock.mock.calls.length;
+    await fireEvent.click(screen.getByRole("button", { name: "Dark" }));
+
+    expect(apiJSONMock.mock.calls.length).toBe(before);
   });
 
   it("shows the API's own error message when saving the theme fails with ApiError", async () => {
@@ -208,8 +237,8 @@ describe("Settings", () => {
       .mockRejectedValueOnce(new ApiError(400, "invalid theme"));
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Theme" });
-    await fireEvent.change(select, { target: { value: "dark" } });
+    await screen.findByRole("group", { name: "Theme" });
+    await fireEvent.click(screen.getByRole("button", { name: "Dark" }));
 
     expect(await screen.findByText("invalid theme")).toBeTruthy();
     expect(applyThemeMock).not.toHaveBeenCalled();
@@ -221,8 +250,8 @@ describe("Settings", () => {
       .mockRejectedValueOnce(new Error("network error"));
     render(Settings);
 
-    const select = await screen.findByRole("combobox", { name: "Theme" });
-    await fireEvent.change(select, { target: { value: "dark" } });
+    await screen.findByRole("group", { name: "Theme" });
+    await fireEvent.click(screen.getByRole("button", { name: "Dark" }));
 
     expect(await screen.findByText("failed to save settings")).toBeTruthy();
   });

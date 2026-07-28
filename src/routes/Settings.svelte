@@ -35,6 +35,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      applyTheme() is a plain DOM attribute mutation, nothing else on the page
      needs to reload or re-render for it to take effect immediately. -->
 <script lang="ts">
+  import type { Component } from "svelte";
+  import Monitor from "@lucide/svelte/icons/monitor";
+  import Sun from "@lucide/svelte/icons/sun";
+  import Moon from "@lucide/svelte/icons/moon";
+  import Check from "@lucide/svelte/icons/check";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { UserSettings } from "../lib/types";
@@ -48,10 +54,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     { value: "fr", label: "Français" },
   ];
 
-  const THEME_OPTIONS: { value: string; label: string }[] = [
-    { value: "", label: m.theme_option_automatic() },
-    { value: "light", label: m.theme_option_light() },
-    { value: "dark", label: m.theme_option_dark() },
+  const THEME_OPTIONS: { value: string; label: string; icon: Component }[] = [
+    { value: "", label: m.theme_option_automatic(), icon: Monitor },
+    { value: "light", label: m.theme_option_light(), icon: Sun },
+    { value: "dark", label: m.theme_option_dark(), icon: Moon },
   ];
 
   let language = $state("");
@@ -86,20 +92,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   });
 
   // Separate state per field (savingLanguage vs. savingTheme, etc.), not
-  // one shared saving/saved/saveError -- both selects live on the same
+  // one shared saving/saved/saveError -- both toggles live on the same
   // screen, so a shared "Saved" would appear next to the section the
   // person *didn't* just touch too, and a shared error after, say, an
   // invalid theme value would misleadingly show under Language as well.
   // The PATCH body is still always both fields together, full-replace;
   // only the UI feedback is split, not the request itself.
-  async function handleLanguageChange() {
+  async function selectLanguage(value: string) {
+    if (value === language) return;
     savingLanguage = true;
     saveErrorLanguage = null;
     savedLanguage = false;
     try {
       const res = await apiJSON<UserSettings>("/settings", {
         method: "PATCH",
-        body: { language, theme },
+        body: { language: value, theme },
       });
       language = res.language ?? "";
       theme = res.theme ?? "";
@@ -121,20 +128,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  // Theme's own handler, separate from handleLanguageChange: language's
-  // save reloads the page (applyLanguageOverride, above) -- if theme
-  // shared that same handler, changing theme would trigger a reload too,
-  // for no reason, when a plain DOM mutation (applyTheme) already does
+  // Theme has its own handler, separate from selectLanguage: language's save
+  // reloads the page (applyLanguageOverride, above) -- if theme shared
+  // that same handler, changing theme would trigger a reload too, for no
+  // reason, when a plain DOM mutation (applyTheme) already does
   // everything theme itself needs. Still sends both fields in the same
   // PATCH body, it just doesn't reload afterward.
-  async function handleThemeChange() {
+  async function selectTheme(value: string) {
+    if (value === theme) return;
     savingTheme = true;
     saveErrorTheme = null;
     savedTheme = false;
     try {
       const res = await apiJSON<UserSettings>("/settings", {
         method: "PATCH",
-        body: { language, theme },
+        body: { language, theme: value },
       });
       language = res.language ?? "";
       theme = res.theme ?? "";
@@ -154,117 +162,175 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>{m.settings()}</h1>
+  <p class="page-heading">{m.settings()}</p>
 
   {#if loadError}
-    <p class="status error" role="alert">{loadError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{loadError}</span>
+    </p>
   {/if}
 
   <section>
-    <h2>{m.common_language()}</h2>
+    <p class="eyebrow">{m.common_language()}</p>
     <p class="hint">
       {m.settings_language_hint()}
     </p>
     {#if loading}
       <p class="status">{m.common_loading()}</p>
     {:else}
-      <select
-        aria-label={m.common_language()}
-        bind:value={language}
-        onchange={handleLanguageChange}
-        disabled={savingLanguage}
-      >
+      <div class="toggle" role="group" aria-label={m.common_language()}>
         {#each LANGUAGE_OPTIONS as option (option.value)}
-          <option value={option.value}>{option.label}</option>
+          <button
+            type="button"
+            class:active={language === option.value}
+            disabled={savingLanguage}
+            onclick={() => selectLanguage(option.value)}
+          >
+            {option.label}
+          </button>
         {/each}
-      </select>
+      </div>
       {#if savedLanguage}
-        <span class="status success">{m.settings_saved()}</span>
+        <span class="saved">
+          <Check size={13} />
+          {m.settings_saved()}
+        </span>
       {/if}
       {#if saveErrorLanguage}
-        <p class="status error" role="alert">{saveErrorLanguage}</p>
+        <p class="status error" role="alert">
+          <AlertCircle size={15} />
+          <span>{saveErrorLanguage}</span>
+        </p>
       {/if}
     {/if}
   </section>
 
   <section>
-    <h2>{m.common_theme()}</h2>
+    <p class="eyebrow">{m.common_theme()}</p>
     <p class="hint">
       {m.settings_theme_hint()}
     </p>
     {#if loading}
       <p class="status">{m.common_loading()}</p>
     {:else}
-      <select
-        aria-label={m.common_theme()}
-        bind:value={theme}
-        onchange={handleThemeChange}
-        disabled={savingTheme}
-      >
+      <div class="toggle" role="group" aria-label={m.common_theme()}>
         {#each THEME_OPTIONS as option (option.value)}
-          <option value={option.value}>{option.label}</option>
+          {@const OptionIcon = option.icon}
+          <button
+            type="button"
+            class:active={theme === option.value}
+            disabled={savingTheme}
+            onclick={() => selectTheme(option.value)}
+          >
+            <OptionIcon size={13} />
+            {option.label}
+          </button>
         {/each}
-      </select>
+      </div>
       {#if savedTheme}
-        <span class="status success">{m.settings_saved()}</span>
+        <span class="saved">
+          <Check size={13} />
+          {m.settings_saved()}
+        </span>
       {/if}
       {#if saveErrorTheme}
-        <p class="status error" role="alert">{saveErrorTheme}</p>
+        <p class="status error" role="alert">
+          <AlertCircle size={15} />
+          <span>{saveErrorTheme}</span>
+        </p>
       {/if}
     {/if}
   </section>
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
-    max-width: 48rem;
+    max-width: 34rem;
     margin: 0 auto;
     padding: 2rem 1rem;
   }
 
-  h1 {
-    margin: 0 0 1rem;
+  .page-heading {
+    @include type.eyebrow;
+    margin: 0 0 1.5rem;
   }
 
   section {
     margin-bottom: 2rem;
   }
 
-  h2 {
-    font-size: 1rem;
-    margin-bottom: 0.375rem;
+  .eyebrow {
+    @include type.eyebrow;
+    margin: 0 0 0.4rem;
   }
 
   .hint {
-    margin: 0 0 0.75rem;
+    margin: 0 0 0.85rem;
     color: var(--ink-muted);
     font-size: 0.8125rem;
+  }
+
+  .toggle {
+    display: flex;
+    flex-wrap: wrap;
+    width: fit-content;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    overflow: hidden;
+
+    button {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      border: none;
+      background: var(--paper-raised);
+      padding: 0.5rem 0.85rem;
+      font: inherit;
+      font-size: 0.8125rem;
+      color: var(--ink-muted);
+      cursor: pointer;
+
+      &.active {
+        background: var(--accent-success);
+        color: var(--paper);
+      }
+
+      &:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      &:focus-visible {
+        @include mix.focus-ring;
+      }
+    }
+
+    button + button {
+      border-left: 1px solid var(--rule);
+    }
+  }
+
+  .saved {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-left: 0.6rem;
+    color: var(--accent-success);
+    font-size: 0.78rem;
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     color: var(--ink-muted);
-    font-size: 0.8125rem;
 
     &.error {
       color: var(--accent);
-    }
-
-    &.success {
-      margin-left: 0.5rem;
-    }
-  }
-
-  select {
-    padding: 0.375rem 0.625rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
-    font-size: 0.8125rem;
-
-    &:disabled {
-      opacity: 0.5;
     }
   }
 </style>
