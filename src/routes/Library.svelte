@@ -145,11 +145,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 64rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .page-heading {
@@ -158,25 +157,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   button {
+    @include comp.bordered-button;
     display: flex;
     align-items: center;
     gap: 0.35rem;
     padding: 0.375rem 0.75rem;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
-    cursor: pointer;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   .toolbar {
@@ -219,13 +204,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 2.5rem 1rem;
+    @include comp.status-block;
     color: var(--accent);
-    text-align: center;
 
     :global(svg) {
       opacity: 0.6;

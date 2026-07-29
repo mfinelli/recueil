@@ -680,11 +680,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 48rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .back {
@@ -706,27 +705,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink-muted);
+    @include comp.status-row;
     margin-bottom: 1rem;
-
-    &.error {
-      color: var(--accent);
-    }
   }
 
   // Matches Library's own load-error treatment exactly -- one consistent
   // full-block error pattern app-wide, not a screen-specific variant.
   .status-error {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 2.5rem 1rem;
+    @include comp.status-block;
     color: var(--accent);
-    text-align: center;
 
     :global(svg) {
       opacity: 0.6;
@@ -747,26 +734,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.5rem;
-    height: 1.5rem;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-    cursor: pointer;
-
-    &:hover {
-      color: var(--accent);
-      background: var(--paper-raised);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
+    @include comp.icon-btn(1.5rem);
   }
 
   // The input takes the exact place of the h1 it replaces -- same
@@ -876,29 +844,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .edit-toggle {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-    cursor: pointer;
-
-    &:hover {
-      color: var(--accent);
-      background: var(--paper-raised);
-    }
+    @include comp.icon-btn(1.4rem);
 
     &.active {
       color: var(--accent-success);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
     }
   }
 
@@ -911,13 +860,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     padding: 0;
 
     li {
+      @include comp.pill;
       display: flex;
       align-items: center;
       gap: 0.3rem;
       padding: 0.2rem 0.65rem;
-      border-radius: 999px;
-      background: var(--paper-raised);
-      border: 1px solid var(--rule);
       font-size: 0.78rem;
 
       // AI-sourced tags get a brass-tinted border + the Sparkles icon
@@ -948,26 +895,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .remove {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.1rem;
-    height: 1.1rem;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-    cursor: pointer;
-
-    &:hover {
-      color: var(--accent);
-      background: rgba(0, 0, 0, 0.05);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
+    @include comp.icon-btn(1.1rem, rgba(0, 0, 0, 0.05));
   }
 
   .inline-form {
@@ -977,40 +905,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   input[type="text"],
   select {
+    @include comp.text-input;
     padding: 0.375rem 0.5rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper);
-    color: var(--ink);
-    font: inherit;
+    border-radius: 4px;
     font-size: 0.875rem;
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   button {
+    @include comp.bordered-button;
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
     padding: 0.375rem 0.75rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
     font-size: 0.875rem;
-    cursor: pointer;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   .captures {

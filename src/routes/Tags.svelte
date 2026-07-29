@@ -238,11 +238,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 48rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .page-heading {
@@ -251,25 +250,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink-muted);
+    @include comp.status-row;
     margin-bottom: 1rem;
-
-    &.error {
-      color: var(--accent);
-    }
   }
 
   .status-block {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 2.5rem 1rem;
+    @include comp.status-block;
     color: var(--ink-muted);
-    text-align: center;
 
     &.error {
       color: var(--accent);
@@ -373,59 +360,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   input[type="text"] {
+    @include comp.text-input;
     padding: 0.4rem 0.6rem;
-    border: 1px solid var(--rule);
     border-radius: 4px;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
     font-size: 0.875rem;
 
     &.invalid {
       border-color: var(--accent);
     }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   button {
+    @include comp.bordered-button;
     padding: 0.375rem 0.75rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
     font-size: 0.8125rem;
-    cursor: pointer;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.8rem;
-    height: 1.8rem;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-
-    &:hover:not(:disabled) {
-      color: var(--accent);
-      background: var(--paper-raised);
-    }
+    @include comp.icon-btn(1.8rem);
   }
 
   .row-actions {

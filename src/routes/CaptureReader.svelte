@@ -532,11 +532,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 38rem;
-    margin: 0 auto;
-    padding: 2rem 1rem 4rem;
+    @include comp.content-screen;
+    padding-bottom: 4rem;
   }
 
   .back {
@@ -558,14 +558,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink-muted);
-
-    &.error {
-      color: var(--accent);
-    }
+    @include comp.status-row;
   }
 
   // Matches Library/PageDetail's own load-error treatment exactly.
@@ -660,8 +653,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .summary {
     display: flex;
     gap: 0.6rem;
+    max-width: 42rem;
     padding: 0.85rem 1rem;
-    margin-bottom: 1.75rem;
+    margin: 0 auto 1.75rem;
     border-radius: 4px;
     border: 1px solid color-mix(in srgb, var(--brass) 40%, var(--rule));
     background: var(--paper-raised);
@@ -708,30 +702,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .regen-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.3rem;
-    height: 1.3rem;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-    cursor: pointer;
-
-    &:hover:not(:disabled) {
-      color: var(--accent);
-      background: rgba(0, 0, 0, 0.05);
-    }
+    @include comp.icon-btn(1.3rem, rgba(0, 0, 0, 0.05));
 
     &:disabled {
       opacity: 0.6;
       cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
     }
   }
 
@@ -740,38 +715,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    margin-bottom: 1.1rem;
+    max-width: 42rem;
+    margin: 0 auto 1.1rem;
   }
 
   .font-toggle {
-    display: flex;
-    width: fit-content;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    overflow: hidden;
+    @include comp.segmented-toggle;
 
     button {
-      border: none;
-      border-radius: 0;
+      @include comp.segmented-toggle-option;
       background: var(--paper-raised);
       padding: 0.35rem 0.65rem;
       font: inherit;
       font-size: 0.78rem;
       color: var(--ink-muted);
       cursor: pointer;
-
-      &.active {
-        background: var(--accent-success);
-        color: var(--paper);
-      }
-
-      &:focus-visible {
-        @include mix.focus-ring;
-      }
-    }
-
-    button + button {
-      border-left: 1px solid var(--rule);
     }
   }
 
@@ -799,6 +757,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   .reader-text {
     max-width: 42rem;
+    margin: 0 auto;
     white-space: pre-wrap;
     font-size: 1.0625rem;
     line-height: 1.7;
@@ -813,7 +772,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    margin-top: 1rem;
+    max-width: 53rem;
+    margin: 1rem auto 0;
     padding-top: 0.75rem;
     border-top: 1px dotted var(--rule);
     color: var(--ink-muted);
@@ -822,7 +782,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .details {
-    margin-top: 2rem;
+    max-width: 53rem;
+    margin: 2rem auto 0;
     padding: 1rem 1.1rem;
     @include mix.card-surface;
   }
@@ -896,36 +857,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   .actions-row {
     display: flex;
-    margin-top: 2rem;
+    max-width: 53rem;
+    margin: 2rem auto 0;
     padding-top: 0.9rem;
     border-top: 1px dotted var(--rule);
   }
 
   button.danger {
+    @include comp.bordered-button;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     padding: 0.4rem 0.75rem;
-    border: 1px solid var(--accent);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
+    border-color: var(--accent);
     color: var(--accent);
-    font: inherit;
     font-size: 0.8125rem;
-    cursor: pointer;
 
     &:hover:not(:disabled) {
       background: var(--accent);
       color: var(--paper);
     }
 
+    // A more forgiving disabled state than the default bordered-button's
+    // 0.5 -- this action is destructive, so the disabled affordance
+    // should still read clearly rather than nearly disappearing.
     &:disabled {
       opacity: 0.6;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
     }
   }
 </style>

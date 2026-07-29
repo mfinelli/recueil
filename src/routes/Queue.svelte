@@ -449,11 +449,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 48rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .page-heading {
@@ -476,22 +475,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .refresh-btn {
+    @include comp.bordered-button;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     margin-left: auto;
     padding: 0.35rem 0.65rem;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
     font-size: 0.78rem;
-    cursor: pointer;
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   .summary {
@@ -502,13 +492,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .stat {
+    @include comp.pill;
     display: flex;
     align-items: baseline;
     gap: 0.35rem;
     padding: 0.4rem 0.75rem;
-    border-radius: 999px;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
     font-size: 0.78rem;
 
     .count {
@@ -564,35 +552,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink-muted);
-
-    &.error {
-      color: var(--accent);
-    }
+    @include comp.status-row;
   }
 
   button {
+    @include comp.bordered-button;
     padding: 0.375rem 0.75rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
     font-size: 0.8125rem;
-    cursor: pointer;
     flex-shrink: 0;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   .items {

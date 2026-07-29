@@ -452,11 +452,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 48rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .page-heading {
@@ -480,24 +479,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink-muted);
-
-    &.error {
-      color: var(--accent);
-    }
+    @include comp.status-row;
   }
 
   .status-block {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 2rem 1rem;
+    @include comp.status-block(2rem 1rem);
     color: var(--ink-muted);
-    text-align: center;
 
     :global(svg) {
       opacity: 0.6;
@@ -561,22 +548,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   button {
+    @include comp.bordered-button;
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
     padding: 0.4rem 0.75rem;
-    border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper-raised);
-    color: var(--ink);
-    font: inherit;
     font-size: 0.8125rem;
-    cursor: pointer;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
 
     &.danger {
       color: var(--accent);
@@ -586,10 +563,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         background: var(--accent);
         color: var(--paper);
       }
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
     }
   }
 
@@ -676,26 +649,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.9rem;
-    height: 1.9rem;
+    @include comp.icon-btn(1.9rem);
     flex: none;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-    cursor: pointer;
-
-    &:hover:not(:disabled) {
-      color: var(--accent);
-      background: var(--paper-raised);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 </style>

@@ -111,6 +111,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
     display: grid;
@@ -148,17 +149,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   input {
-    padding: 0.55rem 0.7rem;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper);
-    box-shadow: inset 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
-    color: var(--ink);
-    font: inherit;
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
+    @include comp.auth-input;
   }
 
   .error {
@@ -177,24 +168,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .primary {
-    margin-top: 0.6rem;
-    padding: 0.7rem;
-    border: none;
-    border-radius: 4px;
-    background: var(--accent-success);
-    color: var(--paper);
-    font: inherit;
-    font-weight: 600;
-    cursor: pointer;
-
-    &:disabled {
-      opacity: 0.6;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
+    @include comp.primary-button;
   }
 
   .alt-action {

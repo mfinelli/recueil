@@ -108,6 +108,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   header {
     border-bottom: 1px solid var(--rule);
@@ -263,26 +264,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.9rem;
-    height: 1.9rem;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: transparent;
-    color: var(--ink-muted);
-    cursor: pointer;
-
-    &:hover {
-      color: var(--accent);
-      background: var(--paper-raised);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
+    @include comp.icon-btn(1.9rem);
   }
 
   @include mix.header-collapse {
