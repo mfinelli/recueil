@@ -2358,12 +2358,30 @@ narrative first.
   Capture rows drop the source label entirely for `extension` captures (the
   overwhelming default) and only call out `manual_upload` explicitly, with an
   icon — see `DESIGN_SYSTEM.md`'s new "De-emphasizing the common case" pattern.
+- **`Queue`**: the last screen in this pass, and the one screen whose scope
+  actually grew mid-round rather than just getting restyled — picked up full
+  status visibility (pending/claimed-or-processing/failed, plus captured/done
+  within the same 15-minute recency window the backend broadening round already
+  established) instead of the failed-only view it shipped with. One status-badge
+  vocabulary (existing tokens only, no new colors) reused across queue items and
+  all three job kinds; relative timestamps via `Intl.RelativeTimeFormat` rather
+  than a hand-rolled formatter, so locale-specific word order ("2 minutes ago"
+  vs. "il y a 2 minutes") comes free; a summary count row above the per-section
+  lists; a manual refresh button plus a light 15-minute auto-poll (same window,
+  deliberately not more frequent, to stay easy on the Worker's free tier); a
+  retried job now updates in place to "pending" instead of being removed from
+  its list, since it's no longer true that "not failed" means "nothing to show"
+  the way it did in the failed-only version. Caught a real copy collision along
+  the way, not just a test artifact: the jobs section was originally headed
+  "Processing," the same word an individual in-progress job's own status badge
+  uses — renamed to "Enrichment jobs" (see `DESIGN_SYSTEM.md`'s own note on
+  this).
 
 ### What's left
 
-The remaining screens, one at a time, mockup-first: the Collections/Tags family,
-then Devices/Queue/Settings. `DESIGN_SYSTEM.md` gets updated in place as new
-patterns come up, rather than waiting until the whole pass is done.
+The dashboard visual design pass itself is done — every screen listed in
+`DESIGN_SYSTEM.md`'s own status table has landed. Extension Safari packaging
+remains open from earlier phases, unrelated to this one.
 
 ## Phase 13 (PageDetail gaps: delete, title override, manual recapture)
 

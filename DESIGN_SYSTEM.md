@@ -269,6 +269,29 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
   device-class icon (Monitor/Smartphone/Tablet, plus a `CircleHelp` fallback
   distinct from Devices' own `Smartphone` default) reuses this exact pattern.
 
+### One status-badge vocabulary, reused everywhere a status shows up
+
+`Queue`'s badges (pending/claimed-or-processing/captured-or-done/failed) map
+onto existing tokens only — muted (waiting), brass (in progress, the amber slot
+in the usual red/amber/green convention), accent-success (done), accent (failed)
+— no new colors introduced. The same four-way mapping applies identically to
+queue items and all three job kinds, with only the label text differing per
+context (`Claimed` vs. `Processing`, `Captured` vs. `Done`). Reach for this
+exact mapping on any future status-driven list rather than inventing a new color
+scheme per screen.
+
+### Relative time: let `Intl.RelativeTimeFormat` own the whole phrase
+
+`Queue`'s relative timestamps ("2 minutes ago") come from
+`Intl.RelativeTimeFormat`, not a hand-rolled formatter — it already localizes
+correctly, including word order that differs by language ("2 minutes ago" vs.
+"il y a 2 minutes," where the "ago" equivalent comes first). Every composing
+message (`queue_item_added`, `queue_job_started`, etc.) pairs a plain verb with
+that already-complete phrase ("Added {time}") rather than appending the app's
+own "ago" after it, which would double up or land in the wrong position
+depending on locale. Reuse this shape for any future relative-time display
+instead of writing a new `"{n} minutes ago"` template.
+
 ## Open items
 
 - **Password reset**: CLI-only for now rather than a self-service email flow.
@@ -293,5 +316,5 @@ things a bare glyph can't fully disambiguate on its own) needs `role="img"`
 | Collections / CollectionDetail | Done — tree-depth guide lines, icon actions, chip-style subcollections                      |
 | Tags / TagDetail               | Done — icon rename/delete, live slug-override editor, PageList inherited                    |
 | Devices                        | Done — icon copy/regenerate/revoke, per-type device icons, separate Active Sessions section |
-| Queue                          | Not started                                                                                 |
+| Queue                          | Done — full status visibility, status badges, summary counts, auto-refresh                  |
 | Settings                       | Done — pill toggles for language/theme, dark mode now wired up end to end                   |

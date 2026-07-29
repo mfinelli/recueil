@@ -15,37 +15,20 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
-<!-- One screen for everything currently stuck, in two flavors:
-     - Failed to capture (queue_items): a URL a device tried and failed to
-       archive at all -- there's no page/capture to show yet. Retrying
-       flags the item (manual_retry) so some device's next poll of
-       GET /queue picks it up again; there's no synchronous "retry now"
-       here, and the item legitimately stays in this list (still 'failed',
-       now flagged) until a device actually claims it.
-     - Failed to process (screenshot/readability/AI jobs): the capture
-       itself archived fine, but one of the async enrichment steps that
-       runs against it afterward permanently failed. Unlike queue items,
-       these are backend-owned -- no device claims them -- so retrying
-       resets the job straight back to 'pending' and the backend's own
-       next poll picks it up, no flag to show; a successful retry call
-       means it's no longer 'failed' at all, so it's just removed from the
-       list here rather than shown as "pending retry."
-     A capture whose readability extraction permanently failed never gets
-     an AI job at all -- it shows up under Readability, not AI, until that's
-     retried.
+<!-- Full queue visibility.
 
-     GET /queue-items and GET /jobs both now return more than failed rows
-     -- pending/claimed and recently-captured items, pending/processing
-     and recently-done jobs -- but this screen still filters back down to
-     status === "failed" right after loading. Showing that fuller picture,
-     is its own separate follow-up.
+     Retrying a job updates it in place to status: "pending" rather
+     than removing it from its list.
 
-     The error message itself is shown on its own line, not folded into
-     the meta line -- "rate limited by the AI provider" vs. some other
-     failure is often the single most useful piece of information here,
-     worth more visual weight than attempts/last-tried. -->
+     Manual refresh (button) plus a light 15-minute poll -- not more frequent
+     than that, matching the same window everything else here already uses,
+     and light enough not to lean on the Worker's free tier for something a
+     person is unlikely to be staring at continuously. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
+  import RefreshCw from "@lucide/svelte/icons/refresh-cw";
+  import ClockIcon from "@lucide/svelte/icons/clock";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type {
@@ -55,8 +38,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     QueueItemListResponse,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
+  import { getLocale } from "../paraglide/runtime";
 
   type JobKind = "screenshot" | "readability" | "ai";
+  type StatusCategory = "pending" | "active" | "done" | "failed";
+
+  const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 
   let items = $state<QueueItem[]>([]);
   let itemsLoading = $state(true);
@@ -70,18 +57,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let actionError = $state<string | null>(null);
   let retryingItemId = $state<string | null>(null);
   let retryingJobKey = $state<string | null>(null);
+  let lastUpdatedAt = $state<Date | null>(null);
 
-  // GET /queue-items and GET /jobs both now return more than just the
-  // failed rows this screen was originally built around (pending/claimed
-  // and recently-captured items; pending/processing and recently-done
-  // jobs). This screen's own UI hasn't caught up to showing that fuller
-  // picture yet, so for now it filters back down to status === "failed" right
-  // after loading.
   async function loadItems() {
     itemsLoading = true;
     try {
       const res = await apiJSON<QueueItemListResponse>("/queue-items");
-      items = res.items.filter((item) => item.status === "failed");
+      items = res.items;
     } catch (err) {
       loadError =
         err instanceof ApiError ? err.message : m.queue_load_items_error();
@@ -94,11 +76,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     jobsLoading = true;
     try {
       const res = await apiJSON<JobsResponse>("/jobs");
-      screenshotJobs = res.screenshot_jobs.filter((j) => j.status === "failed");
-      readabilityJobs = res.readability_jobs.filter(
-        (j) => j.status === "failed",
-      );
-      aiJobs = res.ai_jobs.filter((j) => j.status === "failed");
+      screenshotJobs = res.screenshot_jobs;
+      readabilityJobs = res.readability_jobs;
+      aiJobs = res.ai_jobs;
     } catch (err) {
       loadError =
         err instanceof ApiError ? err.message : m.queue_load_jobs_error();
@@ -107,9 +87,56 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  async function loadAll() {
+    loadError = null;
+    await Promise.all([loadItems(), loadJobs()]);
+    lastUpdatedAt = new Date();
+  }
+
   $effect(() => {
-    loadItems();
-    loadJobs();
+    loadAll();
+    const interval = setInterval(loadAll, REFRESH_INTERVAL_MS);
+    return () => clearInterval(interval);
+  });
+
+  function categoryForItem(status: QueueItem["status"]): StatusCategory {
+    switch (status) {
+      case "pending":
+        return "pending";
+      case "claimed":
+        return "active";
+      case "captured":
+        return "done";
+      case "failed":
+        return "failed";
+    }
+  }
+
+  function categoryForJob(status: Job["status"]): StatusCategory {
+    switch (status) {
+      case "pending":
+        return "pending";
+      case "processing":
+        return "active";
+      case "done":
+        return "done";
+      case "failed":
+        return "failed";
+    }
+  }
+
+  let summary = $derived.by(() => {
+    const counts: Record<StatusCategory, number> = {
+      pending: 0,
+      active: 0,
+      done: 0,
+      failed: 0,
+    };
+    for (const item of items) counts[categoryForItem(item.status)]++;
+    for (const job of [...screenshotJobs, ...readabilityJobs, ...aiJobs]) {
+      counts[categoryForJob(job.status)]++;
+    }
+    return counts;
   });
 
   async function retryItem(item: QueueItem) {
@@ -150,13 +177,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     actionError = null;
     try {
       await apiJSON(`/jobs/${kind}/${job.id}/retry`, { method: "POST" });
-      // Not an optimistic flag like queue items above -- a successful
-      // retry call means this job is no longer 'failed' server-side at
-      // all (see this file's own top comment), so it's simply removed
-      // from its list rather than shown with a "retry pending" state.
+      // Updates the job in place to "pending" rather than removing it
       setJobsListFor(
         kind,
-        jobsListFor(kind).filter((j) => j.id !== job.id),
+        jobsListFor(kind).map((j) =>
+          j.id === job.id
+            ? { ...j, status: "pending" as const, error: null }
+            : j,
+        ),
       );
     } catch (err) {
       actionError =
@@ -175,42 +203,88 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       minute: "2-digit",
     });
   }
+
+  // Intl.RelativeTimeFormat already produces a complete, correctly-ordered
+  // phrase per locale ("2 minutes ago" / "il y a 2 minutes").
+  function formatRelativeTime(iso: string): string {
+    const diffSeconds = Math.round(
+      (Date.now() - new Date(iso).getTime()) / 1000,
+    );
+    const rtf = new Intl.RelativeTimeFormat(getLocale(), { numeric: "auto" });
+    if (Math.abs(diffSeconds) < 60) {
+      return rtf.format(-diffSeconds, "second");
+    }
+    return rtf.format(-Math.round(diffSeconds / 60), "minute");
+  }
 </script>
+
+{#snippet statusBadge(category: StatusCategory, label: string)}
+  <span class="badge {category}">{label}</span>
+{/snippet}
 
 {#snippet jobList(jobs: Job[], kind: JobKind, label: string)}
   <div class="job-section">
     <h3>{label}</h3>
     {#if jobs.length === 0}
-      <p class="status">{m.queue_nothing_failed()}</p>
+      <p class="status">{m.queue_no_jobs()}</p>
     {:else}
       <ul class="items">
         {#each jobs as job (job.id)}
+          {@const category = categoryForJob(job.status)}
           <li>
             <div class="item-info">
-              <a href={`/pages/${job.page_id}`} use:link class="url"
-                >{job.title || job.url}</a
-              >
-              <span class="meta">
-                {job.attempts === 1
-                  ? m.queue_attempts_one({ count: job.attempts })
-                  : m.queue_attempts_other({ count: job.attempts })}
-                {#if job.completed_at}
-                  · {m.queue_last_tried({
-                    date: formatDateTime(job.completed_at),
-                  })}
+              <div class="item-top">
+                {@render statusBadge(
+                  category,
+                  category === "pending"
+                    ? m.queue_status_pending()
+                    : category === "active"
+                      ? m.queue_status_processing()
+                      : category === "done"
+                        ? m.queue_status_done()
+                        : m.queue_status_failed(),
+                )}
+                <a href={`/pages/${job.page_id}`} use:link class="url"
+                  >{job.title || job.url}</a
+                >
+              </div>
+              {#if job.status === "failed"}
+                <span class="meta">
+                  {job.attempts === 1
+                    ? m.queue_attempts_one({ count: job.attempts })
+                    : m.queue_attempts_other({ count: job.attempts })}
+                  {#if job.completed_at}
+                    · {m.queue_last_tried({
+                      date: formatDateTime(job.completed_at),
+                    })}
+                  {/if}
+                </span>
+                {#if job.error}
+                  <span class="error-detail">{job.error}</span>
                 {/if}
-              </span>
-              {#if job.error}
-                <span class="error-detail">{job.error}</span>
+              {:else if job.status === "processing" && job.claimed_at}
+                <span class="meta"
+                  >{m.queue_job_started({
+                    time: formatRelativeTime(job.claimed_at),
+                  })}</span
+                >
+              {:else if job.status === "done" && job.completed_at}
+                <span class="meta"
+                  >{m.queue_job_completed({
+                    time: formatRelativeTime(job.completed_at),
+                  })}</span
+                >
               {/if}
             </div>
-            <button
-              type="button"
-              onclick={() => retryJob(job, kind)}
-              disabled={retryingJobKey === `${kind}:${job.id}`}
-            >
-              {m.common_retry()}
-            </button>
+            {#if job.status === "failed"}
+              <button
+                type="button"
+                onclick={() => retryJob(job, kind)}
+                disabled={retryingJobKey === `${kind}:${job.id}`}
+              >
+                {m.common_retry()}
+              </button>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -220,47 +294,129 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>{m.nav_queue()}</h1>
+  <p class="page-heading">{m.nav_queue()}</p>
+
+  <div class="toolbar">
+    {#if lastUpdatedAt}
+      <span class="updated-at">
+        <ClockIcon size={13} />
+        {m.queue_updated_ago({
+          time: formatRelativeTime(lastUpdatedAt.toISOString()),
+        })}
+      </span>
+    {/if}
+    <button type="button" class="refresh-btn" onclick={loadAll}>
+      <RefreshCw size={13} />
+      {m.queue_refresh()}
+    </button>
+  </div>
 
   {#if loadError}
-    <p class="status error" role="alert">{loadError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{loadError}</span>
+    </p>
   {/if}
   {#if actionError}
-    <p class="status error" role="alert">{actionError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{actionError}</span>
+    </p>
+  {/if}
+
+  {#if !itemsLoading && !jobsLoading}
+    <div class="summary">
+      {#if summary.pending > 0}
+        <span class="stat pending"
+          ><span class="count">{summary.pending}</span><span class="stat-label"
+            >{m.queue_stat_pending()}</span
+          ></span
+        >
+      {/if}
+      {#if summary.active > 0}
+        <span class="stat active"
+          ><span class="count">{summary.active}</span><span class="stat-label"
+            >{m.queue_stat_active()}</span
+          ></span
+        >
+      {/if}
+      {#if summary.failed > 0}
+        <span class="stat failed"
+          ><span class="count">{summary.failed}</span><span class="stat-label"
+            >{m.queue_stat_failed()}</span
+          ></span
+        >
+      {/if}
+      {#if summary.done > 0}
+        <span class="stat done"
+          ><span class="count">{summary.done}</span><span class="stat-label"
+            >{m.queue_stat_done()}</span
+          ></span
+        >
+      {/if}
+    </div>
   {/if}
 
   <section>
-    <h2>{m.queue_failed_capture_heading()}</h2>
+    <p class="eyebrow">{m.queue_capture_queue_heading()}</p>
     <p class="hint">
-      {m.queue_failed_capture_hint()}
+      {m.queue_capture_queue_hint()}
     </p>
     {#if itemsLoading}
       <p class="status">{m.common_loading()}</p>
     {:else if items.length === 0}
-      <p class="status">{m.queue_no_failed_items()}</p>
+      <p class="status">{m.queue_no_items()}</p>
     {:else}
       <ul class="items">
         {#each items as item (item.id)}
+          {@const category = categoryForItem(item.status)}
           <li>
             <div class="item-info">
-              <span class="url">{item.url}</span>
+              <div class="item-top">
+                {@render statusBadge(
+                  category,
+                  category === "pending"
+                    ? m.queue_status_pending()
+                    : category === "active"
+                      ? m.queue_status_claimed()
+                      : category === "done"
+                        ? m.queue_status_captured()
+                        : m.queue_status_failed(),
+                )}
+                <span class="url">{item.url}</span>
+              </div>
               <span class="meta">
-                {m.queue_item_status_failed()} ·
-                {m.queue_item_added_at({
-                  date: formatDateTime(item.created_at),
-                })}
-                {#if item.manual_retry}
+                {#if item.status === "pending"}
+                  {m.queue_item_added({
+                    time: formatRelativeTime(item.created_at),
+                  })}
+                {:else if item.status === "claimed" && item.claimed_at}
+                  {m.queue_item_claimed({
+                    time: formatRelativeTime(item.claimed_at),
+                  })}
+                {:else if item.status === "captured" && item.claimed_at}
+                  {m.queue_item_captured({
+                    time: formatRelativeTime(item.claimed_at),
+                  })}
+                {:else}
+                  {m.queue_item_added_at({
+                    date: formatDateTime(item.created_at),
+                  })}
+                {/if}
+                {#if item.status === "failed" && item.manual_retry}
                   · <span class="pending-retry">{m.queue_retry_pending()}</span>
                 {/if}
               </span>
             </div>
-            <button
-              type="button"
-              onclick={() => retryItem(item)}
-              disabled={item.manual_retry || retryingItemId === item.id}
-            >
-              {item.manual_retry ? m.queue_retry_queued() : m.common_retry()}
-            </button>
+            {#if item.status === "failed"}
+              <button
+                type="button"
+                onclick={() => retryItem(item)}
+                disabled={item.manual_retry || retryingItemId === item.id}
+              >
+                {item.manual_retry ? m.queue_retry_queued() : m.common_retry()}
+              </button>
+            {/if}
           </li>
         {/each}
       </ul>
@@ -268,9 +424,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   </section>
 
   <section>
-    <h2>{m.queue_failed_process_heading()}</h2>
+    <p class="eyebrow">{m.queue_jobs_heading()}</p>
     <p class="hint">
-      {m.queue_failed_process_hint()}
+      {m.queue_jobs_hint()}
     </p>
     {#if jobsLoading}
       <p class="status">{m.common_loading()}</p>
@@ -291,32 +447,110 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 48rem;
     margin: 0 auto;
     padding: 2rem 1rem;
   }
 
-  h1 {
+  .page-heading {
+    @include type.eyebrow;
     margin: 0 0 1rem;
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    margin-bottom: 1.25rem;
+  }
+
+  .updated-at {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+  }
+
+  .refresh-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+    padding: 0.35rem 0.65rem;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper-raised);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.78rem;
+    cursor: pointer;
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1.75rem;
+  }
+
+  .stat {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.4rem 0.75rem;
+    border-radius: 999px;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    font-size: 0.78rem;
+
+    .count {
+      @include type.data-mono;
+      font-weight: 600;
+    }
+
+    .stat-label {
+      color: var(--ink-muted);
+    }
+
+    &.pending .count {
+      color: var(--ink-muted);
+    }
+
+    &.active .count {
+      color: var(--brass);
+    }
+
+    &.failed .count {
+      color: var(--accent);
+    }
+
+    &.done .count {
+      color: var(--accent-success);
+    }
   }
 
   section {
     margin-bottom: 2rem;
   }
 
-  h2 {
-    font-size: 1rem;
-    margin-bottom: 0.375rem;
+  .eyebrow {
+    @include type.eyebrow;
+    margin: 0 0 0.4rem;
   }
 
   h3 {
-    font-size: 0.8125rem;
-    font-weight: 600;
+    @include type.eyebrow;
+    font-size: 0.68rem;
     color: var(--ink-muted);
-    margin: 1rem 0 0.25rem;
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
+    margin: 1.25rem 0 0.4rem;
   }
 
   .job-section:first-child h3 {
@@ -330,6 +564,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     color: var(--ink-muted);
 
     &.error {
@@ -352,13 +589,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       opacity: 0.5;
       cursor: default;
     }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .items {
     list-style: none;
     margin: 0;
     padding: 0;
-    border-top: 1px solid var(--rule);
+    border-top: 1px dotted var(--rule);
   }
 
   .items li {
@@ -367,14 +608,63 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     justify-content: space-between;
     gap: 1rem;
     padding: 0.625rem 0.25rem;
-    border-bottom: 1px solid var(--rule);
+    @include mix.dotted-rule;
   }
 
   .item-info {
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0.2rem;
     min-width: 0;
+  }
+
+  .item-top {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    @include type.data-mono;
+    font-size: 0.65rem;
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    flex: none;
+
+    &.pending {
+      color: var(--ink-muted);
+      background: var(--paper-raised);
+      border: 1px solid var(--rule);
+    }
+
+    &.active {
+      color: var(--brass);
+      background: color-mix(in srgb, var(--brass) 12%, var(--paper-raised));
+      border: 1px solid color-mix(in srgb, var(--brass) 40%, var(--rule));
+    }
+
+    &.failed {
+      color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 10%, var(--paper-raised));
+      border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--rule));
+    }
+
+    &.done {
+      color: var(--accent-success);
+      background: color-mix(
+        in srgb,
+        var(--accent-success) 10%,
+        var(--paper-raised)
+      );
+      border: 1px solid
+        color-mix(in srgb, var(--accent-success) 35%, var(--rule));
+    }
   }
 
   .url {
@@ -389,9 +679,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:hover {
       text-decoration: underline;
     }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .meta {
+    @include type.data-mono;
     color: var(--ink-muted);
     font-size: 0.75rem;
     overflow: hidden;
