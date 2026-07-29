@@ -218,7 +218,7 @@ func TestRequireSession(t *testing.T) {
 					user := dbtest.CreateUser(t, pool, "member")
 					raw, hash, err := GenerateSessionToken()
 					require.NoError(t, err)
-					dbtest.CreateSession(t, pool, db.CreateSessionParams{
+					dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 						SessionHash: hash,
 						UserID:      user.ID,
 						ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
@@ -234,7 +234,7 @@ func TestRequireSession(t *testing.T) {
 					user := dbtest.CreateUser(t, pool, "member")
 					raw, hash, err := GenerateSessionToken()
 					require.NoError(t, err)
-					dbtest.CreateSession(t, pool, db.CreateSessionParams{
+					dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 						SessionHash: hash,
 						UserID:      user.ID,
 						ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true}, // already expired
@@ -282,7 +282,7 @@ func TestRequireSession(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		raw, hash, err := GenerateSessionToken()
 		require.NoError(t, err)
-		created := dbtest.CreateSession(t, pool, db.CreateSessionParams{
+		created := dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 			SessionHash: hash,
 			UserID:      user.ID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
@@ -315,7 +315,7 @@ func TestRequireAdmin(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, role)
 		raw, hash, err := GenerateSessionToken()
 		require.NoError(t, err)
-		dbtest.CreateSession(t, pool, db.CreateSessionParams{
+		dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 			SessionHash: hash,
 			UserID:      user.ID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},

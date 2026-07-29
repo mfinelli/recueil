@@ -516,8 +516,8 @@ func (s *Server) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	parser := useragent.NewParser()
 	resp := make([]sessionResponse, len(sessions))
-	for i, sess := range sessions {
-		resp[i] = sessionResponseFromSession(parser, &sess, sess.ID == currentID)
+	for i := range sessions {
+		resp[i] = sessionResponseFromSession(parser, &sessions[i], sessions[i].ID == currentID)
 	}
 
 	writeJSON(w, http.StatusOK, sessionListResponse{Sessions: resp})
@@ -798,21 +798,24 @@ func (s *Server) ListJobs(w http.ResponseWriter, r *http.Request) {
 		ReadabilityJobs: make([]job, 0, len(readabilityRows)),
 		AIJobs:          make([]job, 0, len(aiRows)),
 	}
-	for _, j := range screenshotRows {
+	for i := range screenshotRows {
+		j := &screenshotRows[i]
 		resp.ScreenshotJobs = append(resp.ScreenshotJobs, job{
 			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
 			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
 			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
-	for _, j := range readabilityRows {
+	for i := range readabilityRows {
+		j := &readabilityRows[i]
 		resp.ReadabilityJobs = append(resp.ReadabilityJobs, job{
 			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
 			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
 			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
-	for _, j := range aiRows {
+	for i := range aiRows {
+		j := &aiRows[i]
 		resp.AIJobs = append(resp.AIJobs, job{
 			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
 			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),

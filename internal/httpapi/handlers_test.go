@@ -544,7 +544,7 @@ func TestLogout(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		raw, hash, err := auth.GenerateSessionToken()
 		require.NoError(t, err)
-		dbtest.CreateSession(t, pool, db.CreateSessionParams{
+		dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 			SessionHash: hash, UserID: user.ID, ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		})
 
@@ -589,7 +589,7 @@ func TestMe(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "admin")
 		raw, hash, err := auth.GenerateSessionToken()
 		require.NoError(t, err)
-		dbtest.CreateSession(t, pool, db.CreateSessionParams{
+		dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 			SessionHash: hash, UserID: user.ID, ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 		})
 
@@ -680,7 +680,7 @@ func sessionCookieFor(t *testing.T, pool *pgxpool.Pool, user *db.User) *http.Coo
 	t.Helper()
 	raw, hash, err := auth.GenerateSessionToken()
 	require.NoError(t, err)
-	dbtest.CreateSession(t, pool, db.CreateSessionParams{
+	dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 		SessionHash: hash, UserID: user.ID, ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
 	})
 	return &http.Cookie{Name: sessionCookieName, Value: raw}
@@ -920,7 +920,7 @@ func createSessionWithUA(t *testing.T, pool *pgxpool.Pool, user *db.User, userAg
 	t.Helper()
 	raw, hash, err := auth.GenerateSessionToken()
 	require.NoError(t, err)
-	sess := dbtest.CreateSession(t, pool, db.CreateSessionParams{
+	sess := dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 		SessionHash: hash, UserID: user.ID,
 		UserAgent: pgtype.Text{String: userAgent, Valid: userAgent != ""},
 		ExpiresAt: pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
