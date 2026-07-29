@@ -154,9 +154,9 @@ func CreateUser(t *testing.T, pool *pgxpool.Pool, role string) db.User {
 // real token/hash pair via auth.GenerateSessionToken, since this package
 // doesn't import auth. No separate cleanup: cascades away with the owning
 // user via CreateUser's cleanup.
-func CreateSession(t *testing.T, pool *pgxpool.Pool, params db.CreateSessionParams) db.Session {
+func CreateSession(t *testing.T, pool *pgxpool.Pool, params *db.CreateSessionParams) db.Session {
 	t.Helper()
-	session, err := db.New(pool).CreateSession(context.Background(), params)
+	session, err := db.New(pool).CreateSession(context.Background(), *params)
 	require.NoError(t, err)
 	return session
 }

@@ -23,15 +23,22 @@
 // (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
 // strictly self-scoped -- see ListDevices' own doc comment for why
 // cross-user device management isn't a web capability here),
-// session-protected failed-queue-item review/retry (GET /api/queue-items,
-// POST /api/queue-items/{id}/retry, also strictly self-scoped, same
-// reasoning), session-protected failed-job review/retry (GET /api/jobs,
-// POST /api/jobs/{kind}/{id}/retry for the screenshot/readability/AI
-// enrichment jobs -- {kind} one of "screenshot"/"readability"/"ai" -- also
-// strictly self-scoped, same reasoning), session-protected library
-// browsing/search (GET /api/pages, GET/PATCH /api/pages/{id}), session-protected capture detail/HTML/language
-// correction (GET /api/captures/{id}, GET /api/captures/{id}/html,
-// PATCH /api/captures/{id}/language, GET /api/text-search-configs), and
+// session-protected Active Sessions (GET /api/sessions, DELETE
+// /api/sessions/{id}, session-protected queue-item review/retry
+// (GET /api/queue-items -- pending/claimed/failed unconditionally, plus
+// recently-captured, POST /api/queue-items/{id}/retry, also strictly
+// self-scoped, same reasoning), session-protected job review/retry
+// (GET /api/jobs -- same pending/processing/failed-unconditional,
+// recently-done shape, POST /api/jobs/{kind}/{id}/retry for the screenshot/
+// readability/AI enrichment jobs -- {kind} one of "screenshot"/"readability"/
+// "ai" -- also strictly self-scoped, same reasoning), session-protected library
+// browsing/search (GET /api/pages, GET/PATCH/DELETE /api/pages/{id},
+// POST /api/pages/{id}/recapture, session-protected capture detail/HTML/language
+// correction (GET /api/captures/{id}, DELETE /api/captures/{id} -- a
+// page left with zero captures is deleted too, GET /api/captures/{id}/html,
+// PATCH /api/captures/{id}/language, POST /api/captures/{id}/
+// regenerate-summary, POST /api/captures/{id}/regenerate-readability,
+// GET /api/text-search-configs, GET /api/capture-config), and
 // session-protected tags/collections (GET /api/tags,
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
 // /api/collections, and page<->collection membership under
@@ -47,7 +54,7 @@
 // internal/db (Postgres), internal/archive (reading archived HTML off
 // disk), internal/mirror (pushing the credential mirror to the Worker),
 // internal/devices (the Manage Devices Worker calls), and internal/queueitems
-// (the failed-queue-item Worker calls). The device-facing / Worker-facing
+// (the queue-item Worker calls). The device-facing / Worker-facing
 // API surface (queue, presigned R2 URLs, /internal/tokens itself) isn't
 // part of this package.
 //
@@ -134,19 +141,27 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pairing-token", s.RevokePairingToken)
 			r.Get("/devices", s.ListDevices)
 			r.Delete("/devices/{id}", s.RevokeDevice)
-			r.Get("/queue-items", s.ListFailedQueueItems)
+			r.Get("/sessions", s.ListSessions)
+			r.Delete("/sessions/{id}", s.DeleteSession)
+			r.Get("/queue-items", s.ListQueueItems)
 			r.Post("/queue-items/{id}/retry", s.RetryQueueItem)
-			r.Get("/jobs", s.ListFailedJobs)
+			r.Get("/jobs", s.ListJobs)
 			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)
+			r.Delete("/pages/{id}", s.DeletePage)
+			r.Post("/pages/{id}/recapture", s.RecapturePage)
 			r.Get("/pages/{id}/favicon", s.GetPageFavicon)
 			r.Get("/pages/{id}/thumbnail", s.GetPageThumbnail)
 			r.Get("/captures/{id}", s.GetCapture)
+			r.Delete("/captures/{id}", s.DeleteCapture)
 			r.Get("/captures/{id}/html", s.GetCaptureHTML)
 			r.Patch("/captures/{id}/language", s.PatchCaptureLanguage)
+			r.Post("/captures/{id}/regenerate-summary", s.RegenerateAISummary)
+			r.Post("/captures/{id}/regenerate-readability", s.RegenerateReadability)
 			r.Get("/text-search-configs", s.ListTextSearchConfigs)
+			r.Get("/capture-config", s.GetCaptureConfig)
 			r.Get("/tags", s.ListTags)
 			r.Patch("/tags/{id}", s.RenameTag)
 			r.Delete("/tags/{id}", s.DeleteTag)

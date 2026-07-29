@@ -79,16 +79,22 @@ UPDATE ai_jobs
 SET status = 'failed', attempts = $2, error = $3, completed_at = NOW()
 WHERE id = $1;
 
--- name: ListFailedAIJobsForUser :many
+-- name: ListRecentAIJobsForUser :many
 -- An ai_jobs row failing this way means readability succeeded and AI
 -- enrichment itself then failed -- a capture whose readability
 -- permanently failed instead never gets an ai_jobs row at all.
-SELECT ai_jobs.id, ai_jobs.attempts, ai_jobs.error, ai_jobs.completed_at,
+--
+-- Same shape as ListRecentScreenshotJobsForUser; done-within-15-minutes
+-- window is duplicated across all three job queries rather than centralized).
+SELECT ai_jobs.id, ai_jobs.status, ai_jobs.attempts, ai_jobs.error,
+       ai_jobs.claimed_at, ai_jobs.completed_at,
        captures.page_id, captures.raw_url, captures.title
 FROM ai_jobs
 JOIN captures ON captures.id = ai_jobs.capture_id
 JOIN pages ON pages.id = captures.page_id
-WHERE ai_jobs.status = 'failed' AND pages.user_id = $1
+WHERE pages.user_id = $1
+  AND (ai_jobs.status IN ('pending', 'processing', 'failed')
+       OR (ai_jobs.status = 'done' AND ai_jobs.completed_at > NOW() - INTERVAL '15 minutes'))
 ORDER BY ai_jobs.completed_at ASC;
 
 -- name: ManualRetryAIJobForUser :one
@@ -97,6 +103,26 @@ SET status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL
 FROM captures, pages
 WHERE ai_jobs.id = $1
   AND ai_jobs.status = 'failed'
+  AND captures.id = ai_jobs.capture_id
+  AND pages.id = captures.page_id
+  AND pages.user_id = $2
+RETURNING ai_jobs.id;
+
+-- name: RegenerateAIJobForCapture :one
+-- Unlike ManualRetryAIJobForUser (which only works on an already-failed
+-- job, keyed by the job's own id, from the Queue screen's failed-job
+-- review), this is the dashboard's PageDetail/reader-view "regenerate
+-- summary" button: keyed by capture_id, works from any status (not just
+-- 'failed') -- a deliberate redo request, not error recovery, so
+-- attempts/completed_at are reset to a clean slate too rather than
+-- carrying over whatever a previous run left behind. captures.ai_summary/
+-- ai_model themselves are left untouched here -- the ai.Runner's own
+-- SetCaptureAI overwrites them once this re-run actually completes, same
+-- as it always does.
+UPDATE ai_jobs
+SET status = 'pending', attempts = 0, next_attempt_at = NULL, error = NULL, claimed_at = NULL, completed_at = NULL
+FROM captures, pages
+WHERE ai_jobs.capture_id = $1
   AND captures.id = ai_jobs.capture_id
   AND pages.id = captures.page_id
   AND pages.user_id = $2

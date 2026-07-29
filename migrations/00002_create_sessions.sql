@@ -19,6 +19,7 @@ CREATE TABLE sessions (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   session_hash TEXT NOT NULL, -- SHA-256 hex of the opaque cookie token
   user_id BIGINT NOT NULL,
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   expires_at TIMESTAMPTZ NOT NULL,

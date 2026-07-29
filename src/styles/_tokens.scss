@@ -1,0 +1,72 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// Color tokens for the dashboard's design system. --ink/--ink-muted/--paper/
+// --paper-raised/--rule/--accent/--accent-success/--focus are carried over
+// from extension/src/popup/popup.css).
+//
+// Three states, not two: automatic (the plain `prefers-color-scheme` media
+// query below), or an explicit user override to light or dark (theme.ts
+// sets/clears `<html data-theme="light"|"dark">` once, after sessionReady.
+// `[data-theme="..."]` is a higher-specificity attribute selector than the
+// bare `:root` the media query targets, so an explicit override always wins
+// regardless of the OS preference or source order; the palette itself is
+// defined once per theme (these two mixins), included from both the
+// automatic (media-query-gated) and explicit (`[data-theme]`-gated) sides
+// rather than duplicating each palette's values twice over.
+@mixin light-palette {
+  --ink: #2b2924;
+  --ink-muted: #746c5c;
+  --paper: #f2ede1;
+  --paper-raised: #fdfbf6;
+  --rule: #ddd2b8;
+  --accent: #8a3223;
+  --accent-success: #3c5c3a;
+  --focus: #4a6b8a;
+  --brass: #b68a2e;
+}
+
+@mixin dark-palette {
+  --ink: #ece5d4;
+  --ink-muted: #a89c86;
+  --paper: #1d1b17;
+  --paper-raised: #29261f;
+  --rule: #40392d;
+  --accent: #d17b64;
+  --accent-success: #8bb385;
+  --focus: #7fa8c9;
+  --brass: #d9ae52;
+}
+
+:root {
+  @include light-palette;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    @include dark-palette;
+  }
+}
+
+:root[data-theme="light"] {
+  @include light-palette;
+}
+
+:root[data-theme="dark"] {
+  @include dark-palette;
+}

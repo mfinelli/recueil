@@ -28,6 +28,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      does that as an edit right after. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
+  import Plus from "@lucide/svelte/icons/plus";
+  import Pencil from "@lucide/svelte/icons/pencil";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Archive from "@lucide/svelte/icons/archive";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Collection, CollectionListResponse } from "../lib/types";
@@ -266,7 +271,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 {#snippet nodeRow(node: CollectionNode, depth: number, path: string)}
   <li>
-    <div class="row" style={`padding-left: ${depth * 1.25}rem`}>
+    <div class="row">
       {#if editingId === node.id}
         <form
           class="inline-form rename-form"
@@ -297,11 +302,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                 class="slug-preview"
                 onclick={openSlugField}
               >
+                <Pencil size={10} />
                 {m.collections_slug_preview({ path: fullSlugPreview })}
               </button>
             {/if}
             <input
               type="text"
+              class="desc-input"
               placeholder={m.collections_description_placeholder()}
               bind:value={editingDescription}
               disabled={savingRename}
@@ -321,21 +328,41 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           </div>
         </form>
       {:else}
-        <a class="name" href={`/collections/${path}`} use:link>{node.name}</a>
+        <div class="name-block">
+          <a class="name" href={`/collections/${path}`} use:link>{node.name}</a>
+          <span class="slug">/collections/{path}</span>
+          {#if node.description}
+            <span class="node-description">{node.description}</span>
+          {/if}
+        </div>
         <div class="row-actions">
-          <button type="button" onclick={() => startAddingChild(node.id)}
-            >{m.collections_add_subcollection()}</button
-          >
-          <button type="button" onclick={() => startRename(node, path)}
-            >{m.collections_rename()}</button
-          >
           <button
             type="button"
-            class="danger"
+            class="icon-btn"
+            aria-label={m.collections_add_subcollection_aria({
+              name: node.name,
+            })}
+            title={m.collections_add_subcollection()}
+            onclick={() => startAddingChild(node.id)}
+          >
+            <Plus size={14} />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={m.collections_rename_aria({ name: node.name })}
+            onclick={() => startRename(node, path)}
+          >
+            <Pencil size={14} />
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            aria-label={m.collections_delete_aria({ name: node.name })}
             onclick={() => handleDelete(node)}
             disabled={deletingId === node.id}
           >
-            {m.common_delete()}
+            <Trash2 size={14} />
           </button>
         </div>
       {/if}
@@ -344,7 +371,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#if addingChildTo === node.id}
       <form
         class="inline-form child-form"
-        style={`padding-left: ${(depth + 1) * 1.25}rem`}
         onsubmit={(e) => handleCreateChild(e, node.id)}
       >
         <input
@@ -376,10 +402,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>{m.nav_collections()}</h1>
+  <p class="page-heading">{m.nav_collections()}</p>
 
   {#if actionError}
-    <p class="status error" role="alert">{actionError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{actionError}</span>
+    </p>
   {/if}
 
   <form class="inline-form" onsubmit={handleCreateTopLevel}>
@@ -389,17 +418,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       bind:value={newTopLevelName}
       disabled={creatingTopLevel}
     />
-    <button type="submit" disabled={creatingTopLevel || !newTopLevelName.trim()}
-      >{m.common_create()}</button
+    <button
+      type="submit"
+      disabled={creatingTopLevel || !newTopLevelName.trim()}
     >
+      <Plus size={13} />
+      {m.common_create()}
+    </button>
   </form>
 
   {#if loading}
     <p class="status">{m.common_loading()}</p>
   {:else if loadError}
-    <p class="status error" role="alert">{loadError}</p>
+    <div class="status-block error" role="alert">
+      <AlertCircle size={28} />
+      <span>{loadError}</span>
+    </div>
   {:else if tree.length === 0}
-    <p class="status">{m.collections_no_collections()}</p>
+    <div class="status-block">
+      <Archive size={28} />
+      <span>{m.collections_no_collections()}</span>
+    </div>
   {:else}
     <ul class="tree">
       {#each tree as node (node.id)}
@@ -410,28 +449,54 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 48rem;
     margin: 0 auto;
     padding: 2rem 1rem;
   }
 
-  h1 {
-    margin: 0 0 1rem;
+  .page-heading {
+    @include type.eyebrow;
+    margin: 0 0 1.25rem;
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     color: var(--ink-muted);
+    margin-bottom: 1rem;
 
     &.error {
       color: var(--accent);
     }
   }
 
+  .status-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
+    color: var(--ink-muted);
+    text-align: center;
+
+    &.error {
+      color: var(--accent);
+    }
+
+    :global(svg) {
+      opacity: 0.6;
+    }
+  }
+
   .inline-form {
     display: flex;
     gap: 0.5rem;
-    margin-bottom: 1rem;
+    margin-bottom: 1.5rem;
   }
 
   .rename-form {
@@ -442,18 +507,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .child-form {
-    margin-top: 0.375rem;
-    margin-bottom: 0.5rem;
+    padding-left: 1.1rem;
+    margin: 0.5rem 0 0.75rem;
   }
 
   input[type="text"] {
-    padding: 0.375rem 0.5rem;
+    padding: 0.4rem 0.6rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper);
+    border-radius: 4px;
+    background: var(--paper-raised);
     color: var(--ink);
     font: inherit;
     font-size: 0.875rem;
+
+    &.invalid {
+      border-color: var(--accent);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .desc-input {
+    font-size: 0.8125rem;
+    color: var(--ink-muted);
   }
 
   button {
@@ -465,15 +543,35 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     font: inherit;
     font-size: 0.8125rem;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
 
     &:disabled {
       opacity: 0.5;
       cursor: default;
     }
 
-    &.danger:hover:not(:disabled) {
-      border-color: var(--accent);
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink-muted);
+
+    &:hover:not(:disabled) {
       color: var(--accent);
+      background: var(--paper-raised);
     }
   }
 
@@ -481,6 +579,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     list-style: none;
     margin: 0;
     padding: 0;
+    border-top: 1px dotted var(--rule);
+
+    .tree {
+      margin-top: 0.15rem;
+      padding-left: 1.1rem;
+      border-top: none;
+      border-left: 1px dotted var(--rule);
+    }
   }
 
   .row {
@@ -488,8 +594,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding: 0.5rem 0.25rem;
-    border-bottom: 1px solid var(--rule);
+    padding: 0.6rem 0.25rem;
+    @include mix.dotted-rule;
+  }
+
+  .name-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
   }
 
   .name {
@@ -498,14 +611,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     text-decoration: none;
 
     &:hover {
-      text-decoration: underline;
+      color: var(--accent);
     }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .slug {
+    @include type.data-mono;
+    font-size: 0.72rem;
+    color: var(--ink-muted);
+  }
+
+  .node-description {
+    font-size: 0.78rem;
+    color: var(--ink-muted);
   }
 
   .edit-fields {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.3rem;
     flex: 1;
   }
 
@@ -513,6 +641,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     display: flex;
     flex-direction: column;
     gap: 0.125rem;
+
+    input {
+      @include type.data-mono;
+      font-size: 0.8rem;
+    }
   }
 
   .slug-error {
@@ -521,27 +654,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .slug-preview {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     width: fit-content;
     padding: 0.125rem 0;
     border: none;
     background: none;
     color: var(--ink-muted);
-    font-size: 0.75rem;
+    @include type.data-mono;
+    font-size: 0.72rem;
     text-decoration: underline dotted;
     cursor: pointer;
 
     &:hover {
-      color: var(--ink);
+      color: var(--accent);
     }
-  }
 
-  input[type="text"].invalid {
-    border-color: var(--accent);
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .row-actions {
     display: flex;
-    gap: 0.375rem;
+    gap: 0.15rem;
     flex-shrink: 0;
   }
 </style>

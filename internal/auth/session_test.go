@@ -139,6 +139,27 @@ func TestUserFromContext(t *testing.T) {
 	})
 }
 
+func TestSessionIDFromContext(t *testing.T) {
+	t.Run("returns the session id when present", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), sessionIDContextKey, int64(42))
+
+		got, ok := SessionIDFromContext(ctx)
+		assert.True(t, ok)
+		assert.Equal(t, int64(42), got)
+	})
+
+	t.Run("returns false when absent", func(t *testing.T) {
+		_, ok := SessionIDFromContext(context.Background())
+		assert.False(t, ok)
+	})
+
+	t.Run("returns false when the key holds an unexpected type", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), sessionIDContextKey, "not-an-int64")
+		_, ok := SessionIDFromContext(ctx)
+		assert.False(t, ok, "type assertion should fail safely, not panic")
+	})
+}
+
 // TestRequireSession_NoDatabaseNeeded covers only the branch that returns
 // before ever touching *db.Queries (passing nil confirms that path really
 // doesn't dereference it).
@@ -197,7 +218,7 @@ func TestRequireSession(t *testing.T) {
 					user := dbtest.CreateUser(t, pool, "member")
 					raw, hash, err := GenerateSessionToken()
 					require.NoError(t, err)
-					dbtest.CreateSession(t, pool, db.CreateSessionParams{
+					dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 						SessionHash: hash,
 						UserID:      user.ID,
 						ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
@@ -213,7 +234,7 @@ func TestRequireSession(t *testing.T) {
 					user := dbtest.CreateUser(t, pool, "member")
 					raw, hash, err := GenerateSessionToken()
 					require.NoError(t, err)
-					dbtest.CreateSession(t, pool, db.CreateSessionParams{
+					dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 						SessionHash: hash,
 						UserID:      user.ID,
 						ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(-time.Hour), Valid: true}, // already expired
@@ -254,6 +275,36 @@ func TestRequireSession(t *testing.T) {
 			})
 		}
 	})
+
+	t.Run("populates SessionIDFromContext with this request's own session id", func(t *testing.T) {
+		pool := dbtest.Setup(t)
+		q := db.New(pool)
+		user := dbtest.CreateUser(t, pool, "member")
+		raw, hash, err := GenerateSessionToken()
+		require.NoError(t, err)
+		created := dbtest.CreateSession(t, pool, &db.CreateSessionParams{
+			SessionHash: hash,
+			UserID:      user.ID,
+			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+		})
+
+		var gotSessionID int64
+		var gotOK bool
+		next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotSessionID, gotOK = SessionIDFromContext(r.Context())
+			w.WriteHeader(http.StatusOK)
+		})
+
+		r := httptest.NewRequest(http.MethodGet, "/", http.NoBody)
+		r.AddCookie(&http.Cookie{Name: cookieName, Value: raw})
+		w := httptest.NewRecorder()
+
+		RequireSession(q)(next).ServeHTTP(w, r)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.True(t, gotOK)
+		assert.Equal(t, created.ID, gotSessionID)
+	})
 }
 
 func TestRequireAdmin(t *testing.T) {
@@ -264,7 +315,7 @@ func TestRequireAdmin(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, role)
 		raw, hash, err := GenerateSessionToken()
 		require.NoError(t, err)
-		dbtest.CreateSession(t, pool, db.CreateSessionParams{
+		dbtest.CreateSession(t, pool, &db.CreateSessionParams{
 			SessionHash: hash,
 			UserID:      user.ID,
 			ExpiresAt:   pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},

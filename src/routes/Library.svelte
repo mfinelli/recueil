@@ -20,6 +20,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      component now -- this file keeps only what's actually Library-specific:
      the search box and pagination. -->
 <script lang="ts">
+  import Search from "@lucide/svelte/icons/search";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Page, PageListResponse } from "../lib/types";
   import AppHeader from "../components/AppHeader.svelte";
@@ -86,20 +90,28 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <main class="screen">
   <AppHeader />
 
+  <p class="page-heading">{m.nav_library()}</p>
+
   <div class="toolbar">
-    <input
-      class="search"
-      type="search"
-      placeholder={m.library_search_placeholder()}
-      oninput={handleSearchInput}
-      aria-label={m.library_search_label()}
-    />
+    <div class="search-wrap">
+      <Search size={15} />
+      <input
+        class="search"
+        type="search"
+        placeholder={m.library_search_placeholder()}
+        oninput={handleSearchInput}
+        aria-label={m.library_search_label()}
+      />
+    </div>
   </div>
 
   {#if loading}
-    <p class="status">{m.common_loading()}</p>
+    <p class="status-text">{m.common_loading()}</p>
   {:else if error}
-    <p class="status error" role="alert">{error}</p>
+    <div class="status">
+      <AlertCircle size={28} />
+      <span>{error}</span>
+    </div>
   {:else}
     <PageList
       {pages}
@@ -111,34 +123,47 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   {#if !loading && !error && pages.length > 0}
     <div class="pagination">
-      <button onclick={prevPage} disabled={offset === 0}
-        >{m.library_previous()}</button
-      >
-      <span
+      <button onclick={prevPage} disabled={offset === 0}>
+        <ChevronLeft size={14} />
+        {m.library_previous()}
+      </button>
+      <span class="count"
         >{m.library_pagination_summary({
           start: offset + 1,
           end: Math.min(offset + PAGE_SIZE, total),
           total,
         })}</span
       >
-      <button onclick={nextPage} disabled={offset + PAGE_SIZE >= total}
-        >{m.library_next()}</button
-      >
+      <button onclick={nextPage} disabled={offset + PAGE_SIZE >= total}>
+        {m.library_next()}
+        <ChevronRight size={14} />
+      </button>
     </div>
   {/if}
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 64rem;
     margin: 0 auto;
     padding: 2rem 1rem;
   }
 
+  .page-heading {
+    @include type.eyebrow;
+    margin: 0 0 1rem;
+  }
+
   button {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
     padding: 0.375rem 0.75rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
+    border-radius: 4px;
     background: var(--paper-raised);
     color: var(--ink);
     font: inherit;
@@ -147,6 +172,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:disabled {
       opacity: 0.5;
       cursor: default;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
@@ -157,21 +186,49 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     margin-bottom: 1.5rem;
   }
 
-  .search {
+  .search-wrap {
+    position: relative;
     flex: 1;
-    padding: 0.625rem 0.75rem;
+    display: flex;
+    align-items: center;
+
+    :global(svg) {
+      position: absolute;
+      left: 0.65rem;
+      color: var(--ink-muted);
+      pointer-events: none;
+    }
+  }
+
+  .search {
+    width: 100%;
+    padding: 0.625rem 0.75rem 0.625rem 2.1rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper);
+    border-radius: 4px;
+    background: var(--paper-raised);
     color: var(--ink);
     font: inherit;
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .status-text {
+    color: var(--ink-muted);
   }
 
   .status {
-    color: var(--ink-muted);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
+    color: var(--accent);
+    text-align: center;
 
-    &.error {
-      color: var(--accent);
+    :global(svg) {
+      opacity: 0.6;
     }
   }
 
@@ -183,5 +240,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     margin-top: 1.5rem;
     font-size: 0.875rem;
     color: var(--ink-muted);
+  }
+
+  .pagination .count {
+    @include type.data-mono;
+    font-size: 0.8125rem;
   }
 </style>

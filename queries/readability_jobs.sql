@@ -91,14 +91,18 @@ UPDATE readability_jobs
 SET status = 'failed', attempts = $2, error = $3, completed_at = NOW()
 WHERE id = $1;
 
--- name: ListFailedReadabilityJobsForUser :many
-SELECT readability_jobs.id, readability_jobs.attempts, readability_jobs.error,
-       readability_jobs.completed_at, captures.page_id, captures.raw_url,
-       captures.title
+-- name: ListRecentReadabilityJobsForUser :many
+-- Same shape as ListRecentScreenshotJobsForUser; done-within-15-minutes
+-- is duplicated across all three job queries.
+SELECT readability_jobs.id, readability_jobs.status, readability_jobs.attempts,
+       readability_jobs.error, readability_jobs.claimed_at, readability_jobs.completed_at,
+       captures.page_id, captures.raw_url, captures.title
 FROM readability_jobs
 JOIN captures ON captures.id = readability_jobs.capture_id
 JOIN pages ON pages.id = captures.page_id
-WHERE readability_jobs.status = 'failed' AND pages.user_id = $1
+WHERE pages.user_id = $1
+  AND (readability_jobs.status IN ('pending', 'processing', 'failed')
+       OR (readability_jobs.status = 'done' AND readability_jobs.completed_at > NOW() - INTERVAL '15 minutes'))
 ORDER BY readability_jobs.completed_at ASC;
 
 -- name: ManualRetryReadabilityJobForUser :one
@@ -107,6 +111,22 @@ SET status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL
 FROM captures, pages
 WHERE readability_jobs.id = $1
   AND readability_jobs.status = 'failed'
+  AND captures.id = readability_jobs.capture_id
+  AND pages.id = captures.page_id
+  AND pages.user_id = $2
+RETURNING readability_jobs.id;
+
+-- name: RegenerateReadabilityJobForCapture :one
+-- RegenerateAIJobForCapture's twin for readability -- keyed by
+-- capture_id (not the job's own id), works from any status, a deliberate
+-- redo request rather than error recovery, so attempts/completed_at get
+-- the same clean-slate reset. Does NOT also touch this capture's ai_jobs
+-- row: readability regenerating doesn't automatically re-queue AI enrichment
+-- too.
+UPDATE readability_jobs
+SET status = 'pending', attempts = 0, next_attempt_at = NULL, error = NULL, claimed_at = NULL, completed_at = NULL
+FROM captures, pages
+WHERE readability_jobs.capture_id = $1
   AND captures.id = readability_jobs.capture_id
   AND pages.id = captures.page_id
   AND pages.user_id = $2

@@ -35,6 +35,7 @@ import wrap from "svelte-spa-router/wrap";
 import { session } from "./session.svelte";
 import Setup from "../routes/Setup.svelte";
 import Login from "../routes/Login.svelte";
+import Register from "../routes/Register.svelte";
 import Library from "../routes/Library.svelte";
 import PageDetail from "../routes/PageDetail.svelte";
 import Collections from "../routes/Collections.svelte";
@@ -64,6 +65,26 @@ export const requireGuest: RoutePrecondition = () => {
   return true;
 };
 
+// Same shape as requireGuest, plus the one condition unique to this route:
+// if the server isn't configured for open registration, /register isn't a
+// real screen regardless of session state -- send it to /login rather than
+// letting the route mount and its own POST fail with a 403.
+export const requireOpenRegistration: RoutePrecondition = () => {
+  if (session.needsSetup) {
+    push("/setup");
+    return false;
+  }
+  if (session.user) {
+    push("/");
+    return false;
+  }
+  if (!session.openRegistration) {
+    push("/login");
+    return false;
+  }
+  return true;
+};
+
 export const requireAuth: RoutePrecondition = () => {
   if (session.needsSetup) {
     push("/setup");
@@ -79,6 +100,10 @@ export const requireAuth: RoutePrecondition = () => {
 const routes: RouteDefinition = new Map([
   ["/setup", wrap({ component: Setup, conditions: [requireSetup] })],
   ["/login", wrap({ component: Login, conditions: [requireGuest] })],
+  [
+    "/register",
+    wrap({ component: Register, conditions: [requireOpenRegistration] }),
+  ],
   ["/", wrap({ component: Library, conditions: [requireAuth] })],
   ["/pages/:id", wrap({ component: PageDetail, conditions: [requireAuth] })],
   ["/collections", wrap({ component: Collections, conditions: [requireAuth] })],

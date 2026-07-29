@@ -16,10 +16,16 @@ You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 -->
 <script lang="ts">
-  import { push } from "svelte-spa-router";
-  import { session } from "../lib/session.svelte";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
+  import { session, reloadIntoLibrary } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
   import { m } from "../paraglide/messages";
+  import PasswordInput from "../components/PasswordInput.svelte";
+
+  // Password reset doesn't exist yet (CLI-only for now). Link stays in the
+  // markup, gated behind this constant, so the layout doesn't need revisiting
+  // later.
+  const SHOW_FORGOT_PASSWORD = false;
 
   let username = $state("");
   let password = $state("");
@@ -32,7 +38,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     submitting = true;
     try {
       await session.login(username, password);
-      await push("/");
+      reloadIntoLibrary();
     } catch (err) {
       error = err instanceof ApiError ? err.message : m.login_error_generic();
     } finally {
@@ -43,9 +49,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <form class="card" onsubmit={handleSubmit}>
-    <h1>recueil</h1>
+    <h1 class="wordmark">recueil</h1>
 
-    <label for="username">{m.common_username()}</label>
+    <label class="field-label" for="username">{m.common_username()}</label>
     <input
       id="username"
       type="text"
@@ -55,27 +61,45 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       disabled={submitting}
     />
 
-    <label for="password">{m.common_password()}</label>
-    <input
+    <div class="field-label-row">
+      <label class="field-label" for="password">{m.common_password()}</label>
+      {#if SHOW_FORGOT_PASSWORD}
+        <a class="forgot-link" href="#/forgot-password"
+          >{m.login_forgot_password()}</a
+        >
+      {/if}
+    </div>
+    <PasswordInput
       id="password"
-      type="password"
       autocomplete="current-password"
       bind:value={password}
-      required
       disabled={submitting}
     />
 
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <p class="error" role="alert">
+        <AlertCircle size={15} />
+        <span>{error}</span>
+      </p>
     {/if}
 
-    <button type="submit" disabled={submitting}
+    <button class="primary" type="submit" disabled={submitting}
       >{submitting ? m.login_signing_in() : m.login_sign_in()}</button
     >
+
+    {#if session.openRegistration}
+      <p class="alt-action">
+        {m.login_register_prompt()}
+        <a href="#/register">{m.login_register_link()}</a>
+      </p>
+    {/if}
   </form>
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     display: grid;
     place-items: center;
@@ -86,44 +110,85 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .card {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.65rem;
     width: 100%;
     max-width: 22rem;
     padding: 2rem;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    border-radius: 0.5rem;
+    @include mix.card-surface;
   }
 
-  h1 {
-    margin: 0 0 1rem;
+  .wordmark {
+    @include type.heading;
+    font-size: 1.9rem;
+    margin: 0 0 0.15rem;
   }
 
-  label {
-    font-size: 0.875rem;
-    font-weight: 600;
+  .field-label {
+    @include type.eyebrow;
+    margin-top: 0.4rem;
+  }
+
+  .field-label-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+
+    .field-label {
+      margin-top: 0;
+    }
+  }
+
+  .forgot-link {
+    font-size: 0.75rem;
+    color: var(--ink-muted);
+    text-decoration: none;
+
+    &:hover {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   input {
-    padding: 0.5rem 0.625rem;
+    padding: 0.55rem 0.7rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
+    border-radius: 4px;
     background: var(--paper);
+    box-shadow: inset 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
     color: var(--ink);
     font: inherit;
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
     margin: 0;
     color: var(--accent);
-    font-size: 0.875rem;
+    font-size: 0.85rem;
+    line-height: 1.35;
+
+    :global(svg) {
+      flex: none;
+      margin-top: 0.1rem;
+    }
   }
 
-  button {
-    margin-top: 0.5rem;
-    padding: 0.625rem;
+  .primary {
+    margin-top: 0.6rem;
+    padding: 0.7rem;
     border: none;
-    border-radius: 0.25rem;
+    border-radius: 4px;
     background: var(--accent-success);
     color: var(--paper);
     font: inherit;
@@ -133,6 +198,41 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:disabled {
       opacity: 0.6;
       cursor: default;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .alt-action {
+    margin: 0.5rem 0 0;
+    font-size: 0.875rem;
+    color: var(--ink-muted);
+    text-align: center;
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+
+      &:focus-visible {
+        @include mix.focus-ring;
+      }
+    }
+  }
+
+  @include mix.mobile {
+    .card {
+      max-width: 20rem;
+      padding: 1.5rem;
+    }
+
+    .wordmark {
+      font-size: 1.6rem;
     }
   }
 </style>

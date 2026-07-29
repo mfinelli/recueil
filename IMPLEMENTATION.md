@@ -2272,3 +2272,381 @@ since those are internal API calls that never appear in an address bar.
   would produce (`/collections/zebra/side-dishes`), not just the leaf segment,
   by threading the accumulated parent path down through the recursive
   tree-rendering snippet alongside the existing `depth` parameter.
+
+## Phase 12 (Dashboard visual design pass)
+
+Picks up the item explicitly punted at the end of Phase 6: reconciling the
+dashboard's placeholder `app.scss` (copy-pasted from the extension popup)
+against the marketing site's ledger/brass/stamp palette into an actual design
+system. Scoped screen by screen, mockup-first per screen before any real
+component changes, starting with the shared foundation and `AppHeader` since
+it's on every screen. See `DESIGN_SYSTEM.md` (new this phase) for the resulting
+reference — colors, type roles, breakpoints, and patterns — kept separate from
+this phase-history entry and from `DESIGN.md`'s architecture-level scope on
+purpose, so a screen's visual work can be looked up without reading a phase
+narrative first.
+
+### What exists now
+
+- **`src/styles/_tokens.scss`/`_typography.scss`/`_mixins.scss`** (new): the
+  dashboard's color tokens (unchanged from the Phase 6 placeholder, plus one new
+  `--brass` label accent from the marketing site's palette), three font roles
+  (Fraunces/IBM Plex Mono/system sans, self-hosted via `@fontsource`), and
+  breakpoint variables/mixins. `app.scss` now just imports these plus base
+  resets, instead of carrying the placeholder values directly.
+- **`AppHeader.svelte`**: active nav-link highlighting via
+  `svelte-spa-router/active`, aware of each section's drill-down routes (its own
+  `path` regex per link, not just an exact match — Library also matches
+  `/pages/:id`/`/captures/:id`, Collections also matches `/collections/*`, Tags
+  also matches `/tags/:slug`); a real mobile nav disclosure (the header had zero
+  responsive handling before this phase); icon-only sign-out and a
+  `Menu`/`X`-swapping nav toggle via `@lucide/svelte`.
+- **`@lucide/svelte`** adopted for dashboard icons generally, not just this
+  screen — see `DESIGN_SYSTEM.md`'s Icons section for the actual usage pattern.
+- **Stamp motif** (the extension popup's rotated bordered badge, also on the
+  marketing site's seal) was explored for reuse on the dashboard (Queue/job
+  status was the obvious candidate) and explicitly dropped — extension-only for
+  now, see `DESIGN_SYSTEM.md`.
+- **Dark mode toggle**: discussed, not built. Leaning toward a `Settings`-screen
+  preference (system/light/dark) matching the existing `language` setting's
+  exact shape (`user_settings` nullable column, same upsert, same
+  automatic-plus-explicit-options `<select>`) rather than a header quick-toggle
+  — the header already holds nav + account, and this is a set-once preference
+  rather than something reached for every session, the same profile `Settings`
+  already exists for. Flagged as backend work and picked up separately when the
+  `Settings` screen's own visual pass comes around; see `DESIGN_SYSTEM.md`'s
+  Open Items.
+- **Login/Register/Setup**: shared `PasswordInput.svelte` (show/hide toggle,
+  `tabindex="-1"` on the toggle button so Tab goes straight from one password
+  field to the next instead of landing on the eye icon), a register link on
+  Login gated on `session.openRegistration` (already-shipped backend flag), a
+  forgot-password link built and gated behind an always-false constant rather
+  than commented out (password reset itself stays CLI-only, for now — see
+  `DESIGN_SYSTEM.md`'s Open Items), and a format-hint placeholder
+  (`rcl_bootstrap_…`) on Setup's bootstrap-token field.
+- **Library**: `PageList.svelte`'s favicon/thumbnail failure tracking split into
+  two independent `SvelteSet`s (a single shared one silently broke once grid
+  view started rendering both images for the same page), `favicon_path` checked
+  before ever requesting the image instead of relying solely on `onerror`, a
+  `Globe` fallback icon for a missing/broken favicon in both list and grid, grid
+  view gaining a favicon + truncated URL line to match list view's information
+  density, and dotted-rule list dividers (the mixin had existed since the
+  shared-foundation round but this was its first real use).
+- **`Footer.svelte`**: built (brand/copyright/license, GitHub/recueil.app links,
+  version/commit from the already-existing unauthenticated `GET /info`), then
+  not actually wired into the app after seeing it live — landed standalone and
+  unused rather than discarded, in case the decision changes.
+- **`PageDetail`**: the biggest single-screen visual pass so far. Real bugs
+  caught during review, not just style: the source URL was using `var(--focus)`
+  (reserved for focus rings only, per `DESIGN_SYSTEM.md`'s own rule) to signal
+  "this leaves the app," replaced with the standard mono/muted treatment plus an
+  explicit `ExternalLink` icon. Tags/Collections each gained an independent
+  edit-mode toggle (pencil ↔ checkmark) hiding the remove buttons/add-forms
+  behind it — pills-only by default. Collection pills are real links,
+  reconstructed client-side from the already-fetched full collection list by
+  walking the `parent_id` chain (no backend change needed, since routes.ts
+  wildcards `/collections/*` to the full nested path, not just one collection's
+  own slug); tag pills needed an actual small backend addition instead
+  (`tags.slug` added to `ListPageTags`'s `SELECT` and `pageTagResponse`, since
+  `PageTag` had never exposed a slug anywhere). The mirror-exclusion checkbox
+  was inverted to its positive framing ("Sync with my browser's bookmarks,"
+  checked by default) — the existing wording wasn't wrong, just backend jargon
+  instead of what the toggle actually does for the person looking at it.
+  Recapture/Delete moved to their own row below Captures, separated from the
+  sync toggle, and Recapture now disables itself during its own "Queued!"
+  confirmation window (re-queuing the same URL would just be a no-op anyway).
+  Capture rows drop the source label entirely for `extension` captures (the
+  overwhelming default) and only call out `manual_upload` explicitly, with an
+  icon — see `DESIGN_SYSTEM.md`'s new "De-emphasizing the common case" pattern.
+- **`Queue`**: the last screen in this pass, and the one screen whose scope
+  actually grew mid-round rather than just getting restyled — picked up full
+  status visibility (pending/claimed-or-processing/failed, plus captured/done
+  within the same 15-minute recency window the backend broadening round already
+  established) instead of the failed-only view it shipped with. One status-badge
+  vocabulary (existing tokens only, no new colors) reused across queue items and
+  all three job kinds; relative timestamps via `Intl.RelativeTimeFormat` rather
+  than a hand-rolled formatter, so locale-specific word order ("2 minutes ago"
+  vs. "il y a 2 minutes") comes free; a summary count row above the per-section
+  lists; a manual refresh button plus a light 15-minute auto-poll (same window,
+  deliberately not more frequent, to stay easy on the Worker's free tier); a
+  retried job now updates in place to "pending" instead of being removed from
+  its list, since it's no longer true that "not failed" means "nothing to show"
+  the way it did in the failed-only version. Caught a real copy collision along
+  the way, not just a test artifact: the jobs section was originally headed
+  "Processing," the same word an individual in-progress job's own status badge
+  uses — renamed to "Enrichment jobs" (see `DESIGN_SYSTEM.md`'s own note on
+  this).
+
+### What's left
+
+The dashboard visual design pass itself is done — every screen listed in
+`DESIGN_SYSTEM.md`'s own status table has landed. Extension Safari packaging
+remains open from earlier phases, unrelated to this one.
+
+## Phase 13 (PageDetail gaps: delete, title override, manual recapture)
+
+Three small, independently-scoped gaps flagged while working on the visual
+design pass's PageDetail mockup, not new capability areas — see DESIGN.md §15's
+own closing note for this round. Built together since all three touch the same
+handler/route/screen; landed in the order backend → Worker → frontend for the
+recapture piece specifically, since it's the only one of the three that crosses
+the Worker boundary.
+
+### `DELETE /api/pages/{id}`
+
+- New `DeletePage` query (`:execrows`, same `WHERE id = $1 AND user_id = $2`
+  scoping and `rowsAffected == 0 → 404` handling as the existing
+  `DeleteCollection` — copied that shape directly rather than inventing a new
+  one).
+- Cascades to captures (and transitively their screenshot/readability/AI jobs),
+  `page_tags`, and `page_collections` rows entirely via the schema's own
+  `ON DELETE CASCADE` chain — nothing else to clean up in Postgres.
+- **Deliberately doesn't touch D1 or on-disk archive files synchronously.** The
+  D1 bookmark mirror self-heals via the existing periodic `Syncer`'s
+  `reconcileDeletions` pass (`GetMirrorEligiblePageIDs` simply no longer
+  includes the deleted id), the same mechanism already handles
+  `excluded_from_mirror`. On-disk HTML/screenshot/favicon files are left
+  orphaned — see DESIGN.md §15's Phase 13 entry for why a per-page delete can't
+  safely reclaim them (content-hash addressing, possible sharing across
+  captures/pages) and the `recueil gc` CLI command flagged there as the
+  follow-up, not built this round.
+- Frontend: a "Delete page" button on PageDetail, `confirm()`-gated (same
+  pattern as Tags'/Collections' own deletes), navigates to `/` (the library) on
+  success via `push("/")` — the first write action on this screen that leaves
+  the page entirely, so its own test needed a captured (not just stubbed) `push`
+  mock, same pattern as Login/Setup's own tests use.
+
+### Title override
+
+- `pages.title` was already denormalized from the latest capture (`UpsertPage`'s
+  `SET title = $3` on every ingest) — **your call was a direct overwrite, not a
+  new `title_override` column**: a later recapture clears a manual override back
+  to the auto-detected title, same as it always has. New `SetPageTitle` query,
+  `patchPageRequest` grew a second optional `*string` field (`title`, alongside
+  the existing `excluded_from_mirror`) — at least one of the two must be
+  provided; either or both can be in the same request, applied as two
+  independent updates (not one combined query) since the dashboard never
+  actually sends both together today (they're two separate pieces of UI).
+- Frontend: an inline edit affordance on PageDetail's `<h1>` (a small pencil
+  icon button, `@lucide/svelte`) swaps the heading for a text input plus
+  Save/Cancel, deliberately unstyled beyond matching the screen's existing
+  inline-form pattern — this screen's own visual pass is a separate,
+  already-planned piece of work (DESIGN_SYSTEM.md), not something to anticipate
+  here.
+
+### Manual recapture
+
+- **Enqueues, doesn't capture.** The backend has no rendered/authenticated
+  browser session of its own (DESIGN.md §2's own reasoning for why capture only
+  ever happens from a real tab) — `POST /api/pages/{id}/recapture` looks up the
+  page's most recent capture's `raw_url` (not `pages.normalized_url` — the raw
+  URL is what a device would actually re-fetch) and re-enqueues it through the
+  exact same queue a device's own share-sheet/extension enqueue feeds, via a new
+  `queueitems.Client.Enqueue` method.
+- **New Worker endpoint: `POST /internal/queue-items`** (`handleServiceEnqueue`)
+  — service-secret-gated, same three fields and same
+  `INSERT ... ON CONFLICT(id) DO NOTHING` idempotency as the device-facing
+  `POST /queue`, just called by the backend instead of a device with its own
+  bearer token. `added_by_token_id` is left `NULL` (the schema already allows
+  this — there's no device token to attribute a backend-initiated enqueue to).
+  The queue item's own `id` is generated backend-side (`google/uuid`, same
+  `uuid.NewString()` already used for `source_capture_id` in `internal/ingest`)
+  since there's no client on the other end to have generated one.
+- Frontend: a "Recapture" button that shows a transient "Queued!" confirmation
+  on success (same pattern as Devices.svelte's copy-to-clipboard button) —
+  there's nothing on the page's own state to update, since this never touches
+  `page` at all, only the queue.
+
+### `DELETE /api/captures/{id}`
+
+- New `DeleteCapture` query — captures has no `user_id` of its own, so ownership
+  is scoped via `DELETE ... USING pages` (the DELETE equivalent of the join
+  `GetCaptureByIDForUser`/`SetCaptureLanguage` already use for SELECT/UPDATE),
+  same reasoning, new syntax for the new statement type. Cascades to this
+  capture's screenshot/readability/AI job rows via the schema's own
+  `ON DELETE CASCADE` chain, same as `DeletePage`'s own reasoning — and leaves
+  on-disk archive files orphaned for the same reason `DeletePage` does
+  (content-hash addressing, possible sharing across captures/pages; see
+  DESIGN.md §15's Phase 13 entry) — no new decision needed on either front, both
+  already settled there.
+- **Extends the no-empty-pages policy down one level, per your call**: deleting
+  a page's _last_ remaining capture deletes the page itself too, in the same
+  transaction. `internal/httpapi.DeleteCapture` reads the capture first
+  (confirms ownership, gets `page_id`), opens a transaction, deletes the
+  capture, calls the new `CountCapturesByPage`, and calls the already-existing
+  `DeletePage` query if the count comes back zero — all committed together, so a
+  page is never observably left at zero captures even for an instant.
+- Frontend: a "Delete capture" button on the reader view, `confirm()`-gated
+  (same pattern as PageDetail/Tags/Collections' own deletes). Always navigates
+  to `/` (the library) on success, deliberately not back to the page detail —
+  the response alone doesn't say whether the page survived or got deleted along
+  with its last capture, and guessing wrong would mean landing on a 404; `/` is
+  always valid either way.
+
+### Regenerate summary / regenerate readability
+
+- `POST /api/captures/{id}/regenerate-summary` and
+  `POST /api/captures/{id}/regenerate-readability`: new
+  `RegenerateAIJobForCapture`/ `RegenerateReadabilityJobForCapture` queries,
+  each resetting the relevant job row (`ai_jobs`/`readability_jobs`) back to
+  `status = 'pending'` — attempts, `error`, `claimed_at`, `completed_at` all
+  reset to a clean slate too, since this is a deliberate user-requested redo,
+  not error recovery (unlike the existing
+  `ManualRetryAIJobForUser`/`ManualRetryReadabilityJobForUser`, both restricted
+  to already-`failed` jobs from the Queue screen's own failed-item review —
+  these two work from _any_ prior status, keyed by `capture_id` itself rather
+  than the job's own id). The already-running `ai.Runner`/ readability job
+  runner picks either up on its own normal polling schedule — no new processing
+  logic anywhere.
+- `regenerate-summary` 404s gracefully if readability itself never succeeded for
+  this capture (no `ai_jobs` row exists yet — that row is only created once the
+  readability job succeeds once). `regenerate-readability` always has a row to
+  reset (`readability_jobs` is created at ingest time, unconditionally), so it
+  only 404s for a genuinely bad/not-owned capture id.
+- **Regenerate-readability deliberately does NOT requeue the AI job** — today
+  there's no extra state (e.g. a "readability changed since this summary was
+  generated" flag) to make that decision by, so a stale AI summary is left
+  exactly as stale as it was before this endpoint existed; a separate, explicit
+  regenerate-summary click is what actually refreshes it. If tracking that
+  staleness ever becomes real work worth doing (a new column, most likely),
+  automatically requeuing the AI job too becomes the natural thing to reconsider
+  at the same time.
+- Frontend: both are fire-and-forget from the reader view's own perspective —
+  neither touches the rendered capture at all on success, so each just shows a
+  transient "Queued!" confirmation (same pattern as PageDetail's own recapture
+  button), not a state change to watch for.
+
+### `GET /api/capture-config`
+
+- Reports this running agent's currently-configured `readability_version` and
+  `ai_model` — the exact same values already threaded into
+  `readability.Params`/`ai.Params` at `cmd/agent.go` startup, now also threaded
+  into `httpapi.Server` (`cmd/server.go`'s own call to `httpapi.NewServer` grew
+  two trailing string params for it). `ai_model` is reported as unset (`null`,
+  not `cfg.AIModel`'s literal value) whenever `cfg.AIBaseURL` is empty — AI
+  enrichment being toggled off entirely doesn't necessarily mean `cfg.AIModel`
+  itself was ever cleared, so this reads the same is-it-actually-enabled signal
+  `cmd/agent.go` itself already uses, not just the model string in isolation.
+
+### Task A: previously-untracked-in-the-API fields
+
+- `GET /api/captures/{id}`'s response gained six fields that were already real
+  columns in Postgres and simply never made it into `captureDetailResponse`:
+  `readability_version`, `content_hash` (not nullable — set at ingest time, not
+  by a later job), `thumbnail_size_bytes`, `thumbnail_hash`,
+  `favicon_size_bytes`, `favicon_hash`. Pure DTO/mapping work — no migration, no
+  new query beyond the existing `SELECT captures.*`. New `int4OrNil` helper
+  (`textOrNil`'s twin for `pgtype.Int4`) for the two `*_size_bytes` fields.
+
+### `internal/gc`: the actual sweep
+
+- `Runner.Run(ctx, dryRun)`: reads the complete "live set" of on-disk paths
+  Postgres still references (new `ListReferencedArchivePaths` query — see its
+  own section below for why it's not just `captures.*_path`), then walks every
+  file `archive.Store`'s root actually contains (new `Store.Walk`), removing
+  whatever isn't in that live set (new `Store.Remove`) unless `dryRun` is true,
+  in which case nothing is actually touched — only counted.
+- Individual remove failures (permissions, a concurrent modification) are logged
+  and counted (`Result.RemoveErrors`), not fatal to the run — the sweep
+  continues to the next file, same "log and keep going" philosophy
+  `internal/ingest`/`internal/mirror` already apply at their own per-item level.
+  Only a failure reading the live-set query, or a fundamental failure walking
+  the store's own root at all, aborts the whole run.
+- `Result` reports files scanned/removed and bytes reclaimed either way (real,
+  already-freed space when `dryRun` is false; what _would_ be freed when it's
+  true) — `cmd/gc.go` prints this as a one-line summary.
+
+### `archive.Store` gains `Walk`/`Remove`
+
+- `Walk(fn)`: lists every regular file under the store's root, giving each one's
+  path in the same root-relative shape `WriteHTML`/`WriteAsset` already return
+  and `Open`/`OpenRaw` already accept, plus its size in bytes. Purely read-only
+  — deciding what's still referenced is `internal/gc`'s job, not something
+  `archive` should know (it has no visibility into Postgres at all).
+- `Remove(relPath)`: deletes the file, then climbs back up removing each
+  now-empty parent directory in turn — `CaptureDir`'s own three levels of
+  sharding (`hash[0:2]/hash[2:4]/hash`) collapsed back down once nothing's left
+  in them, rather than accumulating empty directory entries forever as captures
+  get GC'd over an instance's lifetime. `os.Remove` refusing to remove a
+  still-non-empty directory is the natural signal to stop climbing (a sibling
+  capture's own directory still living under the same `hash[0:2]/hash[2:4]`
+  shard prefix is the expected, common case, not a failure) — climbing never
+  goes above the store's root.
+
+### dark mode / theme preference
+
+A `Settings`-screen preference (automatic/light/dark), the shape this project
+had already sketched out (see DESIGN.md's own "Resolved this round" entry for
+the full writeup, including how the flash-of-wrong-theme problem was actually
+solved — the short version below).
+
+- `src/lib/theme.ts` (new): `applyTheme(theme)` — sets/clears
+  `document.documentElement.dataset.theme` and keeps a `localStorage` cache
+  (`"recueil-theme"`) in sync. Much simpler than `locale.ts`'s module: nothing
+  needs Paraglide's repeated-synchronous-read shape here, this is just one DOM
+  mutation plus a cache write.
+
+### active sessions
+
+A `Devices` screen addition, in its own separate section rather than merged into
+the paired-devices list.
+
+- New `internal/auth.SessionIDFromContext`, threaded through `RequireSession`'s
+  middleware alongside the existing user -- needed anywhere that has to tell
+  "this specific session" apart from the user's other ones (the list's own
+  `is_current` flag, and `DeleteSession`'s refusal to delete the one making the
+  request).
+- `GET /api/sessions` / `DELETE /api/sessions/{id}`: strictly self-scoped, same
+  reasoning `ListDevices`/`RevokeDevice` already settled on. Parsing
+  (`github.com/medama-io/go-useragent`), not stored as its own columns at write
+  time.
+- `DeleteSession` refuses (400) to delete the caller's own current session --
+  checked via `SessionIDFromContext` before the query ever runs, not left to the
+  database to reject. Signing out (`POST /api/auth/logout`, already existing) is
+  the correct way to end that one; the dashboard's own UI doesn't even render a
+  revoke control for that row, so reaching this 400 at all means a stale tab or
+  a direct API call, not a normal click.
+- Frontend: `Devices.svelte` gained a third section, reusing the exact same
+  list/icon/`role="img"`+`aria-label` markup pattern the paired-devices list
+  already established (see `DESIGN_SYSTEM.md`'s own note on this). Icons:
+  `Monitor`/`Smartphone`/`Tablet` by parsed `device_class`, with a `CircleHelp`
+  fallback deliberately distinct from Devices' own `Smartphone` default, for an
+  empty/unrecognized `device_class`. The current session gets a left
+  accent-stripe highlight and a "Current session" badge instead of a revoke
+  button, not a disabled one.
+
+### queue-items/jobs recency window (Queue screen backend broadening)
+
+Backend/data-layer work only, explicitly scoped that way -- the Queue screen's
+own UI still filters back down to `status === "failed"` after loading, keeping
+today's behavior unchanged while the fuller data sits ready in the API for a
+separate follow-up to actually build the "what's currently happening" view
+against.
+
+- `terraform/worker/index.js`'s `handleListFailedQueueItems` (renamed
+  `handleListQueueItems`) now returns `pending`/`claimed`/`failed`
+  unconditionally, plus `captured` items claimed within the last 15 minutes --
+  the same window this file's own claim visibility-timeout already used
+  (`handleListQueue`/`handleClaimQueueItem`), reused rather than introducing a
+  second number for the same "still worth a glance" idea. The `?status=` query
+  parameter is gone entirely -- there's nothing left to select between.
+  `claimed_at` is now in the response too.
+- `internal/queueitems.Client.ListFailed` (renamed `List`) and its `Item` type
+  (`ClaimedAt *time.Time` added) updated to match -- a new
+  `parseD1NativeTimestampOrNil` handles the nullable case (never-claimed items).
+- `internal/httpapi`: `ListFailedQueueItems`/`ListFailedJobs` renamed
+  `ListQueueItems`/`ListJobs`; `failedJob`/`failedJobsResponse` renamed
+  `job`/`jobsResponse`, both gaining `Status`/`ClaimedAt`.
+- The three Postgres job-listing queries
+  (`ListFailedScreenshotJobsForUser`/`ListFailedReadabilityJobsForUser`/
+  `ListFailedAIJobsForUser`, renamed `ListRecent...`) got the identical
+  broadening: `pending`/`processing`/`failed` unconditionally, `done` only
+  within the same 15-minute window (`NOW() - INTERVAL '15 minutes'`, duplicated
+  across all three queries rather than centralized -- each query's own comment
+  points at the other two). One consistent "recent" meaning across both the D1
+  queue and Postgres jobs, not two different numbers that happen to live in
+  different databases.
+- Frontend types: `QueueItem.status` tightened from a bare `string` to a literal
+  union (`Device.device_type`/`PageTag.source` precedent), gained `claimed_at`.
+  `FailedJob`/`FailedJobsResponse` renamed `Job`/ `JobsResponse`, gained
+  `status`/`claimed_at`.

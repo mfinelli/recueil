@@ -232,4 +232,12 @@ describe("fetch (router)", () => {
     );
     expect(response.status).toBe(401);
   });
+
+  it("routes POST /internal/queue-items to handleServiceEnqueue (401 with no auth confirms it was reached)", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/queue-items",
+      { method: "POST", body: JSON.stringify({}) },
+    );
+    expect(response.status).toBe(401);
+  });
 });

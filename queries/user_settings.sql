@@ -27,8 +27,10 @@ SELECT * FROM user_settings WHERE user_id = $1;
 -- ON CONFLICT DO UPDATE, not CreateCollection's plain INSERT -- unlike a
 -- collection, there's no meaningful "duplicate" case to reject here: a
 -- user has at most one settings row, and a second PATCH is just changing
--- it, not creating a conflicting second one.
-INSERT INTO user_settings (user_id, language)
-VALUES ($1, $2)
-ON CONFLICT (user_id) DO UPDATE SET language = EXCLUDED.language, updated_at = NOW()
+-- it, not creating a conflicting second one. Both fields are always
+-- written together (full-replace, not a per-field pointer/COALESCE
+-- pattern).
+INSERT INTO user_settings (user_id, language, theme)
+VALUES ($1, $2, $3)
+ON CONFLICT (user_id) DO UPDATE SET language = EXCLUDED.language, theme = EXCLUDED.theme, updated_at = NOW()
 RETURNING *;

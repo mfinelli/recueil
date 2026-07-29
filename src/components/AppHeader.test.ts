@@ -25,6 +25,7 @@
 // import-time side effect (see session.svelte.test.ts's own note on this).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
+import { tick } from "svelte";
 
 vi.mock("svelte-spa-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("svelte-spa-router")>();
@@ -97,5 +98,84 @@ describe("AppHeader", () => {
 
     expect(logoutSpy).toHaveBeenCalled();
     expect(pushMock).toHaveBeenCalledWith("/login");
+  });
+
+  it("toggles the mobile nav disclosure open and closed, morphing the hamburger", async () => {
+    const { container } = render(AppHeader);
+
+    const toggle = screen.getByRole("button", { name: "Menu" });
+    const hamburger = container.querySelector(".hamburger");
+    expect(toggle).toHaveProperty("ariaExpanded", "false");
+    expect(hamburger?.classList.contains("open")).toBe(false);
+
+    await fireEvent.click(toggle);
+    expect(toggle).toHaveProperty("ariaExpanded", "true");
+    expect(hamburger?.classList.contains("open")).toBe(true);
+
+    await fireEvent.click(toggle);
+    expect(toggle).toHaveProperty("ariaExpanded", "false");
+    expect(hamburger?.classList.contains("open")).toBe(false);
+  });
+
+  it("closes the mobile nav disclosure when a nav link is clicked", async () => {
+    render(AppHeader);
+
+    const toggle = screen.getByRole("button", { name: "Menu" });
+    await fireEvent.click(toggle);
+    expect(toggle).toHaveProperty("ariaExpanded", "true");
+
+    await fireEvent.click(screen.getByRole("link", { name: "Collections" }));
+    expect(toggle).toHaveProperty("ariaExpanded", "false");
+  });
+
+  // svelte-spa-router/active reads the current location directly off
+  // window.location's hash (see Router.svelte's own getLocation()), not
+  // through the mocked push() above -- so these drive it the same way the
+  // real router does: set the hash, then fire the hashchange event its
+  // internal listener is waiting for.
+  async function setHash(hash: string) {
+    window.location.hash = hash;
+    window.dispatchEvent(new Event("hashchange"));
+    await tick();
+  }
+
+  afterEach(() => {
+    window.location.hash = "";
+  });
+
+  function isActive(name: string): boolean {
+    return screen.getByRole("link", { name }).classList.contains("active");
+  }
+
+  it("marks Library active by default (path '/')", () => {
+    render(AppHeader);
+
+    expect(isActive("Library")).toBe(true);
+    expect(isActive("Collections")).toBe(false);
+  });
+
+  it("marks Collections active on both /collections and a nested collection path", async () => {
+    render(AppHeader);
+
+    await setHash("#/collections");
+    expect(isActive("Collections")).toBe(true);
+
+    await setHash("#/collections/cooking/recipes");
+    expect(isActive("Collections")).toBe(true);
+    expect(isActive("Library")).toBe(false);
+  });
+
+  it("marks Library active on a page detail route", async () => {
+    render(AppHeader);
+
+    await setHash("#/pages/42");
+    expect(isActive("Library")).toBe(true);
+  });
+
+  it("marks Tags active on a tag detail route", async () => {
+    render(AppHeader);
+
+    await setHash("#/tags/woodworking");
+    expect(isActive("Tags")).toBe(true);
   });
 });

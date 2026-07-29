@@ -23,7 +23,8 @@ INSERT INTO page_tags (page_id, tag_id, source) VALUES ($1, $2, $3)
 ON CONFLICT (page_id, tag_id) DO NOTHING;
 
 -- name: ListPageTags :many
-SELECT tags.id AS tag_id, tags.name AS name, page_tags.source AS source
+SELECT tags.id AS tag_id, tags.name AS name, tags.slug AS slug,
+  page_tags.source AS source
 FROM page_tags
 JOIN tags ON tags.id = page_tags.tag_id
 WHERE page_tags.page_id = $1

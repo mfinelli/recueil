@@ -98,3 +98,48 @@ SELECT * FROM captures WHERE source_capture_id = $1;
 -- regenerated a different value than the one the caller originally submitted.
 UPDATE captures SET source_capture_id = NULL, updated_at = NOW()
 WHERE id = $1;
+
+-- name: DeleteCapture :execrows
+-- Same ownership-scoping as GetCaptureByIDForUser/SetCaptureLanguage
+-- (captures has no user_id of its own) -- DELETE's own USING-clause
+-- equivalent of the join/FROM those two use for SELECT/UPDATE
+-- respectively. Cascades to this capture's screenshot/readability/AI job
+-- rows via the schema's own ON DELETE CASCADE chain, same as DeletePage's
+-- reasoning for pages -- nothing else to clean up in Postgres. Same
+-- deliberately-orphaned-on-disk-files reasoning as DeletePage too.
+--
+-- The caller (DeleteCapture in internal/httpapi) is responsible for the
+-- "a page left with zero captures is deleted too" policy this alone
+-- doesn't enforce -- see CountCapturesByPage, called in the same
+-- transaction.
+DELETE FROM captures USING pages
+WHERE captures.page_id = pages.id AND captures.id = $1 AND pages.user_id = $2;
+
+-- name: CountCapturesByPage :one
+-- Not scoped by user_id (captures has no such column, same as
+-- ListCapturesByPage) -- the caller already owns page_id from an
+-- ownership-checked read before this ever runs.
+SELECT count(*) FROM captures WHERE page_id = $1;
+
+-- name: ListReferencedArchivePaths :many
+-- The complete "live set" internal/gc's own sweep keeps -- every relative
+-- path (archive.Store's own root-relative shape, matching what
+-- WriteHTML/WriteAsset return and Open/OpenRaw accept) that some row in
+-- Postgres still actually points at. Anything the sweep finds under
+-- archive.Store's root that ISN'T in this set gets removed.
+--
+-- This includes pages.favicon_path as its own separate UNION branch,
+-- not just captures.*_path: favicon_path is a denormalized copy of whichever
+-- capture last provided one, and DeleteCapture (internal/httpapi) re-derives
+-- it from the new latest capture whenever the one it was copied from gets
+-- deleted -- but this query doesn't lean on that recomputation always having
+-- happened correctly; asking Postgres directly for whatever's actually stored
+-- right now, across both tables, is the only thing that's actually
+-- authoritative for "is this still referenced."
+SELECT html_path AS path FROM captures
+UNION
+SELECT thumbnail_path FROM captures WHERE thumbnail_path IS NOT NULL
+UNION
+SELECT favicon_path FROM captures WHERE favicon_path IS NOT NULL
+UNION
+SELECT favicon_path FROM pages WHERE favicon_path IS NOT NULL;

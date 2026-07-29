@@ -19,6 +19,7 @@
 package archive_test
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -292,4 +293,117 @@ func TestCaptureDir_ShardsByHashPrefix(t *testing.T) {
 
 func TestCaptureDir_FallsBackForShortHashes(t *testing.T) {
 	assert.Equal(t, "ab", archive.CaptureDir("ab"))
+}
+
+func TestStore_Walk_FindsEveryRegularFile(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	htmlPath, _, err := store.WriteHTML("hash-one-aaaa", []byte("<html></html>"))
+	require.NoError(t, err)
+	assetPath, _, err := store.WriteAsset("hash-one-aaaa", "favicon-hash", "png", []byte("png-bytes"), false)
+	require.NoError(t, err)
+
+	found := make(map[string]int64)
+	err = store.Walk(func(relPath string, sizeBytes int64) error {
+		found[relPath] = sizeBytes
+		return nil
+	})
+	require.NoError(t, err)
+
+	require.Contains(t, found, htmlPath)
+	require.Contains(t, found, assetPath)
+	assert.Equal(t, int64(len("png-bytes")), found[assetPath])
+	assert.Len(t, found, 2, "Walk should not report directories, only files")
+}
+
+func TestStore_Walk_EmptyStore(t *testing.T) {
+	store := archive.New(t.TempDir())
+
+	var calls int
+	err := store.Walk(func(string, int64) error {
+		calls++
+		return nil
+	})
+	require.NoError(t, err)
+	assert.Zero(t, calls)
+}
+
+func TestStore_Walk_PropagatesCallbackError(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+	_, _, err := store.WriteHTML("hash-two-bbbb", []byte("<html></html>"))
+	require.NoError(t, err)
+
+	sentinel := errors.New("stop here")
+	err = store.Walk(func(string, int64) error {
+		return sentinel
+	})
+	assert.ErrorIs(t, err, sentinel)
+}
+
+func TestStore_Remove_DeletesTheFile(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+	relPath, _, err := store.WriteHTML("hash-three-cccc", []byte("<html></html>"))
+	require.NoError(t, err)
+
+	require.NoError(t, store.Remove(relPath))
+
+	_, err = os.Stat(filepath.Join(root, relPath))
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestStore_Remove_PrunesNowEmptyShardDirectories(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+	// A real hash-shaped id so CaptureDir's own sharding actually
+	// applies (ab/cd/abcd.../) -- short test strings like "hash-three"
+	// above fall back to no sharding at all (CaptureDir's own doc
+	// comment), which wouldn't exercise pruning at all.
+	hash := "abcd0000000000000000000000000000000000000000000000000000000000"
+	relPath, _, err := store.WriteHTML(hash, []byte("<html></html>"))
+	require.NoError(t, err)
+
+	captureDir := filepath.Join(root, archive.CaptureDir(hash))
+	shardDir := filepath.Dir(captureDir)
+	topShardDir := filepath.Dir(shardDir)
+	require.DirExists(t, captureDir)
+
+	require.NoError(t, store.Remove(relPath))
+
+	assert.NoDirExists(t, captureDir, "the now-empty capture directory itself should be pruned")
+	assert.NoDirExists(t, shardDir, "the now-empty hash[2:4] shard directory should be pruned too")
+	assert.NoDirExists(t, topShardDir, "the now-empty hash[0:2] shard directory should be pruned too")
+	assert.DirExists(t, root, "pruning must never remove the store's own root")
+}
+
+func TestStore_Remove_StopsPruningAtANonEmptySiblingDirectory(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+	hash := "abcd1111111111111111111111111111111111111111111111111111111111"
+	relPath, _, err := store.WriteHTML(hash, []byte("<html></html>"))
+	require.NoError(t, err)
+
+	// A sibling capture sharing the same hash[0:2]/hash[2:4] shard
+	// prefix but a different full hash -- its own directory must
+	// survive pruning triggered by removing the *other* capture's file.
+	siblingHash := "abcd2222222222222222222222222222222222222222222222222222222222"
+	siblingRelPath, _, err := store.WriteAsset(siblingHash, "sibling-asset-hash", "png", []byte("x"), false)
+	require.NoError(t, err)
+
+	require.NoError(t, store.Remove(relPath))
+
+	assert.NoDirExists(t, filepath.Join(root, archive.CaptureDir(hash)))
+	// The shared hash[0:2]/hash[2:4] shard directory is still needed by
+	// the sibling capture -- pruning must stop there, not remove it.
+	assert.DirExists(t, filepath.Dir(filepath.Join(root, archive.CaptureDir(hash))))
+	_, err = os.Stat(filepath.Join(root, siblingRelPath))
+	assert.NoError(t, err, "the sibling's own file must be untouched")
+}
+
+func TestStore_Remove_NonexistentPath(t *testing.T) {
+	store := archive.New(t.TempDir())
+	err := store.Remove(filepath.Join("does", "not", "exist.html"))
+	assert.Error(t, err)
 }

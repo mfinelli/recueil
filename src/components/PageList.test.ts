@@ -168,4 +168,42 @@ describe("PageList", () => {
     expect(container.querySelector(".favicon-placeholder")).toBeNull();
     expect(container.querySelector(".favicon")).toBeTruthy();
   });
+
+  it("skips the favicon request entirely when favicon_path is null, going straight to the placeholder", () => {
+    const { container } = render(PageList, {
+      pages: [{ ...examplePage, favicon_path: null }],
+      emptyMessage: "Nothing here.",
+    });
+
+    expect(container.querySelector(".favicon")).toBeNull();
+    expect(container.querySelector(".favicon-placeholder")).toBeTruthy();
+  });
+
+  it("renders a favicon and url alongside the thumbnail in grid view", () => {
+    localStorage.setItem(VIEW_MODE_KEY, "grid");
+    const { container } = render(PageList, {
+      pages: [examplePage],
+      emptyMessage: "Nothing here.",
+    });
+
+    const favicon = container.querySelector<HTMLImageElement>(".grid-favicon");
+    expect(favicon?.src).toContain("/api/pages/1/favicon");
+    expect(screen.getByText("example.com/article")).toBeTruthy();
+  });
+
+  it("tracks favicon and thumbnail failures independently in grid view", async () => {
+    localStorage.setItem(VIEW_MODE_KEY, "grid");
+    const { container } = render(PageList, {
+      pages: [examplePage],
+      emptyMessage: "Nothing here.",
+    });
+
+    const favicon = container.querySelector<HTMLImageElement>(".grid-favicon");
+    await fireEvent.error(favicon as HTMLImageElement);
+
+    // The favicon failing shouldn't touch the thumbnail's own state.
+    expect(container.querySelector(".grid-favicon-placeholder")).toBeTruthy();
+    expect(container.querySelector(".thumbnail")).toBeTruthy();
+    expect(container.querySelector(".thumbnail-placeholder")).toBeNull();
+  });
 });

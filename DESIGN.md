@@ -1231,6 +1231,7 @@ CREATE TABLE sessions (
   id BIGINT GENERATED ALWAYS AS IDENTITY,
   session_hash TEXT NOT NULL,
   user_id BIGINT NOT NULL,
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   expires_at TIMESTAMPTZ NOT NULL,
@@ -1242,14 +1243,21 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 ```
 
 Sessions have a 30-day absolute TTL (`expires_at`) and no idle-timeout expiry —
-`last_seen_at` is updated on every authenticated request but isn't currently
-read by any feature; it's kept for a plausible future "your active sessions"
-dashboard view rather than actively driving expiry logic today. Logout deletes
-the row. This is simpler than reusing the device-token mechanism and avoids
-needing a `tokens` table in Postgres — the earlier design's ambiguity about
-"does the backend keep its own copy of tokens" is resolved by not needing one;
-`sessions` and D1's `tokens` are two distinct, independently-revocable
-credential systems for two distinct kinds of client.
+`last_seen_at` is updated on every authenticated request. Logout deletes the
+row. This is simpler than reusing the device-token mechanism and avoids needing
+a `tokens` table in Postgres — the earlier design's ambiguity about "does the
+backend keep its own copy of tokens" is resolved by not needing one; `sessions`
+and D1's `tokens` are two distinct, independently-revocable credential systems
+for two distinct kinds of client.
+
+**`user_agent` (Active Sessions dashboard view) is exactly the "plausible
+future" this table's own original design already anticipated**: captured once at
+sign-in (the request's `User-Agent` header, verbatim, `startSession`), parsed
+fresh on every _read_ rather than split into columns at write time. No IP
+address column at all — a self-hosted tool's own IP-derived "location" would be
+meaningless at best, and there's no trusted-proxy configuration in this app to
+safely attribute an IP to the real client rather than a reverse proxy in front
+of it anyway.
 
 ### Manage Devices dashboard screen
 
@@ -1314,6 +1322,31 @@ until its next request to the Worker, at which point the token lookup fails and
 it gets a 401 — at that point it needs to be re-paired. There's no mechanism
 (and none is planned) to immediately invalidate an in-flight session on the
 device side.
+
+### Active Sessions dashboard screen
+
+The `sessions` table's `user_agent` column (see above) plus a small set of new
+self-scoped endpoints — no Worker/D1 involvement at all, unlike Manage Devices:
+sessions have always lived entirely in Postgres.
+
+- **User-Agent parsing via `github.com/medama-io/go-useragent`, not
+  hand-rolled.** a browser/OS User-Agent parser needs to track an
+  actively-shifting landscape (new browser versions, Chrome's own User-Agent
+  Reduction effort, etc.) that a one-off regex would need ongoing maintenance to
+  keep up with in a way a maintained library already does.
+- **Parsed at read time, not write time** — `sessionResponseFromSession`
+  (`internal/httpapi`) calls the parser fresh on every `GET /api/sessions`,
+  rather than storing browser/OS/device-class as their own columns when the
+  session row is created.
+- **The current session is never revocable through this endpoint at all** —
+  `DeleteSession` checks the request's own session id (a new
+  `auth.SessionIDFromContext`, threaded through `RequireSession`'s middleware
+  alongside the existing user) against the one being deleted and refuses (400)
+  if they match. Signing out (the existing `POST /api/auth/logout` flow) is the
+  correct, already-understood way to end your own current session; letting this
+  endpoint delete it too would mean the DELETE request itself succeeds and then
+  the very next request — including whatever the dashboard tried to do next —
+  starts 401ing with no obvious explanation.
 
 ### 5a. Backend ↔ Worker service authentication
 
@@ -2063,6 +2096,22 @@ screenshot job in §6.
 - A readability job that succeeds on retry still creates its `ai_jobs` row in
   the same transaction as any other successful completion — nothing needed to
   special-case "this was a retry" for that cascade to keep working.
+- **`GET /api/jobs` originally only returned `status = 'failed'` rows, matching
+  the "one place for everything currently stuck" framing above at the time.**
+  Broadened alongside `GET /internal/queue-items` (§8's own entry) once the
+  Queue screen's scope grew to "what's currently happening," not just "what
+  needs attention": `pending`/`processing`/`failed` unconditionally, `done` only
+  within the last 15 minutes — the exact same window and reasoning as
+  `queue_items`' own `captured` state, so "recent" means one consistent thing
+  across both halves of this screen, not two different numbers that happen to
+  live in different databases. That window is duplicated across all three job
+  queries (`ListRecentScreenshotJobsForUser`/`ListRecentReadabilityJobsForUser`/
+  `ListRecentAIJobsForUser`, renamed from their own `ListFailed...` names) as a
+  plain `NOW() - INTERVAL '15 minutes'` rather than centralized anywhere — each
+  query's own comment points at the other two so a future change to the window
+  doesn't miss one. `status` and `claimed_at` are both new fields in the
+  response too; both already existed as real columns, simply weren't surfaced
+  before now.
 
 ### Implementation
 
@@ -2116,8 +2165,8 @@ first simply wins.
   prevent two devices from grabbing the same item simultaneously; a claimed item
   records which device claimed it and when.
 - Implemented as three bearer-token-authenticated Worker endpoints, all
-  operating purely between a device and D1 — the backend never touches
-  `queue_items` at all:
+  operating purely between a device and D1 — the backend doesn't participate in
+  the normal device-enqueue path at all:
   - `POST /queue` — enqueue. `id` is client-generated (idempotent retry via
     `INSERT ... ON CONFLICT(id) DO NOTHING` — see §3c's identical reasoning for
     `pending_captures`).
@@ -2128,6 +2177,19 @@ first simply wins.
     the two-devices-race-for-the-same-item risk actually lives, and where the
     phase-2 brief's instruction to "build the idempotency and visibility-timeout
     logic in at this point, not later" was aimed.
+
+**One exception (Phase 13): the dashboard's "recapture" action.** PageDetail's
+recapture button asks the backend to re-enqueue a page's most recent capture's
+URL — the backend has no rendered/authenticated browser session of its own to
+capture with (see §2's own reasoning for why capture only ever happens from a
+real tab), so this still only ever enqueues, same as a device would. It's a
+fourth, service-secret-gated Worker endpoint (`POST /internal/queue-items`,
+alongside the failed-queue-item review endpoints from Phase 9), not a
+bearer-token one: the backend generates the `id` itself (there's no device on
+the other end to have generated one) and leaves `added_by_token_id` `NULL` (the
+schema already allows this). Once the row exists it's indistinguishable from any
+other queued item — picked up by whichever device next polls `GET /queue`, same
+claim/visibility-timeout/cleanup handling as the rest of this section.
 
 **Claim failure is not a single status code.** A failed claim distinguishes
 three cases, decided during Phase 2 rather than left as a uniform `409`:
@@ -2191,13 +2253,30 @@ not anticipated in the original design:
   `OR (status = 'failed' AND manual_retry = 1)` to make this possible — see the
   migration and `handleClaimQueueItem`/`handleListQueue` in `terraform/index.js`
   for the exact shape). Two new service-secret-gated Worker endpoints back this:
-  `GET /internal/queue-items?status=failed` and
+  `GET /internal/queue-items` (see below for what it returns as of the
+  dashboard's own Queue-screen recency-window work) and
   `POST /internal/queue-items/:id/retry`, called by the backend's own
   `internal/queueitems` client (structured like `internal/devices`) via
   session-protected, self-scoped `GET`/`POST /api/queue-items...`. No automatic
   retry mechanism and no separate/longer expiry were built — expected volume is
   low at this project's personal/family scale, and an operator can always
   intervene by hand if that stops holding.
+- **`GET /internal/queue-items` originally only returned `status=failed` (a
+  required query parameter), matching the Queue screen it existed for at the
+  time.** Broadened once the screen's own scope grew to "what's currently
+  happening," not just "what needs manual attention": it now returns every
+  `pending`/`claimed`/`failed` item unconditionally, plus `captured` items from
+  the last 15 minutes — the same window `handleListQueue`/
+  `handleClaimQueueItem`'s own claim visibility-timeout already uses elsewhere
+  in this file, reused rather than picking a second, different number for what's
+  conceptually the same "still worth a glance" idea. The `?status=` parameter is
+  gone entirely; there's nothing left to select between. `claimed_at` is now in
+  the response too — it already existed on the table (used internally for the
+  retention clock, see above), just wasn't surfaced.
+  `internal/httpapi.ListQueueItems` (renamed from `ListFailedQueueItems`) is the
+  passthrough on the dashboard side; the recency window itself is computed
+  entirely on the Worker side (`datetime('now', '-15 minutes')`), never in Go or
+  in the dashboard's own JS.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
   `pending` for a long time before being claimed; it's time since actual
   completion that should drive retention, not time since the original enqueue.
@@ -2538,7 +2617,15 @@ CREATE TABLE pages (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id),
   normalized_url TEXT NOT NULL,
-  title TEXT,                        -- denormalized from latest capture
+  title TEXT,                        -- denormalized from latest capture,
+                                      -- but also directly PATCH-able as a
+                                      -- manual override (Phase 13,
+                                      -- PATCH /api/pages/{id}) -- a later
+                                      -- recapture overwrites an override
+                                      -- the same way it always overwrites
+                                      -- this column, deliberately: no
+                                      -- separate title_override column, no
+                                      -- display-time fallback
   latest_capture_at TIMESTAMPTZ NOT NULL,  -- also denormalized from latest
                                       -- capture (via GREATEST, tolerating
                                       -- out-of-order ingestion) -- feeds
@@ -2650,13 +2737,23 @@ language-specific by nature.
   Korean: languages Postgres has no snowball stemmer for at all, since they need
   segmentation rather than stemming), or the mapped candidate doesn't actually
   exist on this Postgres instance.
-- **The dashboard (not yet built) can let a user correct a capture's detected
-  language after the fact**, choosing from whatever configs this Postgres
-  instance actually has, or "other" (mapping to `simple`) — a plain
+- **The dashboard lets a user correct a capture's detected language after the
+  fact** (`PatchCaptureLanguage`, Phase 6), choosing from whatever configs this
+  Postgres instance actually has, or "Other" (mapping to `simple`; relabeled
+  from the raw config name in Phase 14 — "simple" isn't a real language, and
+  showing Postgres's own internal name for "no stemming" as if it were one just
+  reads as a stray option nobody explained) — a plain
   `UPDATE captures SET language = ...`, which Postgres automatically recomputes
   `reader_text_tsv` (and its GIN index) for as part of that same statement, the
   same way it already does whenever `reader_text` itself changes (e.g.
   re-extraction, §6a). No manual reindex, no extra synchronization code needed.
+  Every other option's own label is translated into the dashboard's current
+  locale (Phase 14, `lib/languageNames.ts`) rather than shown as Postgres's raw
+  config name — the opposite direction from Settings' language picker (which
+  shows each option self-named, since there you're choosing your own language
+  and need to recognize it among others; here you're already reading the
+  dashboard in your language and labeling someone else's content, so the labels
+  themselves should match).
 
 ```sql
 CREATE TABLE tags (
@@ -3535,6 +3632,21 @@ README that can drift out of sync with the architecture decisions around it.
   on top of the extension's own `blockScripts: true` capture setting, since the
   response is served same-origin with the dashboard).
 
+- **Fonts and icons** (visual-pass tooling, Phase 12): `@fontsource/fraunces`
+  and `@fontsource/ibm-plex-mono` self-host the dashboard's two non-body font
+  families rather than pulling from a CDN — the dashboard is the authenticated
+  half of a self-hosted tool, unlike the marketing site's public page.
+  `@lucide/svelte` (the current official package; not the deprecated
+  `lucide-svelte` v0 name) provides icons via per-icon subpath imports, with
+  app-wide size/stroke-width defaults set once through its own `setLucideProps`
+  context API rather than a local wrapper component. Same category as
+  `chi`/`cobra`/`viper` above — a concrete tooling choice, not an architectural
+  one. The actual design tokens/patterns these support (color palette,
+  typography roles, breakpoints, icon usage conventions) live in the new
+  `DESIGN_SYSTEM.md`, not here — that content is a living reference meant to be
+  read while building a screen, a different shape than this section's own
+  tooling-choice log.
+
 This section is expected to keep growing as the extension, dashboard, and CLI
 are built out.
 
@@ -3666,15 +3778,15 @@ What remains open is purely implementation-phase, not architectural:
   user with a manual-retry action**, not just kept forever with no further
   recourse. A new `queue_items.manual_retry` D1 column (cleared on claim), two
   new service-secret-gated Worker endpoints
-  (`GET /internal/queue-items?status=failed`,
-  `POST /internal/queue-items/:id/retry`), a backend `internal/queueitems`
-  client mirroring `internal/devices`'s shape, session-protected
-  `GET`/`POST /api/queue-items...` (self-scoped, same reasoning as Manage
-  Devices), and a new dashboard Queue screen. §8's cleanup endpoint is otherwise
-  unchanged — `captured` items are still swept, `failed` items are still never
-  deleted, now a deliberate decision (low expected volume at this project's
-  scale, and an operator can always clean up by hand) rather than a deferred
-  one.
+  (`GET /internal/queue-items?status=failed` at the time -- broadened since, see
+  §8's own entry on this), `POST /internal/queue-items/:id/retry`), a backend
+  `internal/queueitems` client mirroring `internal/devices`'s shape,
+  session-protected `GET`/`POST /api/queue-items...` (self-scoped, same
+  reasoning as Manage Devices), and a new dashboard Queue screen. §8's cleanup
+  endpoint is otherwise unchanged — `captured` items are still swept, `failed`
+  items are still never deleted, now a deliberate decision (low expected volume
+  at this project's scale, and an operator can always clean up by hand) rather
+  than a deferred one.
 - **Resolved this round: Readability extraction moved from the extension (and
   the dashboard's browser, for manual uploads) to a single deferred, async
   backend job, sharing the headless-Chrome sidecar with the screenshot job — see
@@ -3778,3 +3890,89 @@ What remains open is purely implementation-phase, not architectural:
   extracted once three real screens existed to repeat the same title/nav/account
   bar across. See §13a's Svelte Dashboard subsection and IMPLEMENTATION.md for
   the details.
+- **Resolved this round (Phase 13): three gaps flagged while building
+  PageDetail's read/write loop (Phase 6) are now closed — page delete
+  (`DELETE /api/pages/{id}`), a manual title override (`PATCH /api/pages/{id}`
+  now also accepts `title`, direct-overwrite semantics — see §10's `pages.title`
+  comment for why a recapture clearing it is deliberate, not a gap), and manual
+  recapture (§8's own new subsection covers the enqueue path).** Delete cascades
+  cleanly through Postgres (captures/jobs/tags/collection-memberships all
+  already `ON DELETE CASCADE`) and the D1 bookmark mirror self-heals via the
+  existing periodic sync's deletion reconciliation — nothing new needed on
+  either front. What it deliberately does **not** do: reclaim the deleted page's
+  on-disk archive files. Those are content-hash-addressed (§4) and can be shared
+  across captures or even across pages (identical content recaptured
+  independently), so a safe per-page delete would need a reference-counting pass
+  across every capture's hash, not a simple "delete this page's files." Left
+  genuinely open: a **`recueil gc` CLI command**, operator-run (scheduled or
+  manual, matching the `recueil user resync`/device-management precedent of
+  operator-only tooling over dashboard automation), that walks every capture's
+  referenced hash and removes anything on disk with no remaining referent — not
+  built this round, tracked here as the next piece of this same gap.
+- **Resolved this round: the capture reader view (`/captures/{id}`, Phase 13's
+  "Capture rows now link to..." note) gained the same delete/regenerate loop
+  PageDetail's own Phase 13 gave pages.** `DELETE /api/captures/{id}` extends
+  this project's no-empty-pages policy down a level: deleting a page's _last_
+  capture deletes the page too, in the same transaction
+  (`internal/httpapi.DeleteCapture`), rather than leaving a zero-capture page
+  around as a new edge case nothing else in this project anticipates.
+  `POST /api/captures/{id}/regenerate-summary` and
+  `POST /api/captures/{id}/regenerate-readability` both just reset the relevant
+  job row back to `pending` (`ai_jobs`/`readability_jobs` respectively) and let
+  the already-running `ai.Runner`/readability job runner pick it up on their own
+  schedule — no new processing logic, same "enqueue, don't do the work here"
+  shape as Phase 13's own recapture. Regenerate-readability deliberately does
+  **not** also requeue the AI job: today there's no extra state to track that
+  decision by, so a stale AI summary just stays exactly as stale as it already
+  was until someone clicks regenerate-summary too, separately. Also added
+  `GET /api/capture-config`, reporting this running agent's own
+  currently-configured `readability_version`/`ai_model` (the same values
+  `cmd/agent.go` threads into `readability.Params`/`ai.Params`). Separately,
+  task A of this same round exposed six columns (`readability_version`,
+  `content_hash`, `thumbnail_size_bytes`, `thumbnail_hash`,
+  `favicon_size_bytes`, `favicon_hash`) that were already tracked in Postgres
+  but never surfaced in `GET /api/captures/{id}`'s own response — DTO/mapping
+  work only, no schema change, no new decision to record here.
+- `recueil gc` CLI command: `internal/gc.Runner.Run` is the actual sweep: read
+  every path Postgres still references (`ListReferencedArchivePaths`, spanning
+  `captures.{html,thumbnail,favicon}_path` **and** `pages.favicon_path` — see
+  below for why the latter matters on its own), walk every file
+  `archive.Store`'s root actually contains (`Store.Walk`, new), and remove
+  whatever isn't in that live set (`Store.Remove`, new — also prunes each
+  now-empty parent shard directory it leaves behind, `hash[0:2]/hash[2:4]/hash`
+  collapsed back down once nothing's left in them). A `--dry-run` flag reports
+  the same scan/removal counts and byte total without calling `Store.Remove` at
+  all. Also, since `pages.favicon_path` is a denormalized copy of whichever
+  capture last provided one (`UpsertPage`, same pattern as `pages.title`) —
+  deleting _that_ capture (while the page survives via others) used to leave it
+  pointing at a path no capture row referenced anymore. `DeleteCapture` now
+  refreshes it from `GetLatestCaptureByPage` whenever the page isn't also being
+  deleted (new `SetPageFavicon` query) — always recomputed, not just when the
+  deleted capture happens to be the source, since detecting which case that is
+  would be more complex than just doing the recomputation unconditionally (a
+  no-op write when it wasn't the source). `ListReferencedArchivePaths` still
+  includes `pages.favicon_path` in its own right regardless —
+  belt-and-suspenders, not a substitute for the real fix, since the live-set
+  query shouldn't have to lean on that recomputation always having happened
+  correctly everywhere it could matter.
+- **Resolved this round: dark mode is a real `Settings`-screen preference, not
+  just automatic `prefers-color-scheme`.** `user_settings.theme` — same
+  `NULL`-means-automatic convention, same full-replace `PATCH /api/settings`
+  shape (both `language` and `theme` sent together on every save; see
+  `patchSettingsRequest`'s own doc comment for why that stayed the deliberate
+  choice once a second field showed up, not pointer-based partial updates), same
+  CHECK-constraint treatment §10's schema already gives closed enums like
+  `role`/`status` (unlike `language`, which is deliberately open-ended and
+  validated at the application layer instead — see its own migration comment).
+  `src/styles/_tokens.scss` gained `[data-theme="light"|"dark"]` attribute
+  selectors (higher specificity than the existing `prefers-color-scheme` media
+  query's bare `:root`, so an explicit override always wins) alongside two Sass
+  mixins so the light/dark palettes are each defined once, not duplicated
+  between the automatic and explicit paths.
+  - One accepted gap: the `localStorage` cache is global per browser, not scoped
+    per account — two different users sharing one browser (a real scenario for a
+    self-hosted, multi-account tool) could see one frame of the _other_
+    account's last-applied theme before the real value loads and corrects it.
+    Same tradeoff every other production site using this exact technique already
+    accepts; not worth an account-scoped cache key for a one-frame, purely
+    cosmetic edge case.

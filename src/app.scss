@@ -16,35 +16,12 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// PLACEHOLDER token set, carried over as-is from the extension popup
-// (extension/src/popup/popup.css) purely so the skeleton has *something*
-// to render with. Not a design decision -- the real dashboard token system
-// (reconciling this against the marketing site's ledger/brass/stamp
-// palette) is a deliberately separate pass, not part of Phase 6's
-// scaffolding step.
-:root {
-  --ink: #2b2924;
-  --ink-muted: #746c5c;
-  --paper: #f2ede1;
-  --paper-raised: #fdfbf6;
-  --rule: #ddd2b8;
-  --accent: #8a3223;
-  --accent-success: #3c5c3a;
-  --focus: #4a6b8a;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ink: #ece5d4;
-    --ink-muted: #a89c86;
-    --paper: #1d1b17;
-    --paper-raised: #29261f;
-    --rule: #40392d;
-    --accent: #d17b64;
-    --accent-success: #8bb385;
-    --focus: #7fa8c9;
-  }
-}
+// Design system: tokens (colors), typography (font stacks + text mixins),
+// and mixins (layout/surface/breakpoints) live in src/styles/ so every
+// component's own <style lang="scss"> block can @use them instead of
+// re-declaring the same values.
+@use "./styles/tokens";
+@use "./styles/typography" as type;
 
 *,
 *::before,
@@ -59,7 +36,51 @@ body {
 }
 
 body {
-  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: type.$font-body;
   color: var(--ink);
   background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  @include type.heading;
+}
+
+a {
+  color: inherit;
+}
+
+// Form elements don't inherit typography by default in any browser --
+// without this every <input>/<button>/<textarea>/<select> on Login/Setup's
+// forms (and everywhere else) would render in the browser's own UI font
+// instead of $font-body.
+input,
+button,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+// Images/video/canvas/svg default to inline display, which leaves a stray
+// gap underneath from the line-box they sit in -- relevant here since
+// Library/PageDetail render thumbnails and favicons. max-width keeps them
+// from overflowing their container on narrow screens (see the responsive
+// requirement noted when this pass started).
+img,
+video,
+canvas,
+svg {
+  display: block;
+  max-width: 100%;
 }

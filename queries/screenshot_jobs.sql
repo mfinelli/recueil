@@ -93,20 +93,32 @@ UPDATE screenshot_jobs
 SET status = 'failed', attempts = $2, error = $3, completed_at = NOW()
 WHERE id = $1;
 
--- name: ListFailedScreenshotJobsForUser :many
--- Backs the dashboard's Queue screen (internal/httpapi's ListFailedJobs):
+-- name: ListRecentScreenshotJobsForUser :many
+-- Backs the dashboard's Queue screen (internal/httpapi's ListJobs):
 -- joins through captures/pages the same way GetCaptureByIDForUser does, so
--- a user only ever sees their own failed jobs. raw_url/title come from
--- captures, not pages -- the specific capture that failed, not whatever
--- the page's own (possibly different, possibly later) denormalized title
--- happens to be right now.
-SELECT screenshot_jobs.id, screenshot_jobs.attempts, screenshot_jobs.error,
-       screenshot_jobs.completed_at, captures.page_id, captures.raw_url,
-       captures.title
+-- a user only ever sees their own jobs. raw_url/title come from
+-- captures, not pages -- the specific capture the job belongs to, not
+-- whatever the page's own (possibly different, possibly later)
+-- denormalized title happens to be right now.
+--
+-- pending/processing/failed are returned unconditionally; 'done' only
+-- within the last 15 minutes (NOW() - INTERVAL '15 minutes') -- the same
+-- window terraform/worker/index.js's handleListQueueItems uses for
+-- queue_items' own 'captured' state, reused here rather than picking a
+-- second, different number for what's conceptually the same "just
+-- finished, still worth a glance" idea. If this window ever changes, it
+-- needs to change in all four places it's duplicated (here, and the
+-- identical clause in ListRecentReadabilityJobsForUser/
+-- ListRecentAIJobsForUser below).
+SELECT screenshot_jobs.id, screenshot_jobs.status, screenshot_jobs.attempts,
+       screenshot_jobs.error, screenshot_jobs.claimed_at, screenshot_jobs.completed_at,
+       captures.page_id, captures.raw_url, captures.title
 FROM screenshot_jobs
 JOIN captures ON captures.id = screenshot_jobs.capture_id
 JOIN pages ON pages.id = captures.page_id
-WHERE screenshot_jobs.status = 'failed' AND pages.user_id = $1
+WHERE pages.user_id = $1
+  AND (screenshot_jobs.status IN ('pending', 'processing', 'failed')
+       OR (screenshot_jobs.status = 'done' AND screenshot_jobs.completed_at > NOW() - INTERVAL '15 minutes'))
 ORDER BY screenshot_jobs.completed_at ASC;
 
 -- name: ManualRetryScreenshotJobForUser :one

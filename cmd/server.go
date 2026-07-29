@@ -114,7 +114,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	queueItemsClient := queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration)
+	// AI enrichment is toggled off entirely via an empty AIBaseURL --
+	// cfg.AIModel itself has no such "unset" meaning of its own (a
+	// stale/leftover value there with AIBaseURL empty shouldn't be
+	// reported as if AI were actually configured), so this server's own
+	// reported AIModel only ever reflects cfg.AIModel when AI enrichment
+	// is genuinely on.
+	aiModel := ""
+	if cfg.AIBaseURL != "" {
+		aiModel = cfg.AIModel
+	}
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

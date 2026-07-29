@@ -32,6 +32,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      collection's own pages" with "everything under it." -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
+  import ChevronLeft from "@lucide/svelte/icons/chevron-left";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import PageList from "../components/PageList.svelte";
   import { apiJSON, ApiError } from "../lib/api";
@@ -122,14 +124,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <a class="back" href="/collections" use:link>{m.collectiondetail_back()}</a>
+  <a class="back" href="/collections" use:link>
+    <ChevronLeft size={14} />
+    {m.collectiondetail_back()}
+  </a>
 
   {#if loading}
     <p class="status">{m.common_loading()}</p>
   {:else if notFound}
-    <p class="status error" role="alert">{m.collectiondetail_not_found()}</p>
+    <div class="status-block error" role="alert">
+      <AlertCircle size={28} />
+      <span>{m.collectiondetail_not_found()}</span>
+    </div>
   {:else if error}
-    <p class="status error" role="alert">{error}</p>
+    <div class="status-block error" role="alert">
+      <AlertCircle size={28} />
+      <span>{error}</span>
+    </div>
   {:else}
     {@const target = matched[matched.length - 1]}
     {#if matched.length > 1}
@@ -149,8 +160,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
     {#if children.length > 0}
       <section class="subcollections">
-        <h2>{m.collectiondetail_subcollections_heading()}</h2>
-        <ul>
+        <p class="eyebrow">{m.collectiondetail_subcollections_heading()}</p>
+        <ul class="chips">
           {#each children as child (child.id)}
             <li>
               <a href={pathHref(matched.length) + "/" + child.slug} use:link>
@@ -167,6 +178,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 64rem;
     margin: 0 auto;
@@ -174,82 +188,111 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .back {
-    display: inline-block;
-    margin-bottom: 1rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-bottom: 1.5rem;
     color: var(--ink-muted);
-    font-size: 0.875rem;
     text-decoration: none;
+    font-size: 0.875rem;
 
     &:hover {
       color: var(--ink);
     }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
     margin-bottom: 0.5rem;
+    @include type.data-mono;
     font-size: 0.8125rem;
     color: var(--ink-muted);
 
     a {
       color: inherit;
+      text-decoration: none;
 
       &:hover {
-        color: var(--ink);
+        color: var(--accent);
       }
-    }
 
-    .sep {
-      margin: 0 0.375rem;
+      &:focus-visible {
+        @include mix.focus-ring;
+      }
     }
   }
 
   h1 {
-    margin: 0 0 0.375rem;
+    @include type.heading;
+    font-size: 1.6rem;
+    margin: 0 0 0.4rem;
   }
 
   .description {
-    margin: 0 0 1.25rem;
+    margin: 0 0 1.5rem;
     color: var(--ink-muted);
+    font-size: 0.9375rem;
   }
 
   .subcollections {
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.75rem;
+  }
 
-    h2 {
-      margin: 0 0 0.5rem;
-      font-size: 0.9375rem;
-    }
+  .eyebrow {
+    @include type.eyebrow;
+    margin: 0 0 0.6rem;
+  }
 
-    ul {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-    }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
 
     a {
-      display: inline-block;
-      padding: 0.375rem 0.75rem;
-      border: 1px solid var(--rule);
-      border-radius: 0.25rem;
+      display: block;
+      padding: 0.2rem 0.75rem;
+      border-radius: 999px;
       background: var(--paper-raised);
+      border: 1px solid var(--rule);
+      font-size: 0.8125rem;
       color: inherit;
-      font-size: 0.875rem;
       text-decoration: none;
 
       &:hover {
-        border-color: var(--ink-muted);
+        color: var(--accent);
+        text-decoration: underline;
+      }
+
+      &:focus-visible {
+        @include mix.focus-ring;
       }
     }
   }
 
   .status {
     color: var(--ink-muted);
+  }
 
-    &.error {
-      color: var(--accent);
+  .status-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
+    color: var(--accent);
+    text-align: center;
+
+    :global(svg) {
+      opacity: 0.6;
     }
   }
 </style>

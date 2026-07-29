@@ -20,19 +20,21 @@ package queueitems_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/mfinelli/recueil/internal/queueitems"
 )
 
-func TestClient_ListFailed(t *testing.T) {
+func TestClient_List(t *testing.T) {
 	t.Run("sends the expected request and parses D1-native timestamps", func(t *testing.T) {
 		var gotMethod, gotPath, gotServiceKey string
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,29 +43,32 @@ func TestClient_ListFailed(t *testing.T) {
 			gotServiceKey = r.Header.Get("X-Service-Key")
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"items":[
-				{"id":"item-1","url":"https://example.com/a","status":"failed","manual_retry":0,"created_at":"2026-06-01 12:00:00"},
-				{"id":"item-2","url":"https://example.com/b","status":"failed","manual_retry":1,"created_at":"2026-07-19 08:30:15"}
+				{"id":"item-1","url":"https://example.com/a","status":"pending","manual_retry":0,"claimed_at":"","created_at":"2026-06-01 12:00:00"},
+				{"id":"item-2","url":"https://example.com/b","status":"failed","manual_retry":1,"claimed_at":"2026-07-19 08:31:00","created_at":"2026-07-19 08:30:15"}
 			]}`))
 		}))
 		defer server.Close()
 
 		client := queueitems.NewClient(server.URL, "test-secret")
-		got, err := client.ListFailed(context.Background(), 42)
+		got, err := client.List(context.Background(), 42)
 		require.NoError(t, err)
 
 		assert.Equal(t, http.MethodGet, gotMethod)
-		assert.Equal(t, "/internal/queue-items?user_id=42&status=failed", gotPath)
+		assert.Equal(t, "/internal/queue-items?user_id=42", gotPath)
 		assert.Equal(t, "test-secret", gotServiceKey)
 
 		require.Len(t, got, 2)
 		assert.Equal(t, "item-1", got[0].ID)
 		assert.Equal(t, "https://example.com/a", got[0].URL)
-		assert.Equal(t, "failed", got[0].Status)
+		assert.Equal(t, "pending", got[0].Status)
 		assert.False(t, got[0].ManualRetry)
+		assert.Nil(t, got[0].ClaimedAt, "an unclaimed item's claimed_at should be nil, not the zero time")
 		assert.True(t, got[0].CreatedAt.Equal(time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)))
 
 		assert.Equal(t, "item-2", got[1].ID)
 		assert.True(t, got[1].ManualRetry)
+		require.NotNil(t, got[1].ClaimedAt)
+		assert.True(t, got[1].ClaimedAt.Equal(time.Date(2026, 7, 19, 8, 31, 0, 0, time.UTC)))
 	})
 
 	t.Run("an empty item list decodes to an empty (not nil) slice", func(t *testing.T) {
@@ -73,7 +78,7 @@ func TestClient_ListFailed(t *testing.T) {
 		defer server.Close()
 
 		client := queueitems.NewClient(server.URL, "test-secret")
-		got, err := client.ListFailed(context.Background(), 1)
+		got, err := client.List(context.Background(), 1)
 		require.NoError(t, err)
 		assert.NotNil(t, got)
 		assert.Empty(t, got)
@@ -86,22 +91,33 @@ func TestClient_ListFailed(t *testing.T) {
 		defer server.Close()
 
 		client := queueitems.NewClient(server.URL, "wrong-secret")
-		_, err := client.ListFailed(context.Background(), 1)
+		_, err := client.List(context.Background(), 1)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "401")
 	})
 
-	t.Run("returns an error for a timestamp that isn't D1-native format", func(t *testing.T) {
+	t.Run("returns an error for a created_at that isn't D1-native format", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			// RFC 3339 (with a 'T' and 'Z'), not what D1's own
 			// CURRENT_TIMESTAMP actually produces -- must be rejected,
 			// not silently accepted.
-			_, _ = w.Write([]byte(`{"items":[{"id":"x","url":"https://example.com","status":"failed","manual_retry":0,"created_at":"2026-06-01T12:00:00Z"}]}`))
+			_, _ = w.Write([]byte(`{"items":[{"id":"x","url":"https://example.com","status":"failed","manual_retry":0,"claimed_at":"","created_at":"2026-06-01T12:00:00Z"}]}`))
 		}))
 		defer server.Close()
 
 		client := queueitems.NewClient(server.URL, "test-secret")
-		_, err := client.ListFailed(context.Background(), 1)
+		_, err := client.List(context.Background(), 1)
+		require.Error(t, err)
+	})
+
+	t.Run("returns an error for a claimed_at that isn't D1-native format", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"items":[{"id":"x","url":"https://example.com","status":"failed","manual_retry":0,"claimed_at":"2026-06-01T12:00:00Z","created_at":"2026-06-01 12:00:00"}]}`))
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "test-secret")
+		_, err := client.List(context.Background(), 1)
 		require.Error(t, err)
 	})
 }
@@ -148,5 +164,71 @@ func TestClient_Retry(t *testing.T) {
 		err := client.Retry(context.Background(), 42, "item-7")
 		require.Error(t, err)
 		assert.False(t, errors.Is(err, queueitems.ErrNotFound))
+	})
+}
+
+func TestClient_Enqueue(t *testing.T) {
+	t.Run("sends the expected request, generating its own id", func(t *testing.T) {
+		var gotMethod, gotPath, gotServiceKey, gotContentType string
+		var gotBody map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotMethod = r.Method
+			gotPath = r.URL.RequestURI()
+			gotServiceKey = r.Header.Get("X-Service-Key")
+			gotContentType = r.Header.Get("Content-Type")
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&gotBody))
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "test-secret")
+		err := client.Enqueue(context.Background(), 42, "https://example.com/recapture-me")
+		require.NoError(t, err)
+
+		assert.Equal(t, http.MethodPost, gotMethod)
+		assert.Equal(t, "/internal/queue-items", gotPath)
+		assert.Equal(t, "test-secret", gotServiceKey)
+		assert.Equal(t, "application/json", gotContentType)
+
+		assert.Equal(t, float64(42), gotBody["user_id"])
+		assert.Equal(t, "https://example.com/recapture-me", gotBody["url"])
+		// A real, non-empty id was generated -- not asserting an exact
+		// value (it's a fresh random UUID each call), just that it's
+		// there and looks like one.
+		id, ok := gotBody["id"].(string)
+		require.True(t, ok)
+		assert.NotEmpty(t, id)
+		_, err = uuid.Parse(id)
+		assert.NoError(t, err, "generated id should be a valid UUID")
+	})
+
+	t.Run("two calls generate two different ids", func(t *testing.T) {
+		var gotIDs []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			gotIDs = append(gotIDs, body["id"].(string))
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "test-secret")
+		require.NoError(t, client.Enqueue(context.Background(), 1, "https://example.com/a"))
+		require.NoError(t, client.Enqueue(context.Background(), 1, "https://example.com/b"))
+
+		require.Len(t, gotIDs, 2)
+		assert.NotEqual(t, gotIDs[0], gotIDs[1])
+	})
+
+	t.Run("returns an error on a non-2xx response", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "wrong-secret")
+		err := client.Enqueue(context.Background(), 1, "https://example.com/a")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "401")
 	})
 }

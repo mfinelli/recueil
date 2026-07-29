@@ -16,37 +16,50 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Same two import-time hazards as AppHeader.test.ts (Login imports
-// session.svelte.ts transitively too): mock svelte-spa-router's push, and
-// stub fetch before this file's own top-level imports run so bootstrap()
-// doesn't fire an unmocked network call.
+// Same import-time hazard as AppHeader.test.ts (Login imports
+// session.svelte.ts transitively too): stub fetch before this file's own
+// top-level imports run so bootstrap() doesn't fire an unmocked network
+// call. reloadIntoLibrary is mocked too -- the real one calls
+// window.location.reload(), which jsdom doesn't implement and would just
+// log noise for something this file doesn't need to exercise (that's
+// session.svelte.ts's concern, covered by its own tests) -- keeping
+// the rest of that module (the real `session` singleton) intact via
+// importOriginal.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
-
-vi.mock("svelte-spa-router", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("svelte-spa-router")>();
-  return { ...actual, push: vi.fn() };
-});
 
 vi.stubGlobal(
   "fetch",
   vi.fn().mockResolvedValue(new Response("{}", { status: 200 })),
 );
 
-import { push } from "svelte-spa-router";
-import { session } from "../lib/session.svelte";
+vi.mock("../lib/session.svelte", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/session.svelte")>();
+  return { ...actual, reloadIntoLibrary: vi.fn() };
+});
+
+import { session, reloadIntoLibrary } from "../lib/session.svelte";
 import { ApiError } from "../lib/api";
 import Login from "./Login.svelte";
 
-const pushMock = vi.mocked(push);
+const reloadIntoLibraryMock = vi.mocked(reloadIntoLibrary);
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  pushMock.mockClear();
+  reloadIntoLibraryMock.mockClear();
 });
 
 describe("Login", () => {
+  afterEach(() => {
+    // Direct mutation, not a fresh session.svelte import -- Login reads
+    // session.openRegistration reactively, so resetting it here (rather
+    // than the heavier vi.resetModules()/re-import dance
+    // session.svelte.test.ts uses for bootstrap coverage) is enough to
+    // keep this one field from leaking between tests in this file.
+    session.openRegistration = false;
+  });
+
   it("renders the username and password fields and a sign-in button", () => {
     render(Login);
 
@@ -56,7 +69,29 @@ describe("Login", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("submits the entered username/password and redirects to / on success", async () => {
+  it("doesn't render a register link when open registration is disabled", () => {
+    session.openRegistration = false;
+    render(Login);
+
+    expect(screen.queryByRole("link", { name: "Register" })).toBeNull();
+  });
+
+  it("renders a register link when open registration is enabled", () => {
+    session.openRegistration = true;
+    render(Login);
+
+    const link = screen.getByRole("link", { name: "Register" });
+    expect(link).toBeTruthy();
+    expect(link).toHaveProperty("hash", "#/register");
+  });
+
+  it("doesn't render a forgot-password link (SHOW_FORGOT_PASSWORD is false until that feature exists)", () => {
+    render(Login);
+
+    expect(screen.queryByRole("link", { name: "Forgot?" })).toBeNull();
+  });
+
+  it("submits the entered username/password and reloads into the library on success", async () => {
     const loginSpy = vi.spyOn(session, "login").mockResolvedValue(undefined);
     render(Login);
 
@@ -69,7 +104,7 @@ describe("Login", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(loginSpy).toHaveBeenCalledWith("alice", "correct-password");
-    expect(pushMock).toHaveBeenCalledWith("/");
+    expect(reloadIntoLibraryMock).toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -93,7 +128,7 @@ describe("Login", () => {
     expect(
       await screen.findByText("invalid username or password"),
     ).toBeTruthy();
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(reloadIntoLibraryMock).not.toHaveBeenCalled();
   });
 
   it("falls back to a generic error message for a non-ApiError failure", async () => {
@@ -109,7 +144,7 @@ describe("Login", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByText("login failed")).toBeTruthy();
-    expect(pushMock).not.toHaveBeenCalled();
+    expect(reloadIntoLibraryMock).not.toHaveBeenCalled();
   });
 
   it("disables the fields and shows a pending state while the request is in flight", async () => {

@@ -29,6 +29,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      something typed into it. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
+  import Pencil from "@lucide/svelte/icons/pencil";
+  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Archive from "@lucide/svelte/icons/archive";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Tag, TagListResponse } from "../lib/types";
@@ -130,18 +134,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <AppHeader />
-  <h1>{m.nav_tags()}</h1>
+  <p class="page-heading">{m.nav_tags()}</p>
 
   {#if actionError}
-    <p class="status error" role="alert">{actionError}</p>
+    <p class="status error" role="alert">
+      <AlertCircle size={15} />
+      <span>{actionError}</span>
+    </p>
   {/if}
 
   {#if loading}
     <p class="status">{m.common_loading()}</p>
   {:else if loadError}
-    <p class="status error" role="alert">{loadError}</p>
+    <div class="status-block error" role="alert">
+      <AlertCircle size={28} />
+      <span>{loadError}</span>
+    </div>
   {:else if tags.length === 0}
-    <p class="status">{m.tags_no_tags()}</p>
+    <div class="status-block">
+      <Archive size={28} />
+      <span>{m.tags_no_tags()}</span>
+    </div>
   {:else}
     <ul class="tags">
       {#each tags as tag (tag.id)}
@@ -173,6 +186,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                     class="slug-preview"
                     onclick={openSlugField}
                   >
+                    <Pencil size={10} />
                     {m.tags_slug_preview({ slug: slugPreview })}
                   </button>
                 {/if}
@@ -196,16 +210,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               <span class="slug">/tags/{tag.slug}</span>
             </a>
             <div class="row-actions">
-              <button type="button" onclick={() => startRename(tag)}
-                >{m.tags_rename()}</button
-              >
               <button
                 type="button"
-                class="danger"
+                class="icon-btn"
+                aria-label={m.tags_rename_aria({ name: tag.name })}
+                onclick={() => startRename(tag)}
+              >
+                <Pencil size={14} />
+              </button>
+              <button
+                type="button"
+                class="icon-btn danger"
+                aria-label={m.tags_delete_aria({ name: tag.name })}
                 onclick={() => handleDelete(tag)}
                 disabled={deletingId === tag.id}
               >
-                {m.common_delete()}
+                <Trash2 size={14} />
               </button>
             </div>
           {/if}
@@ -216,21 +236,47 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     max-width: 48rem;
     margin: 0 auto;
     padding: 2rem 1rem;
   }
 
-  h1 {
-    margin: 0 0 1rem;
+  .page-heading {
+    @include type.eyebrow;
+    margin: 0 0 1.25rem;
   }
 
   .status {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
     color: var(--ink-muted);
+    margin-bottom: 1rem;
 
     &.error {
       color: var(--accent);
+    }
+  }
+
+  .status-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
+    color: var(--ink-muted);
+    text-align: center;
+
+    &.error {
+      color: var(--accent);
+    }
+
+    :global(svg) {
+      opacity: 0.6;
     }
   }
 
@@ -238,6 +284,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     list-style: none;
     margin: 0;
     padding: 0;
+    border-top: 1px dotted var(--rule);
   }
 
   .row {
@@ -245,28 +292,31 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     justify-content: space-between;
     gap: 1rem;
-    padding: 0.625rem 0.25rem;
-    border-bottom: 1px solid var(--rule);
+    padding: 0.7rem 0.25rem;
+    @include mix.dotted-rule;
   }
 
   .name {
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0.15rem;
     font-size: 0.9375rem;
     color: inherit;
     text-decoration: none;
 
     &:hover {
-      text-decoration: underline;
+      color: var(--accent);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
   .slug {
-    font-size: 0.75rem;
-    font-weight: 400;
+    @include type.data-mono;
+    font-size: 0.72rem;
     color: var(--ink-muted);
-    text-decoration: none;
   }
 
   .inline-form {
@@ -280,46 +330,63 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .edit-fields {
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
+    gap: 0.3rem;
   }
 
   .slug-field {
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 0.15rem;
+
+    input {
+      @include type.data-mono;
+      font-size: 0.8rem;
+    }
   }
 
   .slug-error {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     color: var(--accent);
   }
 
   .slug-preview {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     width: fit-content;
     padding: 0.125rem 0;
     border: none;
     background: none;
     color: var(--ink-muted);
-    font-size: 0.75rem;
+    @include type.data-mono;
+    font-size: 0.72rem;
     text-decoration: underline dotted;
     cursor: pointer;
 
     &:hover {
-      color: var(--ink);
+      color: var(--accent);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
   input[type="text"] {
-    padding: 0.375rem 0.5rem;
+    padding: 0.4rem 0.6rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
-    background: var(--paper);
+    border-radius: 4px;
+    background: var(--paper-raised);
     color: var(--ink);
     font: inherit;
     font-size: 0.875rem;
 
     &.invalid {
       border-color: var(--accent);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
@@ -338,15 +405,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       cursor: default;
     }
 
-    &.danger:hover:not(:disabled) {
-      border-color: var(--accent);
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.8rem;
+    height: 1.8rem;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--ink-muted);
+
+    &:hover:not(:disabled) {
       color: var(--accent);
+      background: var(--paper-raised);
     }
   }
 
   .row-actions {
     display: flex;
-    gap: 0.375rem;
+    gap: 0.3rem;
     flex-shrink: 0;
   }
 </style>

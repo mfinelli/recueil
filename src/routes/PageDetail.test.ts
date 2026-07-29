@@ -39,6 +39,15 @@
 //    native pre-onchange DOM mutation. The control visually stays at
 //    whatever the user picked, alongside the error message, rather than
 //    reverting. See each test's own comment for specifics.
+//  - delete is the first write path on this screen that navigates away on
+//    success, so its own tests need push mocked-and-captured (not just
+//    stubbed, like the rest of this file's svelte-spa-router mock), same
+//    as Login.test.ts/Setup.test.ts's own pushMock pattern -- and confirm()
+//    mocked the same way Tags.test.ts/Collections.test.ts already do for
+//    their own confirm()-gated deletes.
+//  - recapture never touches `page` at all on success  -- its test only
+//    asserts the transient "Queued!" button label, not any change to the
+//    rendered page state.
 import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   render,
@@ -63,15 +72,21 @@ vi.mock("../lib/api", async (importOriginal) => {
   return { ...actual, apiJSON: vi.fn() };
 });
 
+import { push } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
 import type { CaptureSummary, Collection, PageDetail } from "../lib/types";
 import PageDetailRoute from "./PageDetail.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
+const pushMock = vi.mocked(push);
+const confirmMock = vi.fn();
+vi.stubGlobal("confirm", confirmMock);
 
 afterEach(() => {
   cleanup();
   apiJSONMock.mockReset();
+  confirmMock.mockReset();
+  pushMock.mockClear();
 });
 
 const exampleCapture: CaptureSummary = {
@@ -116,7 +131,7 @@ const basePage: PageDetail = {
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",
   captures: [exampleCapture],
-  tags: [{ id: 1, name: "reading", source: "manual" }],
+  tags: [{ id: 1, name: "reading", slug: "reading", source: "manual" }],
   collections: [{ id: 5, name: "Articles", parent_id: null }],
 };
 
@@ -177,16 +192,22 @@ describe("PageDetail", () => {
     expect(
       screen.getByRole("link", { name: "example.com/article" }),
     ).toBeTruthy();
+    // Checked by default: excluded_from_mirror: false means this page IS
+    // synced, and the checkbox is now framed as the positive ("sync"),
+    // not the negative ("exclude") -- checked means synced.
     expect(
       screen.getByRole("checkbox", {
-        name: "Exclude from bookmark-list mirror",
+        name: "Sync with my browser's bookmarks",
       }),
-    ).toHaveProperty("checked", false);
-    expect(screen.getByText("reading")).toBeTruthy();
-    expect(screen.getByText("Articles")).toBeTruthy();
-    // source/size formatted as "extension · 2.0 KB" for a 2048-byte
-    // capture.
-    expect(screen.getByText(/extension · 2\.0 KB/)).toBeTruthy();
+    ).toHaveProperty("checked", true);
+    // A real link now (tag.slug lets it link to TagDetail, collectionPath
+    // resolves the collection's from allCollections) -- see the dedicated
+    // linking tests below for the cases that matter more.
+    expect(screen.getByRole("link", { name: "reading" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Articles" })).toBeTruthy();
+    // source/size formatted as just "2.0 KB" for an extension capture --
+    // no source label for the common case, see the de-emphasis tests below.
+    expect(screen.getByText(/2\.0 KB/)).toBeTruthy();
   });
 
   it("shows the API's own error message when loading the page fails with ApiError", async () => {
@@ -204,8 +225,13 @@ describe("PageDetail", () => {
   it("adds a tag, keeping the list sorted, and clears the input", async () => {
     render42();
     await screen.findByText("reading");
+    await fireEvent.click(screen.getByRole("button", { name: "Edit tags" }));
 
-    apiJSONMock.mockResolvedValueOnce({ id: 2, name: "archive" });
+    apiJSONMock.mockResolvedValueOnce({
+      id: 2,
+      name: "archive",
+      slug: "archive",
+    });
     const input = screen.getByPlaceholderText("Add a tag…");
     await fireEvent.input(input, { target: { value: "archive" } });
     const tagForm = input.closest("form") as HTMLElement;
@@ -222,6 +248,7 @@ describe("PageDetail", () => {
   it("shows the API's own error message when adding a tag fails", async () => {
     render42();
     await screen.findByText("reading");
+    await fireEvent.click(screen.getByRole("button", { name: "Edit tags" }));
 
     apiJSONMock.mockRejectedValueOnce(new ApiError(400, "invalid tag name"));
     const input = screen.getByPlaceholderText("Add a tag…");
@@ -235,6 +262,7 @@ describe("PageDetail", () => {
   it("removes a tag", async () => {
     render42();
     await screen.findByText("reading");
+    await fireEvent.click(screen.getByRole("button", { name: "Edit tags" }));
 
     apiJSONMock.mockResolvedValueOnce(undefined);
     await fireEvent.click(
@@ -247,9 +275,36 @@ describe("PageDetail", () => {
     expect(screen.queryByText("reading")).toBeNull();
   });
 
+  it("hides the remove buttons and add-tag form until Edit tags is clicked", async () => {
+    render42();
+    await screen.findByText("reading");
+
+    expect(
+      screen.queryByRole("button", { name: "Remove tag reading" }),
+    ).toBeNull();
+    expect(screen.queryByPlaceholderText("Add a tag…")).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit tags" }));
+    expect(
+      screen.getByRole("button", { name: "Remove tag reading" }),
+    ).toBeTruthy();
+    expect(screen.getByPlaceholderText("Add a tag…")).toBeTruthy();
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Done editing tags" }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Remove tag reading" }),
+    ).toBeNull();
+    expect(screen.queryByPlaceholderText("Add a tag…")).toBeNull();
+  });
+
   it("adds an existing collection via the picker, then hides it once every collection is linked", async () => {
     render42();
-    await screen.findByText("Articles");
+    await screen.findByRole("link", { name: "Articles" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
 
     apiJSONMock.mockResolvedValueOnce(undefined);
     const select = screen.getByRole("combobox", {
@@ -274,7 +329,10 @@ describe("PageDetail", () => {
 
   it("removes a collection", async () => {
     render42();
-    await screen.findByText("Articles");
+    await screen.findByRole("link", { name: "Articles" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
 
     apiJSONMock.mockResolvedValueOnce(undefined);
     await fireEvent.click(
@@ -295,7 +353,10 @@ describe("PageDetail", () => {
 
   it("creates a new collection and links it in one action", async () => {
     render42();
-    await screen.findByText("Articles");
+    await screen.findByRole("link", { name: "Articles" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
 
     const created: Collection = {
       id: 7,
@@ -311,11 +372,11 @@ describe("PageDetail", () => {
     await fireEvent.input(input, { target: { value: "Cooking" } });
     await fireEvent.click(screen.getByRole("button", { name: "Create & add" }));
 
-    expect(apiJSONMock).toHaveBeenNthCalledWith(4, "/collections", {
+    expect(apiJSONMock).toHaveBeenNthCalledWith(3, "/collections", {
       method: "POST",
       body: { name: "Cooking" },
     });
-    expect(apiJSONMock).toHaveBeenNthCalledWith(5, "/pages/42/collections", {
+    expect(apiJSONMock).toHaveBeenNthCalledWith(4, "/pages/42/collections", {
       method: "POST",
       body: { collection_id: 7 },
     });
@@ -335,7 +396,10 @@ describe("PageDetail", () => {
 
   it("shows the API's own error message when create-and-add fails on the create step", async () => {
     render42();
-    await screen.findByText("Articles");
+    await screen.findByRole("link", { name: "Articles" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
 
     apiJSONMock.mockRejectedValueOnce(new ApiError(400, "name already in use"));
     await fireEvent.input(
@@ -347,26 +411,86 @@ describe("PageDetail", () => {
     expect(await screen.findByText("name already in use")).toBeTruthy();
   });
 
+  it("links a collection pill to its full nested path, reconstructed from allCollections", async () => {
+    const nested: Collection = {
+      id: 8,
+      parent_id: 5,
+      name: "Side Dishes",
+      slug: "side-dishes",
+      description: null,
+      created_at: "2026-05-01T12:00:00Z",
+      updated_at: "2026-05-01T12:00:00Z",
+    };
+    render42({
+      page: {
+        ...basePage,
+        collections: [{ id: 8, name: "Side Dishes", parent_id: 5 }],
+      },
+      collections: [articlesCollection, recipesCollection, nested],
+    });
+
+    expect(
+      await screen.findByRole("link", { name: "Side Dishes" }),
+    ).toHaveProperty("hash", "#/collections/articles/side-dishes");
+  });
+
+  it("renders a collection pill as plain text, not a broken link, when it can't be found in allCollections", async () => {
+    render42({ collections: [] });
+
+    await screen.findByText("Articles");
+    expect(screen.queryByRole("link", { name: "Articles" })).toBeNull();
+  });
+
+  it("hides the remove buttons and both add-collection forms until Edit collections is clicked", async () => {
+    render42();
+    await screen.findByRole("link", { name: "Articles" });
+
+    expect(
+      screen.queryByRole("button", { name: "Remove from Articles" }),
+    ).toBeNull();
+    expect(screen.queryByPlaceholderText("Add to a collection…")).toBeNull();
+    expect(
+      screen.queryByPlaceholderText("Or create a new collection…"),
+    ).toBeNull();
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove from Articles" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByPlaceholderText("Or create a new collection…"),
+    ).toBeTruthy();
+  });
+
   it("toggles the mirror-exclusion checkbox on success", async () => {
     render42();
     const checkbox = await screen.findByRole("checkbox", {
-      name: "Exclude from bookmark-list mirror",
+      name: "Sync with my browser's bookmarks",
     });
+    // excluded_from_mirror: false on basePage -- checked (synced) by
+    // default, since the checkbox is now framed as the positive.
+    expect(checkbox).toHaveProperty("checked", true);
 
     apiJSONMock.mockResolvedValueOnce(undefined);
     await fireEvent.click(checkbox);
 
+    // The PATCH body is unaffected by the display inversion --
+    // toggleExcludedFromMirror always flips page.excluded_from_mirror to
+    // its opposite regardless of how the checkbox presents that value.
     expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
       method: "PATCH",
       body: { excluded_from_mirror: true },
     });
-    expect(checkbox).toHaveProperty("checked", true);
+    // Now excluded (unsynced), so unchecked.
+    expect(checkbox).toHaveProperty("checked", false);
   });
 
   it("shows an error when the mirror toggle fails, but doesn't correct the checkbox's now-stale checked state", async () => {
     render42();
     const checkbox = await screen.findByRole("checkbox", {
-      name: "Exclude from bookmark-list mirror",
+      name: "Sync with my browser's bookmarks",
     });
 
     apiJSONMock.mockRejectedValueOnce(new ApiError(500, "update rejected"));
@@ -375,46 +499,217 @@ describe("PageDetail", () => {
     expect(await screen.findByText("update rejected")).toBeTruthy();
     // Genuine finding, not a test artifact: page.excluded_from_mirror is
     // only ever written on success, and Svelte's one-way
-    // `checked={page.excluded_from_mirror}` binding only re-writes the
+    // `checked={!page.excluded_from_mirror}` binding only re-writes the
     // DOM when that underlying value actually *changes* -- a failed
     // write leaves it exactly as it was, so there's no dependency change
     // to trigger a re-sync. The browser's own native click-toggle (which
     // sets `checked` before onchange even fires, independent of Svelte)
-    // is therefore left uncorrected: the box visually stays checked
-    // until something unrelated causes this section to re-render. Minor,
-    // since actionError is shown alongside it, but worth knowing about
-    // for any other one-way-bound control following this same pattern.
-    expect(checkbox).toHaveProperty("checked", true);
+    // is therefore left uncorrected: the box visually flips to unchecked
+    // and stays there until something unrelated causes this section to
+    // re-render, even though the write failed and the page is still
+    // synced. Minor, since actionError is shown alongside it, but worth
+    // knowing about for any other one-way-bound control following this
+    // same pattern.
+    expect(checkbox).toHaveProperty("checked", false);
   });
 
-  it("updates a capture's language on success", async () => {
-    render42({ languages: ["en", "fr", "de"] });
-    const select = await screen.findByRole("combobox", { name: "Language" });
+  it("edits the title, saving on success", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    const input = screen.getByPlaceholderText("Title");
+    expect(input).toHaveProperty("value", "An example article");
+
+    apiJSONMock.mockResolvedValueOnce({ ...basePage, title: "New title" });
+    await fireEvent.input(input, { target: { value: "New title" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "PATCH",
+      body: { title: "New title" },
+    });
+    expect(
+      await screen.findByRole("heading", { name: "New title" }),
+    ).toBeTruthy();
+  });
+
+  it("cancels a title edit without calling the API", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    await fireEvent.input(screen.getByPlaceholderText("Title"), {
+      target: { value: "Discarded" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/pages/42",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(
+      screen.getByRole("heading", { name: "An example article" }),
+    ).toBeTruthy();
+  });
+
+  it("shows the API's own error message when saving a title fails", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit title" }));
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(400, "title cannot be empty"),
+    );
+    await fireEvent.input(screen.getByPlaceholderText("Title"), {
+      target: { value: "   " },
+    });
+    // The submit button is disabled for a blank/whitespace-only title
+    // (see PageDetail.svelte's own `!titleInput.trim()` guard), so this
+    // exercises the same trimmed-empty rejection the backend enforces --
+    // clicking Save here is a no-op at the browser level (disabled
+    // button), so use a real value instead and let the mocked rejection
+    // stand in for the backend's own validation failure.
+    await fireEvent.input(screen.getByPlaceholderText("Title"), {
+      target: { value: "New title" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("title cannot be empty")).toBeTruthy();
+  });
+
+  it("queues a recapture, showing a transient confirmation", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
 
     apiJSONMock.mockResolvedValueOnce(undefined);
-    await fireEvent.change(select, { target: { value: "fr" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Recapture" }));
 
-    expect(apiJSONMock).toHaveBeenCalledWith("/captures/100/language", {
-      method: "PATCH",
-      body: { language: "fr" },
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/recapture", {
+      method: "POST",
     });
-    expect(select).toHaveProperty("value", "fr");
+    expect(await screen.findByRole("button", { name: "Queued!" })).toBeTruthy();
   });
 
-  it("shows an error when the language update fails, but doesn't correct the select's now-stale value", async () => {
-    render42({ languages: ["en", "fr", "de"] });
-    const select = await screen.findByRole("combobox", { name: "Language" });
+  it("shows the API's own error message when queuing a recapture fails", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
 
-    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "update rejected"));
-    await fireEvent.change(select, { target: { value: "fr" } });
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "queue unavailable"));
+    await fireEvent.click(screen.getByRole("button", { name: "Recapture" }));
 
-    expect(await screen.findByText("update rejected")).toBeTruthy();
-    // Same finding as the mirror-toggle test above: capture.language is
-    // only written on success, so the one-way `value={capture.language}`
-    // binding never re-fires on a failed update (the value it's tracking
-    // never changed), leaving the <select>'s own DOM value at whatever
-    // the change event already set it to ("fr") rather than reverting to
-    // the still-actual "en".
-    expect(select).toHaveProperty("value", "fr");
+    expect(await screen.findByText("queue unavailable")).toBeTruthy();
+  });
+
+  it("deletes the page after confirmation and navigates back to the library", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    confirmMock.mockReturnValue(true);
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      'Delete "An example article"? This can\'t be undone from the dashboard.',
+    );
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "DELETE",
+    });
+    await vi.waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith("/");
+    });
+  });
+
+  it("doesn't delete the page when the confirmation is declined", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    confirmMock.mockReturnValue(false);
+    await fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/pages/42",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the API's own error message when delete fails, without navigating away", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    confirmMock.mockReturnValue(true);
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "delete failed"));
+    await fireEvent.click(screen.getByRole("button", { name: "Delete page" }));
+
+    expect(await screen.findByText("delete failed")).toBeTruthy();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("disables Recapture during the queued confirmation window, so it can't be clicked again while it'd just be a no-op", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    const button = screen.getByRole("button", { name: "Recapture" });
+    expect(button).toHaveProperty("disabled", false);
+
+    await fireEvent.click(button);
+    const queuedButton = await screen.findByRole("button", {
+      name: "Queued!",
+    });
+    expect(queuedButton).toHaveProperty("disabled", true);
+  });
+
+  it("shows the favicon when favicon_path is set", async () => {
+    const { container } = render42({
+      page: { ...basePage, favicon_path: "/some/path.png" },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    const favicon = container.querySelector<HTMLImageElement>(".favicon");
+    expect(favicon?.src).toContain("/api/pages/42/favicon");
+  });
+
+  it("shows no favicon at all (no placeholder) when favicon_path is null", async () => {
+    const { container } = render42({
+      page: { ...basePage, favicon_path: null },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(container.querySelector(".favicon")).toBeNull();
+  });
+
+  it("hides the favicon on a broken image, again with no placeholder", async () => {
+    const { container } = render42({
+      page: { ...basePage, favicon_path: "/some/path.png" },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    const favicon = container.querySelector<HTMLImageElement>(".favicon");
+    await fireEvent.error(favicon as HTMLImageElement);
+
+    expect(container.querySelector(".favicon")).toBeNull();
+  });
+
+  it("omits the source label for an extension capture (the common case), showing only the size", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(screen.getByText("2.0 KB")).toBeTruthy();
+    expect(screen.queryByText(/extension/)).toBeNull();
+  });
+
+  it("calls out a manual_upload capture specifically, since it's the uncommon case", async () => {
+    render42({
+      page: {
+        ...basePage,
+        captures: [{ ...exampleCapture, source: "manual_upload" }],
+      },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(screen.getByText(/manual upload/)).toBeTruthy();
+    expect(screen.getByText(/2\.0 KB/)).toBeTruthy();
   });
 });

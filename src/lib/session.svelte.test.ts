@@ -48,7 +48,9 @@ describe("session bootstrap", () => {
           jsonResponse({ id: 1, username: "alice", role: "admin" }),
         );
       if (url.endsWith("/setup-status"))
-        return Promise.resolve(jsonResponse({ needs_setup: false }));
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
       throw new Error(`unexpected fetch: ${url}`);
     });
     vi.stubGlobal("fetch", fetchMock);
@@ -58,6 +60,64 @@ describe("session bootstrap", () => {
 
     expect(session.user).toEqual({ id: 1, username: "alice", role: "admin" });
     expect(session.needsSetup).toBe(false);
+  });
+
+  it("populates openRegistration from GET /setup-status", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: true }),
+        );
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.openRegistration).toBe(true);
+  });
+
+  it("populates session.theme from GET /settings", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
+      if (url.endsWith("/settings"))
+        return Promise.resolve(jsonResponse({ language: null, theme: "dark" }));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.theme).toBe("dark");
+  });
+
+  it("leaves session.theme null when the settings request fails", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
+      if (url.endsWith("/settings"))
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.theme).toBeNull();
   });
 
   it("needsSetup is true and user is null on a fresh instance with no users yet", async () => {
@@ -158,6 +218,45 @@ describe("session actions", () => {
 
     await expect(session.login("bob", "wrong-password")).rejects.toMatchObject({
       message: "invalid username or password",
+    });
+    expect(session.user).toBeNull();
+  });
+
+  it("register sets session.user and clears needsSetup on success", async () => {
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({ id: 3, username: "carol", role: "member" }),
+        ),
+    );
+    await session.register("carol", "correct-password");
+
+    expect(session.user).toEqual({ id: 3, username: "carol", role: "member" });
+    expect(session.needsSetup).toBe(false);
+  });
+
+  it("register leaves session.user untouched and propagates ApiError on failure", async () => {
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          jsonResponse({ error: "username already taken" }, 409),
+        ),
+    );
+
+    await expect(
+      session.register("carol", "correct-password"),
+    ).rejects.toMatchObject({
+      message: "username already taken",
     });
     expect(session.user).toBeNull();
   });

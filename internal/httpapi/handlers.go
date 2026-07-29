@@ -35,6 +35,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/medama-io/go-useragent"
+	"github.com/medama-io/go-useragent/agents"
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
@@ -55,10 +57,21 @@ type Server struct {
 	CookieSecure           bool
 	PairingKey             auth.PairingKey
 	EnableOpenRegistration bool
+
+	// ReadabilityVersion/AIModel are this running agent's currently
+	// configured values -- the same readability.Params.Version/
+	// ai.Params.Model the background job runner itself was constructed
+	// with, threaded through here purely for GetCaptureConfig to report.
+	ReadabilityVersion string
+	AIModel            string
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool) *Server {
-	return &Server{Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap, CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration}
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel string) *Server {
+	return &Server{
+		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap,
+		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
+		ReadabilityVersion: readabilityVersion, AIModel: aiModel,
+	}
 }
 
 type credentials struct {
@@ -83,13 +96,16 @@ type pairingTokenResponse struct {
 }
 
 type setupStatusResponse struct {
-	NeedsSetup bool `json:"needs_setup"`
+	NeedsSetup       bool `json:"needs_setup"`
+	OpenRegistration bool `json:"open_registration"`
 }
 
 // GET /api/setup-status: unauthenticated -- lets the dashboard's first load
 // distinguish "show the setup screen" from "show the login screen" without
 // guessing or having to attempt POST /api/setup speculatively just to read
-// its 409. Deliberately doesn't leak anything beyond the boolean (not a
+// its 409. Also carries OpenRegistration (server config, not user data) so
+// Login knows whether to link to /register without a second unauthenticated
+// round-trip. Doesn't leak anything beyond these two booleans (not a
 // username, not a count) -- an unauthenticated endpoint has no other reason
 // to exist here.
 func (s *Server) SetupStatus(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +114,10 @@ func (s *Server) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	writeJSON(w, http.StatusOK, setupStatusResponse{NeedsSetup: count == 0})
+	writeJSON(w, http.StatusOK, setupStatusResponse{
+		NeedsSetup:       count == 0,
+		OpenRegistration: s.EnableOpenRegistration,
+	})
 }
 
 // POST /api/setup: creates the first admin account, gated by the bootstrap
@@ -422,25 +441,154 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type sessionResponse struct {
+	ID             int64  `json:"id"`
+	Browser        string `json:"browser"`
+	BrowserVersion string `json:"browser_version"`
+	OS             string `json:"os"`
+	// DeviceClass is one of "desktop"/"mobile"/"tablet"/"tv"/"bot" (see
+	// sessionResponseFromSession's own doc comment), or "" if the
+	// session has no user_agent at all or the go-useragent library didn't
+	// recognize it. The dashboard's own icon-picking logic treats "" the
+	// same as any other unrecognized value -- a generic fallback icon,
+	// not an error.
+	DeviceClass string    `json:"device_class"`
+	CreatedAt   time.Time `json:"created_at"`
+	LastSeenAt  time.Time `json:"last_seen_at"`
+	// IsCurrent marks the one row that matches the current request's
+	// session cookie (auth.SessionIDFromContext)
+	IsCurrent bool `json:"is_current"`
+}
+
+// sessionResponseFromSession parses user_agent fresh on every call
+// (go-useragent's Parser is cheap -- a trie lookup, no regex, no
+// network, no disk) rather than storing browser/OS/device_class as their own
+// columns at session-creation time. A NULL/empty user_agent parses to every
+// field empty, which the dashboard already treats as "generic/unknown," not
+// an error.
+func sessionResponseFromSession(parser *useragent.Parser, sess *db.Session, isCurrent bool) sessionResponse {
+	resp := sessionResponse{
+		ID: sess.ID, CreatedAt: sess.CreatedAt.Time, LastSeenAt: sess.LastSeenAt.Time, IsCurrent: isCurrent,
+	}
+	if !sess.UserAgent.Valid || sess.UserAgent.String == "" {
+		return resp
+	}
+
+	ua := parser.Parse(sess.UserAgent.String)
+	resp.Browser = ua.Browser().String()
+	resp.BrowserVersion = ua.BrowserVersionMajor()
+	resp.OS = ua.OS().String()
+	switch ua.Device() {
+	case agents.DeviceDesktop:
+		resp.DeviceClass = "desktop"
+	case agents.DeviceMobile:
+		resp.DeviceClass = "mobile"
+	case agents.DeviceTablet:
+		resp.DeviceClass = "tablet"
+	case agents.DeviceTV:
+		resp.DeviceClass = "tv"
+	case agents.DeviceBot:
+		resp.DeviceClass = "bot"
+	}
+	return resp
+}
+
+type sessionListResponse struct {
+	Sessions []sessionResponse `json:"sessions"`
+}
+
+// GET /api/sessions: the calling user's active (unexpired) sessions -- always
+// self-scoped. Most recently active first.
+func (s *Server) ListSessions(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	currentID, _ := auth.SessionIDFromContext(r.Context())
+
+	sessions, err := s.Queries.ListSessionsForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list sessions for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	parser := useragent.NewParser()
+	resp := make([]sessionResponse, len(sessions))
+	for i := range sessions {
+		resp[i] = sessionResponseFromSession(parser, &sessions[i], sessions[i].ID == currentID)
+	}
+
+	writeJSON(w, http.StatusOK, sessionListResponse{Sessions: resp})
+}
+
+// DELETE /api/sessions/{id}: revokes one of the calling user's own
+// *other* sessions -- but never the one this very request is
+// authenticated with. Ending your own current session through this
+// screen would mean the DELETE request itself succeeds and then every
+// subsequent request, including whatever the dashboard tried to do
+// next, starts 401ing with no session left to explain why -- confusing
+// at best. Signing out (POST /api/auth/logout, the existing flow) is
+// the correct, already-well-understood way to end your own current
+// session; this endpoint refuses instead of trying to gracefully handle
+// self-deletion's own aftermath. The dashboard hides the revoke control
+// entirely for the current session's row, so reaching this 400 at all
+// means either a stale tab or a direct API call, not a normal click.
+func (s *Server) DeleteSession(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	sessionID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid session id")
+		return
+	}
+
+	if currentID, ok := auth.SessionIDFromContext(r.Context()); ok && currentID == sessionID {
+		writeError(w, http.StatusBadRequest, "sign out to end your current session")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeleteSessionForUser(r.Context(), db.DeleteSessionForUserParams{ID: sessionID, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete session %d for user %d: %v", sessionID, user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "session not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type userSettingsResponse struct {
 	// Pointer, not a plain string -- nil renders as JSON null, distinct
 	// from an explicit empty-string language, matching textOrNil's own
 	// convention elsewhere in this file (title/favicon_path/etc.).
 	Language *string `json:"language"`
+	// nil means "automatic" -- follow the browser's prefers-color-scheme.
+	// "light"/"dark" are the only other possible values (enforced by the
+	// theme CHECK constraint at the database level, not just here).
+	Theme *string `json:"theme"`
 }
 
 func userSettingsResponseFromSettings(s *db.UserSetting) userSettingsResponse {
-	return userSettingsResponse{Language: textOrNil(s.Language)}
+	return userSettingsResponse{Language: textOrNil(s.Language), Theme: textOrNil(s.Theme)}
 }
 
 // GET /api/settings: the calling user's dashboard preferences. A user who
 // has never PATCHed their settings has no row in user_settings at all (see
 // UpsertUserSettings's own doc comment for why there's no row-per-user
-// backfill) -- that's treated identically to a row that exists with
-// language explicitly NULL, both rendering as {"language": null}, since
+// backfill) -- that's treated identically to a row that exists with a
+// field explicitly NULL, both rendering as null for that field, since
 // from the API's point of view "never set" and "explicitly cleared" mean
-// the same thing: no override, fall back to auto-detection once the
-// dashboard actually has one.
+// the same thing: no override, fall back to auto-detection (browser
+// language / prefers-color-scheme respectively).
 func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -466,17 +614,18 @@ func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) {
 var languageTagPattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Z]{2})?$`)
 
 type patchSettingsRequest struct {
-	// Not a pointer, unlike patchPageRequest's per-field pointers -- this
-	// endpoint has exactly one field today, so there's no "which fields
-	// were provided" question a pointer would answer. An empty string
-	// clears the override back to NULL/auto-detect; anything else must
-	// match languageTagPattern. If a second setting is ever added here,
-	// this request shape (and PatchPage's pointer pattern) is the thing to
-	// revisit then, not before.
+	// Neither field is a pointer, unlike patchPageRequest's per-field
+	// pointers -- both are always sent together, full-replace, on every
+	// PATCH (this is one Settings screen with both preferences already
+	// loaded into the same form, so there's never a real "update just
+	// one without knowing the other" case to support). An empty string
+	// clears either field back to NULL/automatic; anything else must be
+	// a real language tag (Language) or exactly "light"/"dark" (Theme).
 	Language string `json:"language"`
+	Theme    string `json:"theme"`
 }
 
-// PATCH /api/settings: full-replace semantics for the language field (see
+// PATCH /api/settings: full-replace semantics for both fields (see
 // patchSettingsRequest's own doc comment). Upserts rather than requiring a
 // prior GET/row to exist -- a user's very first settings change is exactly
 // as valid as their hundredth.
@@ -496,9 +645,13 @@ func (s *Server) PatchSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid language tag")
 		return
 	}
+	if req.Theme != "" && req.Theme != "light" && req.Theme != "dark" {
+		writeError(w, http.StatusBadRequest, "invalid theme")
+		return
+	}
 
 	settings, err := s.Queries.UpsertUserSettings(r.Context(), db.UpsertUserSettingsParams{
-		UserID: user.ID, Language: textOrNull(req.Language),
+		UserID: user.ID, Language: textOrNull(req.Language), Theme: textOrNull(req.Theme),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -512,21 +665,19 @@ type queueItemListResponse struct {
 	Items []queueitems.Item `json:"items"`
 }
 
-// GET /api/queue-items: lists the calling user's own failed queue items
-// (URLs the extension/CLI tried and failed to archive). Always
-// self-scoped, same reasoning as ListDevices -- this is personal data, not
-// a member-vs-admin dashboard concern the way Manage Devices originally
-// was before that cross-user piece was reconsidered and removed.
-func (s *Server) ListFailedQueueItems(w http.ResponseWriter, r *http.Request) {
+// GET /api/queue-items: lists the calling user's queue items (URLs the
+// extension/CLI has enqueued to archive) -- every pending/claimed/failed
+// item unconditionally, plus recently-'captured' ones.
+func (s *Server) ListQueueItems(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	items, err := s.QueueItems.ListFailed(r.Context(), user.ID)
+	items, err := s.QueueItems.List(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed queue items for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list queue items for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -575,91 +726,100 @@ func timestamptzOrNil(t pgtype.Timestamptz) *time.Time {
 	return &t.Time
 }
 
-// failedJob is the dashboard Queue screen's combined shape for a failed
-// screenshot/readability/AI job -- all three of ListFailedScreenshotJobsForUser/
-// ListFailedReadabilityJobsForUser/ListFailedAIJobsForUser return this same
-// row shape (id/attempts/error/completed_at from the job itself,
-// page_id/raw_url/title from the capture it belongs to, via the same
-// pages-ownership join GetCaptureByIDForUser already uses), so one response
+// job is the dashboard Queue screen's combined shape for a screenshot/
+// readability/AI job -- all three of ListRecentScreenshotJobsForUser/
+// ListRecentReadabilityJobsForUser/ListRecentAIJobsForUser return this same
+// row shape (id/status/attempts/error/claimed_at/completed_at from the job
+// itself, page_id/raw_url/title from the capture it belongs to, via the
+// same pages-ownership join GetCaptureByIDForUser uses), so one response
 // type serves all three lists rather than three near-identical DTOs.
-type failedJob struct {
+type job struct {
 	ID          int64      `json:"id"`
 	PageID      int64      `json:"page_id"`
 	URL         string     `json:"url"`
 	Title       *string    `json:"title"`
+	Status      string     `json:"status"`
 	Attempts    int32      `json:"attempts"`
 	Error       *string    `json:"error"`
+	ClaimedAt   *time.Time `json:"claimed_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
-// failedJobsResponse groups all three job types under their own keys
+// jobsResponse groups all three job types under their own keys
 // (rather than one flat list with a job_type discriminator) so the
 // dashboard's Queue screen can render them as separate sections without
 // having to partition the response itself.
-type failedJobsResponse struct {
-	ScreenshotJobs  []failedJob `json:"screenshot_jobs"`
-	ReadabilityJobs []failedJob `json:"readability_jobs"`
-	AIJobs          []failedJob `json:"ai_jobs"`
+type jobsResponse struct {
+	ScreenshotJobs  []job `json:"screenshot_jobs"`
+	ReadabilityJobs []job `json:"readability_jobs"`
+	AIJobs          []job `json:"ai_jobs"`
 }
 
-// GET /api/jobs: lists the calling user's own failed screenshot,
-// readability, and AI-enrichment jobs in one response -- these are
-// backend-owned async jobs (unlike queue_items, nothing device-side ever
-// claims them), so this needs no Worker round trip at all, just three
+// GET /api/jobs: lists the calling user's screenshot, readability, and
+// AI-enrichment jobs in one response -- every pending/processing/failed
+// job unconditionally, plus 'done' ones from within the last 15 minutes
+// These are backend-owned async jobs (unlike queue_items, nothing device-side
+// ever claims them), so this needs no Worker round trip at all, just three
 // ownership-scoped Postgres queries. Always self-scoped, same reasoning as
-// ListFailedQueueItems/ListDevices.
+// ListQueueItems/ListDevices.
 //
 // A capture whose readability extraction permanently failed never gets an
 // ai_jobs row at all (see readability_jobs.sql's CreateAIJob-on-success
 // comment) -- it shows up in ReadabilityJobs here, not AIJobs, since
 // there's nothing in the ai_jobs table to list for it yet.
-func (s *Server) ListFailedJobs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ListJobs(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	screenshotRows, err := s.Queries.ListFailedScreenshotJobsForUser(r.Context(), user.ID)
+	screenshotRows, err := s.Queries.ListRecentScreenshotJobsForUser(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed screenshot jobs for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list screenshot jobs for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	readabilityRows, err := s.Queries.ListFailedReadabilityJobsForUser(r.Context(), user.ID)
+	readabilityRows, err := s.Queries.ListRecentReadabilityJobsForUser(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed readability jobs for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list readability jobs for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	aiRows, err := s.Queries.ListFailedAIJobsForUser(r.Context(), user.ID)
+	aiRows, err := s.Queries.ListRecentAIJobsForUser(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed AI jobs for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list AI jobs for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	resp := failedJobsResponse{
-		ScreenshotJobs:  make([]failedJob, 0, len(screenshotRows)),
-		ReadabilityJobs: make([]failedJob, 0, len(readabilityRows)),
-		AIJobs:          make([]failedJob, 0, len(aiRows)),
+	resp := jobsResponse{
+		ScreenshotJobs:  make([]job, 0, len(screenshotRows)),
+		ReadabilityJobs: make([]job, 0, len(readabilityRows)),
+		AIJobs:          make([]job, 0, len(aiRows)),
 	}
-	for _, j := range screenshotRows {
-		resp.ScreenshotJobs = append(resp.ScreenshotJobs, failedJob{
-			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
-			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+	for i := range screenshotRows {
+		j := &screenshotRows[i]
+		resp.ScreenshotJobs = append(resp.ScreenshotJobs, job{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
+			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
+			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
-	for _, j := range readabilityRows {
-		resp.ReadabilityJobs = append(resp.ReadabilityJobs, failedJob{
-			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
-			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+	for i := range readabilityRows {
+		j := &readabilityRows[i]
+		resp.ReadabilityJobs = append(resp.ReadabilityJobs, job{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
+			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
+			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
-	for _, j := range aiRows {
-		resp.AIJobs = append(resp.AIJobs, failedJob{
-			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
-			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+	for i := range aiRows {
+		j := &aiRows[i]
+		resp.AIJobs = append(resp.AIJobs, job{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
+			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
+			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
 
@@ -688,7 +848,7 @@ var jobKindToRetry = map[string]func(s *Server, ctx context.Context, id, userID 
 // one of "screenshot", "readability", "ai" -- anything else is a 400, not a
 // 404, since it's a caller bug (an unrecognized kind), not a
 // missing-resource situation. Always self-scoped, same reasoning as
-// ListFailedJobs above.
+// ListJobs above.
 //
 // Unlike RetryQueueItem, there's no device to race against here and no
 // separate "flag it, some device picks it up later" step: the retry query
@@ -764,6 +924,28 @@ func textOrNil(t pgtype.Text) *string {
 		return nil
 	}
 	return &t.String
+}
+
+// int4OrNil is textOrNil's twin for pgtype.Int4 -- thumbnail_size_bytes
+// and favicon_size_bytes are both nullable (no thumbnail/favicon
+// captured yet), same reasoning as their sibling *_path/*_hash columns.
+func int4OrNil(i pgtype.Int4) *int32 {
+	if !i.Valid {
+		return nil
+	}
+	return &i.Int32
+}
+
+// stringOrNil is textOrNil's twin for a plain Go string that isn't a
+// pgtype at all -- Server.ReadabilityVersion/AIModel specifically, where
+// "" means "not configured" (see GetCaptureConfig's own doc comment) and
+// should read as JSON null, not an empty string, same nullability
+// convention as everything else in this API.
+func stringOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // textOrNull is textOrNil's inverse -- internal/ingest has its own
@@ -897,6 +1079,7 @@ type captureSummaryResponse struct {
 type pageTagResponse struct {
 	ID     int64  `json:"id"`
 	Name   string `json:"name"`
+	Slug   string `json:"slug"`
 	Source string `json:"source"`
 }
 
@@ -975,7 +1158,7 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	for _, t := range tags {
-		resp.Tags = append(resp.Tags, pageTagResponse{ID: t.TagID, Name: t.Name, Source: t.Source})
+		resp.Tags = append(resp.Tags, pageTagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug, Source: t.Source})
 	}
 	for _, c := range collections {
 		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})
@@ -1096,13 +1279,17 @@ func (s *Server) GetPageThumbnail(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchPageRequest struct {
-	ExcludedFromMirror *bool `json:"excluded_from_mirror"`
+	ExcludedFromMirror *bool   `json:"excluded_from_mirror"`
+	Title              *string `json:"title"`
 }
 
-// PATCH /api/pages/{id}: currently only supports toggling
-// excluded_from_mirror. A pointer field distinguishes "not provided"
-// from an explicit false, so more patchable fields can be added later
-// without changing this request shape.
+// PATCH /api/pages/{id}: supports toggling excluded_from_mirror and/or
+// overwriting title (a manual title override). Pointer fields
+// distinguish "not provided" from an explicit false/empty, and at least
+// one must be provided; if both are, each is applied as its own update
+// (not one combined query), and the response reflects whichever ran
+// last -- fine here since the dashboard never actually sends both in one
+// request today (they're two separate pieces of UI).
 func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -1119,20 +1306,111 @@ func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ExcludedFromMirror == nil {
-		writeError(w, http.StatusBadRequest, "excluded_from_mirror is required")
+	if req.ExcludedFromMirror == nil && req.Title == nil {
+		writeError(w, http.StatusBadRequest, "excluded_from_mirror or title is required")
 		return
 	}
 
-	page, err := s.Queries.SetPageExcludedFromMirror(r.Context(), db.SetPageExcludedFromMirrorParams{
-		ExcludedFromMirror: *req.ExcludedFromMirror, ID: id, UserID: user.ID,
-	})
+	ctx := r.Context()
+	var page db.Page
+
+	if req.ExcludedFromMirror != nil {
+		page, err = s.Queries.SetPageExcludedFromMirror(ctx, db.SetPageExcludedFromMirrorParams{
+			ExcludedFromMirror: *req.ExcludedFromMirror, ID: id, UserID: user.ID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "page not found")
+			return
+		}
+	}
+
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		if trimmed == "" {
+			writeError(w, http.StatusBadRequest, "title cannot be empty")
+			return
+		}
+		page, err = s.Queries.SetPageTitle(ctx, db.SetPageTitleParams{
+			Title: pgtype.Text{String: trimmed, Valid: true}, ID: id, UserID: user.ID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "page not found")
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, pageResponseFromPage(&page))
+}
+
+// DELETE /api/pages/{id}: see DeletePage's own doc comment for exactly
+// what this does and doesn't clean up (Postgres cascade vs. the D1
+// mirror's self-healing sync vs. intentionally-orphaned on-disk archive
+// files).
+func (s *Server) DeletePage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeletePage(r.Context(), db.DeletePageParams{ID: id, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete page %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// POST /api/pages/{id}/recapture: re-enqueues the page's most recent
+// capture's raw_url (not the normalized_url stored on the page itself --
+// the raw URL is what a device would actually re-fetch) via the Worker's
+// queue, the exact same queue a device's own share-sheet/extension enqueue
+// feeds. This doesn't attempt any capture itself -- it's picked up
+// by whichever device next polls GET /queue, same as any other queued
+// URL, no different from a fresh manual add.
+func (s *Server) RecapturePage(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: id, UserID: user.ID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "page not found")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, pageResponseFromPage(&page))
+	capture, err := s.Queries.GetLatestCaptureByPage(ctx, page.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no captures to recapture")
+		return
+	}
+
+	if err := s.QueueItems.Enqueue(ctx, user.ID, capture.RawUrl); err != nil {
+		log.Printf("warning: failed to enqueue recapture for page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type captureDetailResponse struct {
@@ -1142,8 +1420,14 @@ type captureDetailResponse struct {
 	RawURL                    string    `json:"raw_url"`
 	Title                     *string   `json:"title"`
 	ThumbnailPath             *string   `json:"thumbnail_path"`
+	ThumbnailSizeBytes        *int32    `json:"thumbnail_size_bytes"`
+	ThumbnailHash             *string   `json:"thumbnail_hash"`
 	FaviconPath               *string   `json:"favicon_path"`
+	FaviconSizeBytes          *int32    `json:"favicon_size_bytes"`
+	FaviconHash               *string   `json:"favicon_hash"`
 	ReaderText                *string   `json:"reader_text"`
+	ReadabilityVersion        *string   `json:"readability_version"`
+	ContentHash               string    `json:"content_hash"`
 	AISummary                 *string   `json:"ai_summary"`
 	AIModel                   *string   `json:"ai_model"`
 	Language                  string    `json:"language"`
@@ -1154,11 +1438,18 @@ type captureDetailResponse struct {
 	UpdatedAt                 time.Time `json:"updated_at"`
 }
 
+// captureDetailResponseFromCapture maps every column captures actually
+// has (GetCaptureByIDForUser is a `SELECT captures.*`) into the JSON
+// shape GetCapture returns -- content_hash (the HTML archive's own
+// sha256, not nullable) plus readability_version/thumbnail_size_bytes/
+// thumbnail_hash/favicon_size_bytes/favicon_hash.
 func captureDetailResponseFromCapture(c *db.Capture) captureDetailResponse {
 	return captureDetailResponse{
 		ID: c.ID, PageID: c.PageID, Source: c.Source, RawURL: c.RawUrl, Title: textOrNil(c.Title),
-		ThumbnailPath: textOrNil(c.ThumbnailPath), FaviconPath: textOrNil(c.FaviconPath),
-		ReaderText: textOrNil(c.ReaderText), AISummary: textOrNil(c.AiSummary), AIModel: textOrNil(c.AiModel),
+		ThumbnailPath: textOrNil(c.ThumbnailPath), ThumbnailSizeBytes: int4OrNil(c.ThumbnailSizeBytes), ThumbnailHash: textOrNil(c.ThumbnailHash),
+		FaviconPath: textOrNil(c.FaviconPath), FaviconSizeBytes: int4OrNil(c.FaviconSizeBytes), FaviconHash: textOrNil(c.FaviconHash),
+		ReaderText: textOrNil(c.ReaderText), ReadabilityVersion: textOrNil(c.ReadabilityVersion), ContentHash: c.ContentHash,
+		AISummary: textOrNil(c.AiSummary), AIModel: textOrNil(c.AiModel),
 		Language: c.Language, HTMLCompressedSizeBytes: c.HtmlCompressedSizeBytes, HTMLUncompressedSizeBytes: c.HtmlUncompressedSizeBytes,
 		CapturedAt: c.CapturedAt.Time, CreatedAt: c.CreatedAt.Time, UpdatedAt: c.UpdatedAt.Time,
 	}
@@ -1186,6 +1477,188 @@ func (s *Server) GetCapture(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, captureDetailResponseFromCapture(&capture))
+}
+
+// DELETE /api/captures/{id}: the policy is that no page is
+// ever left with zero captures -- deleting a page's last remaining
+// capture deletes the page itself, in the same transaction, rather than
+// leaving an empty, un-browsable page behind. Ownership is re-verified
+// by DeleteCapture's own USING-clause join (not just trusted from an
+// earlier read), same as every other delete/update in this file.
+func (s *Server) DeleteCapture(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+	ctx := r.Context()
+
+	// Read first, outside the transaction: DeleteCapture's own USING
+	// join re-checks ownership at delete time regardless, but this read
+	// is what gives us page_id to check afterward, and lets a
+	// wrong/not-owned id 404 immediately without ever opening a
+	// transaction for it.
+	capture, err := s.Queries.GetCaptureByIDForUser(ctx, db.GetCaptureByIDForUserParams{ID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		log.Printf("warning: failed to begin transaction deleting capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.Queries.WithTx(tx)
+
+	rowsAffected, err := qtx.DeleteCapture(ctx, db.DeleteCaptureParams{ID: id, UserID: user.ID})
+	if err != nil {
+		log.Printf("warning: failed to delete capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		// Ownership/existence changed between the read above and here
+		// (e.g. a concurrent delete) -- genuinely rare, but correct to
+		// report as gone rather than silently succeeding.
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	remaining, err := qtx.CountCapturesByPage(ctx, capture.PageID)
+	if err != nil {
+		log.Printf("warning: failed to count remaining captures for page %d: %v", capture.PageID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if remaining == 0 {
+		if _, err := qtx.DeletePage(ctx, db.DeletePageParams{ID: capture.PageID, UserID: user.ID}); err != nil {
+			log.Printf("warning: failed to delete now-capture-less page %d: %v", capture.PageID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	} else {
+		// pages.favicon_path is a denormalized copy of whichever capture
+		// last provided one (see SetPageFavicon's own doc comment) --
+		// if the just-deleted capture was that source, the page would
+		// otherwise be left pointing at a path no surviving capture
+		// references anymore. Always recomputed from whatever's now
+		// the page's actual latest capture (this is a no-op write when
+		// the deleted capture wasn't the source in the first place, not
+		// just when it was -- simpler and just as correct as detecting
+		// which case this is first).
+		latest, err := qtx.GetLatestCaptureByPage(ctx, capture.PageID)
+		if err != nil {
+			log.Printf("warning: failed to look up new latest capture for page %d: %v", capture.PageID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if err := qtx.SetPageFavicon(ctx, db.SetPageFaviconParams{FaviconPath: latest.FaviconPath, ID: capture.PageID}); err != nil {
+			log.Printf("warning: failed to refresh favicon for page %d: %v", capture.PageID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("warning: failed to commit transaction deleting capture %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// regeneratedJobResponse is both regenerate endpoints' response shape --
+// just enough for the dashboard to confirm the right job got reset,
+// without re-fetching the whole capture (the reader view's own $effect
+// re-fetches captures separately if it wants updated status).
+type regeneratedJobResponse struct {
+	JobID int64 `json:"job_id"`
+}
+
+// POST /api/captures/{id}/regenerate-summary: resets this capture's
+// ai_jobs row back to pending regardless of its current status -- the
+// ai.Runner's own polling loop (already running, no new processing logic
+// needed here) picks it up and overwrites ai_summary/ai_model once it
+// completes, same as it always does. 404s if readability itself never
+// succeeded for this capture (no ai_jobs row exists yet), same status a
+// bad/not-owned capture id gets; the dashboard doesn't need to tell those
+// two apart, both just mean "nothing to regenerate here."
+func (s *Server) RegenerateAISummary(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+
+	jobID, err := s.Queries.RegenerateAIJobForCapture(r.Context(), db.RegenerateAIJobForCaptureParams{CaptureID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no AI job to regenerate for this capture")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, regeneratedJobResponse{JobID: jobID})
+}
+
+// POST /api/captures/{id}/regenerate-readability: RegenerateAISummary's
+// twin for readability_jobs -- a readability_jobs row always exists
+// already (created at ingest time, unlike ai_jobs), so this 404s only for
+// a genuinely bad/not-owned capture id, never "nothing to regenerate."
+// Does NOT also re-queue this capture's AI job: today there's no extra state
+// to track that decision by -- if the reader text changes, a stale AI summary
+// is left exactly as stale as it was before this endpoint existed, and a
+// separate, explicit regenerate-summary click is what actually refreshes it.
+func (s *Server) RegenerateReadability(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid capture id")
+		return
+	}
+
+	jobID, err := s.Queries.RegenerateReadabilityJobForCapture(r.Context(), db.RegenerateReadabilityJobForCaptureParams{CaptureID: id, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "capture not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, regeneratedJobResponse{JobID: jobID})
+}
+
+type captureConfigResponse struct {
+	ReadabilityVersion *string `json:"readability_version"`
+	AIModel            *string `json:"ai_model"`
+}
+
+// GET /api/capture-config: this running agent's currently configured
+// readability_version/ai_model -- what a regenerate would actually produce
+// right now, for the dashboard to eventually compare against a capture's own
+// already-stored readability_version/ai_model and decide whether to
+// show/hide/disable its regenerate buttons. Empty string means "not
+// configured" (or AI enrichment disabled entirely) and is reported as null,
+// not "".
+func (s *Server) GetCaptureConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, captureConfigResponse{
+		ReadabilityVersion: stringOrNil(s.ReadabilityVersion),
+		AIModel:            stringOrNil(s.AIModel),
+	})
 }
 
 // acceptsZstd does an exact-token check against Accept-Encoding --
@@ -1911,6 +2384,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.U
 	_, err = s.Queries.CreateSession(r.Context(), db.CreateSessionParams{
 		SessionHash: hash,
 		UserID:      user.ID,
+		UserAgent:   textOrNull(r.UserAgent()),
 		ExpiresAt:   pgtype.Timestamptz{Time: auth.SessionExpiry(), Valid: true},
 	})
 	if err != nil {

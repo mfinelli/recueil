@@ -109,7 +109,9 @@ describe("Tags", () => {
     const row = (await screen.findByText("recipes")).closest(
       "li",
     ) as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename tag recipes" }),
+    );
 
     const renameInput = within(row).getByDisplayValue("recipes");
     apiJSONMock.mockResolvedValueOnce({
@@ -134,7 +136,9 @@ describe("Tags", () => {
     const row = (await screen.findByText("recipes")).closest(
       "li",
     ) as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename tag recipes" }),
+    );
 
     const renameInput = within(row).getByDisplayValue("recipes");
     await fireEvent.input(renameInput, { target: { value: "My Recipes!" } });
@@ -151,7 +155,9 @@ describe("Tags", () => {
     const row = (await screen.findByText("recipes")).closest(
       "li",
     ) as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename tag recipes" }),
+    );
     await fireEvent.click(
       within(row).getByRole("button", { name: "URL: /tags/recipes" }),
     );
@@ -178,7 +184,9 @@ describe("Tags", () => {
     const row = (await screen.findByText("recipes")).closest(
       "li",
     ) as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename tag recipes" }),
+    );
     await fireEvent.click(
       within(row).getByRole("button", { name: "URL: /tags/recipes" }),
     );
@@ -204,7 +212,9 @@ describe("Tags", () => {
     const row = (await screen.findByText("recipes")).closest(
       "li",
     ) as HTMLElement;
-    await fireEvent.click(within(row).getByRole("button", { name: "Rename" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Rename tag recipes" }),
+    );
     apiJSONMock.mockRejectedValueOnce(
       new ApiError(409, "a tag with that name or slug already exists"),
     );
@@ -224,7 +234,9 @@ describe("Tags", () => {
       "li",
     ) as HTMLElement;
     apiJSONMock.mockResolvedValueOnce(undefined);
-    await fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Delete tag recipes" }),
+    );
 
     expect(confirmMock).toHaveBeenCalledWith(
       'Delete "recipes"? It will be removed from every page that has it.',
@@ -242,7 +254,9 @@ describe("Tags", () => {
       "li",
     ) as HTMLElement;
     const before = apiJSONMock.mock.calls.length;
-    await fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Delete tag recipes" }),
+    );
 
     expect(apiJSONMock.mock.calls.length).toBe(before);
     expect(screen.getByText("recipes")).toBeTruthy();
@@ -257,7 +271,9 @@ describe("Tags", () => {
       "li",
     ) as HTMLElement;
     apiJSONMock.mockRejectedValueOnce(new ApiError(500, "delete failed"));
-    await fireEvent.click(within(row).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(
+      within(row).getByRole("button", { name: "Delete tag recipes" }),
+    );
 
     expect(await screen.findByText("delete failed")).toBeTruthy();
     expect(screen.getByText("recipes")).toBeTruthy();

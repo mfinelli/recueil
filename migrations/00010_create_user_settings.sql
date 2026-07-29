@@ -29,11 +29,19 @@ CREATE TABLE user_settings (
   -- are added, and a CHECK constraint would need its own migration every time
   -- that list changes. Validated at the application layer instead.
   language TEXT,
+  -- NULL means "automatic" -- follow the browser's prefers-color-scheme,
+  -- exactly like language's NULL-means-auto-detect convention. Unlike
+  -- language, this genuinely is a closed set (there's no "add a new theme"
+  -- equivalent of "add a new translation" on the horizon), so it gets the
+  -- same CHECK constraint role/source/status already use elsewhere in this
+  -- schema.
+  theme TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT user_settings_pkey PRIMARY KEY (user_id),
   CONSTRAINT user_settings_user_id_fkey FOREIGN KEY (user_id)
-    REFERENCES users(id) ON DELETE CASCADE
+    REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT user_settings_theme_check CHECK (theme IN ('light', 'dark'))
 );
 
 -- +goose Down

@@ -61,8 +61,14 @@ export interface CaptureDetail {
   raw_url: string;
   title: string | null;
   thumbnail_path: string | null;
+  thumbnail_size_bytes: number | null;
+  thumbnail_hash: string | null;
   favicon_path: string | null;
+  favicon_size_bytes: number | null;
+  favicon_hash: string | null;
   reader_text: string | null;
+  readability_version: string | null;
+  content_hash: string;
   ai_summary: string | null;
   ai_model: string | null;
   language: string;
@@ -76,6 +82,7 @@ export interface CaptureDetail {
 export interface PageTag {
   id: number;
   name: string;
+  slug: string;
   source: "manual" | "ai";
 }
 
@@ -157,13 +164,28 @@ export interface TextSearchConfigsResponse {
 export interface Device {
   id: number;
   device_name: string;
-  device_type: string;
+  device_type: "extension" | "pwa" | "cli" | "shortcut";
   created_at: string;
   last_used_at: string | null;
 }
 
 export interface DeviceListResponse {
   devices: Device[];
+}
+
+export interface Session {
+  id: number;
+  browser: string;
+  browser_version: string;
+  os: string;
+  device_class: "desktop" | "mobile" | "tablet" | "tv" | "bot" | "";
+  created_at: string;
+  last_seen_at: string;
+  is_current: boolean;
+}
+
+export interface SessionListResponse {
+  sessions: Session[];
 }
 
 export interface PairingTokenResponse {
@@ -174,16 +196,18 @@ export interface PairingTokenResponse {
 // row yet" and "explicitly cleared".
 export interface UserSettings {
   language: string | null;
+  theme: string | null;
 }
 
-// GET /api/queue-items' item shape (only status=failed is currently
-// supported server-side -- see internal/httpapi's ListFailedQueueItems).
-// id is a client-generated UUID (queue_items.id is TEXT), not a number.
+// GET /api/queue-items' item shape -- pending/claimed/failed
+// unconditionally, plus 'captured' items from the last few minutes. id is a
+// client-generated UUID (queue_items.id is TEXT), not a number.
 export interface QueueItem {
   id: string;
   url: string;
-  status: string;
+  status: "pending" | "claimed" | "captured" | "failed";
   manual_retry: boolean;
+  claimed_at: string | null;
   created_at: string;
 }
 
@@ -192,21 +216,49 @@ export interface QueueItemListResponse {
 }
 
 // GET /api/jobs' item shape -- one combined shape for all three job
-// kinds (screenshot/readability/AI), same as internal/httpapi's own
-// failedJob DTO. id is a plain job-table integer PK, unlike QueueItem's
-// client-generated UUID.
-export interface FailedJob {
+// kinds (screenshot/readability/AI), same as internal/httpapi's own job
+// DTO. pending/processing/failed unconditionally, 'done' only within the
+// same recency window QueueItem's own 'captured' status uses. id is a
+// plain job-table integer PK, unlike QueueItem's client-generated UUID.
+export interface Job {
   id: number;
   page_id: number;
   url: string;
   title: string | null;
+  status: "pending" | "processing" | "done" | "failed";
   attempts: number;
   error: string | null;
+  claimed_at: string | null;
   completed_at: string | null;
 }
 
-export interface FailedJobsResponse {
-  screenshot_jobs: FailedJob[];
-  readability_jobs: FailedJob[];
-  ai_jobs: FailedJob[];
+export interface JobsResponse {
+  screenshot_jobs: Job[];
+  readability_jobs: Job[];
+  ai_jobs: Job[];
+}
+
+// GET /info -- unauthenticated, unprefixed (not under /api, served
+// directly by internal/httpapi/router.go alongside /ping/health/metrics
+// via go.finelli.dev/healthchecks), so this doesn't go through
+// api.ts's apiJSON/apiFetch (both hardcode the /api prefix). commit is
+// already a short SHA (e.g. "acff9fd"), not a full 40-character hash --
+// nothing to truncate on the frontend.
+export interface InfoResponse {
+  version: string;
+  commit: string;
+  date: string;
+}
+
+// GET /api/capture-config -- this running agent's currently-configured
+// readability_version/ai_model, i.e. what a regenerate would actually
+// produce right now. Compared against a capture's own already-stored
+// readability_version/ai_model to decide whether to show a regenerate
+// button (equal means regenerating would just reproduce what's already
+// there). Both nullable independently of the capture's own fields --
+// null here means "not configured" (or AI disabled entirely), not "same
+// as the capture."
+export interface CaptureConfig {
+  readability_version: string | null;
+  ai_model: string | null;
 }

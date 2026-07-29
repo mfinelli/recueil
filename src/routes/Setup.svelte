@@ -22,10 +22,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      requireSetup guard); once an account exists this route redirects away
      regardless of what's typed into the URL bar. -->
 <script lang="ts">
-  import { push } from "svelte-spa-router";
-  import { session } from "../lib/session.svelte";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
+  import { session, reloadIntoLibrary } from "../lib/session.svelte";
   import { ApiError } from "../lib/api";
   import { m } from "../paraglide/messages";
+  import PasswordInput from "../components/PasswordInput.svelte";
 
   let bootstrapToken = $state("");
   let username = $state("");
@@ -44,7 +45,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     submitting = true;
     try {
       await session.completeSetup(bootstrapToken, username, password);
-      await push("/");
+      reloadIntoLibrary();
     } catch (err) {
       error = err instanceof ApiError ? err.message : m.setup_error_generic();
     } finally {
@@ -55,21 +56,25 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 <main class="screen">
   <form class="card" onsubmit={handleSubmit}>
-    <h1>recueil</h1>
+    <h1 class="wordmark">recueil</h1>
     <p class="sub">{m.setup_subtitle()}</p>
 
-    <label for="bootstrap-token">{m.setup_bootstrap_token()}</label>
+    <label class="field-label" for="bootstrap-token"
+      >{m.setup_bootstrap_token()}</label
+    >
     <input
       id="bootstrap-token"
+      class="mono"
       type="text"
       autocomplete="off"
+      placeholder="rcl_bootstrap_…"
       bind:value={bootstrapToken}
       required
       disabled={submitting}
     />
     <p class="hint">{m.setup_bootstrap_token_hint()}</p>
 
-    <label for="username">{m.common_username()}</label>
+    <label class="field-label" for="username">{m.common_username()}</label>
     <input
       id="username"
       type="text"
@@ -79,37 +84,41 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       disabled={submitting}
     />
 
-    <label for="password">{m.common_password()}</label>
-    <input
+    <label class="field-label" for="password">{m.common_password()}</label>
+    <PasswordInput
       id="password"
-      type="password"
       autocomplete="new-password"
       bind:value={password}
-      required
       disabled={submitting}
     />
 
-    <label for="confirm-password">{m.setup_confirm_password()}</label>
-    <input
+    <label class="field-label" for="confirm-password"
+      >{m.setup_confirm_password()}</label
+    >
+    <PasswordInput
       id="confirm-password"
-      type="password"
       autocomplete="new-password"
       bind:value={confirmPassword}
-      required
       disabled={submitting}
     />
 
     {#if error}
-      <p class="error" role="alert">{error}</p>
+      <p class="error" role="alert">
+        <AlertCircle size={15} />
+        <span>{error}</span>
+      </p>
     {/if}
 
-    <button type="submit" disabled={submitting}
+    <button class="primary" type="submit" disabled={submitting}
       >{submitting ? m.setup_creating() : m.setup_create_account()}</button
     >
   </form>
 </main>
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   .screen {
     display: grid;
     place-items: center;
@@ -120,55 +129,76 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .card {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: 0.65rem;
     width: 100%;
     max-width: 22rem;
     padding: 2rem;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    border-radius: 0.5rem;
+    @include mix.card-surface;
   }
 
-  h1 {
-    margin: 0;
+  .wordmark {
+    @include type.heading;
+    font-size: 1.9rem;
+    margin: 0 0 0.15rem;
   }
 
   .sub {
-    margin: 0 0 1rem;
+    margin: 0 0 0.75rem;
     color: var(--ink-muted);
+    font-size: 0.9rem;
+    line-height: 1.4;
   }
 
-  label {
-    font-size: 0.875rem;
-    font-weight: 600;
+  .field-label {
+    @include type.eyebrow;
+    margin-top: 0.4rem;
   }
 
   input {
-    padding: 0.5rem 0.625rem;
+    padding: 0.55rem 0.7rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
+    border-radius: 4px;
     background: var(--paper);
+    box-shadow: inset 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
     color: var(--ink);
     font: inherit;
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  input.mono {
+    @include type.data-mono;
+    font-size: 0.85rem;
   }
 
   .hint {
-    margin: 0 0 0.5rem;
+    margin: 0.2rem 0 0.3rem;
     font-size: 0.75rem;
     color: var(--ink-muted);
   }
 
   .error {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
     margin: 0;
     color: var(--accent);
-    font-size: 0.875rem;
+    font-size: 0.85rem;
+    line-height: 1.35;
+
+    :global(svg) {
+      flex: none;
+      margin-top: 0.1rem;
+    }
   }
 
-  button {
-    margin-top: 0.5rem;
-    padding: 0.625rem;
+  .primary {
+    margin-top: 0.6rem;
+    padding: 0.7rem;
     border: none;
-    border-radius: 0.25rem;
+    border-radius: 4px;
     background: var(--accent-success);
     color: var(--paper);
     font: inherit;
@@ -178,6 +208,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:disabled {
       opacity: 0.6;
       cursor: default;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
+  }
+
+  @include mix.mobile {
+    .card {
+      max-width: 20rem;
+      padding: 1.5rem;
+    }
+
+    .wordmark {
+      font-size: 1.6rem;
     }
   }
 </style>

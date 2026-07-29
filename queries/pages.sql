@@ -94,6 +94,34 @@ UPDATE pages SET excluded_from_mirror = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
+-- name: SetPageTitle :one
+-- Direct overwrite, not a separate title_override column: pages.title is
+-- already denormalized from the latest capture, and a later recapture will
+-- overwrite whatever's set here the same way it always has -- which is a
+-- deliberate choice, not an oversight.
+UPDATE pages SET title = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
+-- name: SetPageFavicon :exec
+-- Called by DeleteCapture (internal/httpapi), not by any dashboard
+-- endpoint of its own.
+UPDATE pages SET favicon_path = $1, updated_at = NOW() WHERE id = $2;
+
+-- name: DeletePage :execrows
+-- Cascades to captures (and, transitively, their screenshot/readability/AI
+-- jobs), page_tags, and page_collections rows via the schema's own
+-- ON DELETE CASCADE chain -- nothing else to clean up in Postgres. The D1
+-- bookmark-list mirror isn't touched synchronously here: it self-heals via
+-- the existing periodic Syncer's reconcileDeletions pass (GetMirrorEligiblePageIDs
+-- no longer includes this id once the row's gone), same as it already does for
+-- excluded_from_mirror. The on-disk archive files (HTML/screenshots/favicons)
+-- are content-hash-addressed and can be shared across captures/pages (see
+-- internal/archive's own doc comment), so they're deliberately left orphaned
+-- here rather than attempting a per-page delete that could remove another
+-- page's still-referenced data.
+DELETE FROM pages WHERE id = $1 AND user_id = $2;
+
 -- name: GetPagesUpdatedSince :many
 -- Powers the D1 bookmark-list mirror's incremental sync
 -- (internal/mirror): pages changed since the last successfully-pushed

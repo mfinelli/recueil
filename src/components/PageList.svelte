@@ -29,6 +29,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <script lang="ts">
   import { link } from "svelte-spa-router";
   import { SvelteSet } from "svelte/reactivity";
+  import ListIcon from "@lucide/svelte/icons/list";
+  import LayoutGrid from "@lucide/svelte/icons/layout-grid";
+  import Globe from "@lucide/svelte/icons/globe";
+  import Archive from "@lucide/svelte/icons/archive";
   import type { Page } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -45,12 +49,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     $props();
 
   let viewMode = $state<ViewMode>(loadViewMode());
-  // Tracks page ids whose favicon/thumbnail request 404ed -- see
-  // Library.svelte's git history for the original comment on this same
-  // pattern. Keyed by page id (covers both the favicon and thumbnail
-  // request for that row/card), SvelteSet so .add() itself triggers
-  // reactivity.
-  let imageLoadFailed = new SvelteSet<number>();
+  // Favicon and thumbnail are two independent images per page (grid view
+  // renders both at once), so they need two independent failure states --
+  // a single id-keyed set here would incorrectly hide a working favicon
+  // just because that page's thumbnail 404ed, or vice versa.
+  let faviconLoadFailed = new SvelteSet<number>();
+  let thumbnailLoadFailed = new SvelteSet<number>();
 
   // Reset per `pages` prop identity, not per individual page: a fresh
   // array (a new search, or this component mounted for a different
@@ -58,7 +62,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // necessarily apply to what's now being shown.
   $effect(() => {
     void pages;
-    imageLoadFailed.clear();
+    faviconLoadFailed.clear();
+    thumbnailLoadFailed.clear();
   });
 
   function setViewMode(mode: ViewMode) {
@@ -66,8 +71,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     localStorage.setItem(VIEW_MODE_KEY, mode);
   }
 
-  function markImageFailed(pageId: number) {
-    imageLoadFailed.add(pageId);
+  function markThumbnailFailed(pageId: number) {
+    thumbnailLoadFailed.add(pageId);
+  }
+
+  // Distinct from markThumbnailFailed: an <img onerror> handler, for when
+  // the request itself 404s despite favicon_path being set (a stale path,
+  // a file removed from disk, etc.) -- not to be confused with
+  // showFavicon()'s favicon_path check below, which skips the request
+  // entirely for the far more common case of a page that never had a
+  // favicon captured at all.
+  function markFaviconFailed(pageId: number) {
+    faviconLoadFailed.add(pageId);
+  }
+
+  // page.favicon_path is already null on the API response for a page with
+  // no captured favicon -- checking it here means those pages skip the
+  // image request entirely (straight to the fallback) rather than waiting
+  // on a request that was always going to 404.
+  function showFavicon(page: Page): boolean {
+    return page.favicon_path !== null && !faviconLoadFailed.has(page.id);
   }
 
   function displayTitle(page: Page): string {
@@ -84,31 +107,44 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 </script>
 
 <div class="view-toggle" role="group" aria-label={m.library_view_label()}>
-  <button class:active={viewMode === "list"} onclick={() => setViewMode("list")}
-    >{m.library_view_list()}</button
+  <button
+    class:active={viewMode === "list"}
+    onclick={() => setViewMode("list")}
   >
-  <button class:active={viewMode === "grid"} onclick={() => setViewMode("grid")}
-    >{m.library_view_grid()}</button
+    <ListIcon size={14} />
+    {m.library_view_list()}
+  </button>
+  <button
+    class:active={viewMode === "grid"}
+    onclick={() => setViewMode("grid")}
   >
+    <LayoutGrid size={14} />
+    {m.library_view_grid()}
+  </button>
 </div>
 
 {#if pages.length === 0}
-  <p class="status">{emptyMessage}</p>
+  <div class="status">
+    <Archive size={28} />
+    <span>{emptyMessage}</span>
+  </div>
 {:else if viewMode === "list"}
   <ul class="pages-list">
     {#each pages as page (page.id)}
       <li>
         <a href={`/pages/${page.id}`} use:link>
-          {#if !imageLoadFailed.has(page.id)}
+          {#if showFavicon(page)}
             <img
               class="favicon"
               src={`/api/pages/${page.id}/favicon`}
               alt=""
               loading="lazy"
-              onerror={() => markImageFailed(page.id)}
+              onerror={() => markFaviconFailed(page.id)}
             />
           {:else}
-            <span class="favicon-placeholder" aria-hidden="true"></span>
+            <span class="favicon-placeholder" aria-hidden="true">
+              <Globe size={12} />
+            </span>
           {/if}
           <span class="title">{displayTitle(page)}</span>
           <span class="url">{page.normalized_url}</span>
@@ -123,13 +159,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <li>
         <a href={`/pages/${page.id}`} use:link>
           <span class="thumbnail-frame">
-            {#if !imageLoadFailed.has(page.id)}
+            {#if !thumbnailLoadFailed.has(page.id)}
               <img
                 class="thumbnail"
                 src={`/api/pages/${page.id}/thumbnail`}
                 alt=""
                 loading="lazy"
-                onerror={() => markImageFailed(page.id)}
+                onerror={() => markThumbnailFailed(page.id)}
               />
             {:else}
               <span class="thumbnail-placeholder" aria-hidden="true"
@@ -137,7 +173,23 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               >
             {/if}
           </span>
-          <span class="title">{displayTitle(page)}</span>
+          <span class="title-row">
+            {#if showFavicon(page)}
+              <img
+                class="grid-favicon"
+                src={`/api/pages/${page.id}/favicon`}
+                alt=""
+                loading="lazy"
+                onerror={() => markFaviconFailed(page.id)}
+              />
+            {:else}
+              <span class="grid-favicon-placeholder" aria-hidden="true">
+                <Globe size={9} />
+              </span>
+            {/if}
+            <span class="title">{displayTitle(page)}</span>
+          </span>
+          <span class="url">{page.normalized_url}</span>
           <span class="date">{formatDate(page.latest_capture_at)}</span>
         </a>
       </li>
@@ -146,18 +198,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 {/if}
 
 <style lang="scss">
+  @use "../styles/typography" as type;
+  @use "../styles/mixins" as mix;
+
   button {
-    padding: 0.375rem 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.4rem 0.7rem;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
+    border-radius: 4px;
     background: var(--paper-raised);
-    color: var(--ink);
+    color: var(--ink-muted);
     font: inherit;
+    font-size: 0.8125rem;
     cursor: pointer;
 
     &:disabled {
       opacity: 0.5;
       cursor: default;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 
@@ -165,24 +228,37 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     display: flex;
     width: fit-content;
     border: 1px solid var(--rule);
-    border-radius: 0.25rem;
+    border-radius: 4px;
     overflow: hidden;
     margin-bottom: 1.5rem;
 
     button {
       border: none;
       border-radius: 0;
-      font-size: 0.8125rem;
 
       &.active {
         background: var(--accent-success);
         color: var(--paper);
       }
     }
+
+    button + button {
+      border-left: 1px solid var(--rule);
+    }
   }
 
   .status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 2.5rem 1rem;
     color: var(--ink-muted);
+    text-align: center;
+
+    :global(svg) {
+      color: var(--rule);
+    }
   }
 
   // List view
@@ -190,11 +266,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     list-style: none;
     margin: 0;
     padding: 0;
-    border-top: 1px solid var(--rule);
+    border-top: 1px dotted var(--rule);
   }
 
   .pages-list li {
-    border-bottom: 1px solid var(--rule);
+    @include mix.dotted-rule;
   }
 
   .pages-list a {
@@ -220,8 +296,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .favicon-placeholder {
+    display: grid;
+    place-items: center;
     border-radius: 0.1875rem;
-    background: var(--rule);
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    color: var(--ink-muted);
   }
 
   .pages-list .title {
@@ -231,6 +311,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   .pages-list .url {
     grid-column: 2;
+    @include type.data-mono;
     color: var(--ink-muted);
     font-size: 0.8125rem;
     overflow: hidden;
@@ -242,6 +323,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     grid-column: 3;
     grid-row: 1 / 3;
     align-self: center;
+    @include type.data-mono;
     color: var(--ink-muted);
     font-size: 0.8125rem;
     white-space: nowrap;
@@ -260,7 +342,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .pages-grid a {
     display: flex;
     flex-direction: column;
-    gap: 0.375rem;
+    gap: 0.3rem;
     text-decoration: none;
     color: inherit;
   }
@@ -268,10 +350,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .thumbnail-frame {
     display: block;
     aspect-ratio: 4 / 3;
-    border: 1px solid var(--rule);
-    border-radius: 0.375rem;
+    @include mix.card-surface;
     overflow: hidden;
-    background: var(--paper-raised);
   }
 
   .thumbnail {
@@ -287,8 +367,30 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     width: 100%;
     height: 100%;
     color: var(--ink-muted);
+    @include type.heading;
     font-size: 2rem;
-    text-transform: uppercase;
+  }
+
+  .title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .grid-favicon,
+  .grid-favicon-placeholder {
+    flex: none;
+    width: 0.875rem;
+    height: 0.875rem;
+    border-radius: 0.125rem;
+  }
+
+  .grid-favicon-placeholder {
+    display: grid;
+    place-items: center;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    color: var(--ink-muted);
   }
 
   .pages-grid .title {
@@ -299,8 +401,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     white-space: nowrap;
   }
 
-  .pages-grid .date {
+  .pages-grid .url {
+    @include type.data-mono;
+    font-size: 0.7rem;
     color: var(--ink-muted);
-    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pages-grid .date {
+    @include type.data-mono;
+    font-size: 0.7rem;
+    color: var(--ink-muted);
   }
 </style>

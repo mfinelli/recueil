@@ -44,7 +44,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 import { apiJSON, ApiError } from "../lib/api";
-import type { Device, PairingTokenResponse } from "../lib/types";
+import type { Device, PairingTokenResponse, Session } from "../lib/types";
 import Devices from "./Devices.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
@@ -72,14 +72,38 @@ const aliceDevice: Device = {
   last_used_at: "2026-06-01T09:30:00Z",
 };
 
+const currentSession: Session = {
+  id: 10,
+  browser: "Chrome",
+  browser_version: "118",
+  os: "Windows",
+  device_class: "desktop",
+  created_at: "2026-05-01T12:00:00Z",
+  last_seen_at: "2026-06-01T09:30:00Z",
+  is_current: true,
+};
+
+const otherSession: Session = {
+  id: 11,
+  browser: "Safari",
+  browser_version: "17",
+  os: "iOS",
+  device_class: "mobile",
+  created_at: "2026-04-01T12:00:00Z",
+  last_seen_at: "2026-05-20T09:30:00Z",
+  is_current: false,
+};
+
 type LoadOptions = {
   pairingToken?: PairingTokenResponse | null;
   pairingTokenError?: unknown;
   devices?: Device[];
   devicesError?: unknown;
+  sessions?: Session[];
+  sessionsError?: unknown;
 };
 
-// Only handles the two GET-on-mount calls -- action tests layer their own
+// Only handles the three GET-on-mount calls -- action tests layer their own
 // mockImplementationOnce for the specific write endpoint they exercise on
 // top of this (mockImplementationOnce takes priority over the base
 // mockImplementation below it).
@@ -88,6 +112,8 @@ function mockLoad({
   pairingTokenError,
   devices = [],
   devicesError,
+  sessions = [],
+  sessionsError,
 }: LoadOptions = {}) {
   apiJSONMock.mockImplementation((path: string) => {
     if (path === "/pairing-token") {
@@ -100,6 +126,10 @@ function mockLoad({
     if (path === "/devices") {
       if (devicesError) return Promise.reject(devicesError);
       return Promise.resolve({ devices });
+    }
+    if (path === "/sessions") {
+      if (sessionsError) return Promise.reject(sessionsError);
+      return Promise.resolve({ sessions });
     }
     throw new Error(`unexpected apiJSON call: ${path}`);
   });
@@ -114,10 +144,15 @@ describe("Devices", () => {
 
     expect(await screen.findByText("the-pairing-token")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Regenerate" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copy pairing token" }),
+    ).toBeTruthy();
 
     expect(screen.getByText("Alice's phone")).toBeTruthy();
-    expect(screen.getByText(/extension ·/)).toBeTruthy();
+    // Device type is conveyed by the icon (role="img", aria-label) next
+    // to the name now, not a text prefix on the meta line -- see the
+    // dedicated device-type-icon tests below.
+    expect(screen.getByRole("img", { name: "Browser extension" })).toBeTruthy();
   });
 
   it("shows a Generate button and no token when there isn't one yet", async () => {
@@ -156,7 +191,9 @@ describe("Devices", () => {
     mockLoad();
     render(Devices);
 
-    const copyButton = await screen.findByRole("button", { name: "Copy" });
+    const copyButton = await screen.findByRole("button", {
+      name: "Copy pairing token",
+    });
     await fireEvent.click(copyButton);
 
     expect(writeTextMock).toHaveBeenCalledWith("the-pairing-token");
@@ -217,12 +254,9 @@ describe("Devices", () => {
     render(Devices);
 
     apiJSONMock.mockResolvedValueOnce(undefined);
-    const revokeButtons = await screen.findAllByRole("button", {
-      name: "Revoke",
-    });
-    // Two "Revoke" buttons exist once a token and a device both render --
-    // the token's own is first in document order, the device row's second.
-    await fireEvent.click(revokeButtons[1]);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Revoke Alice's phone" }),
+    );
 
     expect(confirmMock).toHaveBeenCalledWith(
       'Revoke "Alice\'s phone"? It will need to be paired again to archive pages.',
@@ -240,10 +274,9 @@ describe("Devices", () => {
     render(Devices);
 
     const before = apiJSONMock.mock.calls.length;
-    const revokeButtons = await screen.findAllByRole("button", {
-      name: "Revoke",
-    });
-    await fireEvent.click(revokeButtons[1]);
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Revoke Alice's phone" }),
+    );
 
     expect(apiJSONMock.mock.calls.length).toBe(before);
     expect(screen.getByText("Alice's phone")).toBeTruthy();
@@ -264,5 +297,144 @@ describe("Devices", () => {
     expect(
       await screen.findByText("regeneration failed server-side"),
     ).toBeTruthy();
+  });
+
+  describe("device-type icon", () => {
+    it.each([
+      ["extension", "Browser extension"],
+      ["cli", "Command-line interface"],
+      ["shortcut", "iOS Shortcut"],
+      ["pwa", "Progressive web app"],
+    ] as const)(
+      "labels a %s device as %s, exposed to screen readers via role=img",
+      async (type, label) => {
+        mockLoad({ devices: [{ ...aliceDevice, device_type: type }] });
+        render(Devices);
+
+        expect(await screen.findByRole("img", { name: label })).toBeTruthy();
+      },
+    );
+  });
+
+  describe("sessions", () => {
+    it("shows a session's browser/OS and signed-in/active dates", async () => {
+      mockLoad({ sessions: [otherSession] });
+      render(Devices);
+
+      expect(await screen.findByText("Safari · iOS")).toBeTruthy();
+      expect(screen.getByText(/signed in.*active/)).toBeTruthy();
+    });
+
+    it("highlights the current session with a badge and no revoke control", async () => {
+      mockLoad({ sessions: [currentSession, otherSession] });
+      render(Devices);
+
+      await screen.findByText("Chrome · Windows");
+      expect(screen.getByText("Current session")).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "Sign out Chrome · Windows" }),
+      ).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Sign out Safari · iOS" }),
+      ).toBeTruthy();
+    });
+
+    it("revokes a non-current session after confirming, removing it from the list", async () => {
+      mockLoad({ sessions: [currentSession, otherSession] });
+      confirmMock.mockReturnValue(true);
+      render(Devices);
+
+      const revokeButton = await screen.findByRole("button", {
+        name: "Sign out Safari · iOS",
+      });
+      apiJSONMock.mockResolvedValueOnce(undefined);
+      await fireEvent.click(revokeButton);
+
+      expect(confirmMock).toHaveBeenCalled();
+      expect(apiJSONMock).toHaveBeenCalledWith("/sessions/11", {
+        method: "DELETE",
+      });
+      expect(screen.queryByText("Safari · iOS")).toBeNull();
+      expect(screen.getByText("Chrome · Windows")).toBeTruthy();
+    });
+
+    it("doesn't revoke a session when the confirmation is declined", async () => {
+      mockLoad({ sessions: [otherSession] });
+      confirmMock.mockReturnValue(false);
+      render(Devices);
+
+      const revokeButton = await screen.findByRole("button", {
+        name: "Sign out Safari · iOS",
+      });
+      await fireEvent.click(revokeButton);
+
+      expect(apiJSONMock).not.toHaveBeenCalledWith(
+        "/sessions/11",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+      expect(screen.getByText("Safari · iOS")).toBeTruthy();
+    });
+
+    it("shows the API's own error message when loading sessions fails", async () => {
+      mockLoad({ sessionsError: new ApiError(500, "sessions unavailable") });
+      render(Devices);
+
+      expect(await screen.findByText("sessions unavailable")).toBeTruthy();
+    });
+
+    it("falls back to a generic error for a non-ApiError sessions load failure", async () => {
+      mockLoad({ sessionsError: new Error("network error") });
+      render(Devices);
+
+      expect(await screen.findByText("failed to load sessions")).toBeTruthy();
+    });
+
+    it("shows the API's own error message when revoking a session fails", async () => {
+      mockLoad({ sessions: [otherSession] });
+      confirmMock.mockReturnValue(true);
+      render(Devices);
+
+      const revokeButton = await screen.findByRole("button", {
+        name: "Sign out Safari · iOS",
+      });
+      apiJSONMock.mockRejectedValueOnce(new ApiError(400, "cannot revoke"));
+      await fireEvent.click(revokeButton);
+
+      expect(await screen.findByText("cannot revoke")).toBeTruthy();
+      // The session must still be listed -- the revoke failed.
+      expect(screen.getByText("Safari · iOS")).toBeTruthy();
+    });
+
+    describe("device-class icon", () => {
+      it.each(["desktop", "mobile", "tablet"] as const)(
+        "renders a %s session's icon as an accessible role=img labeled with its browser/OS",
+        async (deviceClass) => {
+          mockLoad({
+            sessions: [{ ...otherSession, device_class: deviceClass }],
+          });
+          render(Devices);
+
+          expect(
+            await screen.findByRole("img", { name: "Safari · iOS" }),
+          ).toBeTruthy();
+        },
+      );
+
+      it("falls back to a generic icon, not Devices' own Smartphone default, for an unrecognized device_class", async () => {
+        // "" is exactly what the backend sends for a session whose
+        // user_agent go-useragent couldn't parse at all -- this is that
+        // case reaching the dashboard, not a test-only value.
+        mockLoad({
+          sessions: [
+            { ...otherSession, browser: "", os: "", device_class: "" },
+          ],
+        });
+        render(Devices);
+
+        expect(
+          await screen.findByRole("img", { name: "Unknown device" }),
+        ).toBeTruthy();
+      });
+    });
   });
 });
