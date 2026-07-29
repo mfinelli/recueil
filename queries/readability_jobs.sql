@@ -91,14 +91,18 @@ UPDATE readability_jobs
 SET status = 'failed', attempts = $2, error = $3, completed_at = NOW()
 WHERE id = $1;
 
--- name: ListFailedReadabilityJobsForUser :many
-SELECT readability_jobs.id, readability_jobs.attempts, readability_jobs.error,
-       readability_jobs.completed_at, captures.page_id, captures.raw_url,
-       captures.title
+-- name: ListRecentReadabilityJobsForUser :many
+-- Same shape as ListRecentScreenshotJobsForUser; done-within-15-minutes
+-- is duplicated across all three job queries.
+SELECT readability_jobs.id, readability_jobs.status, readability_jobs.attempts,
+       readability_jobs.error, readability_jobs.claimed_at, readability_jobs.completed_at,
+       captures.page_id, captures.raw_url, captures.title
 FROM readability_jobs
 JOIN captures ON captures.id = readability_jobs.capture_id
 JOIN pages ON pages.id = captures.page_id
-WHERE readability_jobs.status = 'failed' AND pages.user_id = $1
+WHERE pages.user_id = $1
+  AND (readability_jobs.status IN ('pending', 'processing', 'failed')
+       OR (readability_jobs.status = 'done' AND readability_jobs.completed_at > NOW() - INTERVAL '15 minutes'))
 ORDER BY readability_jobs.completed_at ASC;
 
 -- name: ManualRetryReadabilityJobForUser :one

@@ -749,7 +749,7 @@ func newQueueItemsWorkerServer(t *testing.T, itemsByUser map[int64][]map[string]
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/internal/queue-items":
 			userID, err := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
-			if err != nil || r.URL.Query().Get("status") != "failed" {
+			if err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
@@ -1130,13 +1130,17 @@ func TestDeleteSession(t *testing.T) {
 	})
 }
 
-func TestListFailedQueueItems(t *testing.T) {
+func TestListQueueItems(t *testing.T) {
 	pool := dbtest.Setup(t)
 
-	t.Run("a member sees their own failed items", func(t *testing.T) {
+	t.Run("lists pending/claimed/failed items unconditionally, passing claimed_at through", func(t *testing.T) {
 		member := dbtest.CreateUser(t, pool, "member")
 		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
-			member.ID: {{"id": "item-1", "url": "https://example.com/a", "status": "failed", "manual_retry": float64(0), "created_at": "2026-06-01 12:00:00"}},
+			member.ID: {
+				{"id": "item-pending", "url": "https://example.com/p", "status": "pending", "manual_retry": float64(0), "claimed_at": nil, "created_at": "2026-06-01 12:00:00"},
+				{"id": "item-claimed", "url": "https://example.com/c", "status": "claimed", "manual_retry": float64(0), "claimed_at": "2026-06-01 12:05:00", "created_at": "2026-06-01 12:00:01"},
+				{"id": "item-failed", "url": "https://example.com/f", "status": "failed", "manual_retry": float64(0), "claimed_at": nil, "created_at": "2026-06-01 12:00:02"},
+			},
 		})
 		server, _ := newTestServer(t, pool, workerServer.URL)
 		cookie := sessionCookieFor(t, pool, &member)
@@ -1146,13 +1150,60 @@ func TestListFailedQueueItems(t *testing.T) {
 
 		var got struct {
 			Items []struct {
-				ID  string `json:"id"`
-				URL string `json:"url"`
+				ID        string  `json:"id"`
+				Status    string  `json:"status"`
+				ClaimedAt *string `json:"claimed_at"`
+			} `json:"items"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.Items, 3)
+
+		byID := map[string]string{}
+		for _, item := range got.Items {
+			byID[item.ID] = item.Status
+		}
+		assert.Equal(t, "pending", byID["item-pending"])
+		assert.Equal(t, "claimed", byID["item-claimed"])
+		assert.Equal(t, "failed", byID["item-failed"])
+
+		for _, item := range got.Items {
+			if item.ID == "item-pending" || item.ID == "item-failed" {
+				assert.Nil(t, item.ClaimedAt, "never-claimed items should have a null claimed_at")
+			}
+			if item.ID == "item-claimed" {
+				require.NotNil(t, item.ClaimedAt)
+				assert.Contains(t, *item.ClaimedAt, "2026-06-01T12:05:00")
+			}
+		}
+	})
+
+	// The Worker's own recency-window filtering for 'captured' items
+	// (terraform/worker/index.js's own handleListQueueItems) is tested
+	// there directly, against a real D1 -- this mock Worker just returns
+	// whatever it's told, so there's nothing more to verify about that
+	// filtering from this side. This confirms the passthrough itself
+	// doesn't drop/misrender a 'captured' item the Worker does decide to
+	// include.
+	t.Run("passes a recently-captured item through unchanged", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		workerServer := newQueueItemsWorkerServer(t, map[int64][]map[string]any{
+			member.ID: {{"id": "item-captured", "url": "https://example.com/cap", "status": "captured", "manual_retry": float64(0), "claimed_at": "2026-06-01 12:05:00", "created_at": "2026-06-01 12:00:00"}},
+		})
+		server, _ := newTestServer(t, pool, workerServer.URL)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/queue-items", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Items []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
 			} `json:"items"`
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		require.Len(t, got.Items, 1)
-		assert.Equal(t, "item-1", got.Items[0].ID)
+		assert.Equal(t, "captured", got.Items[0].Status)
 	})
 
 	t.Run("?user_id= is ignored -- always self-scoped, even for an admin", func(t *testing.T) {
@@ -1269,7 +1320,23 @@ func seedFailedJob(t *testing.T, pool *pgxpool.Pool, table string, captureID int
 	return id
 }
 
-func TestListFailedJobs(t *testing.T) {
+// seedJobWithStatus is seedFailedJob's twin for tests exercising ListJobs'
+// recency-window filtering -- seedFailedJob always hardcodes
+// status='failed' and completed_at=NOW(), neither of which fits a
+// pending/processing job (no completed_at at all) or a 'done' job at a
+// specific, test-controlled distance from now.
+func seedJobWithStatus(t *testing.T, pool *pgxpool.Pool, table string, captureID int64, status string, completedAt *time.Time) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(),
+		fmt.Sprintf(`INSERT INTO %s (capture_id, status, completed_at) VALUES ($1, $2, $3) RETURNING id`, table),
+		captureID, status, completedAt,
+	).Scan(&id)
+	require.NoError(t, err)
+	return id
+}
+
+func TestListJobs(t *testing.T) {
 	pool := dbtest.Setup(t)
 
 	t.Run("lists the calling user's own failed jobs, grouped by kind", func(t *testing.T) {
@@ -1320,14 +1387,12 @@ func TestListFailedJobs(t *testing.T) {
 		assert.Empty(t, got.ScreenshotJobs)
 	})
 
-	t.Run("excludes pending/processing/done jobs, only failed", func(t *testing.T) {
+	t.Run("includes pending and processing jobs unconditionally", func(t *testing.T) {
 		member := dbtest.CreateUser(t, pool, "member")
-		page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/notfailed")
-		_ = dbtest.CreateCapture(t, pool, page.ID)
-		// CreateCapture's own ingestion-adjacent fixtures don't create job
-		// rows automatically (unlike real ingestion) -- there's simply no
-		// screenshot_jobs row for this capture at all, which is the
-		// "never failed" case this asserts against.
+		page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/pending-processing")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		seedJobWithStatus(t, pool, "screenshot_jobs", capture.ID, "pending", nil)
+		seedJobWithStatus(t, pool, "readability_jobs", capture.ID, "processing", nil)
 
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &member)
@@ -1336,7 +1401,52 @@ func TestListFailedJobs(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var got struct {
-			ScreenshotJobs []struct{ URL string } `json:"screenshot_jobs"`
+			ScreenshotJobs  []struct{ Status string } `json:"screenshot_jobs"`
+			ReadabilityJobs []struct{ Status string } `json:"readability_jobs"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.ScreenshotJobs, 1)
+		assert.Equal(t, "pending", got.ScreenshotJobs[0].Status)
+		require.Len(t, got.ReadabilityJobs, 1)
+		assert.Equal(t, "processing", got.ReadabilityJobs[0].Status)
+	})
+
+	t.Run("includes a done job completed within the recency window", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/recently-done")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		recent := time.Now().Add(-5 * time.Minute)
+		seedJobWithStatus(t, pool, "screenshot_jobs", capture.ID, "done", &recent)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/jobs", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ScreenshotJobs []struct{ Status string } `json:"screenshot_jobs"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.Len(t, got.ScreenshotJobs, 1)
+		assert.Equal(t, "done", got.ScreenshotJobs[0].Status)
+	})
+
+	t.Run("excludes a done job completed outside the recency window", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, member.ID, "https://example.com/stale-done")
+		capture := dbtest.CreateCapture(t, pool, page.ID)
+		stale := time.Now().Add(-20 * time.Minute)
+		seedJobWithStatus(t, pool, "screenshot_jobs", capture.ID, "done", &stale)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/jobs", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			ScreenshotJobs []struct{ Status string } `json:"screenshot_jobs"`
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		assert.Empty(t, got.ScreenshotJobs)

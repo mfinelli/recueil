@@ -199,14 +199,15 @@ export interface UserSettings {
   theme: string | null;
 }
 
-// GET /api/queue-items' item shape (only status=failed is currently
-// supported server-side -- see internal/httpapi's ListFailedQueueItems).
-// id is a client-generated UUID (queue_items.id is TEXT), not a number.
+// GET /api/queue-items' item shape -- pending/claimed/failed
+// unconditionally, plus 'captured' items from the last few minutes. id is a
+// client-generated UUID (queue_items.id is TEXT), not a number.
 export interface QueueItem {
   id: string;
   url: string;
-  status: string;
+  status: "pending" | "claimed" | "captured" | "failed";
   manual_retry: boolean;
+  claimed_at: string | null;
   created_at: string;
 }
 
@@ -215,23 +216,26 @@ export interface QueueItemListResponse {
 }
 
 // GET /api/jobs' item shape -- one combined shape for all three job
-// kinds (screenshot/readability/AI), same as internal/httpapi's own
-// failedJob DTO. id is a plain job-table integer PK, unlike QueueItem's
-// client-generated UUID.
-export interface FailedJob {
+// kinds (screenshot/readability/AI), same as internal/httpapi's own job
+// DTO. pending/processing/failed unconditionally, 'done' only within the
+// same recency window QueueItem's own 'captured' status uses. id is a
+// plain job-table integer PK, unlike QueueItem's client-generated UUID.
+export interface Job {
   id: number;
   page_id: number;
   url: string;
   title: string | null;
+  status: "pending" | "processing" | "done" | "failed";
   attempts: number;
   error: string | null;
+  claimed_at: string | null;
   completed_at: string | null;
 }
 
-export interface FailedJobsResponse {
-  screenshot_jobs: FailedJob[];
-  readability_jobs: FailedJob[];
-  ai_jobs: FailedJob[];
+export interface JobsResponse {
+  screenshot_jobs: Job[];
+  readability_jobs: Job[];
+  ai_jobs: Job[];
 }
 
 // GET /info -- unauthenticated, unprefixed (not under /api, served

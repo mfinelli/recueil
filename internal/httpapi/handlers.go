@@ -665,21 +665,19 @@ type queueItemListResponse struct {
 	Items []queueitems.Item `json:"items"`
 }
 
-// GET /api/queue-items: lists the calling user's own failed queue items
-// (URLs the extension/CLI tried and failed to archive). Always
-// self-scoped, same reasoning as ListDevices -- this is personal data, not
-// a member-vs-admin dashboard concern the way Manage Devices originally
-// was before that cross-user piece was reconsidered and removed.
-func (s *Server) ListFailedQueueItems(w http.ResponseWriter, r *http.Request) {
+// GET /api/queue-items: lists the calling user's queue items (URLs the
+// extension/CLI has enqueued to archive) -- every pending/claimed/failed
+// item unconditionally, plus recently-'captured' ones.
+func (s *Server) ListQueueItems(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	items, err := s.QueueItems.ListFailed(r.Context(), user.ID)
+	items, err := s.QueueItems.List(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed queue items for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list queue items for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -728,91 +726,97 @@ func timestamptzOrNil(t pgtype.Timestamptz) *time.Time {
 	return &t.Time
 }
 
-// failedJob is the dashboard Queue screen's combined shape for a failed
-// screenshot/readability/AI job -- all three of ListFailedScreenshotJobsForUser/
-// ListFailedReadabilityJobsForUser/ListFailedAIJobsForUser return this same
-// row shape (id/attempts/error/completed_at from the job itself,
-// page_id/raw_url/title from the capture it belongs to, via the same
-// pages-ownership join GetCaptureByIDForUser already uses), so one response
+// job is the dashboard Queue screen's combined shape for a screenshot/
+// readability/AI job -- all three of ListRecentScreenshotJobsForUser/
+// ListRecentReadabilityJobsForUser/ListRecentAIJobsForUser return this same
+// row shape (id/status/attempts/error/claimed_at/completed_at from the job
+// itself, page_id/raw_url/title from the capture it belongs to, via the
+// same pages-ownership join GetCaptureByIDForUser uses), so one response
 // type serves all three lists rather than three near-identical DTOs.
-type failedJob struct {
+type job struct {
 	ID          int64      `json:"id"`
 	PageID      int64      `json:"page_id"`
 	URL         string     `json:"url"`
 	Title       *string    `json:"title"`
+	Status      string     `json:"status"`
 	Attempts    int32      `json:"attempts"`
 	Error       *string    `json:"error"`
+	ClaimedAt   *time.Time `json:"claimed_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
 
-// failedJobsResponse groups all three job types under their own keys
+// jobsResponse groups all three job types under their own keys
 // (rather than one flat list with a job_type discriminator) so the
 // dashboard's Queue screen can render them as separate sections without
 // having to partition the response itself.
-type failedJobsResponse struct {
-	ScreenshotJobs  []failedJob `json:"screenshot_jobs"`
-	ReadabilityJobs []failedJob `json:"readability_jobs"`
-	AIJobs          []failedJob `json:"ai_jobs"`
+type jobsResponse struct {
+	ScreenshotJobs  []job `json:"screenshot_jobs"`
+	ReadabilityJobs []job `json:"readability_jobs"`
+	AIJobs          []job `json:"ai_jobs"`
 }
 
-// GET /api/jobs: lists the calling user's own failed screenshot,
-// readability, and AI-enrichment jobs in one response -- these are
-// backend-owned async jobs (unlike queue_items, nothing device-side ever
-// claims them), so this needs no Worker round trip at all, just three
+// GET /api/jobs: lists the calling user's screenshot, readability, and
+// AI-enrichment jobs in one response -- every pending/processing/failed
+// job unconditionally, plus 'done' ones from within the last 15 minutes
+// These are backend-owned async jobs (unlike queue_items, nothing device-side
+// ever claims them), so this needs no Worker round trip at all, just three
 // ownership-scoped Postgres queries. Always self-scoped, same reasoning as
-// ListFailedQueueItems/ListDevices.
+// ListQueueItems/ListDevices.
 //
 // A capture whose readability extraction permanently failed never gets an
 // ai_jobs row at all (see readability_jobs.sql's CreateAIJob-on-success
 // comment) -- it shows up in ReadabilityJobs here, not AIJobs, since
 // there's nothing in the ai_jobs table to list for it yet.
-func (s *Server) ListFailedJobs(w http.ResponseWriter, r *http.Request) {
+func (s *Server) ListJobs(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
-	screenshotRows, err := s.Queries.ListFailedScreenshotJobsForUser(r.Context(), user.ID)
+	screenshotRows, err := s.Queries.ListRecentScreenshotJobsForUser(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed screenshot jobs for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list screenshot jobs for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	readabilityRows, err := s.Queries.ListFailedReadabilityJobsForUser(r.Context(), user.ID)
+	readabilityRows, err := s.Queries.ListRecentReadabilityJobsForUser(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed readability jobs for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list readability jobs for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	aiRows, err := s.Queries.ListFailedAIJobsForUser(r.Context(), user.ID)
+	aiRows, err := s.Queries.ListRecentAIJobsForUser(r.Context(), user.ID)
 	if err != nil {
-		log.Printf("warning: failed to list failed AI jobs for user %d: %v", user.ID, err)
+		log.Printf("warning: failed to list AI jobs for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	resp := failedJobsResponse{
-		ScreenshotJobs:  make([]failedJob, 0, len(screenshotRows)),
-		ReadabilityJobs: make([]failedJob, 0, len(readabilityRows)),
-		AIJobs:          make([]failedJob, 0, len(aiRows)),
+	resp := jobsResponse{
+		ScreenshotJobs:  make([]job, 0, len(screenshotRows)),
+		ReadabilityJobs: make([]job, 0, len(readabilityRows)),
+		AIJobs:          make([]job, 0, len(aiRows)),
 	}
 	for _, j := range screenshotRows {
-		resp.ScreenshotJobs = append(resp.ScreenshotJobs, failedJob{
-			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
-			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+		resp.ScreenshotJobs = append(resp.ScreenshotJobs, job{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
+			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
+			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
 	for _, j := range readabilityRows {
-		resp.ReadabilityJobs = append(resp.ReadabilityJobs, failedJob{
-			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
-			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+		resp.ReadabilityJobs = append(resp.ReadabilityJobs, job{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
+			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
+			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
 	for _, j := range aiRows {
-		resp.AIJobs = append(resp.AIJobs, failedJob{
-			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title),
-			Attempts: j.Attempts, Error: textOrNil(j.Error), CompletedAt: timestamptzOrNil(j.CompletedAt),
+		resp.AIJobs = append(resp.AIJobs, job{
+			ID: j.ID, PageID: j.PageID, URL: j.RawUrl, Title: textOrNil(j.Title), Status: j.Status,
+			Attempts: j.Attempts, Error: textOrNil(j.Error), ClaimedAt: timestamptzOrNil(j.ClaimedAt),
+			CompletedAt: timestamptzOrNil(j.CompletedAt),
 		})
 	}
 
@@ -841,7 +845,7 @@ var jobKindToRetry = map[string]func(s *Server, ctx context.Context, id, userID 
 // one of "screenshot", "readability", "ai" -- anything else is a 400, not a
 // 404, since it's a caller bug (an unrecognized kind), not a
 // missing-resource situation. Always self-scoped, same reasoning as
-// ListFailedJobs above.
+// ListJobs above.
 //
 // Unlike RetryQueueItem, there's no device to race against here and no
 // separate "flag it, some device picks it up later" step: the retry query

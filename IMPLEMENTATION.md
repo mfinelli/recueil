@@ -2596,3 +2596,39 @@ the paired-devices list.
   empty/unrecognized `device_class`. The current session gets a left
   accent-stripe highlight and a "Current session" badge instead of a revoke
   button, not a disabled one.
+
+### queue-items/jobs recency window (Queue screen backend broadening)
+
+Backend/data-layer work only, explicitly scoped that way -- the Queue screen's
+own UI still filters back down to `status === "failed"` after loading, keeping
+today's behavior unchanged while the fuller data sits ready in the API for a
+separate follow-up to actually build the "what's currently happening" view
+against.
+
+- `terraform/worker/index.js`'s `handleListFailedQueueItems` (renamed
+  `handleListQueueItems`) now returns `pending`/`claimed`/`failed`
+  unconditionally, plus `captured` items claimed within the last 15 minutes --
+  the same window this file's own claim visibility-timeout already used
+  (`handleListQueue`/`handleClaimQueueItem`), reused rather than introducing a
+  second number for the same "still worth a glance" idea. The `?status=` query
+  parameter is gone entirely -- there's nothing left to select between.
+  `claimed_at` is now in the response too.
+- `internal/queueitems.Client.ListFailed` (renamed `List`) and its `Item` type
+  (`ClaimedAt *time.Time` added) updated to match -- a new
+  `parseD1NativeTimestampOrNil` handles the nullable case (never-claimed items).
+- `internal/httpapi`: `ListFailedQueueItems`/`ListFailedJobs` renamed
+  `ListQueueItems`/`ListJobs`; `failedJob`/`failedJobsResponse` renamed
+  `job`/`jobsResponse`, both gaining `Status`/`ClaimedAt`.
+- The three Postgres job-listing queries
+  (`ListFailedScreenshotJobsForUser`/`ListFailedReadabilityJobsForUser`/
+  `ListFailedAIJobsForUser`, renamed `ListRecent...`) got the identical
+  broadening: `pending`/`processing`/`failed` unconditionally, `done` only
+  within the same 15-minute window (`NOW() - INTERVAL '15 minutes'`, duplicated
+  across all three queries rather than centralized -- each query's own comment
+  points at the other two). One consistent "recent" meaning across both the D1
+  queue and Postgres jobs, not two different numbers that happen to live in
+  different databases.
+- Frontend types: `QueueItem.status` tightened from a bare `string` to a literal
+  union (`Device.device_type`/`PageTag.source` precedent), gained `claimed_at`.
+  `FailedJob`/`FailedJobsResponse` renamed `Job`/ `JobsResponse`, gained
+  `status`/`claimed_at`.

@@ -52,7 +52,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 import { apiJSON, ApiError } from "../lib/api";
-import type { FailedJob, FailedJobsResponse, QueueItem } from "../lib/types";
+import type { Job, JobsResponse, QueueItem } from "../lib/types";
 import Queue from "./Queue.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
@@ -67,20 +67,23 @@ const failedItem: QueueItem = {
   url: "https://example.com/failed-capture",
   status: "failed",
   manual_retry: false,
+  claimed_at: null,
   created_at: "2026-05-01T12:00:00Z",
 };
 
-const readabilityJob: FailedJob = {
+const readabilityJob: Job = {
   id: 5,
   page_id: 10,
   url: "https://example.com/failed-job",
   title: null,
+  status: "failed",
   attempts: 2,
   error: "could not parse article body",
+  claimed_at: null,
   completed_at: "2026-05-02T08:00:00Z",
 };
 
-const emptyJobs: FailedJobsResponse = {
+const emptyJobs: JobsResponse = {
   screenshot_jobs: [],
   readability_jobs: [],
   ai_jobs: [],
@@ -89,7 +92,7 @@ const emptyJobs: FailedJobsResponse = {
 type LoadOptions = {
   items?: QueueItem[];
   itemsError?: unknown;
-  jobs?: FailedJobsResponse;
+  jobs?: JobsResponse;
   jobsError?: unknown;
 };
 
@@ -113,6 +116,55 @@ function mockLoad({
 }
 
 describe("Queue", () => {
+  it("filters out non-failed items and jobs (bridge behavior until this screen's own broader-status UI lands)", async () => {
+    mockLoad({
+      items: [
+        failedItem,
+        {
+          ...failedItem,
+          id: "q2",
+          status: "pending",
+          url: "https://example.com/pending",
+        },
+        {
+          ...failedItem,
+          id: "q3",
+          status: "captured",
+          url: "https://example.com/captured",
+        },
+      ],
+      jobs: {
+        ...emptyJobs,
+        readability_jobs: [
+          readabilityJob,
+          {
+            ...readabilityJob,
+            id: 6,
+            status: "processing",
+            url: "https://example.com/processing",
+          },
+          {
+            ...readabilityJob,
+            id: 7,
+            status: "done",
+            url: "https://example.com/done",
+          },
+        ],
+      },
+    });
+    render(Queue);
+
+    expect(
+      await screen.findByText("https://example.com/failed-capture"),
+    ).toBeTruthy();
+    expect(screen.getByText("https://example.com/failed-job")).toBeTruthy();
+
+    expect(screen.queryByText("https://example.com/pending")).toBeNull();
+    expect(screen.queryByText("https://example.com/captured")).toBeNull();
+    expect(screen.queryByText("https://example.com/processing")).toBeNull();
+    expect(screen.queryByText("https://example.com/done")).toBeNull();
+  });
+
   it("shows loading states, then failed items and failed jobs", async () => {
     mockLoad({
       items: [failedItem],

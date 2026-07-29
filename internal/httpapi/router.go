@@ -24,10 +24,12 @@
 // strictly self-scoped -- see ListDevices' own doc comment for why
 // cross-user device management isn't a web capability here),
 // session-protected Active Sessions (GET /api/sessions, DELETE
-// /api/sessions/{id}, session-protected failed-queue-item review/retry
-// (GET /api/queue-items, POST /api/queue-items/{id}/retry, also strictly
-// self-scoped, same reasoning), session-protected failed-job review/retry
-// (GET /api/jobs, POST /api/jobs/{kind}/{id}/retry for the screenshot/
+// /api/sessions/{id}, session-protected queue-item review/retry
+// (GET /api/queue-items -- pending/claimed/failed unconditionally, plus
+// recently-captured, POST /api/queue-items/{id}/retry, also strictly
+// self-scoped, same reasoning), session-protected job review/retry
+// (GET /api/jobs -- same pending/processing/failed-unconditional,
+// recently-done shape, POST /api/jobs/{kind}/{id}/retry for the screenshot/
 // readability/AI enrichment jobs -- {kind} one of "screenshot"/"readability"/
 // "ai" -- also strictly self-scoped, same reasoning), session-protected library
 // browsing/search (GET /api/pages, GET/PATCH/DELETE /api/pages/{id},
@@ -52,7 +54,7 @@
 // internal/db (Postgres), internal/archive (reading archived HTML off
 // disk), internal/mirror (pushing the credential mirror to the Worker),
 // internal/devices (the Manage Devices Worker calls), and internal/queueitems
-// (the failed-queue-item Worker calls). The device-facing / Worker-facing
+// (the queue-item Worker calls). The device-facing / Worker-facing
 // API surface (queue, presigned R2 URLs, /internal/tokens itself) isn't
 // part of this package.
 //
@@ -141,9 +143,9 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/devices/{id}", s.RevokeDevice)
 			r.Get("/sessions", s.ListSessions)
 			r.Delete("/sessions/{id}", s.DeleteSession)
-			r.Get("/queue-items", s.ListFailedQueueItems)
+			r.Get("/queue-items", s.ListQueueItems)
 			r.Post("/queue-items/{id}/retry", s.RetryQueueItem)
-			r.Get("/jobs", s.ListFailedJobs)
+			r.Get("/jobs", s.ListJobs)
 			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)
 			r.Get("/pages/{id}", s.GetPage)

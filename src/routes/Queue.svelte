@@ -31,8 +31,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
        means it's no longer 'failed' at all, so it's just removed from the
        list here rather than shown as "pending retry."
      A capture whose readability extraction permanently failed never gets
-     an AI job at all (see internal/httpapi's ListFailedJobs doc comment)
-     -- it shows up under Readability, not AI, until that's retried.
+     an AI job at all -- it shows up under Readability, not AI, until that's
+     retried.
+
+     GET /queue-items and GET /jobs both now return more than failed rows
+     -- pending/claimed and recently-captured items, pending/processing
+     and recently-done jobs -- but this screen still filters back down to
+     status === "failed" right after loading. Showing that fuller picture,
+     is its own separate follow-up.
+
      The error message itself is shown on its own line, not folded into
      the meta line -- "rate limited by the AI provider" vs. some other
      failure is often the single most useful piece of information here,
@@ -42,8 +49,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type {
-    FailedJob,
-    FailedJobsResponse,
+    Job,
+    JobsResponse,
     QueueItem,
     QueueItemListResponse,
   } from "../lib/types";
@@ -54,9 +61,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let items = $state<QueueItem[]>([]);
   let itemsLoading = $state(true);
 
-  let screenshotJobs = $state<FailedJob[]>([]);
-  let readabilityJobs = $state<FailedJob[]>([]);
-  let aiJobs = $state<FailedJob[]>([]);
+  let screenshotJobs = $state<Job[]>([]);
+  let readabilityJobs = $state<Job[]>([]);
+  let aiJobs = $state<Job[]>([]);
   let jobsLoading = $state(true);
 
   let loadError = $state<string | null>(null);
@@ -64,11 +71,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let retryingItemId = $state<string | null>(null);
   let retryingJobKey = $state<string | null>(null);
 
+  // GET /queue-items and GET /jobs both now return more than just the
+  // failed rows this screen was originally built around (pending/claimed
+  // and recently-captured items; pending/processing and recently-done
+  // jobs). This screen's own UI hasn't caught up to showing that fuller
+  // picture yet, so for now it filters back down to status === "failed" right
+  // after loading.
   async function loadItems() {
     itemsLoading = true;
     try {
       const res = await apiJSON<QueueItemListResponse>("/queue-items");
-      items = res.items;
+      items = res.items.filter((item) => item.status === "failed");
     } catch (err) {
       loadError =
         err instanceof ApiError ? err.message : m.queue_load_items_error();
@@ -80,10 +93,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   async function loadJobs() {
     jobsLoading = true;
     try {
-      const res = await apiJSON<FailedJobsResponse>("/jobs");
-      screenshotJobs = res.screenshot_jobs;
-      readabilityJobs = res.readability_jobs;
-      aiJobs = res.ai_jobs;
+      const res = await apiJSON<JobsResponse>("/jobs");
+      screenshotJobs = res.screenshot_jobs.filter((j) => j.status === "failed");
+      readabilityJobs = res.readability_jobs.filter(
+        (j) => j.status === "failed",
+      );
+      aiJobs = res.ai_jobs.filter((j) => j.status === "failed");
     } catch (err) {
       loadError =
         err instanceof ApiError ? err.message : m.queue_load_jobs_error();
@@ -118,19 +133,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  function jobsListFor(kind: JobKind): FailedJob[] {
+  function jobsListFor(kind: JobKind): Job[] {
     if (kind === "screenshot") return screenshotJobs;
     if (kind === "readability") return readabilityJobs;
     return aiJobs;
   }
 
-  function setJobsListFor(kind: JobKind, jobs: FailedJob[]) {
+  function setJobsListFor(kind: JobKind, jobs: Job[]) {
     if (kind === "screenshot") screenshotJobs = jobs;
     else if (kind === "readability") readabilityJobs = jobs;
     else aiJobs = jobs;
   }
 
-  async function retryJob(job: FailedJob, kind: JobKind) {
+  async function retryJob(job: Job, kind: JobKind) {
     retryingJobKey = `${kind}:${job.id}`;
     actionError = null;
     try {
@@ -162,7 +177,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 </script>
 
-{#snippet jobList(jobs: FailedJob[], kind: JobKind, label: string)}
+{#snippet jobList(jobs: Job[], kind: JobKind, label: string)}
   <div class="job-section">
     <h3>{label}</h3>
     {#if jobs.length === 0}

@@ -59,19 +59,21 @@ const userAgent = "recueil/1.0"
 // 409/410 split is worth making here, unlike the device-claim endpoint).
 var ErrNotFound = errors.New("queueitems: item not found or not retryable")
 
-// Item is one failed queue item, as returned by
-// GET /internal/queue-items?status=failed. id is a client-generated UUID
-// (queue_items.id is TEXT, not an integer PK, unlike tokens.id) --
+// Item is one queue item, as returned by GET /internal/queue-items --
+// every pending/claimed/failed item unconditionally, plus 'captured' ones
+// from within the Worker's own recency window. id is a client-generated
+// UUID (queue_items.id is TEXT, not an integer PK, unlike tokens.id) --
 // deliberately a string here, not int64. Doubles as this package's JSON
 // wire type for internal/httpapi's own /api/queue-items response (same
 // reasoning as devices.Token: nothing sensitive to strip, so a separate
 // DTO isn't earning its keep).
 type Item struct {
-	ID          string    `json:"id"`
-	URL         string    `json:"url"`
-	Status      string    `json:"status"`
-	ManualRetry bool      `json:"manual_retry"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string     `json:"id"`
+	URL         string     `json:"url"`
+	Status      string     `json:"status"`
+	ManualRetry bool       `json:"manual_retry"`
+	ClaimedAt   *time.Time `json:"claimed_at"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 type Client struct {
@@ -93,13 +95,15 @@ type itemWirePayload struct {
 	URL         string `json:"url"`
 	Status      string `json:"status"`
 	ManualRetry int    `json:"manual_retry"`
+	ClaimedAt   string `json:"claimed_at"`
 	CreatedAt   string `json:"created_at"`
 }
 
-// ListFailed lists every failed queue item belonging to userID, oldest
-// first (matching the Worker's own ORDER BY created_at ASC).
-func (c *Client) ListFailed(ctx context.Context, userID int64) ([]Item, error) {
-	reqURL := fmt.Sprintf("%s/internal/queue-items?user_id=%d&status=failed", c.baseURL, userID)
+// List lists every one of userID's queue items the Worker's
+// handleListQueueItems currently returns; this client has no filtering
+// logic of its own, it just passes the query through and parses the response.
+func (c *Client) List(ctx context.Context, userID int64) ([]Item, error) {
+	reqURL := fmt.Sprintf("%s/internal/queue-items?user_id=%d", c.baseURL, userID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, http.NoBody)
 	if err != nil {
 		return nil, err
@@ -109,19 +113,19 @@ func (c *Client) ListFailed(ctx context.Context, userID int64) ([]Item, error) {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("queueitems: listing failed items: %w", err)
+		return nil, fmt.Errorf("queueitems: listing items: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("queueitems: listing failed items: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("queueitems: listing items: status %d", resp.StatusCode)
 	}
 
 	var parsed struct {
 		Items []itemWirePayload `json:"items"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("queueitems: decoding failed-items response: %w", err)
+		return nil, fmt.Errorf("queueitems: decoding items response: %w", err)
 	}
 
 	items := make([]Item, 0, len(parsed.Items))
@@ -130,11 +134,16 @@ func (c *Client) ListFailed(ctx context.Context, userID int64) ([]Item, error) {
 		if err != nil {
 			return nil, fmt.Errorf("queueitems: parsing created_at for item %q: %w", w.ID, err)
 		}
+		claimedAt, err := parseD1NativeTimestampOrNil(w.ClaimedAt)
+		if err != nil {
+			return nil, fmt.Errorf("queueitems: parsing claimed_at for item %q: %w", w.ID, err)
+		}
 		items = append(items, Item{
 			ID:          w.ID,
 			URL:         w.URL,
 			Status:      w.Status,
 			ManualRetry: w.ManualRetry != 0,
+			ClaimedAt:   claimedAt,
 			CreatedAt:   createdAt,
 		})
 	}
@@ -237,4 +246,22 @@ func parseD1NativeTimestamp(s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("unrecognized D1 timestamp format %q: %w", s, err)
 	}
 	return t, nil
+}
+
+// parseD1NativeTimestampOrNil is parseD1NativeTimestamp's twin for a
+// column that's genuinely nullable in D1 (queue_items.claimed_at is NULL
+// for anything that's never been claimed -- a 'pending' item, most
+// obviously). Whether D1 serializes that as JSON null or an empty string,
+// it lands the same way here: itemWirePayload.ClaimedAt is a plain
+// (non-pointer) string, so either one unmarshals to "" -- that's the one
+// value this treats as "absent" rather than attempting to parse it.
+func parseD1NativeTimestampOrNil(s string) (*time.Time, error) {
+	if s == "" {
+		return nil, nil
+	}
+	t, err := parseD1NativeTimestamp(s)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
 }

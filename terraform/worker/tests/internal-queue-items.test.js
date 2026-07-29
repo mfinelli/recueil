@@ -19,7 +19,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import {
-  handleListFailedQueueItems,
+  handleListQueueItems,
   handleRetryQueueItem,
   handleServiceEnqueue,
 } from "../index.js";
@@ -56,92 +56,120 @@ async function seedUser() {
   return userId;
 }
 
-async function seedQueueItem(userId, id, url, status, manualRetry = 0) {
+/**
+ * @param {number} userId
+ * @param {string} id
+ * @param {string} url
+ * @param {string} status
+ * @param {number} [manualRetry]
+ * @param {string | null} [claimedAt] SQLite datetime string (e.g. via
+ *   `datetime('now', '-20 minutes')`, computed by the caller) -- lets
+ *   tests exercise handleListQueueItems' own recency window without
+ *   depending on real wall-clock timing.
+ */
+async function seedQueueItem(
+  userId,
+  id,
+  url,
+  status,
+  manualRetry = 0,
+  claimedAt = null,
+) {
   await env.DB.prepare(
-    `INSERT INTO queue_items (id, user_id, url, status, manual_retry)
-     VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO queue_items (id, user_id, url, status, manual_retry, claimed_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
   )
-    .bind(id, userId, url, status, manualRetry)
+    .bind(id, userId, url, status, manualRetry, claimedAt)
     .run();
 }
 
-describe("handleListFailedQueueItems", () => {
-  it("lists only the requested user's failed items", async () => {
+/** A claimed_at value clearly inside/outside handleListQueueItems' own
+ * 15-minute recency window, computed directly against SQLite's own clock
+ * (not JS's) so there's no risk of clock skew between the two. */
+async function claimedMinutesAgo(minutesAgo) {
+  const { results } = await env.DB.prepare(`SELECT datetime('now', ?) AS ts`)
+    .bind(`-${minutesAgo} minutes`)
+    .all();
+  return results[0].ts;
+}
+
+describe("handleListQueueItems", () => {
+  it("lists pending/claimed/failed items unconditionally, scoped to the requesting user", async () => {
     const userA = await seedUser();
     const userB = await seedUser();
     await seedQueueItem(
       userA,
-      "a-failed-1",
+      "a-pending",
       "https://example.com/a1",
-      "failed",
+      "pending",
     );
     await seedQueueItem(
       userA,
-      "a-failed-2",
+      "a-claimed",
       "https://example.com/a2",
-      "failed",
+      "claimed",
     );
-    await seedQueueItem(
-      userB,
-      "b-failed-1",
-      "https://example.com/b1",
-      "failed",
-    );
+    await seedQueueItem(userA, "a-failed", "https://example.com/a3", "failed");
+    await seedQueueItem(userB, "b-failed", "https://example.com/b1", "failed");
 
-    const response = await handleListFailedQueueItems(
-      serviceRequest(
-        "GET",
-        `/internal/queue-items?user_id=${userA}&status=failed`,
-      ),
+    const response = await handleListQueueItems(
+      serviceRequest("GET", `/internal/queue-items?user_id=${userA}`),
       env,
     );
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.items.map((i) => i.id).sort()).toEqual([
-      "a-failed-1",
-      "a-failed-2",
+      "a-claimed",
+      "a-failed",
+      "a-pending",
     ]);
   });
 
-  it("excludes pending, claimed, and captured items", async () => {
+  it("includes a captured item claimed within the recency window", async () => {
     const userId = await seedUser();
+    const recent = await claimedMinutesAgo(5);
     await seedQueueItem(
       userId,
-      "pending-item",
-      "https://example.com/p",
-      "pending",
-    );
-    await seedQueueItem(
-      userId,
-      "claimed-item",
-      "https://example.com/c",
-      "claimed",
-    );
-    await seedQueueItem(
-      userId,
-      "captured-item",
-      "https://example.com/cap",
+      "recently-captured",
+      "https://example.com/rc",
       "captured",
+      0,
+      recent,
     );
 
-    const response = await handleListFailedQueueItems(
-      serviceRequest(
-        "GET",
-        `/internal/queue-items?user_id=${userId}&status=failed`,
-      ),
+    const response = await handleListQueueItems(
+      serviceRequest("GET", `/internal/queue-items?user_id=${userId}`),
+      env,
+    );
+    const body = await response.json();
+    expect(body.items.map((i) => i.id)).toEqual(["recently-captured"]);
+    expect(body.items[0].claimed_at).toBe(recent);
+  });
+
+  it("excludes a captured item claimed outside the recency window", async () => {
+    const userId = await seedUser();
+    const stale = await claimedMinutesAgo(20);
+    await seedQueueItem(
+      userId,
+      "stale-captured",
+      "https://example.com/sc",
+      "captured",
+      0,
+      stale,
+    );
+
+    const response = await handleListQueueItems(
+      serviceRequest("GET", `/internal/queue-items?user_id=${userId}`),
       env,
     );
     const body = await response.json();
     expect(body.items).toEqual([]);
   });
 
-  it("returns an empty list for a user with no failed items", async () => {
+  it("returns an empty list for a user with no items", async () => {
     const userId = await seedUser();
-    const response = await handleListFailedQueueItems(
-      serviceRequest(
-        "GET",
-        `/internal/queue-items?user_id=${userId}&status=failed`,
-      ),
+    const response = await handleListQueueItems(
+      serviceRequest("GET", `/internal/queue-items?user_id=${userId}`),
       env,
     );
     expect(response.status).toBe(200);
@@ -150,20 +178,16 @@ describe("handleListFailedQueueItems", () => {
   });
 
   it("requires the service key", async () => {
-    const response = await handleListFailedQueueItems(
-      serviceRequest(
-        "GET",
-        "/internal/queue-items?user_id=1&status=failed",
-        {},
-      ),
+    const response = await handleListQueueItems(
+      serviceRequest("GET", "/internal/queue-items?user_id=1", {}),
       env,
     );
     expect(response.status).toBe(401);
   });
 
   it("rejects the wrong service key", async () => {
-    const response = await handleListFailedQueueItems(
-      serviceRequest("GET", "/internal/queue-items?user_id=1&status=failed", {
+    const response = await handleListQueueItems(
+      serviceRequest("GET", "/internal/queue-items?user_id=1", {
         "X-Service-Key": "wrong",
       }),
       env,
@@ -172,40 +196,19 @@ describe("handleListFailedQueueItems", () => {
   });
 
   it("rejects a missing user_id", async () => {
-    const response = await handleListFailedQueueItems(
-      serviceRequest("GET", "/internal/queue-items?status=failed"),
+    const response = await handleListQueueItems(
+      serviceRequest("GET", "/internal/queue-items"),
       env,
     );
     expect(response.status).toBe(400);
   });
 
   it("rejects a non-integer user_id", async () => {
-    const response = await handleListFailedQueueItems(
-      serviceRequest(
-        "GET",
-        "/internal/queue-items?user_id=not-a-number&status=failed",
-      ),
+    const response = await handleListQueueItems(
+      serviceRequest("GET", "/internal/queue-items?user_id=not-a-number"),
       env,
     );
     expect(response.status).toBe(400);
-  });
-
-  it("rejects a missing or unsupported status", async () => {
-    const userId = await seedUser();
-    const missing = await handleListFailedQueueItems(
-      serviceRequest("GET", `/internal/queue-items?user_id=${userId}`),
-      env,
-    );
-    expect(missing.status).toBe(400);
-
-    const unsupported = await handleListFailedQueueItems(
-      serviceRequest(
-        "GET",
-        `/internal/queue-items?user_id=${userId}&status=pending`,
-      ),
-      env,
-    );
-    expect(unsupported.status).toBe(400);
   });
 });
 

@@ -40,10 +40,12 @@
 //   deletion reconciliation, batch delete) -- all four deliberately dumb:
 //   the backend computes what changed and what to delete, the Worker only
 //   ever executes exactly what it's told
-// - GET /internal/queue-items?status=failed, POST
+// - GET /internal/queue-items, POST
 //   /internal/queue-items/:id/retry: service-secret-gated, called by the
-//   backend on the dashboard's Queue screen's behalf -- lists failed items
-//   for manual review, and flags one for another claim attempt without
+//   backend on the dashboard's Queue screen's behalf -- lists a user's
+//   pending/claimed/failed items plus recently-'captured' ones (see
+//   handleListQueueItems's own doc comment for the recency window) for
+//   review, and flags a failed one for another claim attempt without
 //   losing its 'failed' status (see the manual_retry migration's comment)
 // - POST /internal/queue-items: service-secret-gated, called by the backend
 //   on the dashboard's recapture action's behalf -- same shape as the
@@ -468,7 +470,7 @@ export default {
       return handleDeleteArchivedPages(request, env);
     }
     if (method === "GET" && pathname === "/internal/queue-items") {
-      return handleListFailedQueueItems(request, env);
+      return handleListQueueItems(request, env);
     }
     if (method === "POST" && pathname === "/internal/queue-items") {
       return handleServiceEnqueue(request, env);
@@ -1546,19 +1548,25 @@ export async function handleFailQueueItem(request, env, ctx, itemId) {
 }
 
 /**
- * GET /internal/queue-items?user_id=&status=failed: lists a user's failed
- * queue items for the dashboard's Queue screen. Service-secret-gated,
- * called by the backend, same shape as handleListTokens. Only
- * `status=failed` is supported for now (the only thing the dashboard
- * currently shows) -- an unrecognized or missing status is a 400 rather
- * than silently listing everything, so a future caller bug doesn't leak
- * pending/claimed rows for other devices' in-flight work.
+ * GET /internal/queue-items?user_id=: lists a user's queue items for the
+ * dashboard's Queue screen -- every pending/claimed/failed item
+ * unconditionally, plus 'captured' ones from the last 15 minutes (the same
+ * window handleListQueue/handleClaimQueueItem's visibility timeout
+ * already uses, reused here for one consistent "recent" meaning across this
+ * file rather than picking a second, different number). Service-secret-gated,
+ * called by the backend, same shape as handleListTokens.
+ *
+ * 'captured' items age out of this list on their own as they cross that
+ * 15-minute mark -- there's no separate mechanism needed to hide them, the
+ * WHERE clause's own recency check does it -- and eventually get deleted
+ * entirely by handleCleanupQueueItems (a much longer, unrelated retention
+ * window).
  *
  * @param {Request} request
  * @param {Env} env
  * @returns {Promise<Response>}
  */
-export async function handleListFailedQueueItems(request, env) {
+export async function handleListQueueItems(request, env) {
   const serviceKey = request.headers.get("X-Service-Key");
   if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
     return new Response("Unauthorized", { status: 401 });
@@ -1570,13 +1578,13 @@ export async function handleListFailedQueueItems(request, env) {
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }
-  if (url.searchParams.get("status") !== "failed") {
-    return new Response("Missing or unsupported status", { status: 400 });
-  }
 
   const { results } = await env.DB.prepare(
-    `SELECT id, url, status, manual_retry, created_at
-     FROM queue_items WHERE user_id = ? AND status = 'failed'
+    `SELECT id, url, status, manual_retry, claimed_at, created_at
+     FROM queue_items
+     WHERE user_id = ?
+       AND (status IN ('pending', 'claimed', 'failed')
+            OR (status = 'captured' AND claimed_at > datetime('now', '-15 minutes')))
      ORDER BY created_at ASC`,
   )
     .bind(userId)

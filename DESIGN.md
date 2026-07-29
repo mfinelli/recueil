@@ -2096,6 +2096,22 @@ screenshot job in §6.
 - A readability job that succeeds on retry still creates its `ai_jobs` row in
   the same transaction as any other successful completion — nothing needed to
   special-case "this was a retry" for that cascade to keep working.
+- **`GET /api/jobs` originally only returned `status = 'failed'` rows, matching
+  the "one place for everything currently stuck" framing above at the time.**
+  Broadened alongside `GET /internal/queue-items` (§8's own entry) once the
+  Queue screen's scope grew to "what's currently happening," not just "what
+  needs attention": `pending`/`processing`/`failed` unconditionally, `done` only
+  within the last 15 minutes — the exact same window and reasoning as
+  `queue_items`' own `captured` state, so "recent" means one consistent thing
+  across both halves of this screen, not two different numbers that happen to
+  live in different databases. That window is duplicated across all three job
+  queries (`ListRecentScreenshotJobsForUser`/`ListRecentReadabilityJobsForUser`/
+  `ListRecentAIJobsForUser`, renamed from their own `ListFailed...` names) as a
+  plain `NOW() - INTERVAL '15 minutes'` rather than centralized anywhere — each
+  query's own comment points at the other two so a future change to the window
+  doesn't miss one. `status` and `claimed_at` are both new fields in the
+  response too; both already existed as real columns, simply weren't surfaced
+  before now.
 
 ### Implementation
 
@@ -2237,13 +2253,30 @@ not anticipated in the original design:
   `OR (status = 'failed' AND manual_retry = 1)` to make this possible — see the
   migration and `handleClaimQueueItem`/`handleListQueue` in `terraform/index.js`
   for the exact shape). Two new service-secret-gated Worker endpoints back this:
-  `GET /internal/queue-items?status=failed` and
+  `GET /internal/queue-items` (see below for what it returns as of the
+  dashboard's own Queue-screen recency-window work) and
   `POST /internal/queue-items/:id/retry`, called by the backend's own
   `internal/queueitems` client (structured like `internal/devices`) via
   session-protected, self-scoped `GET`/`POST /api/queue-items...`. No automatic
   retry mechanism and no separate/longer expiry were built — expected volume is
   low at this project's personal/family scale, and an operator can always
   intervene by hand if that stops holding.
+- **`GET /internal/queue-items` originally only returned `status=failed` (a
+  required query parameter), matching the Queue screen it existed for at the
+  time.** Broadened once the screen's own scope grew to "what's currently
+  happening," not just "what needs manual attention": it now returns every
+  `pending`/`claimed`/`failed` item unconditionally, plus `captured` items from
+  the last 15 minutes — the same window `handleListQueue`/
+  `handleClaimQueueItem`'s own claim visibility-timeout already uses elsewhere
+  in this file, reused rather than picking a second, different number for what's
+  conceptually the same "still worth a glance" idea. The `?status=` parameter is
+  gone entirely; there's nothing left to select between. `claimed_at` is now in
+  the response too — it already existed on the table (used internally for the
+  retention clock, see above), just wasn't surfaced.
+  `internal/httpapi.ListQueueItems` (renamed from `ListFailedQueueItems`) is the
+  passthrough on the dashboard side; the recency window itself is computed
+  entirely on the Worker side (`datetime('now', '-15 minutes')`), never in Go or
+  in the dashboard's own JS.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
   `pending` for a long time before being claimed; it's time since actual
   completion that should drive retention, not time since the original enqueue.
@@ -3745,15 +3778,15 @@ What remains open is purely implementation-phase, not architectural:
   user with a manual-retry action**, not just kept forever with no further
   recourse. A new `queue_items.manual_retry` D1 column (cleared on claim), two
   new service-secret-gated Worker endpoints
-  (`GET /internal/queue-items?status=failed`,
-  `POST /internal/queue-items/:id/retry`), a backend `internal/queueitems`
-  client mirroring `internal/devices`'s shape, session-protected
-  `GET`/`POST /api/queue-items...` (self-scoped, same reasoning as Manage
-  Devices), and a new dashboard Queue screen. §8's cleanup endpoint is otherwise
-  unchanged — `captured` items are still swept, `failed` items are still never
-  deleted, now a deliberate decision (low expected volume at this project's
-  scale, and an operator can always clean up by hand) rather than a deferred
-  one.
+  (`GET /internal/queue-items?status=failed` at the time -- broadened since, see
+  §8's own entry on this), `POST /internal/queue-items/:id/retry`), a backend
+  `internal/queueitems` client mirroring `internal/devices`'s shape,
+  session-protected `GET`/`POST /api/queue-items...` (self-scoped, same
+  reasoning as Manage Devices), and a new dashboard Queue screen. §8's cleanup
+  endpoint is otherwise unchanged — `captured` items are still swept, `failed`
+  items are still never deleted, now a deliberate decision (low expected volume
+  at this project's scale, and an operator can always clean up by hand) rather
+  than a deferred one.
 - **Resolved this round: Readability extraction moved from the extension (and
   the dashboard's browser, for manual uploads) to a single deferred, async
   backend job, sharing the headless-Chrome sidecar with the screenshot job — see
