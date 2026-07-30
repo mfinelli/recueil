@@ -51,7 +51,6 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
       - run: |
           pnpm ci
-          pnpm run build
           go mod download
           make
         if: matrix.build-mode == 'manual'
