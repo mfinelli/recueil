@@ -23,11 +23,7 @@ CREATE TABLE user_settings (
   user_id BIGINT NOT NULL,
   -- BCP-47-ish language tag (e.g. 'en', 'fr'). NULL means no explicit
   -- override -- the dashboard falls back to auto-detecting a language from
-  -- the browser. No CHECK constraint against a fixed set of values, unlike
-  -- role/status/ source elsewhere in this schema: which languages the
-  -- dashboard actually supports is expected to grow over time as translations
-  -- are added, and a CHECK constraint would need its own migration every time
-  -- that list changes. Validated at the application layer instead.
+  -- the browser.
   language TEXT,
   -- NULL means "automatic" -- follow the browser's prefers-color-scheme,
   -- exactly like language's NULL-means-auto-detect convention. Unlike
@@ -41,6 +37,7 @@ CREATE TABLE user_settings (
   CONSTRAINT user_settings_pkey PRIMARY KEY (user_id),
   CONSTRAINT user_settings_user_id_fkey FOREIGN KEY (user_id)
     REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT user_settings_language_check CHECK (language IN ('en', 'fr')),
   CONSTRAINT user_settings_theme_check CHECK (theme IN ('light', 'dark'))
 );
 
