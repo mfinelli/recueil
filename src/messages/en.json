@@ -256,5 +256,12 @@
   "pagedetail_recapture_error": "failed to queue recapture",
   "pagedetail_delete": "Delete page",
   "pagedetail_delete_confirm": "Delete \"{title}\"? This can't be undone from the dashboard.",
-  "pagedetail_delete_error": "failed to delete page"
+  "pagedetail_delete_error": "failed to delete page",
+  "pagedetail_notes_heading": "Notes",
+  "pagedetail_edit_notes": "Edit notes",
+  "pagedetail_done_editing_notes": "Done editing notes",
+  "pagedetail_notes_empty": "No notes yet.",
+  "pagedetail_notes_placeholder": "Add a note…",
+  "pagedetail_notes_hint": "Supports **bold**, *italic* / _italic_, and - lists.",
+  "pagedetail_notes_error": "failed to update notes"
 }

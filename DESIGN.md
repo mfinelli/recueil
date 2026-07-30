@@ -2640,6 +2640,18 @@ CREATE TABLE pages (
                                       -- the same way title is -- including
                                       -- back to NULL if the latest capture
                                       -- genuinely didn't find one
+  notes TEXT,                        -- free-text, user-authored (Phase 14,
+                                      -- PATCH /api/pages/{id}) -- a light
+                                      -- markdown subset (bold/italic/lists;
+                                      -- src/lib/markdown.ts), stored as
+                                      -- source and rendered client-side,
+                                      -- same as reader_text/ai_summary's
+                                      -- own "store source, render on read"
+                                      -- choice. Page-level like tags/
+                                      -- collections, not per-capture.
+                                      -- Deliberately not mirrored to D1:
+                                      -- personal annotations, not bookmark
+                                      -- structure
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)

@@ -26,6 +26,7 @@ export interface Page {
   latest_capture_at: string;
   excluded_from_mirror: boolean;
   favicon_path: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 }

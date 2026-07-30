@@ -103,6 +103,13 @@ UPDATE pages SET title = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
+-- name: SetPageNotes :one
+-- Unlike SetPageTitle, an empty value is meaningful here (clearing a
+-- note is a normal action, not an error).
+UPDATE pages SET notes = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
 -- name: SetPageFavicon :exec
 -- Called by DeleteCapture (internal/httpapi), not by any dashboard
 -- endpoint of its own.

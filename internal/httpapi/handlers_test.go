@@ -2043,6 +2043,83 @@ func TestPatchPage(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
+	t.Run("sets notes for the owner", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/notes")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"**Worth** revisiting"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Notes *string `json:"notes"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Notes)
+		assert.Equal(t, "**Worth** revisiting", *got.Notes)
+	})
+
+	t.Run("trims whitespace from notes before saving", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/notes-trim")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"  padded note  "}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Notes *string `json:"notes"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Notes)
+		assert.Equal(t, "padded note", *got.Notes)
+	})
+
+	t.Run("an empty/whitespace-only notes value clears it to null, not an error", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/notes-clear")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		setResp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"a note to clear"}`)
+		assert.Equal(t, http.StatusOK, setResp.StatusCode)
+
+		clearResp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"   "}`)
+		assert.Equal(t, http.StatusOK, clearResp.StatusCode)
+
+		var got struct {
+			Notes *string `json:"notes"`
+		}
+		require.NoError(t, json.NewDecoder(clearResp.Body).Decode(&got))
+		assert.Nil(t, got.Notes)
+
+		persisted, err := db.New(pool).GetPageByID(context.Background(), page.ID)
+		require.NoError(t, err)
+		assert.False(t, persisted.Notes.Valid)
+	})
+
+	t.Run("another user's page returns 404 for a notes update too", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/notes-not-yours")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"Hijacked"}`)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
 	t.Run("both fields in one request applies both -- RETURNING * on the second UPDATE reflects the first's write too", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/retitle-both")

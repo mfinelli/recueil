@@ -128,6 +128,7 @@ const basePage: PageDetail = {
   latest_capture_at: "2026-05-01T12:00:00Z",
   excluded_from_mirror: false,
   favicon_path: null,
+  notes: null,
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",
   captures: [exampleCapture],
@@ -576,6 +577,108 @@ describe("PageDetail", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("title cannot be empty")).toBeTruthy();
+  });
+
+  it("shows an empty-notes message when there are no notes", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(screen.getByText("No notes yet.")).toBeTruthy();
+  });
+
+  it("renders notes through the markdown subset, not as plain text", async () => {
+    render42({
+      page: {
+        ...basePage,
+        notes: "**bold** and a list:\n- one\n- two",
+      },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    const strong = screen.getByText("bold", { selector: "strong" });
+    expect(strong).toBeTruthy();
+    // Scoped to the notes body specifically -- tags/collections render
+    // their own <ul> chip lists too, so an unscoped getByRole("list")
+    // would be ambiguous.
+    const notesBody = strong.closest(".notes-body") as HTMLElement;
+    expect(within(notesBody).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("edits notes, saving on success", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    const textarea = screen.getByPlaceholderText("Add a note…");
+    expect(textarea).toHaveProperty("value", "");
+
+    apiJSONMock.mockResolvedValueOnce({
+      ...basePage,
+      notes: "**Worth** revisiting",
+    });
+    await fireEvent.input(textarea, {
+      target: { value: "**Worth** revisiting" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "PATCH",
+      body: { notes: "**Worth** revisiting" },
+    });
+    expect(
+      await screen.findByText("Worth", { selector: "strong" }),
+    ).toBeTruthy();
+  });
+
+  it("clears notes back to the empty state by saving a blank textarea", async () => {
+    render42({ page: { ...basePage, notes: "an existing note" } });
+    await screen.findByText("an existing note");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    apiJSONMock.mockResolvedValueOnce({ ...basePage, notes: null });
+    await fireEvent.input(screen.getByPlaceholderText("Add a note…"), {
+      target: { value: "   " },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "PATCH",
+      body: { notes: "" },
+    });
+    expect(await screen.findByText("No notes yet.")).toBeTruthy();
+  });
+
+  it("cancels a notes edit without calling the API", async () => {
+    render42({ page: { ...basePage, notes: "original note" } });
+    await screen.findByText("original note");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    await fireEvent.input(screen.getByPlaceholderText("Add a note…"), {
+      target: { value: "discarded" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/pages/42",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(screen.getByText("original note")).toBeTruthy();
+  });
+
+  it("shows the API's own error message when saving notes fails", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(500, "failed to update notes"),
+    );
+    await fireEvent.input(screen.getByPlaceholderText("Add a note…"), {
+      target: { value: "a note" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("failed to update notes")).toBeTruthy();
   });
 
   it("queues a recapture, showing a transient confirmation", async () => {

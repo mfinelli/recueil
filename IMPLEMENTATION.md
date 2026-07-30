@@ -2650,3 +2650,91 @@ against.
   union (`Device.device_type`/`PageTag.source` precedent), gained `claimed_at`.
   `FailedJob`/`FailedJobsResponse` renamed `Job`/ `JobsResponse`, gained
   `status`/`claimed_at`.
+
+## Phase 14 (Page notes / page linking)
+
+### Schema
+
+`pages.notes TEXT`, nullable. Page-level, not per-capture, same reasoning as
+tags/collections: it's the user's own annotation about the URL, which doesn't
+change with a re-archive. Deliberately **not** mirrored to D1 —
+`internal/mirror/sync.go`'s payload only ever carried `title`, and notes are a
+personal annotation, not bookmark structure, so it stays Postgres-only.
+
+Also deliberately **not** folded into `SearchPages`'s full-text search over
+`reader_text` — discussed and declined for now; revisit if it turns out to
+matter in practice.
+
+### Backend
+
+- New `SetPageNotes` query (`queries/pages.sql`), right next to `SetPageTitle` —
+  same `WHERE id = $1 AND user_id = $2` / `RETURNING *` shape, but unlike title,
+  an empty value is meaningful here (clears the note) rather than rejected.
+- `PatchPage` (`internal/httpapi/handlers.go`) gained a third optional field,
+  `Notes *string`, alongside the existing `ExcludedFromMirror`/`Title` —
+  extended the existing handler rather than adding a new route, since it already
+  existed specifically to support "apply whichever of several optional fields
+  were provided." Trim-then-nullify-if-empty: a blank/whitespace-only value
+  stores `NULL`, not `""`, matching how `title`/`favicon_path` already
+  distinguish "not set" from a real value.
+- `pageResponse` and all three of its conversion functions
+  (`pageResponseFromPage`/`FromListRow`/`FromSearchRow`) gained `Notes`. It now
+  rides along on every page response — list, search, and detail alike — same as
+  every other column on this struct; no separate "detail-only" field concept
+  exists in this API today, so this doesn't introduce one just for notes. Worth
+  revisiting if note length ever makes list/search payloads noticeably heavier
+  in practice, but not a concern at today's usage.
+- Six new `TestPatchPage` subtests: set, trim, clear-to-null-on-blank, and the
+  standard 404-for-another-user's-page check, mirroring the existing title
+  subtests' shape exactly.
+
+### Markdown rendering (`src/lib/markdown.ts`)
+
+Hand-rolled, not a library. The scope is intentionally three constructs (bold,
+italic, simple lists), and a fixed, hand-rolled output vocabulary
+(`<strong>`/`<em>`/`<ul>`/`<li>`/`<p>`/`<br>`, always wrapping HTML-escaped
+text) means there's no separate sanitization step to get right or forget, unlike
+adopting a general-purpose parser and then needing to sanitize _its_ output
+separately. Bold is matched before italic so `**bold**`'s own asterisks are
+never mistaken for italic markers. Asterisk-italic (`*x*`) can sit directly
+against a word, matching common markdown convention; underscore-italic (`_x_`)
+requires a non-word boundary on both sides (`(?<![\w])_(.+?)_(?![\w])`), so
+identifiers like `my_variable_name` aren't mangled — the one place a naive regex
+implementation usually gets underscores wrong.
+
+Source is stored as-is in `pages.notes` and rendered client-side on read — the
+same choice `reader_text`/`ai_summary` already made (see
+`CaptureReader.svelte`'s own doc comment), just with actual formatting this
+time.
+
+### Frontend (`PageDetail.svelte`)
+
+New "Notes" section, placed after Collections and before the Captures list.
+Reuses the existing `edit-toggle` button class (pencil ⇄ checkmark, same as
+Tags/Collections). Unlike Tags/Collections' per-item instant-save add/remove
+forms, a note is one free-text field, so its edit UX matches the existing
+**title-edit** pattern instead: a textarea plus explicit Save/Cancel, not
+autosave-per-keystroke. Six new component tests (`PageDetail.test.ts`): empty
+state, markdown actually rendering (not just displaying literal `**bold**`
+text), save, clear-via-blank-save, cancel discards without calling the API, and
+the API's own error message surfacing on a failed save.
+
+`Page`/`PageDetail` (`src/lib/types.ts`) gained `notes: string | null`, which
+required updating five existing test fixtures
+(`PageList`/`CollectionDetail`/`Library`/`PageDetail`/`TagDetail.test.ts`) that
+construct a full `Page` object literal and started failing type-checking once
+the field became required.
+
+Seven new `pagedetail_notes_*` message keys, both `en.json`/`fr.json`, kept at
+full parity (251/251 keys each).
+
+### Next up
+
+Explicit page-to-page linking (the HN-article/HN-discussion example from design
+discussion) is a separate, not-yet-built phase: a self-referential `page_links`
+table storing each relationship once as a canonically-ordered pair
+(`CHECK (page_id_a < page_id_b)`) rather than twice, a combined title-or-URL
+search endpoint for the "link to" picker, and a lightweight favicon/title/URL
+list on PageDetail (not pills — see the mockup review) for showing existing
+links. Schema/API design already discussed and mocked up alongside notes; not
+implemented this round.

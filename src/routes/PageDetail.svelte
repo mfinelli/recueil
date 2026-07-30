@@ -49,6 +49,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { link, push } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
   import { formatBytes } from "../lib/format";
+  import { renderMarkdown } from "../lib/markdown";
   import AppHeader from "../components/AppHeader.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
@@ -90,6 +91,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let editingTitle = $state(false);
   let titleInput = $state("");
   let savingTitle = $state(false);
+  let editingNotes = $state(false);
+  let notesInput = $state("");
+  let savingNotes = $state(false);
   let recapturing = $state(false);
   let recaptureQueued = $state(false);
   let deleting = $state(false);
@@ -116,6 +120,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     faviconFailed = false;
     editingTags = false;
     editingCollections = false;
+    editingNotes = false;
 
     Promise.allSettled([
       apiJSON<PageDetail>(`/pages/${id}`),
@@ -354,6 +359,39 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         err instanceof ApiError ? err.message : m.pagedetail_title_error();
     } finally {
       savingTitle = false;
+    }
+  }
+
+  function startEditingNotes() {
+    if (!page) return;
+    notesInput = page.notes ?? "";
+    editingNotes = true;
+  }
+
+  function cancelEditingNotes() {
+    editingNotes = false;
+  }
+
+  // Unlike saveTitle, an empty/whitespace-only value is a valid save --
+  // it clears the note rather than being rejected, matching PatchPage's
+  // own trim-then-nullify-if-empty handling on the backend.
+  async function saveNotes(event: SubmitEvent) {
+    event.preventDefault();
+    if (!page) return;
+    savingNotes = true;
+    actionError = null;
+    try {
+      const updated = await apiJSON<PageDetail>(`/pages/${page.id}`, {
+        method: "PATCH",
+        body: { notes: notesInput.trim() },
+      });
+      page.notes = updated.notes;
+      editingNotes = false;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_notes_error();
+    } finally {
+      savingNotes = false;
     }
   }
 
@@ -625,6 +663,57 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {/if}
     </section>
 
+    <section>
+      <div class="block-header">
+        <h2>{m.pagedetail_notes_heading()}</h2>
+        <button
+          type="button"
+          class="edit-toggle"
+          class:active={editingNotes}
+          aria-label={editingNotes
+            ? m.pagedetail_done_editing_notes()
+            : m.pagedetail_edit_notes()}
+          onclick={() =>
+            editingNotes ? cancelEditingNotes() : startEditingNotes()}
+        >
+          {#if editingNotes}
+            <Check size={13} />
+          {:else}
+            <Pencil size={13} />
+          {/if}
+        </button>
+      </div>
+      {#if editingNotes}
+        <form class="notes-edit" onsubmit={saveNotes}>
+          <textarea
+            rows="5"
+            placeholder={m.pagedetail_notes_placeholder()}
+            bind:value={notesInput}
+            disabled={savingNotes}></textarea>
+          <p class="notes-hint">{m.pagedetail_notes_hint()}</p>
+          <div class="title-edit-actions">
+            <button type="submit" disabled={savingNotes}
+              >{m.common_save()}</button
+            >
+            <button
+              type="button"
+              onclick={cancelEditingNotes}
+              disabled={savingNotes}>{m.common_cancel()}</button
+            >
+          </div>
+        </form>
+      {:else if page.notes}
+        <!-- renderMarkdown only ever emits <strong>/<em>/<ul>/<li>/<p>/<br>
+             wrapping HTML-escaped text -- there's no path from page.notes to
+             an injected tag/attribute, which is what this rule exists to
+             catch. -->
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+        <div class="notes-body">{@html renderMarkdown(page.notes)}</div>
+      {:else}
+        <p class="empty-note">{m.pagedetail_notes_empty()}</p>
+      {/if}
+    </section>
+
     <h2>{m.pagedetail_captures_heading()}</h2>
     <ul class="captures">
       {#each page.captures as capture (capture.id)}
@@ -757,6 +846,53 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .title-edit-actions {
     display: flex;
     gap: 0.5rem;
+  }
+
+  .notes-body {
+    @include mix.card-surface;
+    padding: 0.85rem 1rem;
+    font-size: 0.9rem;
+    line-height: 1.6;
+
+    :global(p) {
+      margin: 0 0 0.6rem;
+
+      &:last-child {
+        margin-bottom: 0;
+      }
+    }
+
+    :global(ul) {
+      margin: 0 0 0.6rem;
+      padding-left: 1.2rem;
+
+      &:last-child {
+        margin-bottom: 0;
+      }
+    }
+  }
+
+  .empty-note {
+    color: var(--ink-muted);
+    font-size: 0.8125rem;
+    font-style: italic;
+  }
+
+  .notes-edit textarea {
+    @include comp.text-input;
+    display: block;
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    line-height: 1.55;
+    resize: vertical;
+  }
+
+  .notes-hint {
+    margin: 0.4rem 0 0;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
   }
 
   .source-row {

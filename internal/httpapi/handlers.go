@@ -984,6 +984,7 @@ type pageResponse struct {
 	LatestCaptureAt    time.Time `json:"latest_capture_at"`
 	ExcludedFromMirror bool      `json:"excluded_from_mirror"`
 	FaviconPath        *string   `json:"favicon_path"`
+	Notes              *string   `json:"notes"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
 }
@@ -992,7 +993,8 @@ func pageResponseFromPage(p *db.Page) pageResponse {
 	return pageResponse{
 		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
 		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
-		FaviconPath: textOrNil(p.FaviconPath), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
+		FaviconPath: textOrNil(p.FaviconPath), Notes: textOrNil(p.Notes),
+		CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
 	}
 }
 
@@ -1000,7 +1002,8 @@ func pageResponseFromListRow(p *db.ListPagesRow) pageResponse {
 	return pageResponse{
 		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
 		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
-		FaviconPath: textOrNil(p.FaviconPath), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
+		FaviconPath: textOrNil(p.FaviconPath), Notes: textOrNil(p.Notes),
+		CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
 	}
 }
 
@@ -1008,7 +1011,8 @@ func pageResponseFromSearchRow(p *db.SearchPagesRow) pageResponse {
 	return pageResponse{
 		ID: p.ID, NormalizedURL: p.NormalizedUrl, Title: textOrNil(p.Title),
 		LatestCaptureAt: p.LatestCaptureAt.Time, ExcludedFromMirror: p.ExcludedFromMirror,
-		FaviconPath: textOrNil(p.FaviconPath), CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
+		FaviconPath: textOrNil(p.FaviconPath), Notes: textOrNil(p.Notes),
+		CreatedAt: p.CreatedAt.Time, UpdatedAt: p.UpdatedAt.Time,
 	}
 }
 
@@ -1281,15 +1285,17 @@ func (s *Server) GetPageThumbnail(w http.ResponseWriter, r *http.Request) {
 type patchPageRequest struct {
 	ExcludedFromMirror *bool   `json:"excluded_from_mirror"`
 	Title              *string `json:"title"`
+	Notes              *string `json:"notes"`
 }
 
 // PATCH /api/pages/{id}: supports toggling excluded_from_mirror and/or
-// overwriting title (a manual title override). Pointer fields
-// distinguish "not provided" from an explicit false/empty, and at least
-// one must be provided; if both are, each is applied as its own update
-// (not one combined query), and the response reflects whichever ran
-// last -- fine here since the dashboard never actually sends both in one
-// request today (they're two separate pieces of UI).
+// overwriting title (a manual title override) and/or setting notes.
+// Pointer fields distinguish "not provided" from an explicit
+// false/empty, and at least one must be provided; if more than one is,
+// each is applied as its own update (not one combined query), and the
+// response reflects whichever ran last -- fine here since the dashboard
+// never actually sends more than one of these in one request today
+// (they're separate pieces of UI).
 func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -1306,8 +1312,8 @@ func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.ExcludedFromMirror == nil && req.Title == nil {
-		writeError(w, http.StatusBadRequest, "excluded_from_mirror or title is required")
+	if req.ExcludedFromMirror == nil && req.Title == nil && req.Notes == nil {
+		writeError(w, http.StatusBadRequest, "excluded_from_mirror, title, or notes is required")
 		return
 	}
 
@@ -1332,6 +1338,25 @@ func (s *Server) PatchPage(w http.ResponseWriter, r *http.Request) {
 		}
 		page, err = s.Queries.SetPageTitle(ctx, db.SetPageTitleParams{
 			Title: pgtype.Text{String: trimmed, Valid: true}, ID: id, UserID: user.ID,
+		})
+		if err != nil {
+			writeError(w, http.StatusNotFound, "page not found")
+			return
+		}
+	}
+
+	if req.Notes != nil {
+		// Unlike title, an empty/whitespace-only value is meaningful: it
+		// clears the note back to NULL rather than storing "". Matches
+		// how title/favicon_path already distinguish NULL ("none set")
+		// from a real value elsewhere on this same struct.
+		trimmed := strings.TrimSpace(*req.Notes)
+		notes := pgtype.Text{Valid: false}
+		if trimmed != "" {
+			notes = pgtype.Text{String: trimmed, Valid: true}
+		}
+		page, err = s.Queries.SetPageNotes(ctx, db.SetPageNotesParams{
+			Notes: notes, ID: id, UserID: user.ID,
 		})
 		if err != nil {
 			writeError(w, http.StatusNotFound, "page not found")
