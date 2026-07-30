@@ -259,9 +259,17 @@
   "pagedetail_delete_error": "failed to delete page",
   "pagedetail_notes_heading": "Notes",
   "pagedetail_edit_notes": "Edit notes",
-  "pagedetail_done_editing_notes": "Done editing notes",
   "pagedetail_notes_empty": "No notes yet.",
   "pagedetail_notes_placeholder": "Add a note…",
   "pagedetail_notes_hint": "Supports **bold**, *italic* / _italic_, and - lists.",
-  "pagedetail_notes_error": "failed to update notes"
+  "pagedetail_notes_error": "failed to update notes",
+  "pagedetail_links_heading": "Linked pages",
+  "pagedetail_edit_links": "Edit linked pages",
+  "pagedetail_done_editing_links": "Done editing linked pages",
+  "pagedetail_links_empty": "No pages linked yet.",
+  "pagedetail_link_search_placeholder": "Search by title or URL…",
+  "pagedetail_link_no_results": "No matching pages.",
+  "pagedetail_remove_link_aria": "Remove link to {name}",
+  "pagedetail_link_error": "failed to link page",
+  "pagedetail_remove_link_error": "failed to remove link"
 }

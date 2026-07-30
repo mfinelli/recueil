@@ -259,9 +259,17 @@
   "pagedetail_delete_error": "échec de la suppression de la page",
   "pagedetail_notes_heading": "Notes",
   "pagedetail_edit_notes": "Modifier les notes",
-  "pagedetail_done_editing_notes": "Terminer la modification des notes",
   "pagedetail_notes_empty": "Aucune note pour le moment.",
   "pagedetail_notes_placeholder": "Ajouter une note…",
   "pagedetail_notes_hint": "Prend en charge **gras**, *italique* / _italique_, et les listes avec -.",
-  "pagedetail_notes_error": "échec de la mise à jour des notes"
+  "pagedetail_notes_error": "échec de la mise à jour des notes",
+  "pagedetail_links_heading": "Pages liées",
+  "pagedetail_edit_links": "Modifier les pages liées",
+  "pagedetail_done_editing_links": "Terminer la modification des pages liées",
+  "pagedetail_links_empty": "Aucune page liée pour le moment.",
+  "pagedetail_link_search_placeholder": "Rechercher par titre ou URL…",
+  "pagedetail_link_no_results": "Aucune page correspondante.",
+  "pagedetail_remove_link_aria": "Supprimer le lien vers {name}",
+  "pagedetail_link_error": "échec de la liaison de la page",
+  "pagedetail_remove_link_error": "échec de la suppression du lien"
 }

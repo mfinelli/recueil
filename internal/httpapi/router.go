@@ -32,17 +32,21 @@
 // recently-done shape, POST /api/jobs/{kind}/{id}/retry for the screenshot/
 // readability/AI enrichment jobs -- {kind} one of "screenshot"/"readability"/
 // "ai" -- also strictly self-scoped, same reasoning), session-protected library
-// browsing/search (GET /api/pages, GET/PATCH/DELETE /api/pages/{id},
-// POST /api/pages/{id}/recapture, session-protected capture detail/HTML/language
+// browsing/search (GET /api/pages, GET /api/pages/link-candidates -- a
+// separate title-or-URL search for the page-linking picker, not the same
+// query the library's own full-text search uses --
+// GET/PATCH/DELETE /api/pages/{id}, POST /api/pages/{id}/recapture,
+// session-protected capture detail/HTML/language
 // correction (GET /api/captures/{id}, DELETE /api/captures/{id} -- a
 // page left with zero captures is deleted too, GET /api/captures/{id}/html,
 // PATCH /api/captures/{id}/language, POST /api/captures/{id}/
 // regenerate-summary, POST /api/captures/{id}/regenerate-readability,
 // GET /api/text-search-configs, GET /api/capture-config), and
-// session-protected tags/collections (GET /api/tags,
+// session-protected tags/collections/links (GET /api/tags,
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
-// /api/collections, and page<->collection membership under
-// /api/pages/{id}/collections).
+// /api/collections, page<->collection membership under
+// /api/pages/{id}/collections, and bidirectional page<->page links under
+// /api/pages/{id}/links[/{linkPageId}]).
 // Routed via chi, with auth.RequireSession used as ordinary chi
 // middleware (no httpapi-specific auth plumbing of its own). RequireAdmin
 // exists in internal/auth but isn't used here -- there's currently no
@@ -148,6 +152,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/jobs", s.ListJobs)
 			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)
+			r.Get("/pages/link-candidates", s.SearchPagesForLinking)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)
 			r.Delete("/pages/{id}", s.DeletePage)
@@ -175,6 +180,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/collections/{id}/pages", s.ListCollectionPages)
 			r.Post("/pages/{id}/collections", s.AddPageToCollection)
 			r.Delete("/pages/{id}/collections/{collectionId}", s.RemovePageFromCollection)
+			r.Post("/pages/{id}/links", s.AddPageLink)
+			r.Delete("/pages/{id}/links/{linkPageId}", s.RemovePageLink)
 		})
 	})
 

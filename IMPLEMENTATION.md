@@ -2728,13 +2728,56 @@ the field became required.
 Seven new `pagedetail_notes_*` message keys, both `en.json`/`fr.json`, kept at
 full parity (251/251 keys each).
 
-### Next up
+### Page links backend
 
-Explicit page-to-page linking (the HN-article/HN-discussion example from design
-discussion) is a separate, not-yet-built phase: a self-referential `page_links`
-table storing each relationship once as a canonically-ordered pair
-(`CHECK (page_id_a < page_id_b)`) rather than twice, a combined title-or-URL
-search endpoint for the "link to" picker, and a lightweight favicon/title/URL
-list on PageDetail (not pills — see the mockup review) for showing existing
-links. Schema/API design already discussed and mocked up alongside notes; not
-implemented this round.
+- `queries/page_links.sql` (new file): `AddPageLink`/`RemovePageLink` use
+  `LEAST`/`GREATEST` to canonicalize the pair, so callers never compute ordering
+  themselves. Actually running these through `sqlc generate` (not just
+  hand-tracing) caught two real problems before they shipped: `LEAST($1, $2)`
+  alone left sqlc unable to infer a parameter type at all (an unusable
+  `interface{}` field), and separately, it derived duplicate-looking generated
+  struct field names (`PageIDA`/`PageIDA_2`) for `RemovePageLink`'s two
+  arguments — easy to transpose by accident. Fixed with explicit `::bigint`
+  casts and named `sqlc.arg()`s; both now generate clean `int64` `PageA`/`PageB`
+  fields. `ListPageLinks` returns "the other page" in every link regardless of
+  which side of the stored pair it's on, via a `CASE` on which id matches the
+  one being looked up — this is what makes a link bidirectional _at read time_,
+  with no special-casing needed anywhere else.
+- `SearchPagesForLinking` (`queries/pages.sql`): plain `ILIKE` over
+  `title`/`normalized_url` in one query (one `$query` parameter, matched against
+  both columns with `OR`), excludes the page being linked from. Deliberately not
+  a `tsvector`/trigram setup — proportionate to a personal library's scale, same
+  reasoning as collections' own recursive-CTE comment elsewhere in this
+  codebase. No pagination/`total_count`, unlike `ListPages`/`SearchPages`: this
+  backs a live typeahead dropdown showing a handful of matches (capped at a new
+  `linkCandidateLimit = 8`), not a browsable listing.
+- Three new handlers: `AddPageLink`/`RemovePageLink`
+  (`POST`/`DELETE /api/pages/{id}/links[/{linkPageId}]`, same
+  both-sides-verified-independently pattern `AddPageToCollection` already uses,
+  plus a same-page-to-itself rejection `AddPageToCollection` doesn't need an
+  equivalent of) and `SearchPagesForLinking`
+  (`GET /api/pages/link-candidates?q=...&exclude=...`). New shared
+  `pageLinkResponse` type (id/title/normalized_url/favicon_path) covers both the
+  linked-pages list and search-candidate results, since they're identical in
+  shape — one type, not two. `pageDetailResponse` gained
+  `Links []pageLinkResponse`, populated in `GetPage` via `ListPageLinks`.
+- Router's own top-of-file route summary comment updated to describe the new
+  routes, matching its existing practice of staying in sync with the routes
+  actually registered below it.
+- New tests: `TestPageLinks` (bidirectional visibility from both sides without a
+  second POST, removal from either side, self-link rejection, cross-user 404,
+  and that linking the same pair twice — even initiated from each side in turn —
+  is a no-op via `AddPageLink`'s own canonicalization, not a duplicate row) and
+  `TestSearchPagesForLinking` (title match, URL match, empty-query returns
+  nothing rather than everything, cross-user isolation).
+
+### Page links frontend
+
+New "Linked pages" section, placed after Notes and before the Captures list.
+Rendered as a lightweight list (favicon left, title/normalized_url on two lines
+below it) rather than pills — a link carries more identifying information than a
+tag/collection name does, so it reads better as a row; see this phase's own
+mockup-revision note above. Favicon handling mirrors `PageList.svelte`'s own
+pattern exactly, including _why_ it's a `SvelteSet` keyed by page id rather than
+one shared boolean: several linked pages' images can be loading/failing
+independently at once, on this screen same as that one.

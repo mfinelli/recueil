@@ -18,16 +18,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <!-- The full read/write loop: tag add/remove, collection add/remove, the
      excluded_from_mirror toggle, title editing, delete, and manual
      recapture all call their real backend endpoints. page/collections are
-     updated optimistically from each write's own response rather than
+     updated optimistically from each write's response rather than
      refetching the whole page afterward -- a normal tradeoff for a
      single-user personal tool, not something defended against
      concurrent-editor conflicts.
 
      Recapture (POST /pages/{id}/recapture) doesn't touch `page` at all --
      it only re-enqueues the latest capture's URL for a device to pick up
-     later, so its own button just shows a transient "queued" confirmation,
+     later, so its button just shows a transient "queued" confirmation,
      same pattern as Devices.svelte's copy-to-clipboard button. Delete
-     navigates back to the library on success, same as Devices'/Tags' own
+     navigates back to the library on success, same as Devices'/Tags'
      confirm()-gated deletes but the first one on this screen that leaves the
      page entirely afterward.
 
@@ -35,10 +35,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      the raw archived HTML itself still opens as a plain new-tab link, but
      from inside that reader view now, not directly from this list.
 
-     The language picker's own options are labeled in the dashboard's
+     The language picker's options are labeled in the dashboard's
      current locale (lib/languageNames.ts), not the raw pg_ts_config name
      GET /api/text-search-configs actually returns -- explicitly the
-     opposite direction from Settings' own language picker, which shows
+     opposite direction from Settings' language picker, which shows
      each option self-named so you can recognize *your own* language among
      others; here you're already reading the dashboard in your language and
      labeling someone else's content, so every option is translated into
@@ -47,6 +47,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      run through that translation at all. -->
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
+  import { SvelteSet } from "svelte/reactivity";
   import { apiJSON, ApiError } from "../lib/api";
   import { formatBytes } from "../lib/format";
   import { renderMarkdown } from "../lib/markdown";
@@ -62,11 +63,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Upload from "@lucide/svelte/icons/upload";
+  import Globe from "@lucide/svelte/icons/globe";
   import type {
     PageDetail,
     TagCreated,
     Collection,
     CollectionListResponse,
+    PageLink,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -103,6 +106,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // doesn't need to preserve alignment across many rows the way a list
   // does, so a missing/broken favicon just means nothing renders there.
   let faviconFailed = $state(false);
+  // Keyed by linked page id, same reasoning as PageList's
+  // faviconLoadFailed: several linked pages render at once, so one
+  // shared boolean would incorrectly hide every favicon just because
+  // one of them 404ed.
+  let linkFaviconFailed = new SvelteSet<number>();
 
   // Independent per section (not one shared "edit mode" for the whole
   // page) -- editing tags shouldn't also pop open the collections forms.
@@ -110,6 +118,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // buttons and add forms.
   let editingTags = $state(false);
   let editingCollections = $state(false);
+  let editingLinks = $state(false);
+  let linkSearchQuery = $state("");
+  let linkSearchResults = $state<PageLink[]>([]);
+  let addingLink = $state(false);
+  // Plain variable, not $state -- it's a setTimeout handle consumed only
+  // by clearTimeout/reassignment within handleLinkSearchInput itself,
+  // never read reactively, same as Library.svelte's searchDebounce.
+  let linkSearchDebounce: ReturnType<typeof setTimeout> | undefined;
 
   $effect(() => {
     const id = params.id;
@@ -121,6 +137,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     editingTags = false;
     editingCollections = false;
     editingNotes = false;
+    editingLinks = false;
+    linkSearchQuery = "";
+    linkSearchResults = [];
 
     Promise.allSettled([
       apiJSON<PageDetail>(`/pages/${id}`),
@@ -193,6 +212,105 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     } catch (err) {
       actionError =
         err instanceof ApiError ? err.message : m.pagedetail_remove_tag_error();
+    }
+  }
+
+  function markLinkFaviconFailed(pageId: number) {
+    linkFaviconFailed.add(pageId);
+  }
+
+  // Same reasoning as PageList's showFavicon: skip the image request
+  // entirely (straight to the placeholder) for a link that never had a
+  // favicon captured, rather than waiting on a request that was always
+  // going to 404.
+  function showLinkFavicon(linked: PageLink): boolean {
+    return linked.favicon_path !== null && !linkFaviconFailed.has(linked.id);
+  }
+
+  // page.links already loaded with the page, so this only needs to
+  // exclude those from the *search* results client-side -- same
+  // approach as availableCollections above, and the same reasoning
+  // SearchPagesForLinking's backend comment gives for not also
+  // doing this filtering server-side.
+  function availableLinkResults(p: PageDetail): PageLink[] {
+    const linkedIds = new Set(p.links.map((l) => l.id));
+    return linkSearchResults.filter((r) => !linkedIds.has(r.id));
+  }
+
+  // Paired with `bind:value={linkSearchQuery}` on the input rather than
+  // Library's uncontrolled-input pattern -- a successful addLink()
+  // below needs to clear the visible search text programmatically, which
+  // a controlled input makes trivial and an uncontrolled one wouldn't.
+  function handleLinkSearchInput() {
+    clearTimeout(linkSearchDebounce);
+    const value = linkSearchQuery;
+    if (!value.trim()) {
+      linkSearchResults = [];
+      return;
+    }
+    linkSearchDebounce = setTimeout(async () => {
+      if (!page) return;
+      const params = new URLSearchParams({
+        q: value,
+        exclude: String(page.id),
+      });
+      try {
+        const res = await apiJSON<{ pages: PageLink[] }>(
+          `/pages/link-candidates?${params.toString()}`,
+        );
+        // Guards against a slower, now-stale request's response landing
+        // after a faster, more recent one and overwriting it -- the
+        // query the person is currently looking at is the source of
+        // truth for whether this response is still relevant.
+        if (linkSearchQuery === value) {
+          linkSearchResults = res.pages;
+        }
+      } catch {
+        // Best-effort, same reasoning as allCollections' load above:
+        // a failed search just leaves the dropdown with fewer/no
+        // results rather than surfacing its own error banner.
+        linkSearchResults = [];
+      }
+    }, 300);
+  }
+
+  async function addLink(target: PageLink) {
+    if (!page) return;
+    addingLink = true;
+    actionError = null;
+    try {
+      const linked = await apiJSON<PageLink>(`/pages/${page.id}/links`, {
+        method: "POST",
+        body: { link_page_id: target.id },
+      });
+      page.links = [...page.links, linked].sort((a, b) =>
+        (a.title ?? a.normalized_url).localeCompare(
+          b.title ?? b.normalized_url,
+        ),
+      );
+      linkSearchQuery = "";
+      linkSearchResults = [];
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_link_error();
+    } finally {
+      addingLink = false;
+    }
+  }
+
+  async function removeLink(linkPageId: number) {
+    if (!page) return;
+    actionError = null;
+    try {
+      await apiJSON(`/pages/${page.id}/links/${linkPageId}`, {
+        method: "DELETE",
+      });
+      page.links = page.links.filter((l) => l.id !== linkPageId);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.pagedetail_remove_link_error();
     }
   }
 
@@ -666,22 +784,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     <section>
       <div class="block-header">
         <h2>{m.pagedetail_notes_heading()}</h2>
-        <button
-          type="button"
-          class="edit-toggle"
-          class:active={editingNotes}
-          aria-label={editingNotes
-            ? m.pagedetail_done_editing_notes()
-            : m.pagedetail_edit_notes()}
-          onclick={() =>
-            editingNotes ? cancelEditingNotes() : startEditingNotes()}
-        >
-          {#if editingNotes}
-            <Check size={13} />
-          {:else}
+        {#if !editingNotes}
+          <button
+            type="button"
+            class="edit-toggle"
+            aria-label={m.pagedetail_edit_notes()}
+            onclick={startEditingNotes}
+          >
             <Pencil size={13} />
-          {/if}
-        </button>
+          </button>
+        {/if}
       </div>
       {#if editingNotes}
         <form class="notes-edit" onsubmit={saveNotes}>
@@ -711,6 +823,101 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         <div class="notes-body">{@html renderMarkdown(page.notes)}</div>
       {:else}
         <p class="empty-note">{m.pagedetail_notes_empty()}</p>
+      {/if}
+    </section>
+
+    <section>
+      <div class="block-header">
+        <h2>{m.pagedetail_links_heading()}</h2>
+        <button
+          type="button"
+          class="edit-toggle"
+          class:active={editingLinks}
+          aria-label={editingLinks
+            ? m.pagedetail_done_editing_links()
+            : m.pagedetail_edit_links()}
+          onclick={() => (editingLinks = !editingLinks)}
+        >
+          {#if editingLinks}
+            <Check size={13} />
+          {:else}
+            <Pencil size={13} />
+          {/if}
+        </button>
+      </div>
+      {#if page.links.length > 0}
+        <ul class="linked-list">
+          {#each page.links as linked (linked.id)}
+            <li>
+              <a href={`/pages/${linked.id}`} use:link class="linked-row">
+                {#if showLinkFavicon(linked)}
+                  <img
+                    class="linked-favicon"
+                    src={`/api/pages/${linked.id}/favicon`}
+                    alt=""
+                    loading="lazy"
+                    onerror={() => markLinkFaviconFailed(linked.id)}
+                  />
+                {:else}
+                  <span class="linked-favicon-placeholder" aria-hidden="true">
+                    <Globe size={11} />
+                  </span>
+                {/if}
+                <span class="linked-title"
+                  >{linked.title ?? linked.normalized_url}</span
+                >
+                <span class="linked-url">{linked.normalized_url}</span>
+              </a>
+              {#if editingLinks}
+                <button
+                  type="button"
+                  class="remove"
+                  aria-label={m.pagedetail_remove_link_aria({
+                    name: linked.title ?? linked.normalized_url,
+                  })}
+                  onclick={() => removeLink(linked.id)}
+                >
+                  <X size={11} />
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="empty-note">{m.pagedetail_links_empty()}</p>
+      {/if}
+      {#if editingLinks}
+        <div class="link-search-wrap">
+          <input
+            type="text"
+            placeholder={m.pagedetail_link_search_placeholder()}
+            bind:value={linkSearchQuery}
+            oninput={handleLinkSearchInput}
+            disabled={addingLink}
+          />
+          {#if availableLinkResults(page).length > 0}
+            <ul class="link-results">
+              {#each availableLinkResults(page) as candidate (candidate.id)}
+                <li>
+                  <button
+                    type="button"
+                    onclick={() => addLink(candidate)}
+                    disabled={addingLink}
+                  >
+                    <span class="result-title"
+                      >{candidate.title ?? candidate.normalized_url}</span
+                    >
+                    <span class="result-url">{candidate.normalized_url}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {:else if linkSearchQuery.trim()}
+            <ul class="link-results">
+              <li class="no-results">{m.pagedetail_link_no_results()}</li>
+            </ul>
+          {/if}
+        </div>
       {/if}
     </section>
 
@@ -893,6 +1100,158 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     margin: 0.4rem 0 0;
     color: var(--ink-muted);
     font-size: 0.75rem;
+  }
+
+  // A lightweight version of Library's list-view row (favicon, with the
+  // title and url on two lines).
+  .linked-list {
+    list-style: none;
+    margin: 0 0 0.65rem;
+    padding: 0;
+    border-top: 1px dotted var(--rule);
+  }
+
+  .linked-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-bottom: 1px dotted var(--rule);
+  }
+
+  .linked-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.05rem 0.6rem;
+    flex: 1;
+    min-width: 0;
+    padding: 0.45rem 0.25rem;
+    text-decoration: none;
+    color: inherit;
+
+    &:hover {
+      background: var(--paper-raised);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+      outline-offset: -2px;
+    }
+  }
+
+  .linked-favicon,
+  .linked-favicon-placeholder {
+    grid-column: 1;
+    grid-row: 1 / 3;
+    width: 1.05rem;
+    height: 1.05rem;
+    border-radius: 0.15rem;
+  }
+
+  .linked-favicon-placeholder {
+    display: grid;
+    place-items: center;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    color: var(--ink-muted);
+  }
+
+  .linked-title {
+    grid-column: 2;
+    font-size: 0.85rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .linked-url {
+    grid-column: 2;
+    @include type.data-mono;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .linked-list .remove {
+    flex: none;
+    margin-right: 0.4rem;
+  }
+
+  .link-search-wrap {
+    position: relative;
+    max-width: 26rem;
+
+    input[type="text"] {
+      @include comp.text-input;
+      display: block;
+      width: 100%;
+      padding: 0.45rem 0.65rem;
+      border-radius: 4px;
+      font-size: 0.875rem;
+    }
+  }
+
+  .link-results {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper-raised);
+    overflow: hidden;
+
+    li + li {
+      border-top: 1px dotted var(--rule);
+    }
+
+    .no-results {
+      padding: 0.6rem 0.7rem;
+      color: var(--ink-muted);
+      font-size: 0.8rem;
+      font-style: italic;
+    }
+
+    button {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.1rem;
+      width: 100%;
+      text-align: left;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      padding: 0.5rem 0.7rem;
+      cursor: pointer;
+
+      &:hover:not(:disabled) {
+        background: var(--paper);
+      }
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
+      &:focus-visible {
+        @include mix.focus-ring;
+        outline-offset: -2px;
+      }
+    }
+
+    .result-title {
+      font-size: 0.85rem;
+      color: var(--ink);
+    }
+
+    .result-url {
+      @include type.data-mono;
+      font-size: 0.7rem;
+      color: var(--ink-muted);
+    }
   }
 
   .source-row {

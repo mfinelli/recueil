@@ -1093,15 +1093,40 @@ type pageCollectionResponse struct {
 	ParentID *int64 `json:"parent_id"`
 }
 
+// pageLinkResponse is a lightweight page reference -- just enough to
+// render the linked-pages list's favicon/title/url row or a link-candidates
+// search result, which is shaped identically. Doesn't carry the full
+// pageResponse's timestamps/excluded_from_mirror/notes -- none of which
+// either of those views needs.
+type pageLinkResponse struct {
+	ID            int64   `json:"id"`
+	Title         *string `json:"title"`
+	NormalizedURL string  `json:"normalized_url"`
+	FaviconPath   *string `json:"favicon_path"`
+}
+
+func pageLinkResponseFromListRow(p *db.ListPageLinksRow) pageLinkResponse {
+	return pageLinkResponse{
+		ID: p.ID, Title: textOrNil(p.Title), NormalizedURL: p.NormalizedUrl, FaviconPath: textOrNil(p.FaviconPath),
+	}
+}
+
+func pageLinkResponseFromPage(p *db.Page) pageLinkResponse {
+	return pageLinkResponse{
+		ID: p.ID, Title: textOrNil(p.Title), NormalizedURL: p.NormalizedUrl, FaviconPath: textOrNil(p.FaviconPath),
+	}
+}
+
 // pageDetailResponse embeds pageResponse so its fields flatten into the
-// same top-level JSON object as "captures"/"tags"/"collections" -- the
-// page detail view's natural shape is "the page, plus everything
+// same top-level JSON object as "captures"/"tags"/"collections"/"links" --
+// the page detail view's natural shape is "the page, plus everything
 // attached to it," not a nested "page" envelope key.
 type pageDetailResponse struct {
 	pageResponse
 	Captures    []captureSummaryResponse `json:"captures"`
 	Tags        []pageTagResponse        `json:"tags"`
 	Collections []pageCollectionResponse `json:"collections"`
+	Links       []pageLinkResponse       `json:"links"`
 }
 
 // GET /api/pages/{id}: page detail plus full capture (version) history
@@ -1145,12 +1170,19 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	links, err := s.Queries.ListPageLinks(ctx, page.ID)
+	if err != nil {
+		log.Printf("warning: failed to list links for page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
 	resp := pageDetailResponse{
 		pageResponse: pageResponseFromPage(&page),
 		Captures:     []captureSummaryResponse{},
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
+		Links:        []pageLinkResponse{},
 	}
 	for i := range captures {
 		c := &captures[i]
@@ -1166,6 +1198,9 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, c := range collections {
 		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})
+	}
+	for i := range links {
+		resp.Links = append(resp.Links, pageLinkResponseFromListRow(&links[i]))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -2398,6 +2433,146 @@ func (s *Server) RemovePageFromCollection(w http.ResponseWriter, r *http.Request
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type addPageLinkRequest struct {
+	LinkPageID int64 `json:"link_page_id"`
+}
+
+// POST /api/pages/{id}/links: links two pages bidirectionally -- both
+// must belong to the requesting user (checked independently, same as
+// AddPageToCollection checks both the page and the collection), and
+// AddPageLink itself canonicalizes which one is stored as page_id_a vs
+// page_id_b, so the order these two ids are checked/passed in doesn't
+// matter.
+func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pageID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	req, err := decodeJSON[addPageLinkRequest](r)
+	if err != nil || req.LinkPageID == 0 {
+		writeError(w, http.StatusBadRequest, "link_page_id is required")
+		return
+	}
+	if req.LinkPageID == pageID {
+		writeError(w, http.StatusBadRequest, "a page cannot be linked to itself")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+	linkPage, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: req.LinkPageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	if err := s.Queries.AddPageLink(ctx, db.AddPageLinkParams{PageA: page.ID, PageB: linkPage.ID}); err != nil {
+		log.Printf("warning: failed to link page %d to page %d: %v", page.ID, linkPage.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, pageLinkResponseFromPage(&linkPage))
+}
+
+// DELETE /api/pages/{id}/links/{linkPageId}: only the {id} side needs to
+// be verified as belonging to the requester (same reasoning as
+// RemovePageFromCollection not separately verifying {collectionId} --
+// the DELETE is scoped to a pair involving an already-verified,
+// user-owned page, so it simply matches zero rows if {linkPageId} isn't
+// actually linked to it, rather than needing its own ownership check).
+func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	pageID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid page id")
+		return
+	}
+	linkPageID, err := strconv.ParseInt(chi.URLParam(r, "linkPageId"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid link page id")
+		return
+	}
+	ctx := r.Context()
+
+	page, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: pageID, UserID: user.ID})
+	if err != nil {
+		writeError(w, http.StatusNotFound, "page not found")
+		return
+	}
+
+	if err := s.Queries.RemovePageLink(ctx, db.RemovePageLinkParams{PageA: page.ID, PageB: linkPageID}); err != nil {
+		log.Printf("warning: failed to remove link between page %d and page %d: %v", page.ID, linkPageID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// linkCandidateLimit caps GET /api/pages/link-candidates -- a live
+// typeahead dropdown showing a handful of matches, deliberately much
+// smaller than defaultPageLimit/maxPageLimit above (those back a
+// browsable, paginated listing; this doesn't paginate at all).
+const linkCandidateLimit = 8
+
+// GET /api/pages/link-candidates?q=...: title-or-normalized_url search
+// for the "link this page to..." picker, excluding the page being
+// linked from (?exclude=) so it can never show up as a candidate to
+// link to itself. Doesn't also exclude pages already linked to it --
+// the frontend already has that full list loaded (GetPage's own
+// "links"), and filters candidates against it client-side, the same way
+// PageDetail already filters the collections picker against
+// page.collections rather than asking the backend to.
+func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	query := r.URL.Query().Get("q")
+	resp := struct {
+		Pages []pageLinkResponse `json:"pages"`
+	}{Pages: []pageLinkResponse{}}
+	if query == "" {
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+	var excludePageID int64
+	if v := r.URL.Query().Get("exclude"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			excludePageID = n
+		}
+	}
+
+	pages, err := s.Queries.SearchPagesForLinking(r.Context(), db.SearchPagesForLinkingParams{
+		UserID: user.ID, ExcludePageID: excludePageID, Query: query, Limit: linkCandidateLimit,
+	})
+	if err != nil {
+		log.Printf("warning: failed to search link candidates for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	for i := range pages {
+		resp.Pages = append(resp.Pages, pageLinkResponseFromPage(&pages[i]))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) startSession(w http.ResponseWriter, r *http.Request, user *db.User) {
