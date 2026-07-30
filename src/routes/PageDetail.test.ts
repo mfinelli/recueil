@@ -127,6 +127,48 @@ const recipesCollection: Collection = {
   updated_at: "2026-05-01T12:00:00Z",
 };
 
+const cookbookCollection: Collection = {
+  id: 20,
+  parent_id: null,
+  name: "Cookbook",
+  slug: "cookbook",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
+const zebraCollection: Collection = {
+  id: 21,
+  parent_id: null,
+  name: "Zebra",
+  slug: "zebra",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
+// Two distinct collections that happen to share a name -- this is the
+// exact ambiguity the picker's full-path labels exist to resolve.
+const cookbookRecipesCollection: Collection = {
+  id: 22,
+  parent_id: 20,
+  name: "Recipes",
+  slug: "recipes",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
+const zebraRecipesCollection: Collection = {
+  id: 23,
+  parent_id: 21,
+  name: "Recipes",
+  slug: "recipes",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
 const basePage: PageDetail = {
   id: 42,
   normalized_url: "example.com/article",
@@ -333,6 +375,40 @@ describe("PageDetail", () => {
     // so the "add existing" picker has nothing left to offer and
     // disappears entirely.
     expect(screen.queryByPlaceholderText("Add to a collection…")).toBeNull();
+  });
+
+  it("disambiguates same-named collections under different parents with a full path, sorted so they land near their real siblings", async () => {
+    render42({
+      page: { ...basePage, collections: [] },
+      collections: [
+        zebraCollection,
+        cookbookCollection,
+        zebraRecipesCollection,
+        cookbookRecipesCollection,
+      ],
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
+
+    const select = screen.getByRole("combobox", {
+      name: "",
+    }) as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+
+    // Neither "Recipes" collection is distinguishable by name alone, so
+    // both must carry their own parent in the label -- and the two
+    // "Cookbook.../Zebra..." pairs should sort together (real siblings
+    // grouped), not "Cookbook, Recipes, Recipes, Zebra" with both
+    // identical "Recipes" labels adjacent and indistinguishable.
+    expect(labels).toEqual([
+      "Add to a collection…",
+      "Cookbook",
+      "Cookbook / Recipes",
+      "Zebra",
+      "Zebra / Recipes",
+    ]);
   });
 
   it("removes a collection", async () => {

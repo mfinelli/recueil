@@ -401,10 +401,38 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   // Collections this page isn't already in -- what the picker should
   // actually offer, rather than letting someone "add" a membership that
-  // already exists.
+  // already exists. Sorted by full name path (not the fetch's own
+  // parent_id-then-name order, which doesn't group a collection near its
+  // actual children) so that once collectionNamePath's disambiguating
+  // labels are in play below, same-named collections under different
+  // parents land near their real siblings instead of scattered
+  // arbitrarily through the list.
   function availableCollections(p: PageDetail): Collection[] {
     const memberIds = new Set(p.collections.map((c) => c.id));
-    return allCollections.filter((c) => !memberIds.has(c.id));
+    return allCollections
+      .filter((c) => !memberIds.has(c.id))
+      .map((c) => ({ collection: c, path: collectionNamePath(c.id) }))
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((entry) => entry.collection);
+  }
+
+  // Walks a collection's parent_id chain in allCollections, collecting
+  // one segment per ancestor via `pick`. Shared by collectionPath (slugs,
+  // below) and collectionNamePath (names, for the "add to collection"
+  // picker) -- same traversal, just a different field per ancestor.
+  function collectionAncestorSegments(
+    collectionId: number,
+    pick: (c: Collection) => string,
+  ): string[] {
+    const byId = new Map(allCollections.map((c) => [c.id, c]));
+    const segments: string[] = [];
+    let current = byId.get(collectionId);
+    while (current) {
+      segments.unshift(pick(current));
+      current =
+        current.parent_id !== null ? byId.get(current.parent_id) : undefined;
+    }
+    return segments;
   }
 
   // page.collections (PageCollection) doesn't carry a slug, and routes.ts
@@ -418,15 +446,25 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // Promise.allSettled above -- or some other inconsistency), in which
   // case the caller renders plain text instead of a broken link.
   function collectionPath(collectionId: number): string | null {
-    const byId = new Map(allCollections.map((c) => [c.id, c]));
-    const segments: string[] = [];
-    let current = byId.get(collectionId);
-    while (current) {
-      segments.unshift(current.slug);
-      current =
-        current.parent_id !== null ? byId.get(current.parent_id) : undefined;
-    }
+    const segments = collectionAncestorSegments(collectionId, (c) => c.slug);
     return segments.length > 0 ? segments.join("/") : null;
+  }
+
+  // Same ancestor walk as collectionPath, but names joined with " / "
+  // for human display rather than slugs joined with "/" for a URL --
+  // used as the "add to collection" picker's option labels, so two
+  // same-named collections under different parents (e.g. two separate
+  // "Recipes" collections) read as "Zebra / Recipes" vs
+  // "Cookbook / Recipes" instead of two indistinguishable "Recipes"
+  // entries. Every id this is called with comes from allCollections
+  // itself (see availableCollections above), so unlike collectionPath
+  // there's no fetch-failed/not-found case to handle here -- the walk
+  // always resolves at least the collection's own name.  A "/" inside a
+  // collection's own name would read oddly here (indistinguishable from
+  // an extra path segment), but that's an edge case not worth guarding
+  // against right now.
+  function collectionNamePath(collectionId: number): string {
+    return collectionAncestorSegments(collectionId, (c) => c.name).join(" / ");
   }
 
   async function toggleExcludedFromMirror() {
@@ -755,7 +793,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                 >{m.pagedetail_add_to_collection_placeholder()}</option
               >
               {#each availableCollections(page) as collection (collection.id)}
-                <option value={collection.id}>{collection.name}</option>
+                <option value={collection.id}
+                  >{collectionNamePath(collection.id)}</option
+                >
               {/each}
             </select>
             <button
