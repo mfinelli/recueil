@@ -94,12 +94,38 @@ UPDATE pages SET excluded_from_mirror = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
+-- name: SearchPagesForLinking :many
+-- Combined title-or-normalized_url search, one input matched against
+-- both columns, for the "link this page to..." picker -- the person
+-- searching may remember either. Plain ILIKE, not a tsvector/trigram
+-- setup: proportionate to a personal library's scale, same reasoning as
+-- collections' own recursive-CTE comment elsewhere in this codebase; a
+-- pg_trgm GIN index is a drop-in upgrade later if this ever needs it.
+-- No pagination/total_count (unlike ListPages/SearchPages above) -- this
+-- backs a live typeahead dropdown showing a handful of matches, not a
+-- browsable listing.
+SELECT *
+FROM pages
+WHERE user_id = sqlc.arg(user_id)
+  AND id != sqlc.arg(exclude_page_id)
+  AND (title ILIKE '%' || sqlc.arg(query)::text || '%'
+    OR normalized_url ILIKE '%' || sqlc.arg(query)::text || '%')
+ORDER BY latest_capture_at DESC
+LIMIT sqlc.arg('limit');
+
 -- name: SetPageTitle :one
 -- Direct overwrite, not a separate title_override column: pages.title is
 -- already denormalized from the latest capture, and a later recapture will
 -- overwrite whatever's set here the same way it always has -- which is a
 -- deliberate choice, not an oversight.
 UPDATE pages SET title = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
+-- name: SetPageNotes :one
+-- Unlike SetPageTitle, an empty value is meaningful here (clearing a
+-- note is a normal action, not an error).
+UPDATE pages SET notes = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 

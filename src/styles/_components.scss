@@ -1,0 +1,231 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// Shared UI-pattern mixins -- one level up from _mixins.scss's
+// low-level primitives (breakpoints, card-surface, dotted-rule,
+// focus-ring). These compose those primitives into the handful of
+// concrete button/pill/status shapes.
+@use "mixins" as mix;
+
+// Round, icon-only button (AppHeader's sign-out, Collections/Tags/Devices'
+// row actions, PageDetail's edit-toggle/remove, CaptureReader's
+// regen-btn). Size varies intentionally by context, so it's the one
+// required argument; hover background defaults to the --paper-raised
+// treatment most of these use, but PageDetail's .remove and
+// CaptureReader's .regen-btn use a plain rgba(0, 0, 0, 0.05) instead --
+// pass $hover-bg to match those.
+@mixin icon-btn($size, $hover-bg: var(--paper-raised)) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: $size;
+  height: $size;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    color: var(--accent);
+    background: $hover-bg;
+  }
+
+  &:focus-visible {
+    @include mix.focus-ring;
+  }
+}
+
+// Bordered "secondary" button chrome (Collections, Library, PageDetail,
+// Queue, Tags, Devices, PageList's plain `button {}` rules). Callers
+// still set their own display/gap/padding/font-size, since those
+// differ intentionally by screen -- this only covers what is
+// identical: the bordered-surface look plus disabled/focus states.
+@mixin bordered-button {
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  &:focus-visible {
+    @include mix.focus-ring;
+  }
+}
+
+// Text input sitting directly on the page (Collections' and Tags'
+// rename fields, PageDetail's add-tag/add-to-collection fields) --
+// as opposed to the auth screens' `auth-input`, which sits inside a
+// raised `.card` and can afford a flatter --paper background because
+// the card itself already provides the contrast. Without a raised
+// parent, an input needs --paper-raised itself to read as a control
+// rather than disappear into the page.
+@mixin text-input {
+  border: 1px solid var(--rule);
+  background: var(--paper-raised);
+  color: var(--ink);
+  font: inherit;
+
+  &:focus-visible {
+    @include mix.focus-ring;
+  }
+}
+
+// Neutral pill surface shared by PageDetail's tag chips, CollectionDetail's
+// subcollection chips, and Queue's summary-count pills. Intentionally
+// narrow: just the shape, not padding/font-size/color, so PageDetail's
+// brass-tinted `.ai` variant and Queue's colored status `.badge`
+// vocabulary are untouched.
+@mixin pill {
+  border-radius: 999px;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+}
+
+// Segmented-toggle track (Settings' language/theme toggle, CaptureReader's
+// font-toggle, PageList's view-toggle). Covers the track chrome and the
+// shared button-to-button divider; each screen still defines its own
+// button padding/font-size/base color, since those vary.
+@mixin segmented-toggle {
+  display: flex;
+  width: fit-content;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  overflow: hidden;
+
+  button + button {
+    border-left: 1px solid var(--rule);
+  }
+}
+
+// The individual option within a segmented-toggle track: flattens the
+// button's own border/radius against the track and adds the shared
+// active/hover/focus treatment. A non-active option's text goes
+// --accent on hover, same idiom as bordered-button; an already-active
+// option doesn't need extra hover feedback, so it's excluded. Reach
+// for this alongside `segmented-toggle` above, not on its own.
+@mixin segmented-toggle-option {
+  border: none;
+  border-radius: 0;
+
+  &.active {
+    background: var(--accent-success);
+    color: var(--paper);
+  }
+
+  &:hover:not(:disabled):not(.active) {
+    color: var(--accent);
+  }
+
+  &:focus-visible {
+    @include mix.focus-ring;
+  }
+}
+
+// Inline saving/loading status row (Collections, Devices, PageDetail,
+// Queue, Tags -- the "Saving...", "Saved", error-text-next-to-a-form
+// treatment). CollectionDetail/TagDetail's own bare `.status { color:
+// var(--ink-muted); }` don't pull this in -- there's nothing to share
+// beyond that one line.
+@mixin status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--ink-muted);
+
+  &.error {
+    color: var(--accent);
+  }
+}
+
+// Centered full-block empty/error state (an icon above a message,
+// filling the space a list or detail view would otherwise occupy).
+// $padding defaults to the 2.5rem 1rem used almost everywhere;
+// The Devices' version is deliberately shorter (2rem 1rem) since its
+// sections already carry their own vertical rhythm, so it passes an
+// override. Color (always-accent vs muted-with-`&.error`) and the
+// muted-icon treatment (opacity vs an explicit --rule color) genuinely
+// differ by screen and stay at the call site.
+@mixin status-block($padding: 2.5rem 1rem) {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: $padding;
+  text-align: center;
+}
+
+// Auth-screen text input (Login, Register, Setup) -- identical across
+// all three today.
+@mixin auth-input {
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: 0.25rem;
+  background: var(--paper);
+  box-shadow: inset 0 1px 3px color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--ink);
+  font: inherit;
+
+  &:focus-visible {
+    @include mix.focus-ring;
+  }
+}
+
+// Auth-screen primary submit button (Login, Register, Setup) --
+// identical across all three today.
+@mixin primary-button {
+  margin-top: 0.6rem;
+  padding: 0.7rem;
+  border: none;
+  border-radius: 4px;
+  background: var(--accent-success);
+  color: var(--paper);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+
+  &:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  &:focus-visible {
+    @include mix.focus-ring;
+  }
+}
+
+// Centered content column (Library, CollectionDetail, TagDetail,
+// Collections, Devices, PageDetail, Queue, Tags, Settings' `.screen`
+// rules.
+@mixin content-screen($max-width: 64rem) {
+  max-width: $max-width;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}

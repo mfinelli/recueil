@@ -45,6 +45,7 @@ const examplePage: Page = {
   latest_capture_at: "2026-05-01T12:00:00Z",
   excluded_from_mirror: false,
   favicon_path: "/some/path.png",
+  notes: null,
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",
 };

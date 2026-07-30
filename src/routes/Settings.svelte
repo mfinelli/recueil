@@ -247,11 +247,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 34rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .page-heading {
@@ -275,18 +274,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .toggle {
-    display: flex;
+    @include comp.segmented-toggle;
     flex-wrap: wrap;
-    width: fit-content;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    overflow: hidden;
 
     button {
+      @include comp.segmented-toggle-option;
       display: flex;
       align-items: center;
       gap: 0.4rem;
-      border: none;
       background: var(--paper-raised);
       padding: 0.5rem 0.85rem;
       font: inherit;
@@ -294,23 +289,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       color: var(--ink-muted);
       cursor: pointer;
 
-      &.active {
-        background: var(--accent-success);
-        color: var(--paper);
-      }
-
       &:disabled {
         opacity: 0.6;
         cursor: default;
       }
-
-      &:focus-visible {
-        @include mix.focus-ring;
-      }
-    }
-
-    button + button {
-      border-left: 1px solid var(--rule);
     }
   }
 
@@ -324,13 +306,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ink-muted);
-
-    &.error {
-      color: var(--accent);
-    }
+    @include comp.status-row;
   }
 </style>

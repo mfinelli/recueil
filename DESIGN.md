@@ -2640,6 +2640,18 @@ CREATE TABLE pages (
                                       -- the same way title is -- including
                                       -- back to NULL if the latest capture
                                       -- genuinely didn't find one
+  notes TEXT,                        -- free-text, user-authored (Phase 14,
+                                      -- PATCH /api/pages/{id}) -- a light
+                                      -- markdown subset (bold/italic/lists;
+                                      -- src/lib/markdown.ts), stored as
+                                      -- source and rendered client-side,
+                                      -- same as reader_text/ai_summary's
+                                      -- own "store source, render on read"
+                                      -- choice. Page-level like tags/
+                                      -- collections, not per-capture.
+                                      -- Deliberately not mirrored to D1:
+                                      -- personal annotations, not bookmark
+                                      -- structure
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
@@ -2831,6 +2843,30 @@ CREATE TABLE page_collections (
   added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (page_id, collection_id)
 );
+
+-- Explicit, bidirectional page-to-page links (Phase 15) -- pairwise edges,
+-- not a shared link-group/cluster concept: linking B and C to each other
+-- later doesn't imply any relationship between A and C just because both
+-- are linked to B. Each relationship stored once, as a canonically-ordered
+-- pair (the CHECK enforces page_id_a < page_id_b), rather than twice as
+-- both A-B and B-A rows -- "everything linked to page X" is simply
+-- WHERE page_id_a = X OR page_id_b = X, so there's no direction to get
+-- backwards and no risk of a duplicate reverse-direction insert. The
+-- ordering check also rules out a page linking to itself as a side effect
+-- (page_id_a < page_id_b can never hold when they're equal). No user_id
+-- column, same as page_tags/page_collections above: ownership is already
+-- enforced by both referenced pages belonging to the same user.
+CREATE TABLE page_links (
+  page_id_a BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  page_id_b BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (page_id_a, page_id_b),
+  CHECK (page_id_a < page_id_b)
+);
+CREATE INDEX idx_page_links_page_id_b ON page_links(page_id_b);  -- the
+                                      -- primary key covers page_id_a = X
+                                      -- efficiently; this covers the other
+                                      -- half of the bidirectional OR query
 
 -- Decoupled from captures so a capture remains fully valid/browsable
 -- with zero AI enrichment ever having run.

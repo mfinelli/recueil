@@ -26,6 +26,7 @@ export interface Page {
   latest_capture_at: string;
   excluded_from_mirror: boolean;
   favicon_path: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -92,6 +93,16 @@ export interface PageCollection {
   parent_id: number | null;
 }
 
+// A lightweight page reference -- both a link on PageDetail and a
+// link-candidates search result are shaped identically (see
+// internal/httpapi's own pageLinkResponse), so one type covers both.
+export interface PageLink {
+  id: number;
+  title: string | null;
+  normalized_url: string;
+  favicon_path: string | null;
+}
+
 // PageDetail extends Page: internal/httpapi's pageDetailResponse embeds its
 // own pageResponse, flattening the same fields into one JSON object rather
 // than a nested envelope -- this mirrors that shape.
@@ -99,6 +110,7 @@ export interface PageDetail extends Page {
   captures: CaptureSummary[];
   tags: PageTag[];
   collections: PageCollection[];
+  links: PageLink[];
 }
 
 // GET /api/tags' item shape -- also what the rename/delete-adjacent

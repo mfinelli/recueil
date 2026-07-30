@@ -2043,6 +2043,83 @@ func TestPatchPage(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
+	t.Run("sets notes for the owner", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/notes")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"**Worth** revisiting"}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Notes *string `json:"notes"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Notes)
+		assert.Equal(t, "**Worth** revisiting", *got.Notes)
+	})
+
+	t.Run("trims whitespace from notes before saving", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/notes-trim")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"  padded note  "}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Notes *string `json:"notes"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		require.NotNil(t, got.Notes)
+		assert.Equal(t, "padded note", *got.Notes)
+	})
+
+	t.Run("an empty/whitespace-only notes value clears it to null, not an error", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/notes-clear")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		setResp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"a note to clear"}`)
+		assert.Equal(t, http.StatusOK, setResp.StatusCode)
+
+		clearResp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"   "}`)
+		assert.Equal(t, http.StatusOK, clearResp.StatusCode)
+
+		var got struct {
+			Notes *string `json:"notes"`
+		}
+		require.NoError(t, json.NewDecoder(clearResp.Body).Decode(&got))
+		assert.Nil(t, got.Notes)
+
+		persisted, err := db.New(pool).GetPageByID(context.Background(), page.ID)
+		require.NoError(t, err)
+		assert.False(t, persisted.Notes.Valid)
+	})
+
+	t.Run("another user's page returns 404 for a notes update too", func(t *testing.T) {
+		owner := dbtest.CreateUser(t, pool, "member")
+		requester := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, owner.ID, "https://example.com/notes-not-yours")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &requester)
+
+		resp := requestWithCookieBody(t, server, http.MethodPatch, fmt.Sprintf("/api/pages/%d", page.ID),
+			cookie, `{"notes":"Hijacked"}`)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
 	t.Run("both fields in one request applies both -- RETURNING * on the second UPDATE reflects the first's write too", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/retitle-both")
@@ -3593,6 +3670,209 @@ func TestPageCollectionMembership(t *testing.T) {
 	})
 }
 
+func TestPageLinks(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("linking two pages is visible from both sides, then removing it is too", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		article := dbtest.CreatePage(t, pool, user.ID, "https://example.com/the-article")
+		discussion := dbtest.CreatePage(t, pool, user.ID, "https://example.com/the-discussion")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		addResp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", article.ID),
+			cookie, fmt.Sprintf(`{"link_page_id":%d}`, discussion.ID))
+		assert.Equal(t, http.StatusCreated, addResp.StatusCode)
+
+		type linksBody struct {
+			Links []struct {
+				ID int64 `json:"id"`
+			} `json:"links"`
+		}
+
+		// Visible from the article's own detail response...
+		articleDetail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", article.ID), cookie)
+		var articleLinks linksBody
+		require.NoError(t, json.NewDecoder(articleDetail.Body).Decode(&articleLinks))
+		require.Len(t, articleLinks.Links, 1)
+		assert.Equal(t, discussion.ID, articleLinks.Links[0].ID)
+
+		// ...and without a second POST -- this is the
+		// bidirectionality itself, not just that the write worked.
+		discussionDetail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", discussion.ID), cookie)
+		var discussionLinks linksBody
+		require.NoError(t, json.NewDecoder(discussionDetail.Body).Decode(&discussionLinks))
+		require.Len(t, discussionLinks.Links, 1)
+		assert.Equal(t, article.ID, discussionLinks.Links[0].ID)
+
+		remResp := requestWithCookie(t, server, http.MethodDelete,
+			fmt.Sprintf("/api/pages/%d/links/%d", article.ID, discussion.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, remResp.StatusCode)
+
+		afterResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", discussion.ID), cookie)
+		var after linksBody
+		require.NoError(t, json.NewDecoder(afterResp.Body).Decode(&after))
+		assert.Empty(t, after.Links)
+	})
+
+	t.Run("removing a link from the other side works too, since the pair isn't directional", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		a := dbtest.CreatePage(t, pool, user.ID, "https://example.com/remove-a")
+		b := dbtest.CreatePage(t, pool, user.ID, "https://example.com/remove-b")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", a.ID),
+			cookie, fmt.Sprintf(`{"link_page_id":%d}`, b.ID))
+
+		// Removed via b's URL, even though the link was created via a.
+		remResp := requestWithCookie(t, server, http.MethodDelete,
+			fmt.Sprintf("/api/pages/%d/links/%d", b.ID, a.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, remResp.StatusCode)
+
+		detail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", a.ID), cookie)
+		var got struct {
+			Links []struct{} `json:"links"`
+		}
+		require.NoError(t, json.NewDecoder(detail.Body).Decode(&got))
+		assert.Empty(t, got.Links)
+	})
+
+	t.Run("linking a page to itself is rejected", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/self-link")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", page.ID),
+			cookie, fmt.Sprintf(`{"link_page_id":%d}`, page.ID))
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("linking to another user's page returns 404", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		otherOwner := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/my-page-linking")
+		theirPage := dbtest.CreatePage(t, pool, otherOwner.ID, "https://example.com/not-your-page-either")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", page.ID),
+			cookie, fmt.Sprintf(`{"link_page_id":%d}`, theirPage.ID))
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("linking the same pair twice is a no-op, not an error or a duplicate", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		a := dbtest.CreatePage(t, pool, user.ID, "https://example.com/dup-a")
+		b := dbtest.CreatePage(t, pool, user.ID, "https://example.com/dup-b")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		first := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", a.ID),
+			cookie, fmt.Sprintf(`{"link_page_id":%d}`, b.ID))
+		assert.Equal(t, http.StatusCreated, first.StatusCode)
+
+		// The second POST swaps which page initiates it too, exercising
+		// AddPageLink's own LEAST/GREATEST canonicalization -- this isn't
+		// just "the same request twice," it's "the same pair from the
+		// other direction."
+		second := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", b.ID),
+			cookie, fmt.Sprintf(`{"link_page_id":%d}`, a.ID))
+		assert.Equal(t, http.StatusCreated, second.StatusCode)
+
+		detail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", a.ID), cookie)
+		var got struct {
+			Links []struct{} `json:"links"`
+		}
+		require.NoError(t, json.NewDecoder(detail.Body).Decode(&got))
+		assert.Len(t, got.Links, 1)
+	})
+}
+
+func TestSearchPagesForLinking(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("matches by title or normalized_url in one query, excludes the given page, and caps at the link-candidate limit", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		ctx := context.Background()
+
+		current := dbtest.CreatePage(t, pool, user.ID, "https://example.com/current-page")
+
+		byTitle := dbtest.CreatePage(t, pool, user.ID, "https://example.com/found-by-title")
+		_, err := q.SetPageTitle(ctx, db.SetPageTitleParams{
+			Title: pgtype.Text{String: "A Philosophy of Software Design", Valid: true}, ID: byTitle.ID, UserID: user.ID,
+		})
+		require.NoError(t, err)
+
+		byURL := dbtest.CreatePage(t, pool, user.ID, "https://philosophy.example.com/unrelated-title")
+
+		noMatch := dbtest.CreatePage(t, pool, user.ID, "https://example.com/no-match-here")
+		_, err = q.SetPageTitle(ctx, db.SetPageTitleParams{
+			Title: pgtype.Text{String: "Something Else Entirely", Valid: true}, ID: noMatch.ID, UserID: user.ID,
+		})
+		require.NoError(t, err)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet,
+			fmt.Sprintf("/api/pages/link-candidates?q=philosophy&exclude=%d", current.ID), cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Pages []struct {
+				ID int64 `json:"id"`
+			} `json:"pages"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+
+		gotIDs := make([]int64, len(got.Pages))
+		for i, p := range got.Pages {
+			gotIDs[i] = p.ID
+		}
+		assert.ElementsMatch(t, []int64{byTitle.ID, byURL.ID}, gotIDs)
+	})
+
+	t.Run("an empty query returns an empty list rather than every page", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		dbtest.CreatePage(t, pool, user.ID, "https://example.com/would-otherwise-match")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/link-candidates?q=", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got struct {
+			Pages []struct{} `json:"pages"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Empty(t, got.Pages)
+	})
+
+	t.Run("doesn't match another user's pages", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		otherOwner := dbtest.CreateUser(t, pool, "member")
+		dbtest.CreatePage(t, pool, otherOwner.ID, "https://example.com/not-yours-to-search")
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/link-candidates?q=yours", cookie)
+		var got struct {
+			Pages []struct{} `json:"pages"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Empty(t, got.Pages)
+	})
+}
 func TestGetPageFavicon(t *testing.T) {
 	pool := dbtest.Setup(t)
 

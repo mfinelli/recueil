@@ -200,36 +200,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   button {
+    @include comp.bordered-button;
     display: flex;
     align-items: center;
     gap: 0.35rem;
     padding: 0.4rem 0.7rem;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper-raised);
     color: var(--ink-muted);
-    font: inherit;
     font-size: 0.8125rem;
-    cursor: pointer;
-
-    &:disabled {
-      opacity: 0.5;
-      cursor: default;
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-    }
   }
 
   .view-toggle {
-    display: flex;
-    width: fit-content;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    overflow: hidden;
+    @include comp.segmented-toggle;
     margin-bottom: 1.5rem;
 
     button {
@@ -241,20 +225,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         color: var(--paper);
       }
     }
-
-    button + button {
-      border-left: 1px solid var(--rule);
-    }
   }
 
   .status {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 2.5rem 1rem;
+    @include comp.status-block;
     color: var(--ink-muted);
-    text-align: center;
 
     :global(svg) {
       color: var(--rule);

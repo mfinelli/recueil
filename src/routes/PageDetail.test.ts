@@ -74,7 +74,12 @@ vi.mock("../lib/api", async (importOriginal) => {
 
 import { push } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
-import type { CaptureSummary, Collection, PageDetail } from "../lib/types";
+import type {
+  CaptureSummary,
+  Collection,
+  PageDetail,
+  PageLink,
+} from "../lib/types";
 import PageDetailRoute from "./PageDetail.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
@@ -87,6 +92,7 @@ afterEach(() => {
   apiJSONMock.mockReset();
   confirmMock.mockReset();
   pushMock.mockClear();
+  vi.useRealTimers();
 });
 
 const exampleCapture: CaptureSummary = {
@@ -121,6 +127,48 @@ const recipesCollection: Collection = {
   updated_at: "2026-05-01T12:00:00Z",
 };
 
+const cookbookCollection: Collection = {
+  id: 20,
+  parent_id: null,
+  name: "Cookbook",
+  slug: "cookbook",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
+const zebraCollection: Collection = {
+  id: 21,
+  parent_id: null,
+  name: "Zebra",
+  slug: "zebra",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
+// Two distinct collections that happen to share a name -- this is the
+// exact ambiguity the picker's full-path labels exist to resolve.
+const cookbookRecipesCollection: Collection = {
+  id: 22,
+  parent_id: 20,
+  name: "Recipes",
+  slug: "recipes",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
+const zebraRecipesCollection: Collection = {
+  id: 23,
+  parent_id: 21,
+  name: "Recipes",
+  slug: "recipes",
+  description: null,
+  created_at: "2026-05-01T12:00:00Z",
+  updated_at: "2026-05-01T12:00:00Z",
+};
+
 const basePage: PageDetail = {
   id: 42,
   normalized_url: "example.com/article",
@@ -128,11 +176,13 @@ const basePage: PageDetail = {
   latest_capture_at: "2026-05-01T12:00:00Z",
   excluded_from_mirror: false,
   favicon_path: null,
+  notes: null,
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",
   captures: [exampleCapture],
   tags: [{ id: 1, name: "reading", slug: "reading", source: "manual" }],
   collections: [{ id: 5, name: "Articles", parent_id: null }],
+  links: [],
 };
 
 type LoadOptions = {
@@ -325,6 +375,40 @@ describe("PageDetail", () => {
     // so the "add existing" picker has nothing left to offer and
     // disappears entirely.
     expect(screen.queryByPlaceholderText("Add to a collection…")).toBeNull();
+  });
+
+  it("disambiguates same-named collections under different parents with a full path, sorted so they land near their real siblings", async () => {
+    render42({
+      page: { ...basePage, collections: [] },
+      collections: [
+        zebraCollection,
+        cookbookCollection,
+        zebraRecipesCollection,
+        cookbookRecipesCollection,
+      ],
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit collections" }),
+    );
+
+    const select = screen.getByRole("combobox", {
+      name: "",
+    }) as HTMLSelectElement;
+    const labels = Array.from(select.options).map((o) => o.textContent);
+
+    // Neither "Recipes" collection is distinguishable by name alone, so
+    // both must carry their own parent in the label -- and the two
+    // "Cookbook.../Zebra..." pairs should sort together (real siblings
+    // grouped), not "Cookbook, Recipes, Recipes, Zebra" with both
+    // identical "Recipes" labels adjacent and indistinguishable.
+    expect(labels).toEqual([
+      "Add to a collection…",
+      "Cookbook",
+      "Cookbook / Recipes",
+      "Zebra",
+      "Zebra / Recipes",
+    ]);
   });
 
   it("removes a collection", async () => {
@@ -576,6 +660,322 @@ describe("PageDetail", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("title cannot be empty")).toBeTruthy();
+  });
+
+  it("shows an empty-notes message when there are no notes", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(screen.getByText("No notes yet.")).toBeTruthy();
+  });
+
+  it("renders notes through the markdown subset, not as plain text", async () => {
+    render42({
+      page: {
+        ...basePage,
+        notes: "**bold** and a list:\n- one\n- two",
+      },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    const strong = screen.getByText("bold", { selector: "strong" });
+    expect(strong).toBeTruthy();
+    // Scoped to the notes body specifically -- tags/collections render
+    // their own <ul> chip lists too, so an unscoped getByRole("list")
+    // would be ambiguous.
+    const notesBody = strong.closest(".notes-body") as HTMLElement;
+    expect(within(notesBody).getAllByRole("listitem")).toHaveLength(2);
+  });
+
+  it("hides the edit-toggle button while editing -- Save/Cancel own exiting edit mode, not a second click on it", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    expect(screen.queryByRole("button", { name: "Edit notes" })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Edit notes" })).toBeTruthy();
+  });
+
+  it("edits notes, saving on success", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    const textarea = screen.getByPlaceholderText("Add a note…");
+    expect(textarea).toHaveProperty("value", "");
+
+    apiJSONMock.mockResolvedValueOnce({
+      ...basePage,
+      notes: "**Worth** revisiting",
+    });
+    await fireEvent.input(textarea, {
+      target: { value: "**Worth** revisiting" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "PATCH",
+      body: { notes: "**Worth** revisiting" },
+    });
+    expect(
+      await screen.findByText("Worth", { selector: "strong" }),
+    ).toBeTruthy();
+  });
+
+  it("clears notes back to the empty state by saving a blank textarea", async () => {
+    render42({ page: { ...basePage, notes: "an existing note" } });
+    await screen.findByText("an existing note");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    apiJSONMock.mockResolvedValueOnce({ ...basePage, notes: null });
+    await fireEvent.input(screen.getByPlaceholderText("Add a note…"), {
+      target: { value: "   " },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42", {
+      method: "PATCH",
+      body: { notes: "" },
+    });
+    expect(await screen.findByText("No notes yet.")).toBeTruthy();
+  });
+
+  it("cancels a notes edit without calling the API", async () => {
+    render42({ page: { ...basePage, notes: "original note" } });
+    await screen.findByText("original note");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    await fireEvent.input(screen.getByPlaceholderText("Add a note…"), {
+      target: { value: "discarded" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      "/pages/42",
+      expect.objectContaining({ method: "PATCH" }),
+    );
+    expect(screen.getByText("original note")).toBeTruthy();
+  });
+
+  it("shows the API's own error message when saving notes fails", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit notes" }));
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(500, "failed to update notes"),
+    );
+    await fireEvent.input(screen.getByPlaceholderText("Add a note…"), {
+      target: { value: "a note" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("failed to update notes")).toBeTruthy();
+  });
+
+  it("shows an empty-links message when there are no links", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(screen.getByText("No pages linked yet.")).toBeTruthy();
+  });
+
+  it("shows a linked page's title and normalized_url as a list row", async () => {
+    const discussion: PageLink = {
+      id: 7,
+      title: "Show HN: I built a self-hosted bookmarker",
+      normalized_url: "example.com/show-hn",
+      favicon_path: null,
+    };
+    render42({ page: { ...basePage, links: [discussion] } });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(
+      screen.getByText("Show HN: I built a self-hosted bookmarker"),
+    ).toBeTruthy();
+    expect(screen.getByText("example.com/show-hn")).toBeTruthy();
+    expect(
+      screen.getByRole("link", {
+        name: "Show HN: I built a self-hosted bookmarker example.com/show-hn",
+      }),
+    ).toHaveProperty("href", expect.stringContaining("/pages/7"));
+  });
+
+  it("hides the remove buttons and search input until Edit linked pages is clicked", async () => {
+    const linked: PageLink = {
+      id: 7,
+      title: "Linked page",
+      normalized_url: "example.com/linked",
+      favicon_path: null,
+    };
+    render42({ page: { ...basePage, links: [linked] } });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(
+      screen.queryByRole("button", { name: "Remove link to Linked page" }),
+    ).toBeNull();
+    expect(screen.queryByPlaceholderText("Search by title or URL…")).toBeNull();
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit linked pages" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove link to Linked page" }),
+    ).toBeTruthy();
+    expect(screen.getByPlaceholderText("Search by title or URL…")).toBeTruthy();
+  });
+
+  it("searches for candidates after a debounce, excludes already-linked pages, and adds one on click", async () => {
+    vi.useFakeTimers();
+    const alreadyLinked: PageLink = {
+      id: 5,
+      title: "Already linked",
+      normalized_url: "example.com/already-linked",
+      favicon_path: null,
+    };
+    const candidate: PageLink = {
+      id: 9,
+      title: "A Philosophy of Software Design",
+      normalized_url: "example.com/philosophy",
+      favicon_path: null,
+    };
+    render42({ page: { ...basePage, links: [alreadyLinked] } });
+    await vi.waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "An example article" }),
+      ).toBeTruthy(),
+    );
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit linked pages" }),
+    );
+
+    apiJSONMock.mockResolvedValueOnce({
+      pages: [alreadyLinked, candidate],
+    });
+    await fireEvent.input(
+      screen.getByPlaceholderText("Search by title or URL…"),
+      { target: { value: "philosophy" } },
+    );
+    // Not yet -- still within the 300ms debounce window.
+    expect(apiJSONMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("link-candidates"),
+    );
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(apiJSONMock).toHaveBeenLastCalledWith(
+      "/pages/link-candidates?q=philosophy&exclude=42",
+    );
+    // alreadyLinked came back in the search results too (a realistic
+    // response, since the backend doesn't filter it out server-side --
+    // see SearchPagesForLinking's own comment), but only the genuinely
+    // new candidate should render *in the results dropdown* -- "Already
+    // linked" legitimately still appears elsewhere on the page, in its
+    // own linked-pages list, so the check is scoped to the dropdown.
+    const dropdown = document.querySelector(".link-results") as HTMLElement;
+    expect(within(dropdown).queryByText("Already linked")).toBeNull();
+    const resultButton = await screen.findByRole("button", {
+      name: "A Philosophy of Software Design example.com/philosophy",
+    });
+
+    apiJSONMock.mockResolvedValueOnce(candidate);
+    await fireEvent.click(resultButton);
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/links", {
+      method: "POST",
+      body: { link_page_id: 9 },
+    });
+    expect(
+      await screen.findByText("A Philosophy of Software Design"),
+    ).toBeTruthy();
+    // The search box clears itself after a successful add.
+    expect(
+      screen.getByPlaceholderText("Search by title or URL…"),
+    ).toHaveProperty("value", "");
+  });
+
+  it("removes a link", async () => {
+    const linked: PageLink = {
+      id: 7,
+      title: "Linked page",
+      normalized_url: "example.com/linked",
+      favicon_path: null,
+    };
+    render42({ page: { ...basePage, links: [linked] } });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit linked pages" }),
+    );
+    apiJSONMock.mockResolvedValueOnce(undefined);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Remove link to Linked page" }),
+    );
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/links/7", {
+      method: "DELETE",
+    });
+    expect(await screen.findByText("No pages linked yet.")).toBeTruthy();
+  });
+
+  it("shows the API's own error message when adding a link fails", async () => {
+    vi.useFakeTimers();
+    const candidate: PageLink = {
+      id: 9,
+      title: "A candidate page",
+      normalized_url: "example.com/candidate",
+      favicon_path: null,
+    };
+    render42();
+    await vi.waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "An example article" }),
+      ).toBeTruthy(),
+    );
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit linked pages" }),
+    );
+    apiJSONMock.mockResolvedValueOnce({ pages: [candidate] });
+    await fireEvent.input(
+      screen.getByPlaceholderText("Search by title or URL…"),
+      { target: { value: "candidate" } },
+    );
+    await vi.advanceTimersByTimeAsync(300);
+    const resultButton = await screen.findByRole("button", {
+      name: "A candidate page example.com/candidate",
+    });
+
+    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "failed to link page"));
+    await fireEvent.click(resultButton);
+
+    expect(await screen.findByText("failed to link page")).toBeTruthy();
+  });
+
+  it("shows the API's own error message when removing a link fails", async () => {
+    const linked: PageLink = {
+      id: 7,
+      title: "Linked page",
+      normalized_url: "example.com/linked",
+      favicon_path: null,
+    };
+    render42({ page: { ...basePage, links: [linked] } });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Edit linked pages" }),
+    );
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(500, "failed to remove link"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Remove link to Linked page" }),
+    );
+
+    expect(await screen.findByText("failed to remove link")).toBeTruthy();
   });
 
   it("queues a recapture, showing a transient confirmation", async () => {

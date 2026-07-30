@@ -2650,3 +2650,134 @@ against.
   union (`Device.device_type`/`PageTag.source` precedent), gained `claimed_at`.
   `FailedJob`/`FailedJobsResponse` renamed `Job`/ `JobsResponse`, gained
   `status`/`claimed_at`.
+
+## Phase 14 (Page notes / page linking)
+
+### Schema
+
+`pages.notes TEXT`, nullable. Page-level, not per-capture, same reasoning as
+tags/collections: it's the user's own annotation about the URL, which doesn't
+change with a re-archive. Deliberately **not** mirrored to D1 —
+`internal/mirror/sync.go`'s payload only ever carried `title`, and notes are a
+personal annotation, not bookmark structure, so it stays Postgres-only.
+
+Also deliberately **not** folded into `SearchPages`'s full-text search over
+`reader_text` — discussed and declined for now; revisit if it turns out to
+matter in practice.
+
+### Backend
+
+- New `SetPageNotes` query (`queries/pages.sql`), right next to `SetPageTitle` —
+  same `WHERE id = $1 AND user_id = $2` / `RETURNING *` shape, but unlike title,
+  an empty value is meaningful here (clears the note) rather than rejected.
+- `PatchPage` (`internal/httpapi/handlers.go`) gained a third optional field,
+  `Notes *string`, alongside the existing `ExcludedFromMirror`/`Title` —
+  extended the existing handler rather than adding a new route, since it already
+  existed specifically to support "apply whichever of several optional fields
+  were provided." Trim-then-nullify-if-empty: a blank/whitespace-only value
+  stores `NULL`, not `""`, matching how `title`/`favicon_path` already
+  distinguish "not set" from a real value.
+- `pageResponse` and all three of its conversion functions
+  (`pageResponseFromPage`/`FromListRow`/`FromSearchRow`) gained `Notes`. It now
+  rides along on every page response — list, search, and detail alike — same as
+  every other column on this struct; no separate "detail-only" field concept
+  exists in this API today, so this doesn't introduce one just for notes. Worth
+  revisiting if note length ever makes list/search payloads noticeably heavier
+  in practice, but not a concern at today's usage.
+- Six new `TestPatchPage` subtests: set, trim, clear-to-null-on-blank, and the
+  standard 404-for-another-user's-page check, mirroring the existing title
+  subtests' shape exactly.
+
+### Markdown rendering (`src/lib/markdown.ts`)
+
+Hand-rolled, not a library. The scope is intentionally three constructs (bold,
+italic, simple lists), and a fixed, hand-rolled output vocabulary
+(`<strong>`/`<em>`/`<ul>`/`<li>`/`<p>`/`<br>`, always wrapping HTML-escaped
+text) means there's no separate sanitization step to get right or forget, unlike
+adopting a general-purpose parser and then needing to sanitize _its_ output
+separately. Bold is matched before italic so `**bold**`'s own asterisks are
+never mistaken for italic markers. Asterisk-italic (`*x*`) can sit directly
+against a word, matching common markdown convention; underscore-italic (`_x_`)
+requires a non-word boundary on both sides (`(?<![\w])_(.+?)_(?![\w])`), so
+identifiers like `my_variable_name` aren't mangled — the one place a naive regex
+implementation usually gets underscores wrong.
+
+Source is stored as-is in `pages.notes` and rendered client-side on read — the
+same choice `reader_text`/`ai_summary` already made (see
+`CaptureReader.svelte`'s own doc comment), just with actual formatting this
+time.
+
+### Frontend (`PageDetail.svelte`)
+
+New "Notes" section, placed after Collections and before the Captures list.
+Reuses the existing `edit-toggle` button class (pencil ⇄ checkmark, same as
+Tags/Collections). Unlike Tags/Collections' per-item instant-save add/remove
+forms, a note is one free-text field, so its edit UX matches the existing
+**title-edit** pattern instead: a textarea plus explicit Save/Cancel, not
+autosave-per-keystroke. Six new component tests (`PageDetail.test.ts`): empty
+state, markdown actually rendering (not just displaying literal `**bold**`
+text), save, clear-via-blank-save, cancel discards without calling the API, and
+the API's own error message surfacing on a failed save.
+
+`Page`/`PageDetail` (`src/lib/types.ts`) gained `notes: string | null`, which
+required updating five existing test fixtures
+(`PageList`/`CollectionDetail`/`Library`/`PageDetail`/`TagDetail.test.ts`) that
+construct a full `Page` object literal and started failing type-checking once
+the field became required.
+
+Seven new `pagedetail_notes_*` message keys, both `en.json`/`fr.json`, kept at
+full parity (251/251 keys each).
+
+### Page links backend
+
+- `queries/page_links.sql` (new file): `AddPageLink`/`RemovePageLink` use
+  `LEAST`/`GREATEST` to canonicalize the pair, so callers never compute ordering
+  themselves. Actually running these through `sqlc generate` (not just
+  hand-tracing) caught two real problems before they shipped: `LEAST($1, $2)`
+  alone left sqlc unable to infer a parameter type at all (an unusable
+  `interface{}` field), and separately, it derived duplicate-looking generated
+  struct field names (`PageIDA`/`PageIDA_2`) for `RemovePageLink`'s two
+  arguments — easy to transpose by accident. Fixed with explicit `::bigint`
+  casts and named `sqlc.arg()`s; both now generate clean `int64` `PageA`/`PageB`
+  fields. `ListPageLinks` returns "the other page" in every link regardless of
+  which side of the stored pair it's on, via a `CASE` on which id matches the
+  one being looked up — this is what makes a link bidirectional _at read time_,
+  with no special-casing needed anywhere else.
+- `SearchPagesForLinking` (`queries/pages.sql`): plain `ILIKE` over
+  `title`/`normalized_url` in one query (one `$query` parameter, matched against
+  both columns with `OR`), excludes the page being linked from. Deliberately not
+  a `tsvector`/trigram setup — proportionate to a personal library's scale, same
+  reasoning as collections' own recursive-CTE comment elsewhere in this
+  codebase. No pagination/`total_count`, unlike `ListPages`/`SearchPages`: this
+  backs a live typeahead dropdown showing a handful of matches (capped at a new
+  `linkCandidateLimit = 8`), not a browsable listing.
+- Three new handlers: `AddPageLink`/`RemovePageLink`
+  (`POST`/`DELETE /api/pages/{id}/links[/{linkPageId}]`, same
+  both-sides-verified-independently pattern `AddPageToCollection` already uses,
+  plus a same-page-to-itself rejection `AddPageToCollection` doesn't need an
+  equivalent of) and `SearchPagesForLinking`
+  (`GET /api/pages/link-candidates?q=...&exclude=...`). New shared
+  `pageLinkResponse` type (id/title/normalized_url/favicon_path) covers both the
+  linked-pages list and search-candidate results, since they're identical in
+  shape — one type, not two. `pageDetailResponse` gained
+  `Links []pageLinkResponse`, populated in `GetPage` via `ListPageLinks`.
+- Router's own top-of-file route summary comment updated to describe the new
+  routes, matching its existing practice of staying in sync with the routes
+  actually registered below it.
+- New tests: `TestPageLinks` (bidirectional visibility from both sides without a
+  second POST, removal from either side, self-link rejection, cross-user 404,
+  and that linking the same pair twice — even initiated from each side in turn —
+  is a no-op via `AddPageLink`'s own canonicalization, not a duplicate row) and
+  `TestSearchPagesForLinking` (title match, URL match, empty-query returns
+  nothing rather than everything, cross-user isolation).
+
+### Page links frontend
+
+New "Linked pages" section, placed after Notes and before the Captures list.
+Rendered as a lightweight list (favicon left, title/normalized_url on two lines
+below it) rather than pills — a link carries more identifying information than a
+tag/collection name does, so it reads better as a row; see this phase's own
+mockup-revision note above. Favicon handling mirrors `PageList.svelte`'s own
+pattern exactly, including _why_ it's a `SvelteSet` keyed by page id rather than
+one shared boolean: several linked pages' images can be loading/failing
+independently at once, on this screen same as that one.

@@ -180,11 +180,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <style lang="scss">
   @use "../styles/typography" as type;
   @use "../styles/mixins" as mix;
+  @use "../styles/components" as comp;
 
   .screen {
-    max-width: 64rem;
-    margin: 0 auto;
-    padding: 2rem 1rem;
+    @include comp.content-screen;
   }
 
   .back {
@@ -258,11 +257,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     padding: 0;
 
     a {
+      @include comp.pill;
       display: block;
       padding: 0.2rem 0.75rem;
-      border-radius: 999px;
-      background: var(--paper-raised);
-      border: 1px solid var(--rule);
       font-size: 0.8125rem;
       color: inherit;
       text-decoration: none;
@@ -283,13 +280,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .status-block {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 2.5rem 1rem;
+    @include comp.status-block;
     color: var(--accent);
-    text-align: center;
 
     :global(svg) {
       opacity: 0.6;
