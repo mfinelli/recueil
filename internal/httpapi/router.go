@@ -19,10 +19,12 @@
 // Package httpapi is the dashboard-facing HTTP API: registration, login,
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
 // /api/auth/me, session-protected dashboard settings (GET/PATCH
-// /api/settings), session-protected pairing-token management
-// (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
-// strictly self-scoped -- see ListDevices' own doc comment for why
-// cross-user device management isn't a web capability here),
+// /api/settings) and read-only aggregate archive stats (GET /api/stats,
+// the Settings page's stats section -- page/capture counts and a
+// disk-usage breakdown by category), session-protected pairing-token
+// management (view/regenerate/revoke), session-protected Manage Devices
+// (list/revoke, strictly self-scoped -- see ListDevices' doc comment
+// for why cross-user device management isn't a web capability here),
 // session-protected Active Sessions (GET /api/sessions, DELETE
 // /api/sessions/{id}, session-protected queue-item review/retry
 // (GET /api/queue-items -- pending/claimed/failed unconditionally, plus
@@ -140,6 +142,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/auth/me", s.Me)
 			r.Get("/settings", s.GetSettings)
 			r.Patch("/settings", s.PatchSettings)
+			r.Get("/stats", s.GetStats)
 			r.Get("/pairing-token", s.GetPairingToken)
 			r.Post("/pairing-token/regenerate", s.RegeneratePairingToken)
 			r.Delete("/pairing-token", s.RevokePairingToken)

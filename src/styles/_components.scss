@@ -21,6 +21,7 @@
 // focus-ring). These compose those primitives into the handful of
 // concrete button/pill/status shapes.
 @use "mixins" as mix;
+@use "typography" as type;
 
 // Round, icon-only button (AppHeader's sign-out, Collections/Tags/Devices'
 // row actions, PageDetail's edit-toggle/remove, CaptureReader's
@@ -228,4 +229,39 @@
   max-width: $max-width;
   margin: 0 auto;
   padding: 2rem 1rem;
+}
+
+// A card-surface box of label/value rows, each separated by a dotted
+// rule -- the same as CaptureReader's archive-details block (SHA-256, sizes,
+// readability version) and Settings' stats section. Deliberately just
+// the card chrome and padding, not a width/margin -- CaptureReader's
+// `.details` needs its own max-width/centering (see this file's
+// content-screen), which doesn't apply to a details card sitting
+// inside an already-width-constrained screen like Settings'.
+@mixin details-card {
+  padding: 1rem 1.1rem;
+  @include mix.card-surface;
+}
+
+@mixin details-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  @include mix.dotted-rule;
+  font-size: 0.8rem;
+
+  &:last-child {
+    border-bottom: none;
+  }
+}
+
+@mixin details-label {
+  color: var(--ink-muted);
+}
+
+@mixin details-value {
+  @include type.data-mono;
+  font-size: 0.78rem;
 }

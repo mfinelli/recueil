@@ -1735,6 +1735,99 @@ func TestGetSettings(t *testing.T) {
 	})
 }
 
+type testStatsResponse struct {
+	PageCount             int64 `json:"page_count"`
+	CaptureCount          int64 `json:"capture_count"`
+	HTMLCompressedBytes   int64 `json:"html_compressed_bytes"`
+	HTMLUncompressedBytes int64 `json:"html_uncompressed_bytes"`
+	FaviconBytes          int64 `json:"favicon_bytes"`
+	ScreenshotBytes       int64 `json:"screenshot_bytes"`
+}
+
+func TestGetStats(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a brand new user with no pages gets all zeros, not a 404/500", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/stats", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got testStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, testStatsResponse{}, got)
+	})
+
+	t.Run("sums sizes across every capture, and counts pages/captures separately", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		ctx := context.Background()
+
+		// Two pages; the second gets a second capture (a re-archive), so
+		// page_count and capture_count diverge -- exercising that these
+		// are two genuinely different counts, not the same number twice.
+		pageA := dbtest.CreatePage(t, pool, user.ID, "https://example.com/stats-a")
+		pageB := dbtest.CreatePage(t, pool, user.ID, "https://example.com/stats-b")
+
+		// dbtest.CreateCapture's own fixed sizes: 100 compressed / 500
+		// uncompressed, no favicon/thumbnail (both NULL) unless set below.
+		dbtest.CreateCapture(t, pool, pageA.ID)
+		dbtest.CreateCapture(t, pool, pageB.ID)
+		captureB2 := dbtest.CreateCapture(t, pool, pageB.ID)
+
+		_, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+			PageID: pageA.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
+			RawUrl: "https://example.com/favicon-carrier", HtmlPath: "unused.html.zst",
+			HtmlCompressedSizeBytes: 0, HtmlUncompressedSizeBytes: 0, ContentHash: "unused-" + t.Name(),
+			CapturedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
+			FaviconPath: pgtype.Text{String: "fav.png", Valid: true}, FaviconSizeBytes: pgtype.Int4{Int32: 7, Valid: true},
+			FaviconHash: pgtype.Text{String: "favhash", Valid: true},
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, q.SetCaptureThumbnail(ctx, db.SetCaptureThumbnailParams{
+			ID: captureB2.ID, ThumbnailPath: pgtype.Text{String: "thumb.png", Valid: true},
+			ThumbnailSizeBytes: pgtype.Int4{Int32: 30, Valid: true}, ThumbnailHash: pgtype.Text{String: "thumbhash", Valid: true},
+		}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/stats", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got testStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+
+		assert.Equal(t, int64(2), got.PageCount)
+		// 3 from CreateCapture + 1 more inserted directly above = 4.
+		assert.Equal(t, int64(4), got.CaptureCount)
+		// 3 * 100 (CreateCapture's default) + 0 (the favicon-carrier
+		// capture's own HTML) = 300 -- a plain sum, not deduplicated.
+		assert.Equal(t, int64(300), got.HTMLCompressedBytes)
+		assert.Equal(t, int64(1500), got.HTMLUncompressedBytes)
+		assert.Equal(t, int64(7), got.FaviconBytes)
+		assert.Equal(t, int64(30), got.ScreenshotBytes)
+	})
+
+	t.Run("only counts the requesting user's own pages/captures", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		otherUser := dbtest.CreateUser(t, pool, "member")
+		otherPage := dbtest.CreatePage(t, pool, otherUser.ID, "https://example.com/not-yours-stats")
+		dbtest.CreateCapture(t, pool, otherPage.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/stats", cookie)
+		var got testStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, testStatsResponse{}, got)
+	})
+}
+
 func TestPatchSettings(t *testing.T) {
 	pool := dbtest.Setup(t)
 

@@ -782,10 +782,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .details {
+    @include comp.details-card;
     max-width: 53rem;
     margin: 2rem auto 0;
-    padding: 1rem 1.1rem;
-    @include mix.card-surface;
   }
 
   .details .eyebrow {
@@ -795,26 +794,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   }
 
   .details-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    padding: 0.4rem 0;
-    @include mix.dotted-rule;
-    font-size: 0.8rem;
-
-    &:last-child {
-      border-bottom: none;
-    }
+    @include comp.details-row;
   }
 
   .details-row .label {
-    color: var(--ink-muted);
+    @include comp.details-label;
   }
 
   .details-row .value {
-    @include type.data-mono;
-    font-size: 0.78rem;
+    @include comp.details-value;
   }
 
   .hash-row {

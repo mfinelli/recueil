@@ -211,6 +211,17 @@ export interface UserSettings {
   theme: string | null;
 }
 
+// GET /api/stats' shape -- Settings page's stats section. A plain sum
+// across every capture row.
+export interface Stats {
+  page_count: number;
+  capture_count: number;
+  html_compressed_bytes: number;
+  html_uncompressed_bytes: number;
+  favicon_bytes: number;
+  screenshot_bytes: number;
+}
+
 // GET /api/queue-items' item shape -- pending/claimed/failed
 // unconditionally, plus 'captured' items from the last few minutes. id is a
 // client-generated UUID (queue_items.id is TEXT), not a number.
