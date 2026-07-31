@@ -2813,6 +2813,26 @@ doesn't exist yet and isn't being added just for this.
   directly via `InsertCaptureIdempotent`/`SetCaptureThumbnail` rather than
   `dbtest.CreateCapture`'s own fixed defaults, to exercise those two columns
   specifically), and cross-user isolation.
+- `internal/auth.RequireAdmin` existed but had never been wired to a route
+  before this — `GET /api/admin/stats` is its first real caller, registered in
+  its own `r.Group` (sibling to the `RequireSession` one, not nested inside it —
+  nesting would run session resolution twice for no reason, since `RequireAdmin`
+  already builds on `RequireSession` internally). Router's own top-of-file
+  comment, which literally said "RequireAdmin exists... but isn't used here,"
+  updated to match and point at DESIGN.md's reasoning.
+- Two new queries (`queries/stats.sql`): `GetSystemStats` (same shape as
+  `GetUserStats`, just without the per-user filter — literally every
+  page/capture, instance-wide; no repeat of the ambiguity bug above, since its
+  subquery and outer scope don't share a `pages` reference the way
+  `GetUserStats`'s two CTEs did) and `GetTopUsersByStorage` (the 5 heaviest
+  users, inner-joined throughout rather than `LEFT JOIN` — a user with zero
+  pages/captures isn't a "top consumer" by definition, so excluding them
+  entirely from the ranking is correct here, not a bug, unlike `GetUserStats`,
+  which needs to represent "zero" for one specific user rather than omit a row).
+  Deliberately coarser breakdown than the personal/system three-way split —
+  compressed HTML vs. favicons-and-screenshots combined into one `other_bytes`
+  figure, confirmed directly: five rows of three numbers each starts to compete
+  with the one number that actually matters for a ranking.
 
 ### Frontend
 
@@ -2831,3 +2851,14 @@ value the way each breakdown row genuinely is. The disk total sums compressed
 HTML + favicons + screenshots; the uncompressed HTML figure is shown
 parenthetically next to the compressed one for context, not added into the
 total.
+
+Admin stats: gated on `session.user?.role === "admin"`, no new plumbing needed
+since the session store already carries role from its own bootstrap fetch.
+Rendered as the app's **first real `<table>`** — every other ranked/itemized
+list elsewhere uses a details-row card or a chip/pill list, but four independent
+numeric columns per row didn't fit either shape well. Styled to match rather
+than reading like a dropped-in generic table: card-surface outer shape,
+dotted-rule between body rows, eyebrow-style headers, data-mono applied only to
+the numeric `<td>` cells (caught and fixed a first pass that also applied it to
+header words like "Captures," which read oddly — data-mono is for data, not
+labels).

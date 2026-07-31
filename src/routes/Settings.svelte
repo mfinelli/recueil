@@ -43,11 +43,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
-  import type { UserSettings, Stats } from "../lib/types";
+  import type { UserSettings, Stats, AdminStats } from "../lib/types";
   import { formatBytes } from "../lib/format";
   import { m } from "../paraglide/messages";
   import { applyLanguageOverride } from "../lib/locale";
   import { applyTheme } from "../lib/theme";
+  import { session } from "../lib/session.svelte";
 
   const LANGUAGE_OPTIONS: { value: string; label: string }[] = [
     { value: "", label: m.language_option_automatic() },
@@ -77,6 +78,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let stats = $state<Stats | null>(null);
   let statsLoading = $state(true);
   let statsError = $state<string | null>(null);
+
+  let adminStats = $state<AdminStats | null>(null);
+  let adminStatsLoading = $state(true);
+  let adminStatsError = $state<string | null>(null);
 
   async function loadSettings() {
     loading = true;
@@ -110,9 +115,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  // Only called for an admin (see the $effect below) -- a non-admin's
+  // session never even attempts this request, rather than requesting it
+  // and hiding a 403. adminStatsLoading starts true regardless of role,
+  // but the template only ever consults it inside the
+  // `session.user?.role === "admin"` branch, so a non-admin never sees a
+  // stuck loading indicator for a request that was never made.
+  async function loadAdminStats() {
+    adminStatsLoading = true;
+    try {
+      adminStats = await apiJSON<AdminStats>("/admin/stats");
+    } catch (err) {
+      adminStatsError =
+        err instanceof ApiError
+          ? err.message
+          : m.settings_admin_stats_load_error();
+    } finally {
+      adminStatsLoading = false;
+    }
+  }
+
   $effect(() => {
     loadSettings();
     loadStats();
+    if (session.user?.role === "admin") {
+      loadAdminStats();
+    }
   });
 
   // Separate state per field (savingLanguage vs. savingTheme, etc.), not
@@ -313,6 +341,64 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       </div>
     {/if}
   </section>
+
+  {#if session.user?.role === "admin"}
+    <section>
+      <p class="eyebrow">{m.settings_admin_stats_heading()}</p>
+      <p class="hint">{m.settings_admin_stats_hint()}</p>
+      {#if adminStatsLoading}
+        <p class="status">{m.common_loading()}</p>
+      {:else if adminStatsError}
+        <p class="status error" role="alert">
+          <AlertCircle size={15} />
+          <span>{adminStatsError}</span>
+        </p>
+      {:else if adminStats}
+        <p class="stats-summary">
+          {m.settings_admin_stats_pages({
+            pages: String(adminStats.page_count),
+            captures: String(adminStats.capture_count),
+          })}
+        </p>
+        <p class="stats-summary">
+          {m.settings_admin_stats_disk_total({
+            size: formatBytes(
+              adminStats.html_compressed_bytes +
+                adminStats.favicon_bytes +
+                adminStats.screenshot_bytes,
+            ),
+          })}
+        </p>
+        <p class="top-users-heading">
+          {m.settings_admin_stats_top_users_heading()}
+        </p>
+        {#if adminStats.top_users.length > 0}
+          <table class="top-users">
+            <thead>
+              <tr>
+                <th>{m.settings_admin_stats_user_col()}</th>
+                <th>{m.settings_admin_stats_captures_col()}</th>
+                <th>{m.settings_admin_stats_html_col()}</th>
+                <th>{m.settings_admin_stats_other_col()}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each adminStats.top_users as topUser (topUser.username)}
+                <tr>
+                  <td>{topUser.username}</td>
+                  <td>{topUser.capture_count}</td>
+                  <td>{formatBytes(topUser.html_compressed_bytes)}</td>
+                  <td>{formatBytes(topUser.other_bytes)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {:else}
+          <p class="empty-note">{m.settings_admin_stats_no_top_users()}</p>
+        {/if}
+      {/if}
+    </section>
+  {/if}
 </main>
 
 <style lang="scss">
@@ -402,6 +488,59 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
     .value {
       @include comp.details-value;
+    }
+  }
+
+  .empty-note {
+    color: var(--ink-muted);
+    font-size: 0.8125rem;
+    font-style: italic;
+  }
+
+  .top-users-heading {
+    margin: 0 0 0.5rem;
+    color: var(--ink-muted);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  // .card-surface for the outer shape and a dotted rule between body rows
+  // keep it visually consistent with the rest of the app rather than reading
+  // like a dropped-in generic HTML table.
+  .top-users {
+    width: 100%;
+    border-collapse: collapse;
+    @include mix.card-surface;
+    font-size: 0.8125rem;
+
+    th,
+    td {
+      padding: 0.5rem 0.75rem;
+      text-align: left;
+    }
+
+    th {
+      @include type.eyebrow;
+      font-size: 0.68rem;
+      color: var(--brass);
+    }
+
+    th:not(:first-child) {
+      text-align: right;
+    }
+
+    td:not(:first-child) {
+      @include type.data-mono;
+      font-size: 0.75rem;
+      text-align: right;
+    }
+
+    tbody tr {
+      @include mix.dotted-rule;
+
+      &:last-child {
+        border-bottom: none;
+      }
     }
   }
 </style>

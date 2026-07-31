@@ -222,6 +222,30 @@ export interface Stats {
   screenshot_bytes: number;
 }
 
+// GET /api/admin/stats' shape -- admin-only Settings section. Same
+// four size fields as Stats, but summed across every user, plus the 5
+// heaviest users by storage. Content-free by design: no titles, URLs,
+// or tags, just how much space each user is using.
+export interface TopUserStat {
+  username: string;
+  capture_count: number;
+  html_compressed_bytes: number;
+  // Favicons and screenshots combined into one figure, not two separate
+  // ones -- a deliberately coarser breakdown than Stats'/AdminStats'
+  // three-way split.
+  other_bytes: number;
+}
+
+export interface AdminStats {
+  page_count: number;
+  capture_count: number;
+  html_compressed_bytes: number;
+  html_uncompressed_bytes: number;
+  favicon_bytes: number;
+  screenshot_bytes: number;
+  top_users: TopUserStat[];
+}
+
 // GET /api/queue-items' item shape -- pending/claimed/failed
 // unconditionally, plus 'captured' items from the last few minutes. id is a
 // client-generated UUID (queue_items.id is TEXT), not a number.

@@ -42,8 +42,14 @@
 // time a save happens (a later, user-triggered call), both of the
 // initial mount-time GETs have already resolved through the base
 // implementation.
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  render,
+  screen,
+  fireEvent,
+  cleanup,
+  within,
+} from "@testing-library/svelte";
 
 vi.mock("svelte-spa-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("svelte-spa-router")>();
@@ -73,7 +79,8 @@ vi.mock("../lib/theme", async (importOriginal) => {
 import { apiJSON, ApiError } from "../lib/api";
 import { applyLanguageOverride } from "../lib/locale";
 import { applyTheme } from "../lib/theme";
-import type { UserSettings, Stats } from "../lib/types";
+import { session } from "../lib/session.svelte";
+import type { UserSettings, Stats, AdminStats } from "../lib/types";
 import Settings from "./Settings.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
@@ -85,6 +92,15 @@ afterEach(() => {
   apiJSONMock.mockReset();
   applyLanguageOverrideMock.mockClear();
   applyThemeMock.mockClear();
+});
+
+// Importing Settings.svelte pulls in session.svelte.ts transitively,
+// which fires its bootstrap() fetch calls (against the stubbed global
+// fetch above) as an import-time side effect -- same hazard
+// AppHeader.test.ts already documents and resets for. Defaults to
+// non-admin/logged-out; admin-specific tests override this after.
+beforeEach(() => {
+  session.user = null;
 });
 
 function isActive(name: string): boolean {
@@ -100,14 +116,49 @@ const defaultStats: Stats = {
   screenshot_bytes: 2048,
 };
 
+const defaultAdminStats: AdminStats = {
+  page_count: 20,
+  capture_count: 30,
+  html_compressed_bytes: 4096,
+  html_uncompressed_bytes: 16384,
+  favicon_bytes: 256,
+  screenshot_bytes: 1024,
+  top_users: [
+    {
+      username: "alice",
+      capture_count: 12,
+      html_compressed_bytes: 2048,
+      other_bytes: 512,
+    },
+    {
+      username: "bob",
+      capture_count: 8,
+      html_compressed_bytes: 1024,
+      other_bytes: 256,
+    },
+  ],
+};
+
 // GET /settings and GET /stats resolve independently by URL; anything
 // else (a PATCH, or a call this helper wasn't told to expect) throws,
 // same "fail loudly on an unexpected call" approach mockLoad-style
 // helpers use elsewhere rather than silently returning undefined.
-function mockLoad(settings: UserSettings, stats: Stats = defaultStats) {
+// adminStats defaults to null -- only admin-specific tests pass one,
+// since a non-admin session should never call /admin/stats at all; if
+// the app regresses and calls it anyway, the throw below catches that
+// rather than the mock silently answering a request it shouldn't
+// receive.
+function mockLoad(
+  settings: UserSettings,
+  stats: Stats = defaultStats,
+  adminStats: AdminStats | null = null,
+) {
   apiJSONMock.mockImplementation((url: unknown) => {
     if (url === "/stats") return Promise.resolve(stats);
     if (url === "/settings") return Promise.resolve(settings);
+    if (url === "/admin/stats" && adminStats) {
+      return Promise.resolve(adminStats);
+    }
     throw new Error(`mockLoad: unexpected apiJSON call: ${String(url)}`);
   });
 }
@@ -234,6 +285,106 @@ describe("Settings", () => {
     expect(screen.getByText("1.0 KB (5.0 KB uncompressed)")).toBeTruthy();
     expect(screen.getByText("2.0 KB")).toBeTruthy();
     expect(screen.getByText("4.0 KB")).toBeTruthy();
+  });
+
+  it("doesn't show the instance stats section or call /admin/stats for a non-admin", async () => {
+    session.user = { id: 1, username: "member-user", role: "member" };
+    mockLoad({ language: null, theme: null });
+    render(Settings);
+
+    await screen.findByRole("group", { name: "Language" });
+    expect(screen.queryByText("Instance stats")).toBeNull();
+    expect(apiJSONMock).not.toHaveBeenCalledWith("/admin/stats");
+  });
+
+  it("doesn't show the instance stats section for a logged-out/unresolved session either", async () => {
+    session.user = null;
+    mockLoad({ language: null, theme: null });
+    render(Settings);
+
+    await screen.findByRole("group", { name: "Language" });
+    expect(screen.queryByText("Instance stats")).toBeNull();
+    expect(apiJSONMock).not.toHaveBeenCalledWith("/admin/stats");
+  });
+
+  it("shows instance-wide totals and the top-5 table for an admin", async () => {
+    session.user = { id: 1, username: "admin-user", role: "admin" };
+    mockLoad({ language: null, theme: null }, defaultStats, defaultAdminStats);
+    render(Settings);
+
+    expect(await screen.findByText("Instance stats")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "20 pages archived (30 captures) across all users",
+      ),
+    ).toBeTruthy();
+    // Total = 4096 (HTML) + 256 (favicons) + 1024 (screenshots) = 5376
+    // bytes = 5.3 KB.
+    expect(
+      screen.getByText("Occupying 5.3 KB total disk across all users"),
+    ).toBeTruthy();
+
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("alice")).toBeTruthy();
+    expect(within(table).getByText("bob")).toBeTruthy();
+    expect(within(table).getAllByRole("row")).toHaveLength(3); // header + 2 users
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/admin/stats");
+  });
+
+  it("shows an empty state when no other users have archived anything", async () => {
+    session.user = { id: 1, username: "admin-user", role: "admin" };
+    mockLoad({ language: null, theme: null }, defaultStats, {
+      ...defaultAdminStats,
+      top_users: [],
+    });
+    render(Settings);
+
+    expect(
+      await screen.findByText("No other users have archived anything yet."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("shows the API's own error message when loading instance stats fails, independent of personal stats", async () => {
+    session.user = { id: 1, username: "admin-user", role: "admin" };
+    apiJSONMock.mockImplementation((url: unknown) => {
+      if (url === "/settings") {
+        return Promise.resolve({ language: null, theme: null });
+      }
+      if (url === "/stats") return Promise.resolve(defaultStats);
+      if (url === "/admin/stats") {
+        return Promise.reject(new ApiError(500, "database unavailable"));
+      }
+      throw new Error(`unexpected apiJSON call: ${String(url)}`);
+    });
+    render(Settings);
+
+    // Personal stats loaded fine -- one admin-only resource failing
+    // doesn't take the personal section down with it.
+    expect(
+      await screen.findByText("3 pages archived (5 captures)"),
+    ).toBeTruthy();
+    expect(await screen.findByText("database unavailable")).toBeTruthy();
+  });
+
+  it("falls back to a generic error message for a non-ApiError instance stats failure", async () => {
+    session.user = { id: 1, username: "admin-user", role: "admin" };
+    apiJSONMock.mockImplementation((url: unknown) => {
+      if (url === "/settings") {
+        return Promise.resolve({ language: null, theme: null });
+      }
+      if (url === "/stats") return Promise.resolve(defaultStats);
+      if (url === "/admin/stats") {
+        return Promise.reject(new Error("network error"));
+      }
+      throw new Error(`unexpected apiJSON call: ${String(url)}`);
+    });
+    render(Settings);
+
+    expect(
+      await screen.findByText("failed to load instance stats"),
+    ).toBeTruthy();
   });
 
   it("saves the selected language via PATCH (alongside the current theme) and shows a saved confirmation", async () => {

@@ -44,3 +44,43 @@ capture_totals AS (
   WHERE pages.user_id = sqlc.arg(user_id)
 )
 SELECT * FROM page_totals, capture_totals;
+
+-- name: GetSystemStats :one
+-- Admin-only; Same shape as GetUserStats, just without the per-user WHERE
+-- filter -- literally every page/capture, system-wide.
+SELECT
+  (SELECT COUNT(*) FROM pages) AS page_count,
+  COUNT(*) AS capture_count,
+  COALESCE(SUM(html_compressed_size_bytes), 0)::bigint AS html_compressed_bytes,
+  COALESCE(SUM(html_uncompressed_size_bytes), 0)::bigint AS html_uncompressed_bytes,
+  COALESCE(SUM(favicon_size_bytes), 0)::bigint AS favicon_bytes,
+  COALESCE(SUM(thumbnail_size_bytes), 0)::bigint AS screenshot_bytes
+FROM captures;
+
+-- name: GetTopUsersByStorage :many
+-- The 5 heaviest users by total storage, for the same admin-only section
+-- as GetSystemStats above. A coarser two-way breakdown than
+-- GetUserStats'/GetSystemStats' three-way one (compressed HTML vs.
+-- favicons-and-screenshots combined into one figure).
+--
+-- Inner joins throughout (not LEFT JOIN): a user with zero
+-- pages/captures isn't a "top consumer" by definition, so excluding them
+-- entirely is correct here, not a bug -- unlike GetUserStats, which
+-- needs to represent "zero" for a single specific user rather than omit
+-- rows from a ranking.
+SELECT
+  users.username,
+  COUNT(captures.id) AS capture_count,
+  COALESCE(SUM(captures.html_compressed_size_bytes), 0)::bigint AS html_compressed_bytes,
+  COALESCE(SUM(
+    COALESCE(captures.favicon_size_bytes, 0) + COALESCE(captures.thumbnail_size_bytes, 0)
+  ), 0)::bigint AS other_bytes
+FROM users
+JOIN pages ON pages.user_id = users.id
+JOIN captures ON captures.page_id = pages.id
+GROUP BY users.id, users.username
+ORDER BY
+  COALESCE(SUM(captures.html_compressed_size_bytes), 0)
+    + COALESCE(SUM(COALESCE(captures.favicon_size_bytes, 0) + COALESCE(captures.thumbnail_size_bytes, 0)), 0)
+  DESC
+LIMIT 5;

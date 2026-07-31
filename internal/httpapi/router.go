@@ -48,12 +48,10 @@
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
 // /api/collections, page<->collection membership under
 // /api/pages/{id}/collections, and bidirectional page<->page links under
-// /api/pages/{id}/links[/{linkPageId}]).
-// Routed via chi, with auth.RequireSession used as ordinary chi
-// middleware (no httpapi-specific auth plumbing of its own). RequireAdmin
-// exists in internal/auth but isn't used here -- there's currently no
-// dashboard capability that operates on another user's data at all,
-// mirroring how user creation itself is CLI-only, not a dashboard feature.
+// /api/pages/{id}/links[/{linkPageId}]), and one admin-only route
+// (GET /api/admin/stats -- instance-wide archive stats plus the 5
+// heaviest users by storage. Routed via chi, with auth.RequireSession used as
+// ordinary chi middleware (no httpapi-specific auth plumbing of its own).
 //
 // This package holds request validation and wiring only; the actual work
 // happens in internal/auth (passwords, sessions, the bootstrap holder),
@@ -185,6 +183,11 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pages/{id}/collections/{collectionId}", s.RemovePageFromCollection)
 			r.Post("/pages/{id}/links", s.AddPageLink)
 			r.Delete("/pages/{id}/links/{linkPageId}", s.RemovePageLink)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(q))
+			r.Get("/admin/stats", s.GetAdminStats)
 		})
 	})
 
