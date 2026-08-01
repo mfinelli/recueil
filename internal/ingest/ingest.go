@@ -48,7 +48,7 @@ import (
 )
 
 // defaultBatchLimit bounds how many captures a single RunOnce call
-// processes -- matches the Worker's own GET /internal/pending-captures
+// processes -- matches the Worker's POST /internal/pending-captures
 // default limit (terraform/worker/index.js), so a single poll cycle's work is
 // naturally bounded without RunOnce needing its own separate cap.
 const defaultBatchLimit = 50
@@ -69,7 +69,7 @@ type r2Client interface {
 }
 
 type workerClient interface {
-	ListPendingCaptures(ctx context.Context, limit int) ([]PendingCapture, error)
+	ClaimPendingCaptures(ctx context.Context, limit int) ([]PendingCapture, error)
 	MarkFetched(ctx context.Context, captureID string) error
 }
 
@@ -123,9 +123,12 @@ func New(p Params) *Ingester {
 // succeeds). RunOnce only returns an error when it can't even get a batch to
 // work on.
 func (ing *Ingester) RunOnce(ctx context.Context) error {
-	pending, err := ing.worker.ListPendingCaptures(ctx, defaultBatchLimit)
+	// Claims the batch, rather than merely reading it: this is what stops
+	// a second agent process from picking up the same rows and silently
+	// writing duplicate captures. See WorkerClient.ClaimPendingCaptures.
+	pending, err := ing.worker.ClaimPendingCaptures(ctx, defaultBatchLimit)
 	if err != nil {
-		return fmt.Errorf("ingest: listing pending captures: %w", err)
+		return fmt.Errorf("ingest: claiming pending captures: %w", err)
 	}
 
 	for _, pc := range pending {

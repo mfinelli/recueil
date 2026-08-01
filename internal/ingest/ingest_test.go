@@ -89,7 +89,7 @@ type fakeWorker struct {
 	failMarkFetchedTimes int
 }
 
-func (f *fakeWorker) ListPendingCaptures(_ context.Context, limit int) ([]ingest.PendingCapture, error) {
+func (f *fakeWorker) ClaimPendingCaptures(_ context.Context, limit int) ([]ingest.PendingCapture, error) {
 	if limit < len(f.pending) {
 		return f.pending[:limit], nil
 	}

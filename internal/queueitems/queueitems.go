@@ -181,6 +181,44 @@ func (c *Client) Retry(ctx context.Context, userID int64, itemID string) error {
 	return nil
 }
 
+// Cleanup sweeps queue_items rows in a terminal, successful state
+// ('captured') that finished long enough ago to be of no further use, and
+// returns how many were deleted.
+//
+// Deployment-wide and unscoped, unlike every other method on this client:
+// List and Retry act on behalf of one signed-in user and take a userID for
+// that reason, but this is the backend's own maintenance sweep across the
+// whole instance, called from `recueil agent` rather than an HTTP handler.
+// 'failed' items are deliberately never swept -- they're the durable
+// "needs attention" state the dashboard's Queue screen lists against.
+func (c *Client) Cleanup(ctx context.Context) (int, error) {
+	reqURL := c.baseURL + "/internal/queue-items/cleanup"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, http.NoBody)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("queueitems: cleaning up queue items: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("queueitems: cleaning up queue items: status %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return 0, fmt.Errorf("queueitems: decoding cleanup response: %w", err)
+	}
+	return parsed.Deleted, nil
+}
+
 // enqueuePayload mirrors terraform/worker/index.js's handleServiceEnqueue
 // request shape -- id/user_id/url, same three fields the device-facing
 // POST /queue takes (see handleEnqueue), just without a specific device

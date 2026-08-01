@@ -551,21 +551,44 @@ on the next tick once `server` catches up — the same graceful-degradation shap
 `RunOnce`/`SyncOnce` already have for a single failed item, just one level up,
 at the whole-cycle granularity.
 
-**One shared ticker, both jobs run sequentially per tick** — `Ingester.RunOnce`
-then `Syncer.SyncOnce`, both on the same interval
-(`agent_poll_interval_seconds`, default 120), not two independently-scheduled
-loops. The simplest thing that works; splitting them onto separate cadences is a
-natural, easy follow-up if one ever genuinely needs to run more or less often
-than the other, not a constraint this design paints itself into. A cycle runs
-synchronously within the same `select` loop iteration that reads the ticker
-channel, not spawned into its own goroutine per tick — `time.Ticker`'s channel
-buffers exactly one pending tick, so a cycle that runs longer than the interval
-simply means some ticks are silently dropped rather than a backlog of queued
-cycles building up; the next cycle starts as soon as the current one finishes
-and at least one tick has fired since, not once per missed interval. Either job
-failing is logged, not propagated as the agent process's own failure — the same
-"log and continue" philosophy `RunOnce`/`SyncOnce` already apply at their own
-per-item/per-batch level, one layer further up.
+**Two tickers, split by destination, each running its jobs sequentially per
+tick** — corrected from an earlier revision of this section, which described a
+single shared `agent_poll_interval_seconds` (default 120) and predates the split
+actually landing. What's built: `agent_worker_poll_interval_seconds`
+(default 1800) drives everything that talks to the Cloudflare Worker
+(`Ingester.RunOnce`, then `Syncer.SyncOnce`, then — see below — the D1
+maintenance sweeps), and `agent_local_poll_interval_seconds` (default 300)
+drives everything that only touches this process's own Postgres (the screenshot,
+readability and AI jobs). The split is by _destination_, not by job: that's what
+lets the Worker-facing side stay comfortably inside Cloudflare's free tier while
+local work still picks up quickly. §6's "Two independent agent schedules" note
+covers the same decision from the screenshot job's side.
+
+**The D1 maintenance sweeps ride the worker ticker behind an elapsed-time
+check**, rather than getting a third ticker. `queue_items` and
+`pending_captures` both accumulate terminal rows that need sweeping (§8), but
+against a 72-hour retention window there's nothing to gain from checking every
+half hour, so a `workerCycle.lastCleanup` field gates them to roughly every 12
+hours. Two reasons this isn't its own ticker: the existing split is by
+destination and these sweeps are Worker-facing, so a per-job ticker would
+quietly redefine the taxonomy as "one ticker per job"; and a 12-hour
+`time.Ticker` restarts from zero on every process start, so an agent redeployed
+or restarted more often than that would sweep **never**. The elapsed check has
+the opposite failure — it sweeps shortly after each restart — which costs two
+idempotent `DELETE`s against a handful of indexed rows. Cleanup runs last in the
+cycle and its failures are logged, never allowed to delay the work something
+actually waits on.
+
+A cycle runs synchronously within the same `select` loop iteration that reads
+the ticker channel, not spawned into its own goroutine per tick —
+`time.Ticker`'s channel buffers exactly one pending tick, so a cycle that runs
+longer than the interval simply means some ticks are silently dropped rather
+than a backlog of queued cycles building up; the next cycle starts as soon as
+the current one finishes and at least one tick has fired since, not once per
+missed interval. Either job failing is logged, not propagated as the agent
+process's own failure — the same "log and continue" philosophy
+`RunOnce`/`SyncOnce` already apply at their own per-item/per-batch level, one
+layer further up.
 
 ---
 
@@ -1931,14 +1954,14 @@ chromedp itself.
   fully-inlined SingleFile capture without changing anything else about the
   design.
 - **Two independent agent schedules, not one shared ticker.** `cmd/agent.go` now
-  runs `AgentWorkerPollIntervalSeconds` (default 300s) for everything that talks
-  to the Cloudflare Worker (ingestion, the D1 mirror sync) and
-  `AgentLocalPollIntervalSeconds` (default 30s) for everything that only touches
-  this process's own Postgres (the screenshot job today; readability and AI
-  enrichment will join it on the same schedule). This is what makes "runs
-  comfortably on Cloudflare's free tier" and "picks up new captures quickly"
-  both true at once, rather than trading one off against the other on a single
-  shared interval — see §15.
+  runs `AgentWorkerPollIntervalSeconds` (default 1800s) for everything that
+  talks to the Cloudflare Worker (ingestion, the D1 mirror sync, and the D1
+  maintenance sweeps — see §3e) and `AgentLocalPollIntervalSeconds` (default
+  300s) for everything that only touches this process's own Postgres (the
+  screenshot job today; readability and AI enrichment will join it on the same
+  schedule). This is what makes "runs comfortably on Cloudflare's free tier" and
+  "picks up new captures quickly" both true at once, rather than trading one off
+  against the other on a single shared interval — see §15.
 - **`thumbnail_size_bytes`/`favicon_size_bytes`.** Two new nullable columns on
   `captures`, mirroring `html_compressed_size_bytes`'s own "so the dashboard can
   surface real numbers" reasoning for the two other on-disk assets a capture can
@@ -2388,6 +2411,65 @@ not anticipated in the original design:
   completing is seconds to minutes, not enough to matter for a 72-hour window.
   If a future phase's `complete`/`fail` endpoint adds a dedicated completion
   timestamp, this is a one-line filter change, not a design change.
+
+### Pending-capture claiming and cleanup
+
+`pending_captures` is the queue's downstream sibling — a device has finished
+capturing, and the row exists until the backend pulls the blobs from R2 and
+commits. Two things it lacked, both added together:
+
+- **Backend pickup is an atomic claim, not a plain read.**
+  `POST /internal/pending-captures` (a `POST`, not the original `GET`, because
+  it now mutates) claims a batch and returns it in one `UPDATE ... RETURNING`,
+  the same shape `POST /queue/:id/claim` already uses. SQLite has no
+  `FOR UPDATE SKIP LOCKED`, but D1 serializes writes, so the single statement is
+  atomic on its own.
+
+  **The bug this fixes is a silent duplicate capture, not merely wasted work.**
+  Two agent processes polling at roughly the same time both ingest the same row;
+  the second one's insert should be caught by `captures`'
+  `ON CONFLICT (source_capture_id)` guard, but isn't — because the last thing
+  ingestion does is clear `source_capture_id` back to `NULL` (§3c), and Postgres
+  treats `NULL`s as distinct in a unique index. So once the first agent
+  finishes, there is nothing left for the second to conflict with, and it
+  inserts a duplicate capture row. Nothing downstream catches it either: the two
+  agents mint their own separate archive directories, so `captures.html_path`'s
+  `UNIQUE` constraint doesn't fire, and the `pages` upsert simply attaches both
+  to the same page.
+
+  Deliberately **not** fixed by keeping `source_capture_id` populated forever,
+  which would also have worked: that value is client-generated, and making a
+  permanent dedup guarantee depend on it is precisely what §3c's collision retry
+  loop exists because we can't do. One worker per job is the fix; a stronger
+  idempotency key downstream is not.
+
+  **A one-hour stale-claim window, not the 15 minutes used everywhere else** — a
+  deliberate departure, for a real asymmetry. A stuck `queue_item` has a human
+  waiting to capture something, so reclaiming quickly is worth the risk of two
+  devices racing. Nothing at all waits on a pending capture; the backend polls
+  on its own schedule regardless. The only cost of a long window is that a
+  genuinely dead agent's work waits longer to be retried, while the cost of a
+  short one is real — an ingestion still running when its claim expires lets a
+  second agent in, which is the exact duplicate this exists to prevent.
+
+  **No claimant column**, unlike `queue_items.claimed_by_token_id`: devices race
+  each other and it's worth knowing which won, but every agent presents the same
+  service secret and has no per-instance identity. `claimed_at` alone is all the
+  stale-reclaim needs.
+
+- **`POST /internal/pending-captures/cleanup`**, mirroring the queue-item sweep
+  above, including its 72-hour retention window. Nothing had ever deleted a
+  `pending_captures` row, so the table grew forever. **Only successfully
+  ingested rows (`fetched_by_backend = 1`) are swept**; a row still at `0` is
+  either waiting for pickup or failing ingestion repeatedly, and this table has
+  no status column that could tell those apart, so both are kept indefinitely
+  rather than risk discarding the only record of a capture that never landed.
+  Surfacing and retrying persistently-failing rows needs an `attempts`/`error`
+  column and something equivalent to `POST /queue/:id/fail` — deferred, not
+  forgotten. The retention clock is `claimed_at`, for the same reasoning the
+  queue-item sweep documents; unlike there, though, it isn't merely a reasonable
+  proxy — `fetched_by_backend = 1` is only reachable by an agent that claimed
+  the row first, so it's guaranteed non-`NULL` on exactly the rows this deletes.
 
 ### Bookmark-list mirror (backend → D1 → the browser's own native bookmarks)
 
@@ -3120,6 +3202,16 @@ CREATE TABLE pending_captures (
                                       -- (§3g), not a separate mime column
   captured_at TIMESTAMP NOT NULL,
   fetched_by_backend BOOLEAN NOT NULL DEFAULT FALSE,
+  claimed_at TIMESTAMP,              -- backend pickup is an atomic claim,
+                                      -- not a plain read (§8) -- without it
+                                      -- two agent processes both ingest the
+                                      -- same row and the second silently
+                                      -- writes a duplicate capture. No
+                                      -- claimant column, unlike
+                                      -- queue_items.claimed_by_token_id:
+                                      -- every agent presents the same
+                                      -- service secret and has no
+                                      -- per-instance identity
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -4198,3 +4290,26 @@ load-bearing for more than deletion:
   but before the first deletion, so the refusal is always clean rather than a
   partial sweep. A dry run reports that the real run would refuse rather than
   silently proceeding, which would be actively misleading.
+
+### Pending-capture claiming, and wiring up the D1 maintenance sweeps
+
+**Resolved this round.** Raised while reviewing the per-capture-storage change's
+own crash-retry behaviour, and turned out to be a latent correctness bug
+predating it: `pending_captures` had no claim, so two `agent` processes polling
+at roughly the same time both ingest the same row, and the second silently
+writes a **duplicate capture**. §8's own section covers the mechanism in full;
+the short version is that `captures`' `ON CONFLICT (source_capture_id)` guard
+stops protecting the moment the first agent finishes, because ingestion's last
+step clears that column to `NULL` and Postgres treats `NULL`s as distinct in a
+unique index.
+
+Worth being explicit that this is **not** a consequence of moving off
+content-addressed storage. Under the previous layout the same duplicate row
+would have been inserted; it would simply have pointed at the same file rather
+than a second copy of it.
+
+The fix is a claim (`POST /internal/pending-captures`, one-hour stale window),
+rather than the available alternative of never clearing `source_capture_id` —
+which would also have closed this hole, but only by making a durable dedup
+guarantee depend on a client-generated value, which is exactly what §3c's
+collision-retry loop exists because we can't do.

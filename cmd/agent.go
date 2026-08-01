@@ -38,6 +38,7 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/ingest"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/r2"
 	"github.com/mfinelli/recueil/internal/readability"
 	"github.com/mfinelli/recueil/internal/screenshot"
@@ -208,10 +209,18 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	log.Printf("recueil agent started, worker poll interval: %s, local poll interval: %s",
 		workerInterval, localInterval)
 
+	worker := &workerCycle{
+		ingester:   ingester,
+		syncer:     syncer,
+		worker:     workerClient,
+		queueItems: queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret),
+		logger:     logger.Logger,
+	}
+
 	// Run one cycle of each immediately on startup, rather than waiting
 	// for their first tick -- otherwise a freshly-deployed agent sits
 	// idle for a full interval before doing anything.
-	runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
+	worker.run(cmd.Context())
 	runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 
 	workerTicker := time.NewTicker(workerInterval)
@@ -234,7 +243,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			// tickers are independent of *each other*, though: a slow
 			// worker cycle doesn't delay the local ticker's own firing,
 			// since each is just another case in the same select.
-			runWorkerCycle(cmd.Context(), ingester, syncer, logger.Logger)
+			worker.run(cmd.Context())
 		case <-localTicker.C:
 			runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 		case <-cmd.Context().Done():
@@ -244,20 +253,82 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 }
 
-// runWorkerCycle runs one ingestion pass and one mirror-sync pass --
-// everything that talks to the Cloudflare Worker (and, through it, D1),
-// which is why it's on the slower, Worker-free-tier-friendly schedule
-// (AgentWorkerPollIntervalSeconds). Errors from either are logged, not
-// returned/propagated: a failed cycle shouldn't crash the agent process,
-// it should just try again next tick -- the same "log and continue"
-// philosophy RunOnce/SyncOnce already apply at the per-item level, just
-// one level up.
-func runWorkerCycle(ctx context.Context, ingester *ingest.Ingester, syncer *mirror.Syncer, logger *slog.Logger) {
-	if err := ingester.RunOnce(ctx); err != nil {
-		logger.ErrorContext(ctx, "agent: ingestion cycle failed", "error", err)
+// cleanupInterval is how often the worker cycle also sweeps D1's own
+// terminal rows (ingested pending_captures, captured queue_items). Far
+// less often than the cycle itself runs, since both sweep against a
+// 72-hour retention window and there is nothing to gain from checking
+// every half hour.
+//
+// A plain elapsed-time check on the existing worker ticker rather than a
+// third ticker of its own, for two reasons. The agent's tickers are split
+// by *destination* -- Worker-facing work versus Postgres-only work -- and
+// these sweeps are Worker-facing, so they belong on this cycle by that
+// same taxonomy; a per-job ticker would quietly redefine the split as
+// "one ticker per job." And a 12-hour time.Ticker restarts from zero on
+// every process start, so an agent redeployed or restarted more often
+// than that would sweep *never*. This check has the opposite failure --
+// it sweeps shortly after each restart -- which costs two idempotent
+// DELETEs against a handful of indexed rows.
+const cleanupInterval = 12 * time.Hour
+
+// workerCycle runs one ingestion pass, one mirror-sync pass, and
+// (occasionally) D1's maintenance sweeps -- everything that talks to the
+// Cloudflare Worker (and, through it, D1), which is why it's on the
+// slower, Worker-free-tier-friendly schedule
+// (AgentWorkerPollIntervalSeconds).
+//
+// A struct rather than a free function like runLocalCycle purely because
+// this one carries state between cycles (lastCleanup); the local cycle has
+// nothing to remember. Not safe for concurrent use, which is fine and
+// deliberate: it's only ever called from the agent's single select loop,
+// synchronously, so successive cycles can never overlap.
+type workerCycle struct {
+	ingester   *ingest.Ingester
+	syncer     *mirror.Syncer
+	worker     *ingest.WorkerClient
+	queueItems *queueitems.Client
+	logger     *slog.Logger
+
+	// lastCleanup is the zero Time until the first sweep, which is what
+	// makes a freshly-started agent sweep on its very first cycle.
+	lastCleanup time.Time
+}
+
+// run performs one cycle. Errors from any step are logged, not
+// returned/propagated: a failed cycle shouldn't crash the agent process, it
+// should just try again next tick -- the same "log and continue" philosophy
+// RunOnce/SyncOnce already apply at the per-item level, just one level up.
+func (w *workerCycle) run(ctx context.Context) {
+	if err := w.ingester.RunOnce(ctx); err != nil {
+		w.logger.ErrorContext(ctx, "agent: ingestion cycle failed", "error", err)
 	}
-	if err := syncer.SyncOnce(ctx); err != nil {
-		logger.ErrorContext(ctx, "agent: mirror sync cycle failed", "error", err)
+	if err := w.syncer.SyncOnce(ctx); err != nil {
+		w.logger.ErrorContext(ctx, "agent: mirror sync cycle failed", "error", err)
+	}
+
+	// Last, and only sometimes: pure maintenance, so a failure here
+	// mustn't delay the work anything actually waits on.
+	if now := time.Now(); now.Sub(w.lastCleanup) >= cleanupInterval {
+		w.lastCleanup = now
+		w.runCleanup(ctx)
+	}
+}
+
+// runCleanup sweeps both D1 tables that accumulate terminal rows. Each is
+// independent -- one failing doesn't skip the other, since there's no
+// ordering between them and no reason a Worker error on one implies
+// anything about the other.
+func (w *workerCycle) runCleanup(ctx context.Context) {
+	if deleted, err := w.worker.CleanupPendingCaptures(ctx); err != nil {
+		w.logger.ErrorContext(ctx, "agent: pending-captures cleanup failed", "error", err)
+	} else if deleted > 0 {
+		w.logger.InfoContext(ctx, "agent: swept ingested pending captures", "deleted", deleted)
+	}
+
+	if deleted, err := w.queueItems.Cleanup(ctx); err != nil {
+		w.logger.ErrorContext(ctx, "agent: queue-items cleanup failed", "error", err)
+	} else if deleted > 0 {
+		w.logger.InfoContext(ctx, "agent: swept captured queue items", "deleted", deleted)
 	}
 }
 

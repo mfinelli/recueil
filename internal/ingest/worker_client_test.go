@@ -31,7 +31,7 @@ import (
 	"github.com/mfinelli/recueil/internal/ingest"
 )
 
-func TestWorkerClient_ListPendingCaptures(t *testing.T) {
+func TestWorkerClient_ClaimPendingCaptures(t *testing.T) {
 	t.Run("parses the response and sends the expected request", func(t *testing.T) {
 		var gotMethod, gotPath, gotQuery, gotServiceKey string
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,10 +57,10 @@ func TestWorkerClient_ListPendingCaptures(t *testing.T) {
 		defer server.Close()
 
 		client := ingest.NewWorkerClient(server.URL, "test-secret")
-		captures, err := client.ListPendingCaptures(context.Background(), 50)
+		captures, err := client.ClaimPendingCaptures(context.Background(), 50)
 		require.NoError(t, err)
 
-		assert.Equal(t, http.MethodGet, gotMethod)
+		assert.Equal(t, http.MethodPost, gotMethod)
 		assert.Equal(t, "/internal/pending-captures", gotPath)
 		assert.Equal(t, "limit=50", gotQuery)
 		assert.Equal(t, "test-secret", gotServiceKey)
@@ -90,7 +90,7 @@ func TestWorkerClient_ListPendingCaptures(t *testing.T) {
 		defer server.Close()
 
 		client := ingest.NewWorkerClient(server.URL, "test-secret")
-		captures, err := client.ListPendingCaptures(context.Background(), 50)
+		captures, err := client.ClaimPendingCaptures(context.Background(), 50)
 		require.NoError(t, err)
 		require.Len(t, captures, 1)
 		assert.Nil(t, captures[0].QueueItemID)
@@ -103,7 +103,7 @@ func TestWorkerClient_ListPendingCaptures(t *testing.T) {
 		defer server.Close()
 
 		client := ingest.NewWorkerClient(server.URL, "wrong-secret")
-		_, err := client.ListPendingCaptures(context.Background(), 50)
+		_, err := client.ClaimPendingCaptures(context.Background(), 50)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "401")
 	})

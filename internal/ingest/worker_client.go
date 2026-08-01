@@ -60,8 +60,8 @@ func NewWorkerClient(baseURL, serviceSecret string) *WorkerClient {
 }
 
 // PendingCapture mirrors the shape returned by
-// GET /internal/pending-captures -- see terraform/worker/index.js's
-// handleListPendingCaptures. QueueItemID is nil for a direct capture.
+// POST /internal/pending-captures -- see terraform/worker/index.js's
+// handleClaimPendingCaptures. QueueItemID is nil for a direct capture.
 // R2KeyFavicon is nil whenever the extension didn't find (or upload) a
 // favicon for this capture -- always optional, never a reason ingestion
 // itself fails (see Ingester.captureFavicon).
@@ -73,18 +73,27 @@ type PendingCapture struct {
 	R2KeyHTML    string  `json:"r2_key_html"`
 	R2KeyFavicon *string `json:"r2_key_favicon"`
 	CapturedAt   string  `json:"captured_at"`
+	ClaimedAt    string  `json:"claimed_at"`
 	CreatedAt    string  `json:"created_at"`
 }
 
-type listPendingCapturesResponse struct {
+type claimPendingCapturesResponse struct {
 	PendingCaptures []PendingCapture `json:"pending_captures"`
 }
 
-// ListPendingCaptures lists captures the backend hasn't yet pulled from R2,
-// oldest first, bounded by limit.
-func (c *WorkerClient) ListPendingCaptures(ctx context.Context, limit int) ([]PendingCapture, error) {
+// ClaimPendingCaptures atomically claims up to limit captures the backend
+// hasn't yet pulled from R2, oldest first, and returns them.
+//
+// A claim, not a plain list, and therefore a POST: two agent processes
+// polling at roughly the same time would otherwise both ingest the same row,
+// and the second would silently write a duplicate capture. The downstream
+// source_capture_id guard does not prevent that, because ingestion clears
+// that column to NULL as its final step and Postgres treats NULLs as
+// distinct in a unique index -- so by the time a slower agent inserts, there
+// is nothing left to conflict with.
+func (c *WorkerClient) ClaimPendingCaptures(ctx context.Context, limit int) ([]PendingCapture, error) {
 	url := c.baseURL + "/internal/pending-captures?limit=" + strconv.Itoa(limit)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: building pending-captures request: %w", err)
 	}
@@ -93,15 +102,15 @@ func (c *WorkerClient) ListPendingCaptures(ctx context.Context, limit int) ([]Pe
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("ingest: listing pending captures: %w", err)
+		return nil, fmt.Errorf("ingest: claiming pending captures: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("ingest: listing pending captures: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("ingest: claiming pending captures: status %d", resp.StatusCode)
 	}
 
-	var parsed listPendingCapturesResponse
+	var parsed claimPendingCapturesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
 		return nil, fmt.Errorf("ingest: decoding pending-captures response: %w", err)
 	}
@@ -130,4 +139,41 @@ func (c *WorkerClient) MarkFetched(ctx context.Context, captureID string) error 
 		return fmt.Errorf("ingest: marking capture %q fetched: status %d", captureID, resp.StatusCode)
 	}
 	return nil
+}
+
+// CleanupPendingCaptures sweeps pending_captures rows the backend finished
+// ingesting long enough ago that nothing will look at them again, and
+// returns how many were deleted. Deployment-wide, not per-user: this is
+// maintenance, not an operation on behalf of any particular device.
+//
+// Only successfully-ingested rows are ever removed -- a row the backend has
+// not managed to ingest is kept indefinitely, whether it is merely waiting
+// or failing repeatedly (this table has no status column that could tell
+// those apart). See the Worker's handleCleanupPendingCaptures.
+func (c *WorkerClient) CleanupPendingCaptures(ctx context.Context) (int, error) {
+	url := c.baseURL + "/internal/pending-captures/cleanup"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
+	if err != nil {
+		return 0, fmt.Errorf("ingest: building pending-captures cleanup request: %w", err)
+	}
+	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("ingest: cleaning up pending captures: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("ingest: cleaning up pending captures: status %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return 0, fmt.Errorf("ingest: decoding pending-captures cleanup response: %w", err)
+	}
+	return parsed.Deleted, nil
 }

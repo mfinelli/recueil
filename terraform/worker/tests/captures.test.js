@@ -23,7 +23,8 @@ import {
   handleCompleteQueueItem,
   handleFailQueueItem,
   handleGetUploadUrls,
-  handleListPendingCaptures,
+  handleClaimPendingCaptures,
+  handleCleanupPendingCaptures,
   handleMarkPendingCaptureFetched,
 } from "../index.js";
 import { sha256Hex } from "./test-helpers.js";
@@ -75,12 +76,30 @@ async function seedPendingCapture(
     r2KeyHtml,
     r2KeyFavicon = null,
     fetchedByBackend = 0,
+    // A raw SQLite datetime modifier (e.g. "-90 minutes") applied to
+    // CURRENT_TIMESTAMP, or null to leave the row unclaimed. Expressed as a
+    // relative offset rather than an absolute timestamp so the claim and
+    // retention windows are exercised against the same "now" the handlers
+    // themselves use, instead of a fixed date that quietly ages out of the
+    // window as time passes.
+    claimedAgo = null,
   } = {},
 ) {
+  // Explicitly numbered placeholders, not bare "?": claimedAgo is
+  // referenced twice, and mixing numbered with unnumbered makes SQLite
+  // assign the bare ones sequentially, so a bare-?/?2 mix would silently
+  // resolve ?2 to user_id.
+  //
+  // The offset is applied by SQLite's own datetime() rather than computed
+  // in JS, because CURRENT_TIMESTAMP writes "YYYY-MM-DD HH:MM:SS" and both
+  // the claim and retention windows compare claimed_at lexically against
+  // datetime('now', ...). A JS ISO-8601 string would carry a "T" and a "Z"
+  // and sort wrongly against that format.
   await env.DB.prepare(
     `INSERT INTO pending_captures
-       (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at, fetched_by_backend)
-     VALUES (?, ?, ?, ?, ?, ?, '2026-07-12T12:00:00.000Z', ?)`,
+       (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at, fetched_by_backend, claimed_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, '2026-07-12T12:00:00.000Z', ?7,
+             CASE WHEN ?8 IS NULL THEN NULL ELSE datetime('now', ?8) END)`,
   )
     .bind(
       id,
@@ -90,6 +109,7 @@ async function seedPendingCapture(
       r2KeyHtml ?? `pending/${userId}/${id}/page.html`,
       r2KeyFavicon,
       fetchedByBackend,
+      claimedAgo,
     )
     .run();
 }
@@ -969,7 +989,7 @@ describe("handleFailQueueItem", () => {
   });
 });
 
-describe("handleListPendingCaptures", () => {
+describe("handleClaimPendingCaptures", () => {
   it("includes r2_key_favicon (null when absent, the real key when present)", async () => {
     const userId = await seedUser();
     await seedPendingCapture("list-favicon-none", userId, {});
@@ -977,8 +997,8 @@ describe("handleListPendingCaptures", () => {
       r2KeyFavicon: `pending/${userId}/list-favicon-some/favicon.png`,
     });
 
-    const response = await handleListPendingCaptures(
-      serviceRequest("GET", "/internal/pending-captures"),
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
       env,
     );
     const body = await response.json();
@@ -998,8 +1018,8 @@ describe("handleListPendingCaptures", () => {
     await seedPendingCapture("list-b", userId, {});
     await seedPendingCapture("list-a", userId, {});
 
-    const response = await handleListPendingCaptures(
-      serviceRequest("GET", "/internal/pending-captures"),
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
       env,
     );
     expect(response.status).toBe(200);
@@ -1014,8 +1034,8 @@ describe("handleListPendingCaptures", () => {
     await seedPendingCapture("list-fetched", userId, { fetchedByBackend: 1 });
     await seedPendingCapture("list-unfetched", userId, {});
 
-    const response = await handleListPendingCaptures(
-      serviceRequest("GET", "/internal/pending-captures"),
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
       env,
     );
     const body = await response.json();
@@ -1030,8 +1050,8 @@ describe("handleListPendingCaptures", () => {
     await seedPendingCapture("list-multi-a", userA, {});
     await seedPendingCapture("list-multi-b", userB, {});
 
-    const response = await handleListPendingCaptures(
-      serviceRequest("GET", "/internal/pending-captures"),
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
       env,
     );
     const body = await response.json();
@@ -1046,8 +1066,8 @@ describe("handleListPendingCaptures", () => {
     await seedPendingCapture("list-limit-b", userId, {});
     await seedPendingCapture("list-limit-c", userId, {});
 
-    const response = await handleListPendingCaptures(
-      serviceRequest("GET", "/internal/pending-captures?limit=2"),
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures?limit=2"),
       env,
     );
     expect(response.status).toBe(200);
@@ -1058,8 +1078,8 @@ describe("handleListPendingCaptures", () => {
   it.each([["0"], ["-1"], ["not-a-number"], ["201"]])(
     "rejects an invalid limit: %s",
     async (limit) => {
-      const response = await handleListPendingCaptures(
-        serviceRequest("GET", `/internal/pending-captures?limit=${limit}`),
+      const response = await handleClaimPendingCaptures(
+        serviceRequest("POST", `/internal/pending-captures?limit=${limit}`),
         env,
       );
       expect(response.status).toBe(400);
@@ -1067,7 +1087,7 @@ describe("handleListPendingCaptures", () => {
   );
 
   it("requires the service key", async () => {
-    const response = await handleListPendingCaptures(
+    const response = await handleClaimPendingCaptures(
       new Request("https://example.com/internal/pending-captures"),
       env,
     );
@@ -1075,8 +1095,182 @@ describe("handleListPendingCaptures", () => {
   });
 
   it("rejects the wrong service key", async () => {
-    const response = await handleListPendingCaptures(
+    const response = await handleClaimPendingCaptures(
       new Request("https://example.com/internal/pending-captures", {
+        headers: { "X-Service-Key": "wrong" },
+      }),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+});
+
+describe("handleClaimPendingCaptures (claim semantics)", () => {
+  it("stamps claimed_at on every row it returns", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("claim-stamps", userId, {});
+
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
+      env,
+    );
+    const body = await response.json();
+    const claimed = body.pending_captures.find((c) => c.id === "claim-stamps");
+    expect(claimed.claimed_at).toBeTruthy();
+
+    const row = await env.DB.prepare(
+      "SELECT claimed_at FROM pending_captures WHERE id = ?",
+    )
+      .bind("claim-stamps")
+      .first();
+    expect(row.claimed_at).toBe(claimed.claimed_at);
+  });
+
+  // The actual point of the whole mechanism: a second agent polling right
+  // behind the first must not be handed the same row, because ingesting it
+  // twice writes a duplicate capture that nothing downstream catches.
+  it("does not hand the same row to a second caller", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("claim-once", userId, {});
+
+    const first = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
+      env,
+    );
+    const firstIds = (await first.json()).pending_captures.map((c) => c.id);
+    expect(firstIds).toContain("claim-once");
+
+    const second = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
+      env,
+    );
+    const secondIds = (await second.json()).pending_captures.map((c) => c.id);
+    expect(secondIds).not.toContain("claim-once");
+  });
+
+  it("leaves a recently-claimed row alone", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("claim-recent", userId, {
+      claimedAgo: "-5 minutes",
+    });
+
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
+      env,
+    );
+    const ids = (await response.json()).pending_captures.map((c) => c.id);
+    expect(ids).not.toContain("claim-recent");
+  });
+
+  // Otherwise an agent that died mid-ingestion would strand its rows
+  // forever.
+  it("reclaims a row whose claim has gone stale", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("claim-stale", userId, {
+      claimedAgo: "-90 minutes",
+    });
+
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
+      env,
+    );
+    const ids = (await response.json()).pending_captures.map((c) => c.id);
+    expect(ids).toContain("claim-stale");
+  });
+
+  it("never reclaims a stale-looking row that was already ingested", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("claim-stale-done", userId, {
+      fetchedByBackend: 1,
+      claimedAgo: "-90 minutes",
+    });
+
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
+      env,
+    );
+    const ids = (await response.json()).pending_captures.map((c) => c.id);
+    expect(ids).not.toContain("claim-stale-done");
+  });
+});
+
+describe("handleCleanupPendingCaptures", () => {
+  it("deletes ingested rows past the retention window", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("cleanup-old-done", userId, {
+      fetchedByBackend: 1,
+      claimedAgo: "-100 hours",
+    });
+
+    const response = await handleCleanupPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures/cleanup"),
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect((await response.json()).deleted).toBeGreaterThanOrEqual(1);
+
+    const row = await env.DB.prepare(
+      "SELECT id FROM pending_captures WHERE id = ?",
+    )
+      .bind("cleanup-old-done")
+      .first();
+    expect(row).toBeNull();
+  });
+
+  it("keeps ingested rows still inside the retention window", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("cleanup-recent-done", userId, {
+      fetchedByBackend: 1,
+      claimedAgo: "-1 hours",
+    });
+
+    await handleCleanupPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures/cleanup"),
+      env,
+    );
+
+    const row = await env.DB.prepare(
+      "SELECT id FROM pending_captures WHERE id = ?",
+    )
+      .bind("cleanup-recent-done")
+      .first();
+    expect(row).not.toBeNull();
+  });
+
+  // A row the backend never managed to ingest is the only record that the
+  // capture happened at all, so age is irrelevant -- it is kept whether it
+  // is merely waiting for pickup or failing repeatedly, since this table
+  // has no status column that could tell those two apart.
+  it("never deletes an un-ingested row, however old", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("cleanup-old-pending", userId, {
+      claimedAgo: "-1000 hours",
+    });
+
+    await handleCleanupPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures/cleanup"),
+      env,
+    );
+
+    const row = await env.DB.prepare(
+      "SELECT id FROM pending_captures WHERE id = ?",
+    )
+      .bind("cleanup-old-pending")
+      .first();
+    expect(row).not.toBeNull();
+  });
+
+  it("requires the service key", async () => {
+    const response = await handleCleanupPendingCaptures(
+      new Request("https://example.com/internal/pending-captures/cleanup"),
+      env,
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects the wrong service key", async () => {
+    const response = await handleCleanupPendingCaptures(
+      new Request("https://example.com/internal/pending-captures/cleanup", {
         headers: { "X-Service-Key": "wrong" },
       }),
       env,
@@ -1108,7 +1302,7 @@ describe("handleMarkPendingCaptureFetched", () => {
     expect(row.fetched_by_backend).toBe(1);
   });
 
-  it("no longer appears in handleListPendingCaptures once marked fetched", async () => {
+  it("no longer appears in handleClaimPendingCaptures once marked fetched", async () => {
     const userId = await seedUser();
     await seedPendingCapture("mark-fetched-2", userId, {});
 
@@ -1121,8 +1315,8 @@ describe("handleMarkPendingCaptureFetched", () => {
       "mark-fetched-2",
     );
 
-    const response = await handleListPendingCaptures(
-      serviceRequest("GET", "/internal/pending-captures"),
+    const response = await handleClaimPendingCaptures(
+      serviceRequest("POST", "/internal/pending-captures"),
       env,
     );
     const body = await response.json();
