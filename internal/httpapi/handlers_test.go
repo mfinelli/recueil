@@ -1779,7 +1779,7 @@ func TestGetStats(t *testing.T) {
 
 		_, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
 			PageID: pageA.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
-			RawUrl: "https://example.com/favicon-carrier", HtmlPath: "unused.html.zst",
+			RawUrl: "https://example.com/favicon-carrier", HtmlPath: dbtest.PlaceholderHTMLPath(t),
 			HtmlCompressedSizeBytes: 0, HtmlUncompressedSizeBytes: 0, ContentHash: "unused-" + t.Name(),
 			CapturedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
 			FaviconPath: pgtype.Text{String: "fav.png", Valid: true}, FaviconSizeBytes: pgtype.Int4{Int32: 7, Valid: true},
@@ -1909,7 +1909,7 @@ func TestGetAdminStats(t *testing.T) {
 			p := dbtest.CreatePage(t, pool, u.ID, fmt.Sprintf("https://example.com/top-user-%d", i))
 			_, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
 				PageID: p.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
-				RawUrl: fmt.Sprintf("https://example.com/top-user-raw-%d", i), HtmlPath: "unused.html.zst",
+				RawUrl: fmt.Sprintf("https://example.com/top-user-raw-%d", i), HtmlPath: dbtest.PlaceholderHTMLPath(t),
 				HtmlCompressedSizeBytes: size, HtmlUncompressedSizeBytes: size * 4,
 				ContentHash: fmt.Sprintf("top-user-hash-%d-%s", i, t.Name()),
 				CapturedAt:  pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
@@ -1943,7 +1943,7 @@ func TestGetAdminStats(t *testing.T) {
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/combined-bytes")
 		capture, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
 			PageID: page.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
-			RawUrl: "https://example.com/combined-bytes-raw", HtmlPath: "unused.html.zst",
+			RawUrl: "https://example.com/combined-bytes-raw", HtmlPath: dbtest.PlaceholderHTMLPath(t),
 			HtmlCompressedSizeBytes: 100, HtmlUncompressedSizeBytes: 400,
 			ContentHash: "combined-bytes-" + t.Name(),
 			CapturedAt:  pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
@@ -4117,7 +4117,9 @@ func TestGetPageFavicon(t *testing.T) {
 		server, store := newTestServerWithStore(t, pool, unreachable)
 
 		faviconBytes := []byte("<svg>fake favicon</svg>")
-		relPath, _, err := store.WriteAsset("test-html-hash", "test-favicon-hash", "svg", faviconBytes, true)
+		relDir, err := store.NewCapture()
+		require.NoError(t, err)
+		relPath, _, err := store.WriteAsset(relDir, "favicon", "svg", faviconBytes, true)
 		require.NoError(t, err)
 
 		q := db.New(pool)
@@ -4173,7 +4175,9 @@ func TestGetPageThumbnail(t *testing.T) {
 		capture := dbtest.CreateCapture(t, pool, page.ID)
 
 		thumbnailBytes := []byte("fake png bytes")
-		relPath, _, err := store.WriteAsset("test-html-hash-2", "test-thumb-hash", "png", thumbnailBytes, false)
+		relDir, err := store.NewCapture()
+		require.NoError(t, err)
+		relPath, _, err := store.WriteAsset(relDir, "thumbnail", "png", thumbnailBytes, false)
 		require.NoError(t, err)
 
 		_, err = pool.Exec(context.Background(),

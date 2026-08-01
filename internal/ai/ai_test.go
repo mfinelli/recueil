@@ -163,7 +163,7 @@ func newDueAIJob(t *testing.T, pool *pgxpool.Pool, readerText string) (db.Captur
 		Source:                    "extension",
 		RawUrl:                    "https://example.com/test",
 		Title:                     pgtype.Text{String: "AI Test Article", Valid: true},
-		HtmlPath:                  "irrelevant/for/this/test.html.zst",
+		HtmlPath:                  dbtest.PlaceholderHTMLPath(t),
 		HtmlCompressedSizeBytes:   1,
 		HtmlUncompressedSizeBytes: 1,
 		ContentHash:               uuid.NewString(),

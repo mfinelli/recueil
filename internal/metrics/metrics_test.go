@@ -121,7 +121,7 @@ func newTestCapture(t *testing.T, pool *pgxpool.Pool, q *db.Queries) int64 {
 		SourceCaptureID:           pgtype.Text{String: uuid.NewString(), Valid: true},
 		Source:                    "extension",
 		RawUrl:                    "https://example.com/" + uuid.NewString(),
-		HtmlPath:                  "irrelevant/for/this/test.html.zst",
+		HtmlPath:                  dbtest.PlaceholderHTMLPath(t),
 		HtmlCompressedSizeBytes:   1,
 		HtmlUncompressedSizeBytes: 1,
 		ContentHash:               uuid.NewString(),

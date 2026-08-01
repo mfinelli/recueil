@@ -142,10 +142,10 @@ UPDATE pages SET favicon_path = $1, updated_at = NOW() WHERE id = $2;
 -- the existing periodic Syncer's reconcileDeletions pass (GetMirrorEligiblePageIDs
 -- no longer includes this id once the row's gone), same as it already does for
 -- excluded_from_mirror. The on-disk archive files (HTML/screenshots/favicons)
--- are content-hash-addressed and can be shared across captures/pages (see
--- internal/archive's own doc comment), so they're deliberately left orphaned
--- here rather than attempting a per-page delete that could remove another
--- page's still-referenced data.
+-- are deliberately left orphaned here for `recueil gc` to reclaim, rather
+-- than removed as part of this statement: that keeps deleting a page a
+-- pure database operation, with no way for a partial failure to leave
+-- Postgres and the filesystem disagreeing about what still exists.
 DELETE FROM pages WHERE id = $1 AND user_id = $2;
 
 -- name: GetPagesUpdatedSince :many

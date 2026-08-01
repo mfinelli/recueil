@@ -285,8 +285,8 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 	assert.Equal(t, captureFaviconPath.String, pageFaviconPath.String,
 		"pages.favicon_path should be denormalized from this (the latest) capture, same as title")
 
-	// Lives alongside the HTML in the same capture directory (see
-	// internal/archive's CaptureDir), not scattered into its own.
+	// Lives alongside the HTML in the capture's own directory (see
+	// internal/archive), not scattered into its own.
 	assert.Equal(t, filepath.Dir(htmlPath), filepath.Dir(captureFaviconPath.String))
 
 	// svg is the one format that gets zstd'd (see internal/archive's
@@ -307,14 +307,14 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, info.Size(), int64(faviconSizeBytes.Int32))
 
-	// favicon_hash is recorded as its own column (migration 00009), not
-	// only ever implicit in the filename -- confirm it's both a real
-	// sha256 of the original bytes and consistent with the filename
-	// archive.WriteAsset actually chose.
+	// favicon_hash is recorded as its own column and is the only record
+	// of the favicon's identity now that the filename no longer encodes
+	// it (a capture directory holds exactly one favicon, so the file is
+	// just "favicon.svg.zst") -- confirm it's a real sha256 of the
+	// original bytes.
 	require.True(t, faviconHash.Valid)
 	wantHash := sha256.Sum256(favicon)
 	assert.Equal(t, hex.EncodeToString(wantHash[:]), faviconHash.String)
-	assert.Contains(t, captureFaviconPath.String, faviconHash.String)
 
 	// Cleaned up from R2 alongside the HTML object, same crash-recovery
 	// ordering (disk write and Postgres commit both already durable by
@@ -584,15 +584,17 @@ func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 	// An already-ingested, completely unrelated capture already occupies
 	// this exact source_capture_id -- with a real file on disk, not just
 	// a database row, so this test actually exercises the disk-layer
-	// half of the fix (archive.Store is keyed by content_hash, not
-	// capture_id, specifically so this pre-existing file can't be
-	// clobbered by the colliding capture below -- see archive.go's
-	// package doc).
+	// half of the fix. Every capture's directory is minted independently
+	// of anything the client supplied (archive.Store.NewCapture), so a
+	// collision on source_capture_id can't reach this pre-existing
+	// file's path at all -- see archive.go's package doc.
 	existingContent := []byte(`<html><title>Earlier Capture</title></html>`)
 	// Deliberately not what the new, colliding capture's content will
 	// hash to -- this is what makes it a genuine collision, not a retry.
 	existingContentHash := "0000000000000000000000000000000000000000000000000000000000aa"
-	existingHTMLPath, _, err := store.WriteHTML(existingContentHash, existingContent)
+	existingRelDir, err := store.NewCapture()
+	require.NoError(t, err)
+	existingHTMLPath, _, err := store.WriteHTML(existingRelDir, existingContent)
 	require.NoError(t, err)
 
 	existingPage, err := queries.UpsertPage(ctx, db.UpsertPageParams{
@@ -685,7 +687,7 @@ func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 		"source_capture_id should be cleared to NULL once ingestion fully completes, same as any successful capture")
 	assert.NotEqual(t, existingCapture.ID, newCaptureID)
 	assert.NotEqual(t, existingHTMLPath, newHTMLPath,
-		"the two captures' content differs, so they must land at different content-hash-derived disk paths")
+		"every capture gets its own independently-minted directory, so a source_capture_id collision cannot reach an existing capture's file")
 
 	// The new capture's own file is independently readable with its own
 	// correct content.

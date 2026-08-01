@@ -133,7 +133,9 @@ func newDueReadabilityJob(t *testing.T, pool *pgxpool.Pool, store *archive.Store
 	sum := sha256.Sum256([]byte(testHTML))
 	contentHash := hex.EncodeToString(sum[:])
 
-	relPath, compressedSize, err := store.WriteHTML(contentHash, []byte(testHTML))
+	relDir, err := store.NewCapture()
+	require.NoError(t, err)
+	relPath, compressedSize, err := store.WriteHTML(relDir, []byte(testHTML))
 	require.NoError(t, err)
 
 	page, err := q.UpsertPage(ctx, db.UpsertPageParams{
@@ -264,7 +266,8 @@ func TestRunner_RunOnce_OneFailureDoesNotBlockTheRestOfTheBatch(t *testing.T) {
 
 	brokenCapture, _ := newDueReadabilityJob(t, pool, store)
 	_, err := pool.Exec(context.Background(),
-		"UPDATE captures SET html_path = 'does/not/exist.html.zst' WHERE id = $1", brokenCapture.ID)
+		"UPDATE captures SET html_path = $1 WHERE id = $2",
+		dbtest.PlaceholderHTMLPath(t), brokenCapture.ID)
 	require.NoError(t, err)
 
 	r := newRunner(t, pool, store, 3)
@@ -290,7 +293,8 @@ func TestRunner_RunOnce_FailsPermanentlyAfterMaxAttempts(t *testing.T) {
 
 	capture, _ := newDueReadabilityJob(t, pool, store)
 	_, err := pool.Exec(context.Background(),
-		"UPDATE captures SET html_path = 'does/not/exist.html.zst' WHERE id = $1", capture.ID)
+		"UPDATE captures SET html_path = $1 WHERE id = $2",
+		dbtest.PlaceholderHTMLPath(t), capture.ID)
 	require.NoError(t, err)
 
 	r := newRunner(t, pool, store, 1)

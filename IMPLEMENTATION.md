@@ -2862,3 +2862,133 @@ dotted-rule between body rows, eyebrow-style headers, data-mono applied only to
 the numeric `<td>` cells (caught and fixed a first pass that also applied it to
 header words like "Captures," which read oddly — data-mono is for data, not
 labels).
+
+## Phase 15 (Storage model: per-capture directories; `gc` hardening)
+
+A pre-release review of the storage model, done deliberately before the first
+tagged release since the on-disk layout is one of the few things here that gets
+genuinely hard to change once real archives exist. See DESIGN.md §4 for the
+model and §15's own entry for the decision record; this covers what actually
+landed.
+
+### `internal/archive`: `NewCapture`, and directories that belong to one capture
+
+- **`Store.NewCapture() (relDir string, err error)`** replaces `CaptureDir` (now
+  unexported as `captureDir`, and taking a capture id rather than a content
+  hash). Mints a UUIDv7 via `google/uuid` (already a direct dependency), shards
+  three levels deep, creates the directory, returns the root-relative path.
+- **The shard is the id's trailing four hex characters, not its leading ones.**
+  UUIDv7 puts a millisecond timestamp in the leading bits, so leading-char
+  sharding would put every capture from the same period in one bucket — the
+  exact opposite of what sharding is for. The last group of a v7 id is entirely
+  `rand_b`, so it distributes uniformly. This is the one non-obvious consequence
+  of choosing v7 over v4, and worth stating because a future reader reaching for
+  "just take the first two characters, like git does" would be quietly wrong.
+- **`MkdirAll` for the shard levels, plain `os.Mkdir` for the leaf.** The shard
+  directories are shared by many captures, so already-exists is the normal case
+  there; the leaf is the collision signal. `EEXIST` regenerates the id (bounded
+  loop, `newCaptureAttempts = 5`) rather than adopting the directory. This check
+  has to be at mkdir time, not a Postgres constraint, because the disk write
+  precedes the commit — a constraint alone would reject the row only after
+  `writeAtomic` had already overwritten the other capture's bytes.
+- **`WriteHTML(relDir, data)` /
+  `WriteAsset(relDir, name, ext, data, compress)`** now take the capture
+  directory rather than a hash. Filenames are role-based: `page.html.zst`,
+  `favicon.{ext}[.zst]`, `thumbnail.png`. A directory holds exactly one of each,
+  so nothing needs a hash to stay distinct — and a re-render (retried
+  screenshot, re-extraction after a Readability.js upgrade) now overwrites in
+  place through the existing atomic rename rather than writing a new file and
+  orphaning its predecessor.
+- **New: `Store.WalkEmptyDirs` and `Store.RemoveEmptyDir`.** `Walk` reports
+  regular files only, so a capture directory created by `NewCapture` for an
+  ingestion that then failed early is invisible to it. `RemoveEmptyDir`
+  re-checks emptiness immediately before removing and reports "no longer
+  applicable" as `(false, nil)` rather than an error — both ways that happens (a
+  parent already pruned by an earlier file removal; a concurrent `NewCapture`
+  claiming the directory) are ordinary, not failures a caller should have to
+  recognize and discard. Doing the re-check inside the package also avoids
+  exposing the Store's root, which is the only thing "relative to" actually
+  means.
+- **`Walk` now also reports `modTime`**, and tolerates a root that doesn't exist
+  yet (zero files, which is exactly right for an instance that hasn't ingested
+  anything). Parent-pruning was factored out of `Remove` into
+  `pruneEmptyParents`, shared with `RemoveEmptyDir`.
+
+### Callers
+
+Small surface, which is most of why this was worth doing now:
+
+- **`internal/ingest`** calls `NewCapture` before `WriteHTML`, and threads
+  `relDir` into `captureFavicon` in place of the html hash.
+- **`internal/screenshot`** derives the directory as
+  `filepath.Dir(job.HtmlPath)`. `ClaimDueScreenshotJobs` already returned
+  `html_path` alongside `content_hash`, so this needed no new query — just
+  dropping the now-unused `content_hash` from the `RETURNING` list.
+- **Manual upload (§3d) is not built yet**, so there was no second ingestion
+  path to keep in sync.
+- `content_hash`/`favicon_hash`/`thumbnail_hash` are untouched as columns and
+  still in the capture DTO. §3c's retry-vs-collision disambiguation, which
+  compares the returned row's `content_hash` against the freshly computed one,
+  works exactly as before.
+
+### Schema
+
+`migrations/00004_create_captures.sql` edited in place (nothing has shipped, so
+no stacked `ALTER`): `CONSTRAINT captures_html_path_key UNIQUE (html_path)`.
+`html_path` is one-to-one with the capture directory, so this is the
+database-side statement of the same invariant — belt-and-suspenders behind
+`NewCapture`'s exclusive mkdir, and notably a constraint that would have been
+_wrong_ under the previous layout, where identical HTML deliberately shared a
+path.
+
+### `internal/gc`: two safety rails and an empty-directory pass
+
+`Run` now takes `gc.Options{DryRun, Force}` rather than a bare bool, and is
+restructured **collect-then-remove** rather than removing inline during the
+walk. That restructure is what lets the orphan-fraction check be a clean
+all-or-nothing refusal instead of an abort partway through a deletion pass.
+
+- **`recentThreshold` (15 minutes)** — anything modified more recently is left
+  alone regardless of the live set. Reused from the D1 claim-visibility timeout
+  and `internal/screenshot`'s `claimStaleTimeout` rather than inventing a third
+  number for the same question. The concrete bug this fixes existed before this
+  round: `archive.Store`'s `.tmp-*` files are in `Walk`'s namespace and _by
+  construction_ can never be in the live set, so a sweep concurrent with an
+  ingestion would unlink one mid-write and the writer's `os.Rename` would then
+  fail `ENOENT`. Not silent corruption, but a spurious failure appearing only
+  under concurrency — the kind that gets diagnosed slowly.
+- **`maxOrphanFraction` (0.5), floored at `safetyCheckMinFiles` (100)** —
+  refuses the run with `*TooManyOrphansError` if too much comes back orphaned.
+  Guards a footgun rather than a known bug: the live set is stored path strings
+  compared against walked path strings, and any future normalization divergence
+  between the two sides produces an empty intersection and marks the whole
+  archive as garbage. The floor exists because a four-file archive with three
+  orphans is 75% and means nothing. `--force` overrides; a dry run reports that
+  the real run would refuse (`Result.SafetyCheckTripped`) rather than silently
+  proceeding, which would make `--dry-run` misleading in exactly the situation
+  it matters most.
+- **Empty-directory pass**, per `WalkEmptyDirs` above, age-floored the same way
+  — an unreferenced-and-empty directory a few seconds old is just a capture
+  between `NewCapture` and `WriteHTML`.
+- `Result` gained `FilesSkippedRecent`, `EmptyDirsRemoved`,
+  `SafetyCheckTripped`. `cmd/gc.go` grew `--force`, reports the new counters,
+  and returns `TooManyOrphansError` unwrapped (it already explains itself in
+  full, including what to do; `fmt.Errorf("running gc: %w")` would only prefix
+  noise onto an actionable message).
+
+### Tests
+
+`internal/archive` and `internal/gc` test files rewritten. New coverage worth
+naming: `NewCapture` never returning the same directory twice across 500
+same-millisecond mints; identical content producing two independent files such
+that removing one leaves the other intact (a test that could not have been
+written under the previous layout); `.tmp-*` files surviving a sweep; empty
+capture directories being pruned while recently-created ones are not; and all
+three states of the orphan-fraction check (refuse, `--force`, dry-run-reports).
+
+One honest gap: `NewCapture`'s `EEXIST` branch can't be reached from an external
+test package without injecting the id generator, and adding that seam purely to
+cover a branch guarding an unreachable event wasn't judged worth it. The test
+there asserts the property the branch protects instead — an already-populated
+capture directory is never handed back out — and says so in its own comment
+rather than implying more coverage than exists.

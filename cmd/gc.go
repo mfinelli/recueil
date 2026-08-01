@@ -19,6 +19,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -33,7 +34,10 @@ import (
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 )
 
-var gcDryRun bool
+var (
+	gcDryRun bool
+	gcForce  bool
+)
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
@@ -41,10 +45,20 @@ var gcCmd = &cobra.Command{
 	Long: `Removes archive files no longer referenced by any page or capture.
 
 DELETE /api/pages/{id} and DELETE /api/captures/{id} both deliberately leave
-their on-disk HTML/thumbnail/favicon files in place: those files are
-content-hash addressed and can be shared by other captures or pages, so only
-a full sweep across every row at once -- what this command does -- can tell
-whether a given file is genuinely unreferenced.
+their on-disk HTML/thumbnail/favicon files in place, so that deleting stays a
+pure database operation with no partial-failure state spanning both Postgres
+and the filesystem. This command is the sweep that reclaims them. It also
+prunes capture directories left containing nothing at all, which happens when
+an ingestion fails after creating its directory but before writing into it.
+
+Anything modified in the last 15 minutes is left alone regardless, since an
+in-flight capture writes to disk before committing to Postgres and is
+legitimately unreferenced until it does.
+
+If more than half of the scanned files come back unreferenced, the run stops
+without deleting anything and reports what it found -- that pattern is far
+more likely to mean something is wrong with the sweep than that the archive is
+genuinely half garbage. Use --force when it really is expected.
 
 Safe to run repeatedly; run with --dry-run first to see what would be
 removed without touching disk.`,
@@ -54,6 +68,7 @@ removed without touching disk.`,
 
 func init() {
 	gcCmd.Flags().BoolVar(&gcDryRun, "dry-run", false, "report what would be removed without deleting anything")
+	gcCmd.Flags().BoolVar(&gcForce, "force", false, "proceed even if more than half of the scanned files are unreferenced")
 	rootCmd.AddCommand(gcCmd)
 }
 
@@ -91,8 +106,15 @@ func runGC(cmd *cobra.Command, args []string) error {
 		log.Println("recueil gc: dry run -- nothing will actually be deleted")
 	}
 
-	result, err := runner.Run(ctx, gcDryRun)
+	result, err := runner.Run(ctx, gc.Options{DryRun: gcDryRun, Force: gcForce})
 	if err != nil {
+		// TooManyOrphansError already explains itself in full, including
+		// what to do about it -- wrapping it in "running gc: ..." would
+		// just prefix noise onto an already-actionable message.
+		var tooMany *gc.TooManyOrphansError
+		if errors.As(err, &tooMany) {
+			return err
+		}
 		return fmt.Errorf("running gc: %w", err)
 	}
 
@@ -102,6 +124,22 @@ func runGC(cmd *cobra.Command, args []string) error {
 	}
 	log.Printf("recueil gc: scanned %d files, %s %d orphaned files, %s %.2f MB",
 		result.FilesScanned, verb, result.FilesRemoved, verbNoun(gcDryRun), float64(result.BytesReclaimed)/(1024*1024))
+	if result.EmptyDirsRemoved > 0 {
+		log.Printf("recueil gc: %s %d empty directories", verb, result.EmptyDirsRemoved)
+	}
+	if result.FilesSkippedRecent > 0 {
+		log.Printf("recueil gc: left %d unreferenced but recently-modified files alone (in-flight captures) -- they are judged on the next run",
+			result.FilesSkippedRecent)
+	}
+	// Only reachable here with --dry-run or --force: without either, a
+	// tripped check returns an error above and never gets this far.
+	if result.SafetyCheckTripped {
+		if gcDryRun {
+			log.Println("recueil gc: over half of the scanned files are unreferenced -- a real run would stop here; use --force if that is expected")
+		} else {
+			log.Println("recueil gc: over half of the scanned files were unreferenced -- proceeded anyway because --force was given")
+		}
+	}
 	if result.RemoveErrors > 0 {
 		log.Printf("recueil gc: %d files failed to remove -- see warnings above", result.RemoveErrors)
 	}

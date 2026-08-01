@@ -335,17 +335,65 @@ supply one. Everything downstream — the content_hash-based conflict
 disambiguation, the collision retry loop, the try-first/fallback-on-failure
 pattern — is identical either way.
 
-**Local disk storage is keyed by `content_hash`, not `source_capture_id`, for a
-closely related reason** (see §4/`internal/archive`'s own docs for the full
-reasoning): two captures whose `source_capture_id`s collide would also collide
-on a `source_capture_id`-keyed disk path, and the atomic-rename write this
-project uses silently overwrites whatever's already at the destination. That's a
-worse outcome than the Postgres-side collision above, since it would corrupt an
-unrelated, already-successfully-stored capture's file rather than just failing
-to store the new one. `content_hash` doesn't have this failure mode: two
-genuinely different captures colliding would require an actual SHA-256
-collision, and two captures that happen to share byte-identical content
-overwriting each other with identical bytes is a harmless no-op, not data loss.
+**Local disk storage is keyed by a backend-minted id, never by anything the
+client supplied** (see §4/`internal/archive`'s docs for the full reasoning). The
+failure this avoids is the closely related disk-side twin of problem 2 above:
+two captures whose `source_capture_id`s collide would also collide on a
+`source_capture_id`-keyed disk path, and the atomic-rename write this project
+uses silently overwrites whatever's already at the destination — corrupting an
+unrelated, already-successfully-stored capture's file rather than merely failing
+to store the new one. Because `archive.Store.NewCapture` mints its own UUIDv7
+and creates the directory exclusively (a plain `os.Mkdir`, so an
+already-existing directory is regenerated past rather than adopted), a client-id
+collision simply cannot reach an existing capture's path at all.
+
+An earlier revision keyed the disk path by `content_hash` instead, which solved
+the same problem by a different route — but at the cost of aliasing every two
+captures with byte-identical HTML onto one directory. That is now reversed; see
+§4.
+
+**Two distinct things can go "wrong" here, and they are worth keeping apart,
+because the collision reasoning above primes a reader to conflate them:**
+
+- **A directory collision** — `NewCapture`'s `os.Mkdir` returns `EEXIST`. Zero
+  bytes have been written at that point, so nothing is at risk and nothing is
+  left behind: a new UUIDv7 is generated and the mint is retried. This is the
+  case that actually protects an already-completed capture's data, and it
+  resolves entirely inside `NewCapture` before ingestion ever reaches a write.
+- **A `source_capture_id` duplicate** — detected later, by the insert, and _not_
+  a collision of any kind. No directory collided; `NewCapture` handed back a
+  fresh, unique directory that no other capture has ever touched, and this
+  attempt wrote its bytes into that directory of its own. What the insert then
+  reports is that an earlier attempt already ingested this same pending capture,
+  so the committed row (and its `html_path`) belongs to that earlier attempt's
+  directory, not this one's.
+
+  Regenerating a UUID is not the response to this one: there is nothing to
+  retry, since the capture is already correctly stored — a fresh id would only
+  produce a second redundant copy. Ingestion takes the existing row and proceeds
+  to cleanup, and the copy this attempt wrote is left for `recueil gc` to
+  reclaim, exactly like any other unreferenced file. Nothing was overwritten and
+  no other capture's data was ever in reach; the cost is a redundant copy in a
+  private directory, not damage.
+
+Reaching that second case at all requires a prior attempt to have committed
+while its R2 object survives — either a crash strictly between the Postgres
+commit and the R2 delete, or two `agent` processes polling the same
+`pending_captures` row concurrently (`GET /internal/pending-captures` is a plain
+read, with no claim). The far more common crash-retry, where the R2 object was
+already deleted, never mints a directory at all: the R2 pull fails first and
+ingestion routes straight into the already-committed fallback above.
+
+Avoiding the redundant write would mean checking Postgres for
+`source_capture_id` _before_ touching disk, which is exactly the upfront gating
+rejected above — it would skip the `content_hash` comparison and reintroduce
+problem 2. Write first, discover second, and eat a rare redundant copy.
+
+One incidental improvement over content-addressing, in the concurrent-agents
+case specifically: under the old scheme both agents wrote to the _same_ path at
+once, which was safe only because the bytes were identical and the rename
+atomic. Per-capture directories make those writes disjoint, so they cannot
+interact at all.
 
 ### Re-archiving the same URL
 
@@ -642,20 +690,21 @@ same way `pages.title` already is — including being overwritten back to `NULL`
 if the latest capture genuinely didn't find one, not preserved from an earlier
 capture that did.
 
-**Disk layout — shares the capture's directory, keyed by its own hash.**
-`internal/archive`'s `Store` was restructured around this: every asset belonging
-to one capture (the HTML, now a favicon, later a screenshot) lives together
-under a single directory, sharded by the capture's own `content_hash`
-(`CaptureDir`). The HTML itself keeps a fixed filename inside that directory,
-since the directory already encodes its identity — but a secondary asset like
-the favicon is named by _its own_ content hash plus a real extension
-(`WriteAsset`), never the html's. This matters concretely: two captures can have
-byte-identical HTML while carrying genuinely different favicons (a static page
-recaptured after the site's icon changed), so keying a favicon by the html's
-hash would silently overwrite one capture's favicon with another's — precisely
-the bug this package already exists to avoid, one level removed. Compression is
-per-asset-type, not a blanket zstd: SVG (plain XML) compresses well and gets it;
-PNG/ICO are already-compressed binary formats and are stored raw.
+**Disk layout — shares the capture's directory.** Every asset belonging to one
+capture (the HTML, the favicon, the screenshot) lives together under that
+capture's single directory (§4). Because that directory belongs to exactly one
+capture, each asset just takes a plain role-based filename — `page.html.zst`,
+`favicon.{ext}`, `thumbnail.png`. An earlier revision named each secondary asset
+by _its own_ content hash, which was necessary only because the directory was
+then keyed by the HTML's `content_hash` and could therefore be shared by two
+captures with identical HTML but different favicons; with per-capture
+directories that collision can't arise, so the hash no longer has to appear in
+the filename. `favicon_hash`/`thumbnail_hash` remain columns regardless —
+they're how you tell after the fact whether two captures of a page carried the
+same icon, and the only integrity check available for a file nothing re-derives.
+Compression is per-asset-type, not a blanket zstd: SVG (plain XML) compresses
+well and gets it; PNG/ICO are already-compressed binary formats and are stored
+raw.
 
 **R2 key convention mirrors the HTML object's.** `POST /captures/upload-urls`
 accepts an optional `(favicon_ext, content_sha256_favicon)` pair — both present
@@ -1081,8 +1130,52 @@ once it actually runs.
   compresses extremely well with zstd, commonly 80-90% size reduction) on local
   disk, referenced by path from the `captures` table. Thumbnails (see §6) and
   favicons (§3g) are also stored on local disk, never in R2 — every asset for
-  one capture lives together under a single directory (`internal/archive`'s
-  `CaptureDir`), sharded by the capture's own `content_hash`.
+  one capture lives together under a single directory.
+- **One capture, one directory — never shared, even for identical content.**
+  Each capture's directory is minted by `internal/archive`'s `Store.NewCapture`
+  as a backend-generated UUIDv7, sharded three levels deep
+  (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's own object-store shape, for the same
+  reason: a flat directory with hundreds of thousands of entries degrades badly
+  for `ls`, backup tools, and anything else that walks it). The shard comes from
+  the id's _trailing_ characters, not its leading ones, because UUIDv7's leading
+  bits are a millisecond timestamp — sharding on those would drop everything
+  captured in the same period into one bucket and defeat the point.
+
+  **This reverses an earlier design that keyed the directory by the capture's
+  HTML `content_hash`**, under which two captures with byte-identical HTML
+  aliased onto one directory. Content-addressing was never load-bearing here:
+  `html_path`/`favicon_path`/`thumbnail_path` are stored columns, so every read
+  resolves row → path → disk and nothing ever derives a path from a hash. Its
+  only real benefit was deduplication, which isn't a goal for this project, and
+  which barely fired in practice anyway — §3b already notes that most real pages
+  embed per-load-unique content, so two captures rarely produce identical bytes.
+  What aliasing cost was ongoing rather than one-off: "is this file still
+  referenced?" became a set-membership question rather than a local one,
+  per-user deletion became unprovable (a tenant's bytes physically persist
+  whenever another tenant happens to share them, which matters for the
+  multi-tenant door this section deliberately leaves open below), and
+  `CaptureDir` was a misnomer for a directory that wasn't any one capture's.
+
+  `content_hash`, `favicon_hash` and `thumbnail_hash` all remain columns on
+  `captures` — exact-dedup _detection_, §3c's retry-vs-collision disambiguation,
+  and integrity checking all work exactly as before. The hashes simply no longer
+  name anything on disk.
+
+  **Uniqueness is enforced, not assumed.** `NewCapture` creates the leaf
+  directory with a plain `os.Mkdir`, not `MkdirAll`, so an already-existing
+  directory surfaces as `EEXIST` and the id is regenerated rather than adopted
+  and written into. That check has to happen at mkdir time rather than in
+  Postgres, because the disk write precedes the commit (§3c) — a database
+  constraint alone would only reject the row _after_ the other capture's bytes
+  had already been overwritten. `captures.html_path` additionally carries a
+  `UNIQUE` constraint (migration `00004`), which is the same invariant restated
+  where the database can enforce it: belt-and-suspenders, not the primary
+  mechanism. Note that constraint would have been actively wrong under the
+  previous layout, where identical HTML deliberately shared a path. The
+  collision being guarded against cannot realistically occur — UUIDv7 carries 74
+  random bits, and two ids would have to collide across all of them within the
+  same millisecond — but the guard is nearly free.
+
 - **Backup is entirely the operator's responsibility** — see §14. The
   application itself performs no automated backup.
 - **Database choice: Postgres, not SQLite**, despite this being a personal
@@ -3741,10 +3834,9 @@ should be backed up in the same job/window.
   bake in one host's specific filesystem layout. The one real constraint this
   leaves is unchanged in spirit, just relocated: whatever archive-directory path
   the backend is configured with at restore time must actually contain the
-  restored files at the expected relative layout (see §4/§6a's
-  `internal/urlnorm`-adjacent ingestion package for the actual on-disk layout,
-  e.g. hex-prefix sharding by capture ID) — the config value can point anywhere,
-  but it does have to point somewhere real.
+  restored files at the expected relative layout (see §4 for the actual on-disk
+  layout: three levels of hex sharding on a per-capture UUIDv7) — the config
+  value can point anywhere, but it does have to point somewhere real.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/
@@ -3984,22 +4076,24 @@ What remains open is purely implementation-phase, not architectural:
   below for why the latter matters on its own), walk every file
   `archive.Store`'s root actually contains (`Store.Walk`, new), and remove
   whatever isn't in that live set (`Store.Remove`, new — also prunes each
-  now-empty parent shard directory it leaves behind, `hash[0:2]/hash[2:4]/hash`
+  now-empty parent shard directory it leaves behind, the three shard levels
   collapsed back down once nothing's left in them). A `--dry-run` flag reports
   the same scan/removal counts and byte total without calling `Store.Remove` at
-  all. Also, since `pages.favicon_path` is a denormalized copy of whichever
-  capture last provided one (`UpsertPage`, same pattern as `pages.title`) —
-  deleting _that_ capture (while the page survives via others) used to leave it
-  pointing at a path no capture row referenced anymore. `DeleteCapture` now
-  refreshes it from `GetLatestCaptureByPage` whenever the page isn't also being
-  deleted (new `SetPageFavicon` query) — always recomputed, not just when the
-  deleted capture happens to be the source, since detecting which case that is
-  would be more complex than just doing the recomputation unconditionally (a
-  no-op write when it wasn't the source). `ListReferencedArchivePaths` still
-  includes `pages.favicon_path` in its own right regardless —
-  belt-and-suspenders, not a substitute for the real fix, since the live-set
-  query shouldn't have to lean on that recomputation always having happened
-  correctly everywhere it could matter.
+  all. (Both safety rails and the empty-directory pass described further down
+  this section came later, in the storage-model round.) Also, since
+  `pages.favicon_path` is a denormalized copy of whichever capture last provided
+  one (`UpsertPage`, same pattern as `pages.title`) — deleting _that_ capture
+  (while the page survives via others) used to leave it pointing at a path no
+  capture row referenced anymore. `DeleteCapture` now refreshes it from
+  `GetLatestCaptureByPage` whenever the page isn't also being deleted (new
+  `SetPageFavicon` query) — always recomputed, not just when the deleted capture
+  happens to be the source, since detecting which case that is would be more
+  complex than just doing the recomputation unconditionally (a no-op write when
+  it wasn't the source). `ListReferencedArchivePaths` still includes
+  `pages.favicon_path` in its own right regardless — belt-and-suspenders, not a
+  substitute for the real fix, since the live-set query shouldn't have to lean
+  on that recomputation always having happened correctly everywhere it could
+  matter.
 - **Resolved this round: dark mode is a real `Settings`-screen preference, not
   just automatic `prefers-color-scheme`.** `user_settings.theme` — same
   `NULL`-means-automatic convention, same full-replace `PATCH /api/settings`
@@ -4021,3 +4115,86 @@ What remains open is purely implementation-phase, not architectural:
     Same tradeoff every other production site using this exact technique already
     accepts; not worth an account-scoped cache key for a one-frame, purely
     cosmetic edge case.
+
+### Storage model: per-capture directories, replacing content-hash addressing
+
+**Resolved this round, deliberately before the first tagged release**, since
+this is one of the few decisions in the project that becomes genuinely hard to
+revisit once real archives exist in the wild. The full reasoning lives in §4;
+what follows is the account of the decision itself, kept here rather than
+narrated as history there.
+
+The question raised was whether content-addressed storage was the right call for
+security, privacy, and correctness — specifically whether two users' captures
+could ever overlap with different content. On the security question the answer
+was no: reads are gated by Postgres ownership (`pages.user_id`, self-scoped
+handlers), paths are never guessed or client-supplied, the Worker recomputes R2
+keys itself rather than trusting a client, and SHA-256 collision is not a
+reachable attack even for a malicious account with manual-upload access. Nor was
+there an existence oracle: ingestion is asynchronous and backend-side, so a user
+never observes whether their bytes already existed.
+
+The scheme was replaced anyway, for reasons that turned out not to be about
+security at all:
+
+- **The benefit was one the project doesn't want.** Deduplication is explicitly
+  not a goal here, and §3b already observed it would rarely fire regardless.
+- **The read path never used it.** `html_path` and friends are stored columns.
+  Nothing derives a path from a hash, so content-addressing was a naming scheme
+  wearing the clothes of an addressing scheme.
+- **The costs were structural rather than acute.** A shared directory turns "is
+  this file still referenced?" into a set-membership question, makes per-tenant
+  deletion unprovable (relevant to the hosted/multi-tenant door §4 leaves open),
+  and made `CaptureDir` a name for something that wasn't a capture's directory.
+
+**What made the switch cheap was that `internal/gc` already existed.** The
+expensive part of moving off content-addressing would otherwise have been
+crash-retry: a retry that mints a fresh id writes a directory it may then
+discover it didn't need. With a mark-and-sweep collector already in place for
+page/capture deletion, that orphan is reclaimed by the same machinery as any
+other, and no staging-and-rename scheme was needed. Worth recording as the
+general shape: this was the second time the sweep paid for itself somewhere it
+wasn't designed for.
+
+**§3c's original objection to id-keyed paths was satisfied rather than
+overruled.** That objection was about _client-supplied_ ids colliding and
+silently overwriting through the atomic rename. A backend-minted id created via
+an exclusive `os.Mkdir` addresses it directly, so the reasoning recorded there
+still stands — it just now points at a different mechanism.
+
+Two related changes landed alongside, both in §4's own terms: asset filenames
+inside a capture directory dropped their content hashes in favour of plain role
+names (`favicon.{ext}`, `thumbnail.png`), since there is now exactly one of each
+per directory — which also means a re-render overwrites in place rather than
+orphaning its predecessor — and `captures.html_path` gained a `UNIQUE`
+constraint.
+
+**`recueil gc` was hardened in the same round**, partly because the sweep is now
+load-bearing for more than deletion:
+
+- **A 15-minute recency floor.** Ingestion writes to disk _before_ committing to
+  Postgres (§3c), so a genuinely in-flight capture is legitimately absent from
+  the live set. The sharpest case is `archive.Store`'s own `.tmp-*` files, which
+  are in the walk's namespace and by construction can never appear in the live
+  set — without the floor a sweep would delete one mid-write and the writer's
+  rename would fail. 15 minutes is reused from the D1 queue's claim-visibility
+  timeout and `internal/screenshot`'s `claimStaleTimeout` rather than
+  introducing a third number for the same "stuck, or merely in progress?"
+  question.
+- **An empty-directory pass** (`Store.WalkEmptyDirs`/`RemoveEmptyDir`).
+  `NewCapture` creates a capture's directory before anything is written into it,
+  so an ingestion failing early leaves a directory that `Store.Walk` — which
+  reports regular files only — would never see.
+- **An orphan-fraction refusal.** If more than half of the scanned files come
+  back unreferenced (and at least 100 files were scanned, below which the
+  fraction carries no information), the run removes nothing and returns
+  `TooManyOrphansError`; `--force` overrides. This guards a footgun rather than
+  a known bug: the live set is built by comparing stored path strings against
+  walked path strings, so any future divergence in how the two sides are
+  normalized — a leading `./`, a separator difference, a `filepath.Clean`
+  applied on one side only — would silently produce an empty intersection and
+  mark the entire archive as garbage. That failure would be silent, total, and
+  aimed at the half §14 calls irreplaceable. The check runs after the full scan
+  but before the first deletion, so the refusal is always clean rather than a
+  partial sweep. A dry run reports that the real run would refuse rather than
+  silently proceeding, which would be actively misleading.

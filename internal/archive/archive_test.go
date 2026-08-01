@@ -19,12 +19,12 @@
 package archive_test
 
 import (
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,13 +32,125 @@ import (
 	"github.com/mfinelli/recueil/internal/archive"
 )
 
-func TestStore_WriteHTMLAndOpen_RoundTrip(t *testing.T) {
+// newCapture is the two-line preamble almost every test here needs: mint a
+// capture directory and fail loudly if that didn't work, since nothing
+// downstream is meaningful without it.
+func newCapture(t *testing.T, store *archive.Store) string {
+	t.Helper()
+	relDir, err := store.NewCapture()
+	require.NoError(t, err)
+	return relDir
+}
+
+func TestStore_NewCapture_CreatesTheDirectoryOnDisk(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
 
-	original := []byte(strings.Repeat("<html><body>hello world</body></html>", 1000))
+	relDir := newCapture(t, store)
 
-	relPath, compressedSize, err := store.WriteHTML("capture-abc-123", original)
+	assert.DirExists(t, filepath.Join(root, relDir))
+	entries, err := os.ReadDir(filepath.Join(root, relDir))
+	require.NoError(t, err)
+	assert.Empty(t, entries, "a freshly minted capture directory starts empty")
+}
+
+func TestStore_NewCapture_ShardsByTrailingCharacters(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	relDir := newCapture(t, store)
+
+	parts := strings.Split(relDir, string(filepath.Separator))
+	require.Len(t, parts, 3, "three levels of sharding: {shard}/{shard}/{id}")
+
+	id := parts[2]
+	assert.Len(t, id, 36, "a full UUID string")
+
+	// Trailing, not leading: UUIDv7's leading bits are a millisecond
+	// timestamp, so sharding on those would drop everything captured in
+	// the same period into one bucket. The last group is entirely
+	// rand_b.
+	assert.Equal(t, id[len(id)-4:len(id)-2], parts[0])
+	assert.Equal(t, id[len(id)-2:], parts[1])
+}
+
+func TestStore_NewCapture_NeverReturnsTheSameDirectoryTwice(t *testing.T) {
+	store := archive.New(t.TempDir())
+
+	// Enough iterations to make a same-millisecond batch certain, which
+	// is where a v7 id has only its random bits to distinguish it.
+	const iterations = 500
+	seen := make(map[string]struct{}, iterations)
+	for range iterations {
+		relDir := newCapture(t, store)
+		_, dup := seen[relDir]
+		require.False(t, dup, "NewCapture returned a directory it had already returned: %s", relDir)
+		seen[relDir] = struct{}{}
+	}
+}
+
+// The property the whole layout exists for: identical content does not
+// collapse two captures onto one directory the way the previous
+// content-hash-addressed scheme did.
+func TestStore_NewCapture_IdenticalContentStillGetsSeparateDirectories(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+	identical := []byte("<html>byte for byte the same</html>")
+
+	pathA, _, err := store.WriteHTML(newCapture(t, store), identical)
+	require.NoError(t, err)
+	pathB, _, err := store.WriteHTML(newCapture(t, store), identical)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, pathA, pathB)
+	assert.FileExists(t, filepath.Join(root, pathA))
+	assert.FileExists(t, filepath.Join(root, pathB))
+
+	// Not just distinct paths -- two genuinely independent files, so
+	// removing one leaves the other entirely intact.
+	require.NoError(t, store.Remove(pathA))
+	assert.NoFileExists(t, filepath.Join(root, pathA))
+	assert.FileExists(t, filepath.Join(root, pathB))
+}
+
+// The EEXIST branch inside NewCapture cannot be forced from outside the
+// package without injecting the id generator, and injecting it purely to
+// reach a branch guarding an unreachable event isn't worth the seam. What
+// this checks instead is the property that branch exists to protect: an
+// already-populated capture directory is never handed back out and
+// written into, which is exactly how one capture's bytes would come to
+// overwrite another's.
+func TestStore_NewCapture_NeverHandsBackAnAlreadyPopulatedDirectory(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	first := newCapture(t, store)
+	marker := filepath.Join(root, first, "already-here")
+	require.NoError(t, os.WriteFile(marker, []byte("do not clobber me"), 0o644))
+
+	for range 20 {
+		next := newCapture(t, store)
+		require.NotEqual(t, first, next)
+	}
+
+	content, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	assert.Equal(t, "do not clobber me", string(content))
+}
+
+func TestStore_NewCapture_CreatesRootWhenItDoesNotExist(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "not", "created", "yet")
+	store := archive.New(root)
+
+	relDir := newCapture(t, store)
+	assert.DirExists(t, filepath.Join(root, relDir))
+}
+
+func TestStore_WriteHTMLAndOpen_RoundTrip(t *testing.T) {
+	store := archive.New(t.TempDir())
+	original := []byte("<html><body>hello, archive</body></html>")
+
+	relPath, compressedSize, err := store.WriteHTML(newCapture(t, store), original)
 	require.NoError(t, err)
 	assert.Positive(t, compressedSize)
 
@@ -46,364 +158,404 @@ func TestStore_WriteHTMLAndOpen_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = reader.Close() }()
 
-	got, err := io.ReadAll(reader)
+	roundTripped, err := io.ReadAll(reader)
 	require.NoError(t, err)
-	assert.Equal(t, original, got)
+	assert.Equal(t, original, roundTripped)
+}
+
+func TestStore_WriteHTML_UsesAFixedFilenameInsideTheCaptureDirectory(t *testing.T) {
+	store := archive.New(t.TempDir())
+	relDir := newCapture(t, store)
+
+	relPath, _, err := store.WriteHTML(relDir, []byte("<html></html>"))
+	require.NoError(t, err)
+
+	// The directory identifies the capture, so the filename doesn't have
+	// to -- there is exactly one HTML file in here.
+	assert.Equal(t, filepath.Join(relDir, "page.html.zst"), relPath)
 }
 
 func TestStore_OpenRaw_ReturnsCompressedBytesUnmodified(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	original := []byte(strings.Repeat("<p>compress me</p>", 200))
 
-	original := []byte(strings.Repeat("<html><body>hello world</body></html>", 1000))
-	relPath, compressedSize, err := store.WriteHTML("capture-abc-123", original)
+	relPath, compressedSize, err := store.WriteHTML(newCapture(t, store), original)
 	require.NoError(t, err)
 
 	reader, err := store.OpenRaw(relPath)
 	require.NoError(t, err)
 	defer func() { _ = reader.Close() }()
 
-	got, err := io.ReadAll(reader)
+	raw, err := io.ReadAll(reader)
 	require.NoError(t, err)
-	assert.Len(t, got, int(compressedSize), "OpenRaw must not decompress -- the caller asked for raw bytes")
-	assert.NotEqual(t, original, got, "sanity check: the raw bytes must actually be the compressed form, not accidentally identical to the input")
+	assert.Equal(t, compressedSize, int64(len(raw)))
+	assert.NotEqual(t, original, raw, "OpenRaw must not decompress")
 }
 
 func TestStore_OpenRaw_NonexistentPath(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
+	store := archive.New(t.TempDir())
 
-	_, err := store.OpenRaw("does/not/exist.html.zst")
+	_, err := store.OpenRaw(filepath.Join("does", "not", "exist.html.zst"))
+	require.Error(t, err)
+}
+
+func TestStore_Open_NonexistentPath(t *testing.T) {
+	store := archive.New(t.TempDir())
+
+	_, err := store.Open(filepath.Join("does", "not", "exist.html.zst"))
 	require.Error(t, err)
 }
 
 func TestStore_WriteHTML_CompressesRepetitiveContent(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
+	store := archive.New(t.TempDir())
+	original := []byte(strings.Repeat("<div class=\"row\">the same thing again</div>", 500))
 
-	// Highly repetitive text (like real HTML markup) should compress
-	// substantially -- this isn't a precise ratio assertion, just a sanity
-	// check that compression is actually happening, not a no-op passthrough.
-	original := []byte(strings.Repeat("<div class=\"repeated-markup\">content</div>", 5000))
-
-	_, compressedSize, err := store.WriteHTML("capture-compress-test", original)
+	_, compressedSize, err := store.WriteHTML(newCapture(t, store), original)
 	require.NoError(t, err)
 
-	assert.Less(t, compressedSize, int64(len(original))/2,
-		"expected meaningful compression on highly repetitive content")
-}
-
-func TestStore_WriteHTML_ShardsByHashPrefix(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
-
-	relPath, _, err := store.WriteHTML("ab34cdef-0000-0000-0000-000000000000", []byte("data"))
-	require.NoError(t, err)
-
-	assert.Equal(t,
-		filepath.Join("ab", "34", "ab34cdef-0000-0000-0000-000000000000", "page.html.zst"),
-		relPath)
-
-	// And the file genuinely exists on disk at that sharded location, not
-	// just in the returned string.
-	_, err = os.Stat(filepath.Join(root, relPath))
-	require.NoError(t, err)
-}
-
-func TestStore_WriteHTML_FallsBackForShortHashes(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
-
-	relPath, _, err := store.WriteHTML("ab", []byte("data"))
-	require.NoError(t, err)
-
-	assert.Equal(t, filepath.Join("ab", "page.html.zst"), relPath)
-}
-
-func TestStore_WriteHTML_CreatesDirectoriesAsNeeded(t *testing.T) {
-	// A root that doesn't exist yet at all -- WriteHTML must create the
-	// full sharded directory path underneath it, not assume it already
-	// exists.
-	root := filepath.Join(t.TempDir(), "does", "not", "exist", "yet")
-	store := archive.New(root)
-
-	relPath, _, err := store.WriteHTML("fresh0000-0000-0000-0000-000000000000", []byte("data"))
-	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(root, relPath))
-	require.NoError(t, err)
+	assert.Less(t, compressedSize, int64(len(original))/4,
+		"zstd should compress this kind of markup dramatically")
 }
 
 func TestStore_WriteHTML_LeavesNoTempFilesBehind(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	relDir := newCapture(t, store)
 
-	relPath, _, err := store.WriteHTML("clean0000-0000-0000-0000-000000000000", []byte("data"))
+	_, _, err := store.WriteHTML(relDir, []byte("data"))
 	require.NoError(t, err)
 
-	dir := filepath.Dir(filepath.Join(root, relPath))
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(filepath.Join(root, relDir))
 	require.NoError(t, err)
-
-	require.Len(t, entries, 1, "exactly one file should exist: the final renamed file, no leftover temp file")
-	assert.False(t, strings.HasPrefix(entries[0].Name(), ".tmp-"))
+	require.Len(t, entries, 1)
+	assert.Equal(t, "page.html.zst", entries[0].Name())
 }
 
-func TestStore_WriteHTML_OverwritesOnRetryWithSameHash(t *testing.T) {
-	// a retry after a crash reuses the same html content hash (the
-	// content hasn't changed) and therefore the same target path, and
-	// must safely overwrite whatever's already there -- see archive.go's
-	// package doc for why this is always safe for WriteHTML specifically.
+func TestStore_WriteHTML_OverwritesInPlaceForTheSameCapture(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	relDir := newCapture(t, store)
 
-	relPath1, _, err := store.WriteHTML("retry0000-0000-0000-0000-000000000000", []byte("first attempt"))
+	relPath1, _, err := store.WriteHTML(relDir, []byte("first attempt"))
 	require.NoError(t, err)
-
-	relPath2, _, err := store.WriteHTML("retry0000-0000-0000-0000-000000000000", []byte("second attempt, different content"))
+	relPath2, _, err := store.WriteHTML(relDir, []byte("second attempt, different content"))
 	require.NoError(t, err)
-
-	assert.Equal(t, relPath1, relPath2)
+	require.Equal(t, relPath1, relPath2)
 
 	reader, err := store.Open(relPath2)
 	require.NoError(t, err)
 	defer func() { _ = reader.Close() }()
-
-	got, err := io.ReadAll(reader)
+	content, err := io.ReadAll(reader)
 	require.NoError(t, err)
-	assert.Equal(t, "second attempt, different content", string(got))
+	assert.Equal(t, "second attempt, different content", string(content),
+		"the second write wins cleanly, with no partial file left behind")
+
+	entries, err := os.ReadDir(filepath.Join(root, relDir))
+	require.NoError(t, err)
+	assert.Len(t, entries, 1, "an overwrite leaves nothing superseded behind for gc to find")
 }
 
-func TestStore_Open_NonexistentPath(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
+func TestStore_WriteAsset_LivesAlongsideHTMLInTheSameCaptureDir(t *testing.T) {
+	store := archive.New(t.TempDir())
+	relDir := newCapture(t, store)
 
-	_, err := store.Open("nope/does/not/exist/page.html.zst")
-	require.Error(t, err)
+	htmlPath, _, err := store.WriteHTML(relDir, []byte("<html></html>"))
+	require.NoError(t, err)
+	faviconPath, _, err := store.WriteAsset(relDir, "favicon", "png", []byte("fake-png-bytes"), false)
+	require.NoError(t, err)
+
+	assert.Equal(t, filepath.Dir(htmlPath), filepath.Dir(faviconPath))
+	assert.Equal(t, filepath.Join(relDir, "favicon.png"), faviconPath)
 }
 
-func TestStore_WriteAsset_LivesAlongsideHTMLInSameCaptureDir(t *testing.T) {
+func TestStore_WriteAsset_DistinctRolesCoexist(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	relDir := newCapture(t, store)
 
-	htmlHash := "cafe0000-0000-0000-0000-000000000000"
-	htmlPath, _, err := store.WriteHTML(htmlHash, []byte("<html></html>"))
+	faviconPath, _, err := store.WriteAsset(relDir, "favicon", "png", []byte("favicon bytes"), false)
+	require.NoError(t, err)
+	thumbnailPath, _, err := store.WriteAsset(relDir, "thumbnail", "png", []byte("thumbnail bytes"), false)
 	require.NoError(t, err)
 
-	faviconPath, _, err := store.WriteAsset(htmlHash, "favicon-hash-111", "png", []byte("fake-png-bytes"), false)
-	require.NoError(t, err)
-
-	assert.Equal(t, filepath.Dir(htmlPath), filepath.Dir(faviconPath),
-		"the html file and its favicon should live in the same capture directory")
-	assert.Equal(t, filepath.Join(archive.CaptureDir(htmlHash), "favicon-hash-111.png"), faviconPath)
+	require.NotEqual(t, faviconPath, thumbnailPath)
+	assert.FileExists(t, filepath.Join(root, faviconPath))
+	assert.FileExists(t, filepath.Join(root, thumbnailPath))
 }
 
-func TestStore_WriteAsset_KeyedByItsOwnHashNotHTMLHash(t *testing.T) {
-	// Two captures with byte-identical HTML (same htmlHash) but different
-	// favicons must not collide on disk -- each favicon is keyed by its
-	// own content hash, not the shared html hash. This is the specific
-	// bug this design avoids; see archive.go's package doc.
+// A re-render (a retried screenshot job, a re-extraction after a
+// Readability.js upgrade) replaces the asset rather than accumulating a
+// second copy that gc would later have to notice.
+func TestStore_WriteAsset_ReRenderOverwritesRatherThanAccumulating(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	relDir := newCapture(t, store)
 
-	htmlHash := "shared0000-0000-0000-0000-000000000000"
+	firstPath, _, err := store.WriteAsset(relDir, "thumbnail", "png", []byte("first render"), false)
+	require.NoError(t, err)
+	secondPath, _, err := store.WriteAsset(relDir, "thumbnail", "png", []byte("second render, different bytes"), false)
+	require.NoError(t, err)
+	require.Equal(t, firstPath, secondPath)
 
-	path1, _, err := store.WriteAsset(htmlHash, "favicon-old", "png", []byte("old favicon bytes"), false)
+	entries, err := os.ReadDir(filepath.Join(root, relDir))
 	require.NoError(t, err)
+	assert.Len(t, entries, 1)
 
-	path2, _, err := store.WriteAsset(htmlHash, "favicon-new", "svg", []byte("<svg>new favicon</svg>"), true)
+	content, err := os.ReadFile(filepath.Join(root, secondPath))
 	require.NoError(t, err)
-
-	assert.NotEqual(t, path1, path2)
-
-	// Both must still be readable independently -- writing the second
-	// must not have clobbered the first.
-	r1, err := store.Open(path1)
-	require.NoError(t, err)
-	defer func() { _ = r1.Close() }()
-	got1, err := io.ReadAll(r1)
-	require.NoError(t, err)
-	assert.Equal(t, "old favicon bytes", string(got1))
-
-	r2, err := store.Open(path2)
-	require.NoError(t, err)
-	defer func() { _ = r2.Close() }()
-	got2, err := io.ReadAll(r2)
-	require.NoError(t, err)
-	assert.Equal(t, "<svg>new favicon</svg>", string(got2))
+	assert.Equal(t, "second render, different bytes", string(content))
 }
 
 func TestStore_WriteAsset_CompressTrueAppendsZstExtensionAndCompresses(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	original := []byte(strings.Repeat(`<svg><rect width="10" height="10"/></svg>`, 200))
 
-	original := []byte(strings.Repeat("<svg><!-- repeated --></svg>", 5000))
-
-	relPath, writtenSize, err := store.WriteAsset("html0000-0000-0000-0000-000000000000", "favicon-svg", "svg", original, true)
+	relPath, writtenSize, err := store.WriteAsset(newCapture(t, store), "favicon", "svg", original, true)
 	require.NoError(t, err)
 
-	assert.True(t, strings.HasSuffix(relPath, "favicon-svg.svg.zst"))
-
-	reader, err := store.Open(relPath)
-	require.NoError(t, err)
-	defer func() { _ = reader.Close() }()
-	got, err := io.ReadAll(reader)
-	require.NoError(t, err)
-	assert.Equal(t, original, got)
+	assert.True(t, strings.HasSuffix(relPath, "favicon.svg.zst"))
+	assert.Less(t, writtenSize, int64(len(original)))
 
 	info, err := os.Stat(filepath.Join(root, relPath))
 	require.NoError(t, err)
 	assert.Equal(t, info.Size(), writtenSize,
-		"the returned writtenSize should match the actual on-disk (compressed) size")
-	assert.Less(t, writtenSize, int64(len(original))/2,
-		"expected meaningful compression on highly repetitive content")
+		"writtenSize must be the real on-disk size, not len(data)")
+
+	reader, err := store.Open(relPath)
+	require.NoError(t, err)
+	defer func() { _ = reader.Close() }()
+	roundTripped, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, original, roundTripped)
 }
 
 func TestStore_WriteAsset_CompressFalseStoresRawBytes(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
+	original := []byte("\x89PNG\r\n\x1a\n already-compressed bytes")
 
-	original := []byte("not-actually-a-png-but-treated-as-opaque-bytes")
-
-	relPath, _, err := store.WriteAsset("html0000-0000-0000-0000-000000000000", "favicon-png", "png", original, false)
+	relPath, writtenSize, err := store.WriteAsset(newCapture(t, store), "favicon", "png", original, false)
 	require.NoError(t, err)
 
-	assert.True(t, strings.HasSuffix(relPath, "favicon-png.png"),
-		"uncompressed assets keep a plain extension, no .zst suffix")
+	assert.False(t, strings.HasSuffix(relPath, ".zst"))
+	assert.Equal(t, int64(len(original)), writtenSize)
 
-	// Stored byte-for-byte with no zstd framing -- readable directly off
-	// disk without going through Store.Open at all.
 	onDisk, err := os.ReadFile(filepath.Join(root, relPath))
 	require.NoError(t, err)
-	assert.Equal(t, original, onDisk)
+	assert.Equal(t, original, onDisk, "stored byte-for-byte, no compression applied")
 
 	reader, err := store.Open(relPath)
 	require.NoError(t, err)
 	defer func() { _ = reader.Close() }()
-	got, err := io.ReadAll(reader)
+	roundTripped, err := io.ReadAll(reader)
 	require.NoError(t, err)
-	assert.Equal(t, original, got)
-}
-
-func TestCaptureDir_ShardsByHashPrefix(t *testing.T) {
-	assert.Equal(t,
-		filepath.Join("ab", "34", "ab34cdef-0000-0000-0000-000000000000"),
-		archive.CaptureDir("ab34cdef-0000-0000-0000-000000000000"))
-}
-
-func TestCaptureDir_FallsBackForShortHashes(t *testing.T) {
-	assert.Equal(t, "ab", archive.CaptureDir("ab"))
+	assert.Equal(t, original, roundTripped, "Open must not try to decompress a non-.zst path")
 }
 
 func TestStore_Walk_FindsEveryRegularFile(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
+	store := archive.New(t.TempDir())
+	relDir := newCapture(t, store)
 
-	htmlPath, _, err := store.WriteHTML("hash-one-aaaa", []byte("<html></html>"))
+	htmlPath, _, err := store.WriteHTML(relDir, []byte("<html></html>"))
 	require.NoError(t, err)
-	assetPath, _, err := store.WriteAsset("hash-one-aaaa", "favicon-hash", "png", []byte("png-bytes"), false)
+	assetPath, _, err := store.WriteAsset(relDir, "favicon", "png", []byte("png-bytes"), false)
 	require.NoError(t, err)
 
-	found := make(map[string]int64)
-	err = store.Walk(func(relPath string, sizeBytes int64) error {
+	found := map[string]int64{}
+	err = store.Walk(func(relPath string, sizeBytes int64, _ time.Time) error {
 		found[relPath] = sizeBytes
 		return nil
 	})
 	require.NoError(t, err)
 
-	require.Contains(t, found, htmlPath)
-	require.Contains(t, found, assetPath)
-	assert.Equal(t, int64(len("png-bytes")), found[assetPath])
-	assert.Len(t, found, 2, "Walk should not report directories, only files")
+	assert.Len(t, found, 2)
+	assert.Contains(t, found, htmlPath)
+	assert.Contains(t, found, assetPath)
+	assert.Positive(t, found[htmlPath])
+}
+
+func TestStore_Walk_ReportsModTime(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	relPath, _, err := store.WriteHTML(newCapture(t, store), []byte("<html></html>"))
+	require.NoError(t, err)
+
+	backdated := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(root, relPath), backdated, backdated))
+
+	var got time.Time
+	require.NoError(t, store.Walk(func(_ string, _ int64, modTime time.Time) error {
+		got = modTime
+		return nil
+	}))
+
+	assert.WithinDuration(t, backdated, got, time.Second)
 }
 
 func TestStore_Walk_EmptyStore(t *testing.T) {
 	store := archive.New(t.TempDir())
 
-	var calls int
-	err := store.Walk(func(string, int64) error {
+	calls := 0
+	require.NoError(t, store.Walk(func(string, int64, time.Time) error {
 		calls++
 		return nil
-	})
-	require.NoError(t, err)
+	}))
+	assert.Zero(t, calls)
+}
+
+// A Store pointed at a directory that doesn't exist yet has zero files,
+// which is exactly what an empty walk reports -- gc running before the
+// first capture ever lands shouldn't be an error.
+func TestStore_Walk_RootDoesNotExist(t *testing.T) {
+	store := archive.New(filepath.Join(t.TempDir(), "never", "created"))
+
+	calls := 0
+	require.NoError(t, store.Walk(func(string, int64, time.Time) error {
+		calls++
+		return nil
+	}))
 	assert.Zero(t, calls)
 }
 
 func TestStore_Walk_PropagatesCallbackError(t *testing.T) {
-	root := t.TempDir()
-	store := archive.New(root)
-	_, _, err := store.WriteHTML("hash-two-bbbb", []byte("<html></html>"))
+	store := archive.New(t.TempDir())
+	_, _, err := store.WriteHTML(newCapture(t, store), []byte("<html></html>"))
 	require.NoError(t, err)
 
-	sentinel := errors.New("stop here")
-	err = store.Walk(func(string, int64) error {
-		return sentinel
-	})
+	sentinel := io.ErrUnexpectedEOF
+	err = store.Walk(func(string, int64, time.Time) error { return sentinel })
 	assert.ErrorIs(t, err, sentinel)
+}
+
+func TestStore_WalkEmptyDirs_FindsACaptureDirWithNothingInIt(t *testing.T) {
+	store := archive.New(t.TempDir())
+
+	// One capture that got as far as writing, one that didn't -- the
+	// second is exactly what an ingestion failing right after
+	// NewCapture leaves behind.
+	written := newCapture(t, store)
+	_, _, err := store.WriteHTML(written, []byte("<html></html>"))
+	require.NoError(t, err)
+	empty := newCapture(t, store)
+
+	var found []string
+	require.NoError(t, store.WalkEmptyDirs(func(relPath string, _ time.Time) error {
+		found = append(found, relPath)
+		return nil
+	}))
+
+	assert.Equal(t, []string{empty}, found,
+		"only the directory containing nothing at all, and never the shard dirs above a populated one")
+}
+
+func TestStore_WalkEmptyDirs_NeverReportsTheRootItself(t *testing.T) {
+	store := archive.New(t.TempDir())
+
+	calls := 0
+	require.NoError(t, store.WalkEmptyDirs(func(string, time.Time) error {
+		calls++
+		return nil
+	}))
+	assert.Zero(t, calls, "an empty root is not something to prune")
 }
 
 func TestStore_Remove_DeletesTheFile(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
-	relPath, _, err := store.WriteHTML("hash-three-cccc", []byte("<html></html>"))
+
+	relPath, _, err := store.WriteHTML(newCapture(t, store), []byte("<html></html>"))
 	require.NoError(t, err)
 
 	require.NoError(t, store.Remove(relPath))
-
-	_, err = os.Stat(filepath.Join(root, relPath))
-	assert.True(t, os.IsNotExist(err))
+	assert.NoFileExists(t, filepath.Join(root, relPath))
 }
 
 func TestStore_Remove_PrunesNowEmptyShardDirectories(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
-	// A real hash-shaped id so CaptureDir's own sharding actually
-	// applies (ab/cd/abcd.../) -- short test strings like "hash-three"
-	// above fall back to no sharding at all (CaptureDir's own doc
-	// comment), which wouldn't exercise pruning at all.
-	hash := "abcd0000000000000000000000000000000000000000000000000000000000"
-	relPath, _, err := store.WriteHTML(hash, []byte("<html></html>"))
-	require.NoError(t, err)
 
-	captureDir := filepath.Join(root, archive.CaptureDir(hash))
-	shardDir := filepath.Dir(captureDir)
-	topShardDir := filepath.Dir(shardDir)
-	require.DirExists(t, captureDir)
+	relDir := newCapture(t, store)
+	relPath, _, err := store.WriteHTML(relDir, []byte("<html></html>"))
+	require.NoError(t, err)
+	require.DirExists(t, filepath.Join(root, relDir))
 
 	require.NoError(t, store.Remove(relPath))
 
-	assert.NoDirExists(t, captureDir, "the now-empty capture directory itself should be pruned")
-	assert.NoDirExists(t, shardDir, "the now-empty hash[2:4] shard directory should be pruned too")
-	assert.NoDirExists(t, topShardDir, "the now-empty hash[0:2] shard directory should be pruned too")
-	assert.DirExists(t, root, "pruning must never remove the store's own root")
+	assert.NoDirExists(t, filepath.Join(root, relDir))
+	// Both shard levels above it collapse too.
+	assert.NoDirExists(t, filepath.Dir(filepath.Join(root, relDir)))
+	assert.NoDirExists(t, filepath.Dir(filepath.Dir(filepath.Join(root, relDir))))
+	assert.DirExists(t, root, "pruning never climbs past the store's own root")
 }
 
 func TestStore_Remove_StopsPruningAtANonEmptySiblingDirectory(t *testing.T) {
 	root := t.TempDir()
 	store := archive.New(root)
-	hash := "abcd1111111111111111111111111111111111111111111111111111111111"
-	relPath, _, err := store.WriteHTML(hash, []byte("<html></html>"))
+
+	relDir := newCapture(t, store)
+	relPath, _, err := store.WriteHTML(relDir, []byte("<html></html>"))
 	require.NoError(t, err)
 
-	// A sibling capture sharing the same hash[0:2]/hash[2:4] shard
-	// prefix but a different full hash -- its own directory must
-	// survive pruning triggered by removing the *other* capture's file.
-	siblingHash := "abcd2222222222222222222222222222222222222222222222222222222222"
-	siblingRelPath, _, err := store.WriteAsset(siblingHash, "sibling-asset-hash", "png", []byte("x"), false)
+	// A sibling capture inside the same leaf shard directory, forced
+	// rather than hoped for: NewCapture's ids are random, so waiting for
+	// two to land in the same bucket by chance would be flaky.
+	siblingDir := filepath.Join(filepath.Dir(relDir), "sibling-capture-id")
+	require.NoError(t, os.MkdirAll(filepath.Join(root, siblingDir), 0o755))
+	_, _, err = store.WriteAsset(siblingDir, "favicon", "png", []byte("x"), false)
 	require.NoError(t, err)
 
 	require.NoError(t, store.Remove(relPath))
 
-	assert.NoDirExists(t, filepath.Join(root, archive.CaptureDir(hash)))
-	// The shared hash[0:2]/hash[2:4] shard directory is still needed by
-	// the sibling capture -- pruning must stop there, not remove it.
-	assert.DirExists(t, filepath.Dir(filepath.Join(root, archive.CaptureDir(hash))))
-	_, err = os.Stat(filepath.Join(root, siblingRelPath))
-	assert.NoError(t, err, "the sibling's own file must be untouched")
+	assert.NoDirExists(t, filepath.Join(root, relDir), "the emptied capture dir goes")
+	assert.DirExists(t, filepath.Join(root, filepath.Dir(relDir)),
+		"but its parent stays, because the sibling capture is still in there")
 }
 
 func TestStore_Remove_NonexistentPath(t *testing.T) {
 	store := archive.New(t.TempDir())
-	err := store.Remove(filepath.Join("does", "not", "exist.html"))
-	assert.Error(t, err)
+
+	err := store.Remove(filepath.Join("does", "not", "exist.html.zst"))
+	require.Error(t, err)
+}
+
+func TestStore_RemoveEmptyDir_RemovesAndPrunes(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+	relDir := newCapture(t, store)
+
+	removed, err := store.RemoveEmptyDir(relDir)
+	require.NoError(t, err)
+	assert.True(t, removed)
+	assert.NoDirExists(t, filepath.Join(root, relDir))
+	assert.NoDirExists(t, filepath.Dir(filepath.Join(root, relDir)))
+}
+
+// Both ways a collected candidate can stop applying between the walk and
+// the removal, neither of which is a failure.
+func TestStore_RemoveEmptyDir_NotApplicableCasesAreNotErrors(t *testing.T) {
+	root := t.TempDir()
+	store := archive.New(root)
+
+	t.Run("directory is gone", func(t *testing.T) {
+		relDir := newCapture(t, store)
+		require.NoError(t, os.Remove(filepath.Join(root, relDir)))
+
+		removed, err := store.RemoveEmptyDir(relDir)
+		require.NoError(t, err)
+		assert.False(t, removed)
+	})
+
+	t.Run("directory is no longer empty", func(t *testing.T) {
+		relDir := newCapture(t, store)
+		_, _, err := store.WriteHTML(relDir, []byte("<html>a capture landed here after all</html>"))
+		require.NoError(t, err)
+
+		removed, err := store.RemoveEmptyDir(relDir)
+		require.NoError(t, err)
+		assert.False(t, removed)
+		assert.DirExists(t, filepath.Join(root, relDir))
+	})
 }

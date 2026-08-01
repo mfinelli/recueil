@@ -34,8 +34,8 @@ SELECT * FROM screenshot_jobs WHERE capture_id = $1;
 -- on it -- this is what makes running more than one agent process safe, not
 -- just theoretically possible.
 --
--- The claiming UPDATE and the join back to captures (for html_path/
--- content_hash) happen in one statement rather than a claim-then-fetch
+-- The claiming UPDATE and the join back to captures (for html_path)
+-- happen in one statement rather than a claim-then-fetch
 -- pair, so the row lock is held only for this one brief statement's
 -- duration -- never across the actual render, which can take up to
 -- renderTimeout.
@@ -62,8 +62,7 @@ RETURNING
   screenshot_jobs.id AS job_id,
   screenshot_jobs.capture_id AS capture_id,
   screenshot_jobs.attempts AS attempts,
-  captures.html_path AS html_path,
-  captures.content_hash AS content_hash;
+  captures.html_path AS html_path;
 
 -- name: SetCaptureThumbnail :exec
 UPDATE captures

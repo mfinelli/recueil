@@ -32,6 +32,7 @@ import (
 	"encoding/hex"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -117,7 +118,9 @@ func newDueScreenshotJob(t *testing.T, pool *pgxpool.Pool, store *archive.Store)
 	sum := sha256.Sum256([]byte(testHTML))
 	contentHash := hex.EncodeToString(sum[:])
 
-	relPath, compressedSize, err := store.WriteHTML(contentHash, []byte(testHTML))
+	relDir, err := store.NewCapture()
+	require.NoError(t, err)
+	relPath, compressedSize, err := store.WriteHTML(relDir, []byte(testHTML))
 	require.NoError(t, err)
 
 	page, err := q.UpsertPage(ctx, db.UpsertPageParams{
@@ -221,14 +224,16 @@ func TestRunner_RunOnce_RendersScreenshotForDueJob(t *testing.T) {
 	require.True(t, updated.ThumbnailSizeBytes.Valid)
 	assert.Equal(t, int32(len(shot)), updated.ThumbnailSizeBytes.Int32)
 
-	// thumbnail_hash is recorded as its own column (migration 00009), not
-	// only ever implicit in the filename -- confirm it's both a real
-	// sha256 of the actual stored bytes and consistent with the filename
-	// archive.WriteAsset actually chose.
+	// thumbnail_hash is recorded as its own column and is the only record
+	// of the thumbnail's identity now that the filename no longer
+	// encodes it (a capture directory holds exactly one thumbnail, so
+	// the file is just "thumbnail.png") -- confirm it's a real sha256 of
+	// the actual stored bytes, and that the file landed beside the
+	// capture's own HTML rather than anywhere else.
 	require.True(t, updated.ThumbnailHash.Valid)
 	wantHash := sha256.Sum256(shot)
 	assert.Equal(t, hex.EncodeToString(wantHash[:]), updated.ThumbnailHash.String)
-	assert.Contains(t, updated.ThumbnailPath.String, updated.ThumbnailHash.String)
+	assert.Equal(t, filepath.Dir(capture.HtmlPath), filepath.Dir(updated.ThumbnailPath.String))
 }
 
 func TestRunner_RunOnce_OneFailureDoesNotBlockTheRestOfTheBatch(t *testing.T) {
@@ -244,7 +249,8 @@ func TestRunner_RunOnce_OneFailureDoesNotBlockTheRestOfTheBatch(t *testing.T) {
 	// cheap, deterministic per-job failure alongside the real one.
 	brokenCapture, _ := newDueScreenshotJob(t, pool, store)
 	_, err := pool.Exec(context.Background(),
-		"UPDATE captures SET html_path = 'does/not/exist.html.zst' WHERE id = $1", brokenCapture.ID)
+		"UPDATE captures SET html_path = $1 WHERE id = $2",
+		dbtest.PlaceholderHTMLPath(t), brokenCapture.ID)
 	require.NoError(t, err)
 
 	r := newRunner(t, pool, store, 3)
@@ -272,7 +278,8 @@ func TestRunner_RunOnce_FailsPermanentlyAfterMaxAttempts(t *testing.T) {
 
 	capture, _ := newDueScreenshotJob(t, pool, store)
 	_, err := pool.Exec(context.Background(),
-		"UPDATE captures SET html_path = 'does/not/exist.html.zst' WHERE id = $1", capture.ID)
+		"UPDATE captures SET html_path = $1 WHERE id = $2",
+		dbtest.PlaceholderHTMLPath(t), capture.ID)
 	require.NoError(t, err)
 
 	// maxAttempts=1: the very first failure already exhausts the
