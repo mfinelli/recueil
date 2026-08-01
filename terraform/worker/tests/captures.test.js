@@ -25,6 +25,7 @@ import {
   handleGetUploadUrls,
   handleClaimPendingCaptures,
   handleCleanupPendingCaptures,
+  handleListPendingCaptures,
   handleMarkPendingCaptureFetched,
 } from "../index.js";
 import { sha256Hex } from "./test-helpers.js";
@@ -1191,6 +1192,130 @@ describe("handleClaimPendingCaptures (claim semantics)", () => {
     );
     const ids = (await response.json()).pending_captures.map((c) => c.id);
     expect(ids).not.toContain("claim-stale-done");
+  });
+});
+
+describe("handleListPendingCaptures", () => {
+  it("maps the three states the dashboard renders", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-waiting", userId, {});
+    await seedPendingCapture("list-ingesting", userId, {
+      claimedAgo: "-1 minutes",
+    });
+    await seedPendingCapture("list-ingested", userId, {
+      fetchedByBackend: 1,
+      claimedAgo: "-2 minutes",
+    });
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", `/internal/pending-captures?user_id=${userId}`),
+      env,
+    );
+    expect(response.status).toBe(200);
+    const byId = Object.fromEntries(
+      (await response.json()).pending_captures.map((c) => [c.id, c]),
+    );
+
+    // waiting: nobody has picked it up yet
+    expect(byId["list-waiting"].fetched_by_backend).toBe(0);
+    expect(byId["list-waiting"].claimed_at).toBeNull();
+    // ingesting: claimed, not yet finished
+    expect(byId["list-ingesting"].fetched_by_backend).toBe(0);
+    expect(byId["list-ingesting"].claimed_at).toBeTruthy();
+    // ingested: done, still inside the recency window
+    expect(byId["list-ingested"].fetched_by_backend).toBe(1);
+  });
+
+  // Otherwise a capture would vanish from the screen the instant it moved
+  // on, which is the opposite of the continuity this section exists for.
+  it("keeps recently-ingested rows but drops older ones", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-just-done", userId, {
+      fetchedByBackend: 1,
+      claimedAgo: "-2 minutes",
+    });
+    await seedPendingCapture("list-long-done", userId, {
+      fetchedByBackend: 1,
+      claimedAgo: "-3 hours",
+    });
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", `/internal/pending-captures?user_id=${userId}`),
+      env,
+    );
+    const ids = (await response.json()).pending_captures.map((c) => c.id);
+    expect(ids).toContain("list-just-done");
+    expect(ids).not.toContain("list-long-done");
+  });
+
+  // An un-ingested row is shown however old it is -- there is no failed
+  // state here, so an obviously-stale row is the only signal available that
+  // something is wrong.
+  it("keeps un-ingested rows however old", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-stale-waiting", userId, {
+      claimedAgo: "-500 hours",
+    });
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", `/internal/pending-captures?user_id=${userId}`),
+      env,
+    );
+    const ids = (await response.json()).pending_captures.map((c) => c.id);
+    expect(ids).toContain("list-stale-waiting");
+  });
+
+  it("never returns another user's captures", async () => {
+    const mine = await seedUser();
+    const theirs = await seedUser();
+    await seedPendingCapture("list-mine", mine, {});
+    await seedPendingCapture("list-theirs", theirs, {});
+
+    const response = await handleListPendingCaptures(
+      serviceRequest("GET", `/internal/pending-captures?user_id=${mine}`),
+      env,
+    );
+    const ids = (await response.json()).pending_captures.map((c) => c.id);
+    expect(ids).toContain("list-mine");
+    expect(ids).not.toContain("list-theirs");
+  });
+
+  // Listing must never claim -- it is a person looking at a screen, not the
+  // backend taking work.
+  it("does not claim the rows it returns", async () => {
+    const userId = await seedUser();
+    await seedPendingCapture("list-no-claim", userId, {});
+
+    await handleListPendingCaptures(
+      serviceRequest("GET", `/internal/pending-captures?user_id=${userId}`),
+      env,
+    );
+
+    const row = await env.DB.prepare(
+      "SELECT claimed_at FROM pending_captures WHERE id = ?",
+    )
+      .bind("list-no-claim")
+      .first();
+    expect(row.claimed_at).toBeNull();
+  });
+
+  it.each([[""], ["not-a-number"], ["1.5"]])(
+    "rejects a missing or invalid user_id: %s",
+    async (userId) => {
+      const response = await handleListPendingCaptures(
+        serviceRequest("GET", `/internal/pending-captures?user_id=${userId}`),
+        env,
+      );
+      expect(response.status).toBe(400);
+    },
+  );
+
+  it("requires the service key", async () => {
+    const response = await handleListPendingCaptures(
+      new Request("https://example.com/internal/pending-captures?user_id=1"),
+      env,
+    );
+    expect(response.status).toBe(401);
   });
 });
 

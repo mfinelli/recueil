@@ -42,6 +42,7 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/slug"
 )
@@ -53,6 +54,7 @@ type Server struct {
 	Mirror                 *mirror.Client
 	Devices                *devices.Client
 	QueueItems             *queueitems.Client
+	PendingCaptures        *pendingcaptures.Client
 	Bootstrap              *auth.BootstrapTokenHolder
 	CookieSecure           bool
 	PairingKey             auth.PairingKey
@@ -66,9 +68,9 @@ type Server struct {
 	AIModel            string
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel string) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel string) *Server {
 	return &Server{
-		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, Bootstrap: bootstrap,
+		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
 		ReadabilityVersion: readabilityVersion, AIModel: aiModel,
 	}
@@ -771,6 +773,35 @@ func (s *Server) ListQueueItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, queueItemListResponse{Items: items})
+}
+
+type pendingCaptureListResponse struct {
+	PendingCaptures []pendingcaptures.UserCapture `json:"pending_captures"`
+}
+
+// GET /api/pending-captures: lists the calling user's captures sitting
+// between "a device finished uploading" and "the backend has ingested it",
+// plus any ingested in the last 15 minutes.
+//
+// This window is otherwise entirely invisible on the Queue screen, and at
+// the agent's default 30-minute Worker poll interval it is a long time for
+// a capture to look like nothing happened. Always self-scoped: the user id
+// comes from the session, never a parameter.
+func (s *Server) ListPendingCaptures(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	captures, err := s.PendingCaptures.ListForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list pending captures for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, pendingCaptureListResponse{PendingCaptures: captures})
 }
 
 // POST /api/queue-items/{id}/retry: flags one of the calling user's own

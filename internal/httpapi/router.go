@@ -28,7 +28,9 @@
 // session-protected Active Sessions (GET /api/sessions, DELETE
 // /api/sessions/{id}, session-protected queue-item review/retry
 // (GET /api/queue-items -- pending/claimed/failed unconditionally, plus
-// recently-captured, POST /api/queue-items/{id}/retry, also strictly
+// recently-captured, GET /api/pending-captures -- the not-yet-ingested
+// window between a device finishing its upload and the backend pulling it
+// in, POST /api/queue-items/{id}/retry, also strictly
 // self-scoped, same reasoning), session-protected job review/retry
 // (GET /api/jobs -- same pending/processing/failed-unconditional,
 // recently-done shape, POST /api/jobs/{kind}/{id}/retry for the screenshot/
@@ -150,6 +152,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/sessions/{id}", s.DeleteSession)
 			r.Get("/queue-items", s.ListQueueItems)
 			r.Post("/queue-items/{id}/retry", s.RetryQueueItem)
+			r.Get("/pending-captures", s.ListPendingCaptures)
 			r.Get("/jobs", s.ListJobs)
 			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)

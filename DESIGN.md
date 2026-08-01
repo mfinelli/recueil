@@ -2191,11 +2191,14 @@ here:** rather than a per-capture badge on the capture detail view, failed jobs
 across all three of screenshot/readability/AI surface together on the
 dashboard's Queue screen (§8's `queue_items` retry UI, extended to cover these
 too) — one place for everything currently stuck, not scattered badges per
-capture. `error` is shown on its own line there, not folded into attempts/timing
-metadata: which provider error occurred (e.g. rate-limited vs. some other
-failure) is often the most actionable thing on the screen. No dead-letter queue
-is needed given this is optional and low-stakes; the failed row itself serves
-that purpose.
+capture. (That "currently stuck" framing is no longer the whole story: the
+screen has since become a full lifecycle view — see "Manual retry" below for
+when `GET /api/jobs` broadened past `failed`, and §8's own pending-captures
+listing for the third section that closed the last invisible gap in it.) `error`
+is shown on its own line there, not folded into attempts/timing metadata: which
+provider error occurred (e.g. rate-limited vs. some other failure) is often the
+most actionable thing on the screen. No dead-letter queue is needed given this
+is optional and low-stakes; the failed row itself serves that purpose.
 
 The same `attempts`/`next_attempt_at`/bounded-retry shape is reused for the
 screenshot job in §6.
@@ -2456,6 +2459,41 @@ commits. Two things it lacked, both added together:
   each other and it's worth knowing which won, but every agent presents the same
   service secret and has no per-instance identity. `claimed_at` alone is all the
   stale-reclaim needs.
+
+- **`GET /internal/pending-captures?user_id=`** — the dashboard's own read-only,
+  user-scoped listing, on the same path the claim `POST`s to. Same path,
+  different verb, genuinely different operation: the `POST` is the backend
+  taking work across every user and it mutates `claimed_at`; the `GET` is one
+  person looking at their own rows and mutates nothing. Listing must never
+  claim, or a dashboard left open would starve the ingester.
+
+  This exists because the window between "a device finished uploading" and "the
+  backend has ingested it" was otherwise completely invisible — and at the
+  agent's default 1800s Worker poll interval, that's up to half an hour in which
+  a capture looks like nothing happened at all. It's surfaced as the Queue
+  screen's third section, between the capture queue and the enrichment jobs,
+  matching the actual lifecycle order.
+
+  Rows already ingested within the last 15 minutes are included, the same
+  recency window `GET /internal/queue-items` and `GET /api/jobs` already use, so
+  a capture doesn't vanish from the screen the instant it moves on. Unlike those
+  two there's no status column to filter on: `(fetched_by_backend, claimed_at)`
+  is the entire state, and its three reachable combinations map to
+  waiting/ingesting/ingested. **There is deliberately no failed state among
+  them** — a row whose ingestion keeps failing is indistinguishable from one
+  merely waiting its turn (the same fact that makes the cleanup sweep keep
+  both), so the section states its expected window in the hint text and lets an
+  obviously-stale row speak for itself, rather than inventing a distinction the
+  data can't support. Doing that properly needs the `attempts`/`error` column
+  this table doesn't have yet.
+
+- **`GET /internal/queue-items` also gained a device name**, via a `LEFT JOIN`
+  against `tokens` on `claimed_by_token_id`. For a `claimed` item this is the
+  actionable part — it says which browser to go and finish the capture in — and
+  for a `failed` one it says where it went wrong. The join is deliberately
+  `LEFT`: `claimed_by_token_id` is `NULL` for an item nobody has picked up, and
+  device revocation is a row delete rather than a soft-delete, so a revoked
+  device leaves nothing to name. Either way the item itself must still list.
 
 - **`POST /internal/pending-captures/cleanup`**, mirroring the queue-item sweep
   above, including its 72-hour retention window. Nothing had ever deleted a
@@ -3177,6 +3215,10 @@ CREATE TABLE queue_items (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;
 
+-- Note there is no denormalized device-name column here: the dashboard's
+-- listing endpoint resolves claimed_by_token_id through a LEFT JOIN against
+-- tokens at read time (§8). A copy would only be a second thing to keep
+-- correct when a device is renamed or revoked.
 CREATE INDEX idx_queue_items_user_status ON queue_items(user_id, status);
 CREATE INDEX idx_queue_items_added_by_token_id ON queue_items(added_by_token_id);
 CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token_id);

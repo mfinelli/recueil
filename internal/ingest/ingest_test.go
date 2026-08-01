@@ -40,13 +40,14 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/dbtest"
 	"github.com/mfinelli/recueil/internal/ingest"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
 // fakeR2 and fakeWorker are lightweight in-memory fakes for the two
 // narrow interfaces Ingester depends on -- see ingest.go's own doc
 // comment on r2Client/workerClient for why: internal/r2 and
-// WorkerClient each have their own dedicated tests already proving they
+// internal/pendingcaptures each have their own dedicated tests already proving they
 // talk to their real backends correctly, so this package's tests focus
 // on what it actually owns (the transaction logic, hashing, path
 // handling, job enqueueing) against real Postgres and real disk instead.
@@ -77,7 +78,7 @@ func (f *fakeR2) Delete(_ context.Context, key string) error {
 }
 
 type fakeWorker struct {
-	pending []ingest.PendingCapture
+	pending []pendingcaptures.PendingCapture
 	fetched []string
 
 	// failMarkFetchedTimes, if positive, makes MarkFetched fail this many
@@ -89,7 +90,7 @@ type fakeWorker struct {
 	failMarkFetchedTimes int
 }
 
-func (f *fakeWorker) ClaimPendingCaptures(_ context.Context, limit int) ([]ingest.PendingCapture, error) {
+func (f *fakeWorker) ClaimPendingCaptures(_ context.Context, limit int) ([]pendingcaptures.PendingCapture, error) {
 	if limit < len(f.pending) {
 		return f.pending[:limit], nil
 	}
@@ -132,7 +133,7 @@ func TestIngester_RunOnce_Success(t *testing.T) {
 	r2.objects[r2Key] = html
 
 	worker := &fakeWorker{
-		pending: []ingest.PendingCapture{
+		pending: []pendingcaptures.PendingCapture{
 			{
 				ID:         "capture-1",
 				UserID:     user.ID,
@@ -241,7 +242,7 @@ func TestIngester_RunOnce_Favicon(t *testing.T) {
 	r2.objects[faviconKey] = favicon
 
 	worker := &fakeWorker{
-		pending: []ingest.PendingCapture{
+		pending: []pendingcaptures.PendingCapture{
 			{
 				ID:           "capture-favicon",
 				UserID:       user.ID,
@@ -342,7 +343,7 @@ func TestIngester_RunOnce_MissingFaviconObjectDoesNotFailTheCapture(t *testing.T
 	// Deliberately no object at the favicon key.
 
 	worker := &fakeWorker{
-		pending: []ingest.PendingCapture{
+		pending: []pendingcaptures.PendingCapture{
 			{
 				ID:           "capture-badfavicon",
 				UserID:       user.ID,
@@ -390,7 +391,7 @@ func TestIngester_RunOnce_IdempotentRetry(t *testing.T) {
 	r2 := newFakeR2()
 	r2.objects[r2Key] = html
 	worker := &fakeWorker{
-		pending: []ingest.PendingCapture{
+		pending: []pendingcaptures.PendingCapture{
 			{
 				ID: "capture-retry", UserID: user.ID,
 				URL: "https://example.com/retry", R2KeyHTML: r2Key,
@@ -461,7 +462,7 @@ func TestIngester_RunOnce_OneFailureDoesNotBlockTheRestOfTheBatch(t *testing.T) 
 	r2.objects["pending/1/capture-ok/page.html"] = []byte(`<html><title>OK</title></html>`)
 
 	worker := &fakeWorker{
-		pending: []ingest.PendingCapture{
+		pending: []pendingcaptures.PendingCapture{
 			{
 				ID: "capture-broken", UserID: user.ID,
 				URL: "https://example.com/broken", R2KeyHTML: "pending/1/capture-broken/page.html",
@@ -538,7 +539,7 @@ func TestIngester_RunOnce_LanguageDetection(t *testing.T) {
 			r2 := newFakeR2()
 			r2.objects[r2Key] = []byte(tt.html)
 			worker := &fakeWorker{
-				pending: []ingest.PendingCapture{
+				pending: []pendingcaptures.PendingCapture{
 					{
 						ID:         fmt.Sprintf("lang-test-%d", i),
 						UserID:     user.ID,
@@ -628,7 +629,7 @@ func TestIngester_RunOnce_SourceCaptureIDCollision(t *testing.T) {
 	r2 := newFakeR2()
 	r2.objects[r2Key] = html
 	worker := &fakeWorker{
-		pending: []ingest.PendingCapture{
+		pending: []pendingcaptures.PendingCapture{
 			{
 				ID:         collidingID,
 				UserID:     user.ID,

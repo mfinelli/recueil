@@ -20,7 +20,7 @@
 // screen's two Worker endpoints (GET/DELETE /internal/tokens), both
 // gated by the backend↔Worker service secret. This is the same
 // authenticated-as-the-backend-itself credential tier as internal/mirror
-// (backend-to-D1 push) and internal/ingest.WorkerClient
+// (backend-to-D1 push) and internal/pendingcaptures
 // (service-secret-gated backend polling) -- distinct from
 // internal/deviceapi, which authenticates as a *paired device's own*
 // bearer token, not the backend. It gets its own package rather than

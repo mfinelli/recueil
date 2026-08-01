@@ -48,6 +48,7 @@ import (
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
 )
 
@@ -93,6 +94,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	m := mirror.NewClient(mirrorURL, "test-secret")
 	d := devices.NewClient(mirrorURL, "test-secret")
 	qi := queueitems.NewClient(mirrorURL, "test-secret")
+	pc := pendingcaptures.NewClient(mirrorURL, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, rawToken, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
@@ -102,7 +104,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	// happy-path coverage, keep exercising the real /api/auth/register
 	// flow unchanged. TestRegisterDisabledByDefault covers the
 	// default-false gate directly against its own server.
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -124,11 +126,12 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	m := mirror.NewClient(mirrorURL, "test-secret")
 	d := devices.NewClient(mirrorURL, "test-secret")
 	qi := queueitems.NewClient(mirrorURL, "test-secret")
+	pc := pendingcaptures.NewClient(mirrorURL, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -218,10 +221,11 @@ func TestNewRouter_DashboardSPA(t *testing.T) {
 	m := mirror.NewClient(unreachable, "test-secret")
 	d := devices.NewClient(unreachable, "test-secret")
 	qi := queueitems.NewClient(unreachable, "test-secret")
+	pc := pendingcaptures.NewClient(unreachable, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
@@ -453,11 +457,12 @@ func TestRegisterDisabledByDefault(t *testing.T) {
 	m := mirror.NewClient(unreachable, "test-secret")
 	d := devices.NewClient(unreachable, "test-secret")
 	qi := queueitems.NewClient(unreachable, "test-secret")
+	pc := pendingcaptures.NewClient(unreachable, "test-secret")
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -3256,6 +3261,7 @@ func TestGetCaptureConfig(t *testing.T) {
 		m := mirror.NewClient(unreachable, "test-secret")
 		d := devices.NewClient(unreachable, "test-secret")
 		qi := queueitems.NewClient(unreachable, "test-secret")
+		pc := pendingcaptures.NewClient(unreachable, "test-secret")
 		store := archive.New(t.TempDir())
 		bootstrap, _, err := auth.NewBootstrapTokenHolder()
 		require.NoError(t, err)
@@ -3263,7 +3269,7 @@ func TestGetCaptureConfig(t *testing.T) {
 		// Deliberately "", "" here -- a dev build (no `make`-injected
 		// readability_version) with AI enrichment disabled entirely
 		// (cmd/server.go's own empty-AIBaseURL-means-disabled reasoning).
-		s := httpapi.NewServer(q, pool, store, m, d, qi, bootstrap, false, testPairingKey(t), true, "", "")
+		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "")
 		logger := httplog.NewLogger("recueil-test")
 		logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 		r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)

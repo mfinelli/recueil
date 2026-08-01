@@ -19,7 +19,7 @@
 // Package deviceapi is what a paired device (today: the CLI; the shape
 // generalizes if other Go-side device code ever needs it) does against
 // the Worker's public, device-facing endpoints -- distinct from
-// internal/mirror (backend-to-D1 push) and internal/ingest.WorkerClient
+// internal/mirror (backend-to-D1 push) and internal/pendingcaptures
 // (service-secret-gated backend polling): both of those authenticate as
 // the backend itself, never as a device.
 //

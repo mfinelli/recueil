@@ -32,9 +32,11 @@
 //   claimed-item-to-captured/failed transition
 // - POST /internal/pending-captures, POST
 //   /internal/pending-captures/:id/fetched, POST
-//   /internal/pending-captures/cleanup: service-secret-gated backend
-//   ingestion polling (atomically claim a batch of unfetched captures;
-//   mark one as pulled; sweep long-since-ingested rows)
+//   /internal/pending-captures/cleanup, GET /internal/pending-captures:
+//   service-secret-gated backend ingestion polling (atomically claim a
+//   batch of unfetched captures; mark one as pulled; sweep long-since-
+//   ingested rows) plus a read-only, user-scoped listing for the
+//   dashboard's Queue screen
 // - GET /internal/archived-pages/last-sync, POST
 //   /internal/archived-pages/mirror, GET /internal/archived-pages/page-ids,
 //   POST /internal/archived-pages/delete: service-secret-gated bookmark-list
@@ -438,6 +440,12 @@ export default {
     }
     if (method === "POST" && pathname === "/internal/pending-captures") {
       return handleClaimPendingCaptures(request, env);
+    }
+    // Same path, different verb, genuinely different operation: POST is the
+    // backend claiming work across every user, GET is one user reading their
+    // own. See handleListPendingCaptures.
+    if (method === "GET" && pathname === "/internal/pending-captures") {
+      return handleListPendingCaptures(request, env);
     }
     const fetchedMatch = pathname.match(
       /^\/internal\/pending-captures\/([^/]+)\/fetched$/,
@@ -848,7 +856,13 @@ export async function handleListTokens(request, env) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  // Truthiness rather than a null check: "?user_id=" with no value parses
+  // as null from get() only when the key is absent entirely -- present but
+  // empty gives "", and Number("") is 0, which Number.isInteger happily
+  // accepts. That would turn a malformed request into a silent empty list
+  // for a user id that can never exist, instead of a 400. A real id is
+  // never the empty string, so truthiness is the whole check.
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }
@@ -887,7 +901,7 @@ export async function handleRevokeToken(request, env, tokenIdParam) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   const tokenId = Number(tokenIdParam);
   if (!Number.isInteger(userId) || !Number.isInteger(tokenId)) {
     return new Response("Missing or invalid fields", { status: 400 });
@@ -1096,6 +1110,65 @@ export async function handleMarkPendingCaptureFetched(request, env, captureId) {
     return new Response("Not Found", { status: 404 });
   }
   return new Response(null, { status: 204 });
+}
+
+/**
+ * GET /internal/pending-captures?user_id=: lists one user's captures that
+ * are in the window between "a device finished uploading" and "the backend
+ * has ingested it" -- the dashboard's Queue screen has no other way to see
+ * that stage, and at the default 30-minute backend poll interval it can be
+ * a long one to be invisible for.
+ *
+ * Read-only and user-scoped, which is the whole difference from
+ * handleClaimPendingCaptures on the same path: that one is the backend
+ * taking work (POST, cross-user, mutates claimed_at), this one is a person
+ * looking at their own. Service-secret gated like every /internal route --
+ * the dashboard never talks to this Worker directly, the backend proxies
+ * for it and supplies the user_id from the session.
+ *
+ * Includes rows already ingested within the last 15 minutes, matching
+ * handleListQueueItems' own recency window so a capture doesn't vanish from
+ * the screen the instant it moves on. Unlike that handler there is no
+ * status column to filter on: fetched_by_backend plus claimed_at is the
+ * entire state, and the three combinations map to waiting / ingesting /
+ * ingested. There is deliberately no failed state to surface -- a row that
+ * keeps failing ingestion is indistinguishable from one merely waiting, and
+ * inventing a distinction the data can't support would be worse than
+ * showing the elapsed time and letting an obviously-stale row speak for
+ * itself.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleListPendingCaptures(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const userIdParam = url.searchParams.get("user_id");
+  const userId = userIdParam ? Number(userIdParam) : NaN;
+  if (!Number.isInteger(userId)) {
+    return new Response("Missing or invalid user_id", { status: 400 });
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, url, fetched_by_backend, claimed_at, captured_at, created_at
+     FROM pending_captures
+     WHERE user_id = ?
+       AND (fetched_by_backend = 0
+            OR claimed_at > datetime('now', '-15 minutes'))
+     ORDER BY created_at ASC`,
+  )
+    .bind(userId)
+    .all();
+
+  return new Response(JSON.stringify({ pending_captures: results }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /**
@@ -1674,18 +1747,28 @@ export async function handleListQueueItems(request, env) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }
 
+  // LEFT JOIN, not an inner one: claimed_by_token_id is NULL for an item
+  // nobody has picked up yet, and the token row it points at can be deleted
+  // outright when a device is revoked (tokens are revoked by row delete --
+  // there is no soft-delete). Either way the item itself must still be
+  // listed, just without a device name.
   const { results } = await env.DB.prepare(
-    `SELECT id, url, status, manual_retry, claimed_at, created_at
+    `SELECT queue_items.id, queue_items.url, queue_items.status,
+            queue_items.manual_retry, queue_items.claimed_at,
+            queue_items.created_at,
+            tokens.device_name AS claimed_by_device
      FROM queue_items
-     WHERE user_id = ?
-       AND (status IN ('pending', 'claimed', 'failed')
-            OR (status = 'captured' AND claimed_at > datetime('now', '-15 minutes')))
-     ORDER BY created_at ASC`,
+     LEFT JOIN tokens ON tokens.id = queue_items.claimed_by_token_id
+     WHERE queue_items.user_id = ?
+       AND (queue_items.status IN ('pending', 'claimed', 'failed')
+            OR (queue_items.status = 'captured'
+                AND queue_items.claimed_at > datetime('now', '-15 minutes')))
+     ORDER BY queue_items.created_at ASC`,
   )
     .bind(userId)
     .all();
@@ -1721,7 +1804,7 @@ export async function handleRetryQueueItem(request, env, itemId) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }

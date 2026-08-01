@@ -188,14 +188,13 @@ describe("fetch (router)", () => {
     expect(response.status).toBe(401);
   });
 
-  // The endpoint claims the batch it returns, so it is deliberately not
-  // reachable by GET -- a stale caller still issuing one should fail
-  // loudly rather than silently reading rows without claiming them.
-  it("does not route GET /internal/pending-captures", async () => {
+  // Same path, different verb, different operation: GET is the dashboard's
+  // read-only per-user listing, not a non-claiming variant of the POST.
+  it("routes GET /internal/pending-captures to handleListPendingCaptures", async () => {
     const response = await SELF.fetch(
       "https://example.com/internal/pending-captures",
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
   });
 
   it("routes POST /internal/pending-captures/cleanup to handleCleanupPendingCaptures", async () => {

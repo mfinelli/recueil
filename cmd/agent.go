@@ -38,6 +38,7 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/ingest"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/r2"
 	"github.com/mfinelli/recueil/internal/readability"
@@ -117,7 +118,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	}
 	pipeline := urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 
-	workerClient := ingest.NewWorkerClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+	workerClient := pendingcaptures.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	ingester := ingest.New(ingest.Params{
 		Pool:     pool,
 		Queries:  queries,
@@ -285,7 +286,7 @@ const cleanupInterval = 12 * time.Hour
 type workerCycle struct {
 	ingester   *ingest.Ingester
 	syncer     *mirror.Syncer
-	worker     *ingest.WorkerClient
+	worker     *pendingcaptures.Client
 	queueItems *queueitems.Client
 	logger     *slog.Logger
 

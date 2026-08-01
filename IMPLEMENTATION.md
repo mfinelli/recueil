@@ -2992,3 +2992,88 @@ cover a branch guarding an unreachable event wasn't judged worth it. The test
 there asserts the property the branch protects instead — an already-populated
 capture directory is never handed back out — and says so in its own comment
 rather than implying more coverage than exists.
+
+## Phase 17 (Queue screen: awaiting-ingestion section; device attribution)
+
+Closes the last invisible stage of a capture's life on the Queue screen. See
+DESIGN.md §8's "Pending-capture claiming and cleanup" for the endpoint design.
+
+### The gap
+
+The screen already showed the capture queue and the enrichment jobs, but nothing
+in between — so from the moment a device finished uploading until the backend's
+next poll picked the capture up, there was no evidence anywhere that anything
+was happening. At the default `agent_worker_poll_interval_seconds` of 1800
+that's up to half an hour of apparent silence, which is exactly long enough to
+make someone assume it failed.
+
+### The move (`internal/pendingcaptures`)
+
+The pending-captures Worker client moved out of `internal/ingest` into its own
+package, taking `PendingCapture` with it. `WorkerClient` became `Client`,
+`NewWorkerClient` became `NewClient`.
+
+The reason is the dashboard call site, not tidiness: `internal/httpapi` needs to
+list these rows, and having `cmd/server.go` construct an
+`ingest.NewWorkerClient` would read as though `recueil server` ingests things.
+It doesn't. `pendingcaptures.NewClient` sitting beside `queueitems.NewClient`
+and `devices.NewClient` is obviously right; the alternative was obviously wrong.
+
+The seam is one package per Worker _resource_, not per caller — the agent claims
+/marks/sweeps, the dashboard lists, both through the same client.
+`internal/queueitems` already worked this way (its `List`/`Retry` serve the
+dashboard, its `Cleanup` serves the agent), so this follows an existing shape
+rather than inventing one. Adding a second client for the same table, split by
+caller, was the alternative and would have put the seam in the wrong place.
+
+`parseD1Timestamp` (RFC 3339) now exists in both `internal/ingest` and
+`internal/pendingcaptures`, following the duplicate-don't-share convention
+`queueitems` and `devices` already record for their own
+`parseD1NativeTimestamp`.
+
+### Worker
+
+- **`GET /internal/pending-captures?user_id=`**, alongside the existing `POST`
+  claim on the same path. Read-only and user-scoped; the `POST` is cross-user
+  and mutates `claimed_at`. A test asserts the `GET` doesn't claim — a dashboard
+  left open must not be able to starve the ingester.
+- The `GET` route added last round's test asserting a 404 on that path had to be
+  rewritten. That test's rationale (a stale caller should fail loudly rather
+  than silently read rows without claiming) is now moot: nothing has shipped, so
+  there are no stale callers, and the routes should be whatever makes sense.
+- **`GET /internal/queue-items` gained `claimed_by_device`** via a `LEFT JOIN`
+  on `tokens`. Left, not inner: unclaimed items have a `NULL`
+  `claimed_by_token_id`, and revocation is a row delete, so a revoked device has
+  no name left. The item still lists either way, and both cases are tested.
+
+### Timestamps: two formats on one row
+
+`UserCapture` parses into real `time.Time` values rather than passing D1's
+strings through, and this is the part most likely to be quietly broken by a
+future change:
+
+- `captured_at` is written by the **capturing device** as RFC 3339.
+- `claimed_at` is written by **D1's own `CURRENT_TIMESTAMP`** as
+  `YYYY-MM-DD HH:MM:SS` — no `T`, no `Z`, no offset of any kind.
+
+Passing the latter through to the browser would have been silently wrong rather
+than visibly broken: `new Date("2026-07-12 12:05:09")` is parsed as _local_ time
+by every engine, so every relative timestamp in the new section would have been
+off by the viewer's UTC offset — correct in UTC, wrong everywhere else. Same
+reason `queueitems.Item` already does this. `internal/pendingcaptures`' own
+tests cover both formats on one row explicitly.
+
+`fetched_by_backend` maps from an integer, since SQLite has no boolean type.
+
+### Frontend
+
+A third `<section>` between the two existing ones, reusing the same
+`StatusCategory`/badge/`.items` machinery so it's visually indistinguishable
+from its neighbours. `categoryForPendingCapture` maps
+`(fetched_by_backend, claimed_at)` onto pending/active/done — with no `failed`,
+deliberately. Pending captures feed the summary pills alongside items and jobs,
+and `loadAll` now issues three parallel requests rather than two.
+
+Badge labels are stage-specific ("Waiting"/"Ingesting"/"Ingested") rather than
+reusing the queue's "Pending"/"Claimed"/"Captured": same categories underneath,
+but the words describe what's actually happening at that stage.

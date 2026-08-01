@@ -44,6 +44,7 @@ import (
 
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
@@ -54,14 +55,14 @@ import (
 const defaultBatchLimit = 50
 
 // r2Client and workerClient are narrow interfaces over *r2.Client and
-// *WorkerClient -- just the methods Ingester actually calls. Depending on
+// *pendingcaptures.Client -- just the methods Ingester actually calls. Depending on
 // interfaces here (rather than the concrete types directly) means this
 // package's own tests can substitute lightweight in-memory fakes for R2
 // and the Worker, while still exercising real Postgres (via dbtest), real
 // local disk (via archive.Store against a t.TempDir()), and real URL
 // normalization -- trusting internal/r2's and this package's own
-// WorkerClient tests to separately validate that those two dependencies
-// are correct, rather than re-proving it here via a hand-rolled fake S3
+// internal/pendingcaptures' tests to separately validate that those two
+// dependencies are correct, rather than re-proving it here via a hand-rolled fake S3
 // server.
 type r2Client interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
@@ -69,7 +70,7 @@ type r2Client interface {
 }
 
 type workerClient interface {
-	ClaimPendingCaptures(ctx context.Context, limit int) ([]PendingCapture, error)
+	ClaimPendingCaptures(ctx context.Context, limit int) ([]pendingcaptures.PendingCapture, error)
 	MarkFetched(ctx context.Context, captureID string) error
 }
 
@@ -125,7 +126,8 @@ func New(p Params) *Ingester {
 func (ing *Ingester) RunOnce(ctx context.Context) error {
 	// Claims the batch, rather than merely reading it: this is what stops
 	// a second agent process from picking up the same rows and silently
-	// writing duplicate captures. See WorkerClient.ClaimPendingCaptures.
+	// writing duplicate captures. See
+	// pendingcaptures.Client.ClaimPendingCaptures.
 	pending, err := ing.worker.ClaimPendingCaptures(ctx, defaultBatchLimit)
 	if err != nil {
 		return fmt.Errorf("ingest: claiming pending captures: %w", err)
@@ -145,7 +147,7 @@ func (ing *Ingester) RunOnce(ctx context.Context) error {
 // ordering: local disk write, then the Postgres transaction commits, then the
 // R2 object is deleted, then the D1 flag is set, then (once both cleanup
 // calls have actually succeeded) source_capture_id is cleared.
-func (ing *Ingester) processOne(ctx context.Context, pc *PendingCapture) error {
+func (ing *Ingester) processOne(ctx context.Context, pc *pendingcaptures.PendingCapture) error {
 	captureRowID, commitErr := ing.captureAndCommit(ctx, pc)
 	if commitErr != nil {
 		existing, lookupErr := ing.queries.GetCaptureBySourceCaptureID(ctx, pgtype.Text{String: pc.ID, Valid: true})
@@ -209,7 +211,7 @@ func (ing *Ingester) processOne(ctx context.Context, pc *PendingCapture) error {
 // pull from R2, hash, compress to local disk, normalize the URL, and
 // commit to Postgres. Returns the new (or, via collision-handling,
 // possibly a pre-existing) captures row's id.
-func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (int64, error) {
+func (ing *Ingester) captureAndCommit(ctx context.Context, pc *pendingcaptures.PendingCapture) (int64, error) {
 	capturedAt, err := parseD1Timestamp(pc.CapturedAt)
 	if err != nil {
 		return 0, fmt.Errorf("parsing captured_at %q: %w", pc.CapturedAt, err)
@@ -316,7 +318,7 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 //
 // Never returns an error: a favicon is cosmetic, and a broken/unreachable
 // one is not a reason to fail an otherwise-good capture.
-func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, relDir string) (faviconPath string, writtenSize int32, faviconHash string) {
+func (ing *Ingester) captureFavicon(ctx context.Context, pc *pendingcaptures.PendingCapture, relDir string) (faviconPath string, writtenSize int32, faviconHash string) {
 	key := *pc.R2KeyFavicon
 
 	body, err := ing.r2.Get(ctx, key)
@@ -391,7 +393,7 @@ type writeInput struct {
 // inserts as one transaction -- either all of it lands, or none of it
 // does, so a crash mid-transaction can never leave a capture row without
 // its corresponding job rows.
-func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in *writeInput) (captureID int64, inserted bool, err error) {
+func (ing *Ingester) writeToPostgres(ctx context.Context, pc *pendingcaptures.PendingCapture, in *writeInput) (captureID int64, inserted bool, err error) {
 	tx, err := ing.pool.Begin(ctx)
 	if err != nil {
 		return 0, false, fmt.Errorf("beginning transaction: %w", err)

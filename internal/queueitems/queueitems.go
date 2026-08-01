@@ -22,7 +22,7 @@
 // POST /internal/queue-items (service-secret-gated, backend-initiated
 // enqueue), all gated by the backend<->Worker service secret. Same
 // authenticated-as-the-backend-itself credential tier as internal/devices,
-// internal/mirror, and internal/ingest.WorkerClient -- gets its own package
+// internal/mirror, and internal/pendingcaptures -- gets its own package
 // for the same reason internal/devices does: each service-secret-gated
 // concern here has its own small client, not one shared "Worker API"
 // grab-bag.
