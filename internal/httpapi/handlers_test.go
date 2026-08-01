@@ -1735,6 +1735,242 @@ func TestGetSettings(t *testing.T) {
 	})
 }
 
+type testStatsResponse struct {
+	PageCount             int64 `json:"page_count"`
+	CaptureCount          int64 `json:"capture_count"`
+	HTMLCompressedBytes   int64 `json:"html_compressed_bytes"`
+	HTMLUncompressedBytes int64 `json:"html_uncompressed_bytes"`
+	FaviconBytes          int64 `json:"favicon_bytes"`
+	ScreenshotBytes       int64 `json:"screenshot_bytes"`
+}
+
+func TestGetStats(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a brand new user with no pages gets all zeros, not a 404/500", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/stats", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got testStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, testStatsResponse{}, got)
+	})
+
+	t.Run("sums sizes across every capture, and counts pages/captures separately", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		ctx := context.Background()
+
+		// Two pages; the second gets a second capture (a re-archive), so
+		// page_count and capture_count diverge -- exercising that these
+		// are two genuinely different counts, not the same number twice.
+		pageA := dbtest.CreatePage(t, pool, user.ID, "https://example.com/stats-a")
+		pageB := dbtest.CreatePage(t, pool, user.ID, "https://example.com/stats-b")
+
+		// dbtest.CreateCapture's own fixed sizes: 100 compressed / 500
+		// uncompressed, no favicon/thumbnail (both NULL) unless set below.
+		dbtest.CreateCapture(t, pool, pageA.ID)
+		dbtest.CreateCapture(t, pool, pageB.ID)
+		captureB2 := dbtest.CreateCapture(t, pool, pageB.ID)
+
+		_, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+			PageID: pageA.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
+			RawUrl: "https://example.com/favicon-carrier", HtmlPath: "unused.html.zst",
+			HtmlCompressedSizeBytes: 0, HtmlUncompressedSizeBytes: 0, ContentHash: "unused-" + t.Name(),
+			CapturedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
+			FaviconPath: pgtype.Text{String: "fav.png", Valid: true}, FaviconSizeBytes: pgtype.Int4{Int32: 7, Valid: true},
+			FaviconHash: pgtype.Text{String: "favhash", Valid: true},
+		})
+		require.NoError(t, err)
+
+		require.NoError(t, q.SetCaptureThumbnail(ctx, db.SetCaptureThumbnailParams{
+			ID: captureB2.ID, ThumbnailPath: pgtype.Text{String: "thumb.png", Valid: true},
+			ThumbnailSizeBytes: pgtype.Int4{Int32: 30, Valid: true}, ThumbnailHash: pgtype.Text{String: "thumbhash", Valid: true},
+		}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/stats", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got testStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+
+		assert.Equal(t, int64(2), got.PageCount)
+		// 3 from CreateCapture + 1 more inserted directly above = 4.
+		assert.Equal(t, int64(4), got.CaptureCount)
+		// 3 * 100 (CreateCapture's default) + 0 (the favicon-carrier
+		// capture's own HTML) = 300 -- a plain sum, not deduplicated.
+		assert.Equal(t, int64(300), got.HTMLCompressedBytes)
+		assert.Equal(t, int64(1500), got.HTMLUncompressedBytes)
+		assert.Equal(t, int64(7), got.FaviconBytes)
+		assert.Equal(t, int64(30), got.ScreenshotBytes)
+	})
+
+	t.Run("only counts the requesting user's own pages/captures", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		otherUser := dbtest.CreateUser(t, pool, "member")
+		otherPage := dbtest.CreatePage(t, pool, otherUser.ID, "https://example.com/not-yours-stats")
+		dbtest.CreateCapture(t, pool, otherPage.ID)
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/stats", cookie)
+		var got testStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, testStatsResponse{}, got)
+	})
+}
+
+// Local to this test, same reasoning as testStatsResponse above --
+// handlers_test.go is in the external httpapi_test package, so it can't
+// see adminStatsResponse/topUserResponse.
+type testTopUserResponse struct {
+	Username            string `json:"username"`
+	CaptureCount        int64  `json:"capture_count"`
+	HTMLCompressedBytes int64  `json:"html_compressed_bytes"`
+	OtherBytes          int64  `json:"other_bytes"`
+}
+
+type testAdminStatsResponse struct {
+	PageCount             int64                 `json:"page_count"`
+	CaptureCount          int64                 `json:"capture_count"`
+	HTMLCompressedBytes   int64                 `json:"html_compressed_bytes"`
+	HTMLUncompressedBytes int64                 `json:"html_uncompressed_bytes"`
+	FaviconBytes          int64                 `json:"favicon_bytes"`
+	ScreenshotBytes       int64                 `json:"screenshot_bytes"`
+	TopUsers              []testTopUserResponse `json:"top_users"`
+}
+
+func TestGetAdminStats(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a non-admin gets 403", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/admin/stats", cookie)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("no session at all gets 401, not 403", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/api/admin/stats", http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+
+	t.Run("an admin sees totals summed across every user, not just their own", func(t *testing.T) {
+		admin := dbtest.CreateUser(t, pool, "admin")
+		other := dbtest.CreateUser(t, pool, "member")
+
+		adminPage := dbtest.CreatePage(t, pool, admin.ID, "https://example.com/admin-page")
+		otherPage := dbtest.CreatePage(t, pool, other.ID, "https://example.com/other-page")
+		dbtest.CreateCapture(t, pool, adminPage.ID) // 100 compressed / 500 uncompressed
+		dbtest.CreateCapture(t, pool, otherPage.ID) // same defaults
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &admin)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/admin/stats", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		var got testAdminStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, int64(2), got.PageCount)
+		assert.Equal(t, int64(2), got.CaptureCount)
+		// Both users' captures included -- 2 * 100, not just the
+		// requesting admin's own 100.
+		assert.Equal(t, int64(200), got.HTMLCompressedBytes)
+	})
+
+	t.Run("top users are ordered by total storage descending, capped at 5, and a user with nothing archived is excluded entirely", func(t *testing.T) {
+		admin := dbtest.CreateUser(t, pool, "admin")
+		q := db.New(pool)
+		ctx := context.Background()
+
+		// Six users with captures (one more than the cap), plus a
+		// seventh with zero -- the zero-capture one should never appear
+		// (an inner join, not a "0 bytes" row), and only 5 of the six
+		// with real usage should come back, biggest first.
+		sizes := []int32{500, 100, 400, 200, 300, 50}
+		for i, size := range sizes {
+			u := dbtest.CreateUser(t, pool, "member")
+			p := dbtest.CreatePage(t, pool, u.ID, fmt.Sprintf("https://example.com/top-user-%d", i))
+			_, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+				PageID: p.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
+				RawUrl: fmt.Sprintf("https://example.com/top-user-raw-%d", i), HtmlPath: "unused.html.zst",
+				HtmlCompressedSizeBytes: size, HtmlUncompressedSizeBytes: size * 4,
+				ContentHash: fmt.Sprintf("top-user-hash-%d-%s", i, t.Name()),
+				CapturedAt:  pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
+			})
+			require.NoError(t, err)
+		}
+		emptyUser := dbtest.CreateUser(t, pool, "member")
+		_ = emptyUser // archives nothing -- the point of this user is absence from the results
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &admin)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/admin/stats", cookie)
+		var got testAdminStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+
+		require.Len(t, got.TopUsers, 5)
+		gotSizes := make([]int64, len(got.TopUsers))
+		for i, u := range got.TopUsers {
+			gotSizes[i] = u.HTMLCompressedBytes
+		}
+		assert.Equal(t, []int64{500, 400, 300, 200, 100}, gotSizes)
+	})
+
+	t.Run("combines favicon and screenshot bytes into one figure per user, separate from HTML", func(t *testing.T) {
+		admin := dbtest.CreateUser(t, pool, "admin")
+		user := dbtest.CreateUser(t, pool, "member")
+		q := db.New(pool)
+		ctx := context.Background()
+
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/combined-bytes")
+		capture, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
+			PageID: page.ID, SourceCaptureID: pgtype.Text{Valid: false}, Source: "extension",
+			RawUrl: "https://example.com/combined-bytes-raw", HtmlPath: "unused.html.zst",
+			HtmlCompressedSizeBytes: 100, HtmlUncompressedSizeBytes: 400,
+			ContentHash: "combined-bytes-" + t.Name(),
+			CapturedAt:  pgtype.Timestamptz{Time: time.Now(), Valid: true}, Language: "simple",
+			FaviconPath: pgtype.Text{String: "fav.png", Valid: true}, FaviconSizeBytes: pgtype.Int4{Int32: 10, Valid: true},
+			FaviconHash: pgtype.Text{String: "favhash", Valid: true},
+		})
+		require.NoError(t, err)
+		require.NoError(t, q.SetCaptureThumbnail(ctx, db.SetCaptureThumbnailParams{
+			ID: capture.ID, ThumbnailPath: pgtype.Text{String: "thumb.png", Valid: true},
+			ThumbnailSizeBytes: pgtype.Int4{Int32: 25, Valid: true}, ThumbnailHash: pgtype.Text{String: "thumbhash", Valid: true},
+		}))
+
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &admin)
+
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/admin/stats", cookie)
+		var got testAdminStatsResponse
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+
+		require.Len(t, got.TopUsers, 1)
+		assert.Equal(t, user.Username, got.TopUsers[0].Username)
+		assert.Equal(t, int64(100), got.TopUsers[0].HTMLCompressedBytes)
+		// 10 (favicon) + 25 (screenshot) combined, not two separate figures.
+		assert.Equal(t, int64(35), got.TopUsers[0].OtherBytes)
+	})
+}
+
 func TestPatchSettings(t *testing.T) {
 	pool := dbtest.Setup(t)
 

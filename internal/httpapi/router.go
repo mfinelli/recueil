@@ -19,10 +19,12 @@
 // Package httpapi is the dashboard-facing HTTP API: registration, login,
 // logout, the bootstrap-token-gated first-admin setup, a session-protected
 // /api/auth/me, session-protected dashboard settings (GET/PATCH
-// /api/settings), session-protected pairing-token management
-// (view/regenerate/revoke), session-protected Manage Devices (list/revoke,
-// strictly self-scoped -- see ListDevices' own doc comment for why
-// cross-user device management isn't a web capability here),
+// /api/settings) and read-only aggregate archive stats (GET /api/stats,
+// the Settings page's stats section -- page/capture counts and a
+// disk-usage breakdown by category), session-protected pairing-token
+// management (view/regenerate/revoke), session-protected Manage Devices
+// (list/revoke, strictly self-scoped -- see ListDevices' doc comment
+// for why cross-user device management isn't a web capability here),
 // session-protected Active Sessions (GET /api/sessions, DELETE
 // /api/sessions/{id}, session-protected queue-item review/retry
 // (GET /api/queue-items -- pending/claimed/failed unconditionally, plus
@@ -46,12 +48,10 @@
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
 // /api/collections, page<->collection membership under
 // /api/pages/{id}/collections, and bidirectional page<->page links under
-// /api/pages/{id}/links[/{linkPageId}]).
-// Routed via chi, with auth.RequireSession used as ordinary chi
-// middleware (no httpapi-specific auth plumbing of its own). RequireAdmin
-// exists in internal/auth but isn't used here -- there's currently no
-// dashboard capability that operates on another user's data at all,
-// mirroring how user creation itself is CLI-only, not a dashboard feature.
+// /api/pages/{id}/links[/{linkPageId}]), and one admin-only route
+// (GET /api/admin/stats -- instance-wide archive stats plus the 5
+// heaviest users by storage. Routed via chi, with auth.RequireSession used as
+// ordinary chi middleware (no httpapi-specific auth plumbing of its own).
 //
 // This package holds request validation and wiring only; the actual work
 // happens in internal/auth (passwords, sessions, the bootstrap holder),
@@ -140,6 +140,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/auth/me", s.Me)
 			r.Get("/settings", s.GetSettings)
 			r.Patch("/settings", s.PatchSettings)
+			r.Get("/stats", s.GetStats)
 			r.Get("/pairing-token", s.GetPairingToken)
 			r.Post("/pairing-token/regenerate", s.RegeneratePairingToken)
 			r.Delete("/pairing-token", s.RevokePairingToken)
@@ -182,6 +183,11 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pages/{id}/collections/{collectionId}", s.RemovePageFromCollection)
 			r.Post("/pages/{id}/links", s.AddPageLink)
 			r.Delete("/pages/{id}/links/{linkPageId}", s.RemovePageLink)
+		})
+
+		r.Group(func(r chi.Router) {
+			r.Use(auth.RequireAdmin(q))
+			r.Get("/admin/stats", s.GetAdminStats)
 		})
 	})
 

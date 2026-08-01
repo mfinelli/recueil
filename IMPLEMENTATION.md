@@ -2781,3 +2781,84 @@ mockup-revision note above. Favicon handling mirrors `PageList.svelte`'s own
 pattern exactly, including _why_ it's a `SvelteSet` keyed by page id rather than
 one shared boolean: several linked pages' images can be loading/failing
 independently at once, on this screen same as that one.
+
+### Archive stats
+
+A small aggregate stats section on the Settings page — page/capture counts and a
+disk-usage breakdown by category — rather than a dedicated profile page, which
+doesn't exist yet and isn't being added just for this.
+
+#### Backend
+
+- `queries/stats.sql` (new file): `GetUserStats`, one query, two CTEs
+  (`page_totals`, `capture_totals`) cross-joined so both always return exactly
+  one row (COUNT is 0, SUM is `NULL` over an empty set, coalesced to 0) even for
+  a brand new user. Hit a genuine, non-obvious Postgres quirk while writing
+  this: a scalar subquery for the page count reported "column reference
+  \`user_id\` is ambiguous" once combined with the joined CTE — even though each
+  piece, tested in isolation, referenced only one `pages` table and had nothing
+  ambiguous about it on its own. Confirmed by testing each CTE alone (fine)
+  against the combined form (ambiguous) directly rather than guessing.
+  Explicitly qualifying `pages.user_id` in _both_ CTEs (not just the one that
+  actually needed it, based on the isolated test) resolved it; documented
+  in-query so it doesn't get "simplified" back to the ambiguous bare form later.
+- `GetStats` handler (`GET /api/stats`) + `statsResponse` type
+  (`internal/httpapi/handlers.go`), registered as its own endpoint rather than
+  folded into `GetSettings` — a computed read-only aggregate is a different
+  concern than mutable user preferences, matching how the rest of this API keeps
+  distinct resources separate. Router's own top-of-file summary comment updated
+  to match.
+- `TestGetStats`: zero-state for a brand new user, a real sum across multiple
+  pages/captures (including one with a favicon and one with a thumbnail, set
+  directly via `InsertCaptureIdempotent`/`SetCaptureThumbnail` rather than
+  `dbtest.CreateCapture`'s own fixed defaults, to exercise those two columns
+  specifically), and cross-user isolation.
+- `internal/auth.RequireAdmin` existed but had never been wired to a route
+  before this — `GET /api/admin/stats` is its first real caller, registered in
+  its own `r.Group` (sibling to the `RequireSession` one, not nested inside it —
+  nesting would run session resolution twice for no reason, since `RequireAdmin`
+  already builds on `RequireSession` internally). Router's own top-of-file
+  comment, which literally said "RequireAdmin exists... but isn't used here,"
+  updated to match and point at DESIGN.md's reasoning.
+- Two new queries (`queries/stats.sql`): `GetSystemStats` (same shape as
+  `GetUserStats`, just without the per-user filter — literally every
+  page/capture, instance-wide; no repeat of the ambiguity bug above, since its
+  subquery and outer scope don't share a `pages` reference the way
+  `GetUserStats`'s two CTEs did) and `GetTopUsersByStorage` (the 5 heaviest
+  users, inner-joined throughout rather than `LEFT JOIN` — a user with zero
+  pages/captures isn't a "top consumer" by definition, so excluding them
+  entirely from the ranking is correct here, not a bug, unlike `GetUserStats`,
+  which needs to represent "zero" for one specific user rather than omit a row).
+  Deliberately coarser breakdown than the personal/system three-way split —
+  compressed HTML vs. favicons-and-screenshots combined into one `other_bytes`
+  figure, confirmed directly: five rows of three numbers each starts to compete
+  with the one number that actually matters for a ranking.
+
+### Frontend
+
+New "Archive stats" section on `Settings.svelte`, loaded independently alongside
+language/theme in the same mount-time `$effect` (three parallel requests now,
+not two) — a stats load failure doesn't block or blank out the language/theme
+toggles, and vice versa, same reasoning `PageDetail`'s own independently-loaded
+sections already follow.
+
+Laid out as two plain summary lines ("_N_ pages archived (_M_ captures)",
+"Occupying _size_ total disk") followed by a details-card breakdown
+(HTML/Favicons/Screenshots, each its own label+value row) — not one uniform
+label/value table throughout, since the two summary lines are already complete
+sentences from their own message strings, not a label paired with a separate
+value the way each breakdown row genuinely is. The disk total sums compressed
+HTML + favicons + screenshots; the uncompressed HTML figure is shown
+parenthetically next to the compressed one for context, not added into the
+total.
+
+Admin stats: gated on `session.user?.role === "admin"`, no new plumbing needed
+since the session store already carries role from its own bootstrap fetch.
+Rendered as the app's **first real `<table>`** — every other ranked/itemized
+list elsewhere uses a details-row card or a chip/pill list, but four independent
+numeric columns per row didn't fit either shape well. Styled to match rather
+than reading like a dropped-in generic table: card-surface outer shape,
+dotted-rule between body rows, eyebrow-style headers, data-mono applied only to
+the numeric `<td>` cells (caught and fixed a first pass that also applied it to
+header words like "Captures," which read oddly — data-mono is for data, not
+labels).

@@ -609,6 +609,94 @@ func (s *Server) GetSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, userSettingsResponseFromSettings(&settings))
 }
 
+type statsResponse struct {
+	PageCount             int64 `json:"page_count"`
+	CaptureCount          int64 `json:"capture_count"`
+	HTMLCompressedBytes   int64 `json:"html_compressed_bytes"`
+	HTMLUncompressedBytes int64 `json:"html_uncompressed_bytes"`
+	FaviconBytes          int64 `json:"favicon_bytes"`
+	ScreenshotBytes       int64 `json:"screenshot_bytes"`
+}
+
+// GET /api/stats: aggregate archive stats for the Settings page's
+// stats section. Unlike GetSettings, GetUserStats has no not-found case
+// to special-case -- it's a COUNT/SUM query with no GROUP BY, so it
+// always returns exactly one row (all zeros for a brand new user)
+// rather than zero rows.
+func (s *Server) GetStats(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	stats, err := s.Queries.GetUserStats(r.Context(), user.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, statsResponse{
+		PageCount: stats.PageCount, CaptureCount: stats.CaptureCount,
+		HTMLCompressedBytes: stats.HtmlCompressedBytes, HTMLUncompressedBytes: stats.HtmlUncompressedBytes,
+		FaviconBytes: stats.FaviconBytes, ScreenshotBytes: stats.ScreenshotBytes,
+	})
+}
+
+type topUserResponse struct {
+	Username            string `json:"username"`
+	CaptureCount        int64  `json:"capture_count"`
+	HTMLCompressedBytes int64  `json:"html_compressed_bytes"`
+	OtherBytes          int64  `json:"other_bytes"`
+}
+
+type adminStatsResponse struct {
+	PageCount             int64             `json:"page_count"`
+	CaptureCount          int64             `json:"capture_count"`
+	HTMLCompressedBytes   int64             `json:"html_compressed_bytes"`
+	HTMLUncompressedBytes int64             `json:"html_uncompressed_bytes"`
+	FaviconBytes          int64             `json:"favicon_bytes"`
+	ScreenshotBytes       int64             `json:"screenshot_bytes"`
+	TopUsers              []topUserResponse `json:"top_users"`
+}
+
+// GET /api/admin/stats: instance-wide archive stats (total disk/captures
+// across every user) plus the 5 heaviest users by storage. Admin-only --
+// auth.RequireAdmin already rejects non-admins with 403 before this
+// handler ever runs, so there's no role check here.
+//
+// Content-free (byte counts and capture counts only, no titles/URLs/
+// tags) and read-only.
+func (s *Server) GetAdminStats(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	system, err := s.Queries.GetSystemStats(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	topUsers, err := s.Queries.GetTopUsersByStorage(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	resp := adminStatsResponse{
+		PageCount: system.PageCount, CaptureCount: system.CaptureCount,
+		HTMLCompressedBytes: system.HtmlCompressedBytes, HTMLUncompressedBytes: system.HtmlUncompressedBytes,
+		FaviconBytes: system.FaviconBytes, ScreenshotBytes: system.ScreenshotBytes,
+		TopUsers: []topUserResponse{},
+	}
+	for _, u := range topUsers {
+		resp.TopUsers = append(resp.TopUsers, topUserResponse{
+			Username: u.Username, CaptureCount: u.CaptureCount,
+			HTMLCompressedBytes: u.HtmlCompressedBytes, OtherBytes: u.OtherBytes,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // A shape check, not a fixed enum -- this only rejects values that couldn't
 // possibly be a real language tag, not values that aren't (yet) translated.
 var languageTagPattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Z]{2})?$`)

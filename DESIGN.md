@@ -1299,8 +1299,17 @@ path to read or mutate it. Three pieces are needed:
    reaching into another user's access shouldn't be one browser session away.
    `GET /api/devices`/`DELETE /api/devices/{id}` are now strictly self-scoped
    for every role, no exceptions; `resolveTargetUserID` and its `?user_id=`
-   handling were removed from `internal/httpapi` entirely. **Built (Phase 9):**
-   `recueil device list <username>` and
+   handling were removed from `internal/httpapi` entirely. **One narrow
+   exception, later (Phase 16):** `GET /api/admin/stats` is the first real
+   caller of `RequireAdmin`, and it does cross a user boundary — but not the one
+   this reasoning is actually about. What's being protected against here is an
+   admin _acting on_ or _seeing into_ another account (its devices, its archived
+   pages, anything identifying) from a web session. Admin stats exposes none of
+   that: byte counts and capture counts, aggregated and per-username, with no
+   titles, URLs, or tags anywhere in the response — there's no "account access"
+   in it to reach into, read-only, nothing actionable.
+
+   **Built (Phase 9):** `recueil device list <username>` and
    `recueil device revoke <username> <device-id>` (`cmd/device.go`) are the
    operator-only CLI escape hatch this point originally just planned for — the
    person who deployed the instance, not merely an admin account within it,
