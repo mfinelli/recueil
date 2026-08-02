@@ -98,6 +98,19 @@ func UserFromContext(ctx context.Context) (db.User, bool) {
 	return u, ok
 }
 
+// NewContextForTesting attaches a user to ctx exactly the way
+// RequireSession/RequireAPIToken do after a successful auth check, so
+// UserFromContext resolves it. Exported solely for other packages' tests --
+// internal/mcpapi's tool handlers, for one, are deliberately unexported
+// (only registerTools should call them), which means their own tests can't
+// go through a real chi middleware chain to get an authenticated context
+// the way internal/httpapi's handler tests do via httptest. Must not be
+// used outside tests; userContextKey stays unexported specifically so
+// nothing else can forge this.
+func NewContextForTesting(ctx context.Context, user *db.User) context.Context {
+	return context.WithValue(ctx, userContextKey, *user)
+}
+
 // SessionIDFromContext returns the id of the sessions row the current
 // request's cookie resolved to -- distinct from the user, since a user can
 // (and, for this feature, does) have several active sessions at once. Needed

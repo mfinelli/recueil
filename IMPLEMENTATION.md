@@ -3102,3 +3102,215 @@ relevant client's own test. Added for this one;
 claimed it, or the device was revoked — tokens are revoked by row delete, so the
 LEFT JOIN finds nothing) stays nil rather than becoming `""`, which would render
 as a dangling "by " with no name after it.
+
+## Phase 18 (API tokens: MCP-facing auth infrastructure)
+
+Step one of a two-step MCP feature: this phase is the auth credential the MCP
+server (a later phase) will authenticate against, built and merged on its own
+first, deliberately unwired to anything MCP-specific yet — see DESIGN.md §5's
+new "API tokens (machine access, e.g. MCP)" subsection for the decision record.
+Nothing here changes existing behavior; it's new, currently-unused surface area.
+
+### Schema
+
+`migrations/00012_create_api_tokens.sql`: `api_tokens`, same hashed-opaque-
+token shape as `sessions`, but no `expires_at` at all — a standing per-client
+credential, not a login session. `token_hash` is uniquely constrained the same
+way `session_hash` is.
+
+### Auth primitives (`internal/auth/apitoken.go`)
+
+- **`GenerateAPIToken`** is `GenerateSessionToken`'s twin: 32-byte CSPRNG,
+  `rcl_api_...` prefix (joining the existing `rcl_sess_`/`rcl_pair_`/
+  `rcl_live_`/`rcl_bootstrap_` family), hashed via the existing `HashToken` — no
+  new crypto introduced for what's structurally the same credential shape.
+- **`RequireAPIToken`** is structurally parallel to `RequireSession`: resolves
+  `Authorization: Bearer rcl_api_...`, 401s on anything missing/malformed/
+  unrecognized, and on success attaches the user via the _same_ `userContextKey`
+  `RequireSession` uses — so any handler written against `auth.UserFromContext`
+  works unmodified regardless of which of the two middlewares authenticated the
+  request. There's deliberately no `APITokenIDFromContext` counterpart to
+  `SessionIDFromContext`: nothing about an api-token-authenticated request needs
+  to distinguish "this token" from the user's other ones the way session
+  revocation's self-delete guard does.
+- **`last_used_at` is touched synchronously**, not via the fire-and-forget
+  `waitUntil` pattern D1 device tokens use — that pattern exists specifically
+  for Cloudflare Workers' CPU budget, which doesn't apply to a plain Postgres
+  `UPDATE` here.
+
+### Backend endpoints (`internal/httpapi`)
+
+`POST /api/tokens`, `GET /api/tokens`, `DELETE /api/tokens/{id}` — all in the
+existing `RequireSession`-gated group, self-scoped the same way `/api/devices`
+already is (`DeleteApiTokenForUser`'s `:execrows` two-column WHERE is
+`DeleteSessionForUser`'s exact pattern, reused rather than reinvented).
+`GET /api/tokens` never returns the token or its hash, only what's needed to
+recognize/manage a row (`id`, `name`, `created_at`, `last_used_at`); the raw
+token is returned exactly once, from `POST /api/tokens` alone.
+
+### Not built in this phase
+
+- **`RequireAPIToken` is not mounted on any route.** There's no MCP endpoint yet
+  for it to guard; it exists now, tested in isolation, so the MCP phase can
+  mount it without also having to get the credential mechanism right at the same
+  time.
+- **No dashboard UI.** Per the design decision, this will live as a second list
+  on the existing Manage Devices screen rather than a new page — deferred to a
+  frontend-only follow-up phase, mockup-first as usual.
+
+### Tests
+
+`internal/auth/apitoken_test.go`: `TestGenerateAPIToken` (prefix, hash
+correctness, non-collision); `TestRequireAPIToken` split "No Database" (no
+header / non-Bearer scheme / empty Bearer value — all rejected before any query
+runs) and "With Database" (valid token resolves to the right user; unknown token
+rejected; revoked token rejected — the last one is also the executable check on
+§5's "revocation is effectively immediate" claim, since there's no D1/Worker
+propagation delay to wait out).
+
+`internal/httpapi/handlers_test.go`: `TestCreateAPIToken` (mint + blank-name
+rejection + unauthenticated), `TestListAPITokens` (self-scoping, plus an
+explicit assertion that the response body never contains the raw token hash —
+not just that the JSON schema omits a field, but that the substring isn't
+present anywhere in the payload), `TestRevokeAPIToken` (self-scoping mirrors
+`TestRevokeDevice`'s "can't revoke another user's by guessing the id" case
+exactly).
+
+### API tokens: Devices screen frontend
+
+#### `Devices.svelte`
+
+- New "API tokens" section, placed directly after "Paired devices" and before
+  "Active sessions" — per DESIGN.md §5's "second list alongside paired devices"
+  call, keeping the two credential-management lists adjacent.
+- **The raw token is a dismissible callout, not a list row.** Unlike the pairing
+  token above it (decrypt-and-redisplay on demand, §5), an API token's raw value
+  only ever exists in the `POST /api/tokens` response — there's no `GET` that
+  could return it again. `revealedToken` is plain `$state`, held only in memory,
+  cleared on dismiss or on creating a second token; it never touches `apiTokens`
+  (the persisted list), which only ever carries the redacted shape
+  (`id`/`name`/`created_at`/`last_used_at`).
+- **The new row is appended from the create response directly, no follow-up
+  `GET /api/tokens`.** The create response already carries everything a list row
+  needs (id/name/created_at); `last_used_at: null` is filled in locally, which
+  is provably correct for a token that's seconds old, not a guess.
+- **`button.primary`** is a new small modifier on the shared bordered-button
+  chrome — an affirmative, filled-surface treatment for "Create token"
+  specifically, distinct from the bordered default every other button on this
+  screen uses. Deliberately not `comp.primary-button` (the auth-screens' mixin):
+  that one carries `margin-top`/padding sized for a standalone form submit,
+  which doesn't fit an inline row button here.
+- **`formatDateTime`, `m.devices_last_used_at`, `m.devices_never`** are reused
+  as-is from the paired-devices list — identical shape (`created_at`/nullable
+  `last_used_at`), no reason for a second copy. `m.devices_apitokens_created_at`
+  is new (`"created {date}"` vs. devices' `"paired {date}"` — the verb genuinely
+  differs, a token is created, not paired).
+
+#### Types (`src/lib/types.ts`)
+
+`ApiToken` (list-row shape, no `token` field), `ApiTokenListResponse`,
+`ApiTokenCreateResponse` (the one shape that does carry `token`) — kept as three
+distinct interfaces rather than one with an optional `token?`, so it's not
+possible to type a list row as if it could ever legitimately carry a raw value.
+
+#### Tests (`Devices.test.ts`)
+
+`mockLoad`'s dispatcher gained a fourth branch (`/tokens`) — required, not
+optional: the mount-time `$effect` now fires four parallel loads instead of
+three, so every existing test would have hit `mockLoad`'s "unexpected apiJSON
+call" throw without it. All 26 pre-existing tests still pass unchanged.
+
+New `describe("api tokens", ...)` block (12 tests), structured like the existing
+`sessions` block: load/empty/error states, create (asserts the exact `{name}`
+body sent, the reveal callout appearing, the new row landing in the list, and
+the name input clearing), blank-name client-side rejection, copy, dismiss
+(asserts the revealed value disappears but the list row doesn't), revoke
+confirm/decline/error — the confirm-and-error cases mirror
+`TestRevokeDevice`-equivalent coverage on the Go side.
+
+## Phase 19 (MCP Server: read-only tools)
+
+Step two of the MCP feature, on top of Phase 18's auth. Full design record in
+DESIGN.md §16; this entry covers what actually landed and a few things
+discovered along the way that weren't settled at design time.
+
+### New dependency
+
+While researching the SDK, found and factored in
+[GO-2026-5771](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
+(DNS rebinding via the SDK's HTTP transport, patched in v1.4.0 -- long since
+covered by pinning v1.7.0) and the more recent removal of the SDK's default
+cross-origin protection as of v1.6.0. `internal/mcpapi.NewHandler` explicitly
+configures
+`StreamableHTTPOptions.CrossOriginProtection = http.NewCrossOriginProtection()`
+rather than relying on the SDK's now-off default or its deprecated
+`enableoriginverification` compatibility flag. See DESIGN.md §16 for the full
+reasoning, including why bearer-token auth already changes the threat model here
+regardless.
+
+### `internal/mcpapi` (new package)
+
+Sibling to `internal/httpapi`, not a subpackage -- `mcpapi.go` (server/handler
+construction, `Stateless: true`, the cross-origin config above, `clampLimit`,
+local `textOrEmpty`/`timestamptzOrEmpty` copies of `internal/httpapi`'s own
+unexported helpers) and `tools.go` (all seven tools).
+
+### Tools
+
+`search_archive`, `list_recent`, `list_tags`, `list_pages_by_tag`,
+`list_collections`, `list_pages_by_collection`, `get_page` -- all read-only, all
+scoped via `auth.UserFromContext`. `list_pages_by_tag`/
+`list_pages_by_collection` resolve-then-list (`GetTagBySlug`/
+`GetCollectionByID` first, for the ownership check neither `ListTagPages` nor
+`ListCollectionPages` does on its own), then clamp to `limit` in Go since
+neither underlying query takes one.
+
+`get_page` checks an explicit `capture_id` against the resolved page's own
+`ListCapturesByPage` results before returning its content -- catches a caller
+naming a `page_id` it owns and a `capture_id` belonging to a _different_ one of
+its own pages, which `GetCaptureByIDForUser` alone wouldn't catch (it only
+scopes by `user_id`, not by the specific page passed alongside it). Covered by
+`TestGetPage/a_capture_id_belonging_to_a_different_page_of_the_same_user_is_rejected`.
+
+Tool-level failures ("no page with that id", a foreign `capture_id`, etc.)
+return `*mcp.CallToolResult{IsError: true, ...}`, not a Go `error` -- the SDK
+surfaces a Go `error` return as a JSON-RPC protocol-level error, which isn't the
+right shape for "this call succeeded, the answer is just a normal failure."
+Every test asserting one of these checks `result.IsError`, not `err`.
+
+### Routing (`internal/httpapi/router.go`)
+
+`POST /mcp` mounted as a top-level route -- sibling to `/api`, not nested under
+it, since it's a different auth mechanism (bearer `api_tokens`, not the session
+cookie every `/api` route uses) and a different request framing (JSON-RPC over
+Streamable HTTP). Guarded by `auth.RequireAPIToken`, unused until now since
+Phase 18 built it with no caller yet. `cmd/server.go` needed no changes --
+`NewRouter` already receives the `*db.Queries` `mcpapi.NewHandler` needs.
+
+### `internal/auth`: one small addition
+
+`auth.NewContextForTesting(ctx, user)` -- exported specifically because
+`internal/mcpapi`'s tool methods are deliberately unexported (only
+`registerTools` should call them), which means testing them means an internal
+(`package mcpapi`) test file, same reasoning as
+`internal/auth/session_test.go`'s own package choice. But `internal/mcpapi`
+can't reach `internal/auth`'s unexported `userContextKey` even from its own
+internal test package -- different package entirely -- so building a context
+`auth.UserFromContext` will actually recognize needed one small exported hook.
+Not usable to forge auth in production code; `userContextKey` itself stays
+unexported.
+
+### Tests (`internal/mcpapi/tools_test.go`)
+
+One top-level test function per tool, `t.Run` subtests, `package mcpapi`
+(internal, per the above). Every tool has an explicit "never returns/touches
+another user's data" case, not just a happy path -- `TestSearchArchive`,
+`TestListTags`, `TestListPagesByTag`, `TestListCollections`,
+`TestListPagesByCollection`, and `TestGetPage` each check this either via a
+second `dbtest.CreateUser` whose data must not appear, or via a direct attempt
+to reach the other user's row by id/slug (expecting `IsError`, not a Go error,
+per above). `TestGetPage` additionally covers: default-to-latest capture, an
+explicit `capture_id` selecting older content and listing the newer one under
+`other_captures`, and the cross-page `capture_id` guard. `TestClampLimit` is a
+direct unit test of the shared clamp, since several other tests only exercise it
+implicitly.

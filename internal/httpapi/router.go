@@ -64,6 +64,10 @@
 // API surface (queue, presigned R2 URLs, /internal/tokens itself) isn't
 // part of this package.
 //
+// One more route sits outside the /api group entirely: POST /mcp, the
+// MCP server (internal/mcpapi), guarded by auth.RequireAPIToken rather
+// than the session cookie every /api route uses.
+//
 // NewRouter's dashboard parameter is the embedded Svelte build's dist/
 // directory (see main.go's go:embed directive and cmd/server.go, which
 // treats a missing/incomplete embed as a fatal startup error, the same
@@ -90,6 +94,7 @@ import (
 
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/mcpapi"
 	"github.com/mfinelli/recueil/internal/metrics"
 )
 
@@ -148,6 +153,9 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pairing-token", s.RevokePairingToken)
 			r.Get("/devices", s.ListDevices)
 			r.Delete("/devices/{id}", s.RevokeDevice)
+			r.Post("/tokens", s.CreateAPIToken)
+			r.Get("/tokens", s.ListAPITokens)
+			r.Delete("/tokens/{id}", s.RevokeAPIToken)
 			r.Get("/sessions", s.ListSessions)
 			r.Delete("/sessions/{id}", s.DeleteSession)
 			r.Get("/queue-items", s.ListQueueItems)
@@ -193,6 +201,13 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/admin/stats", s.GetAdminStats)
 		})
 	})
+
+	// /mcp is deliberately not under the /api group above: it's a
+	// different surface (internal/mcpapi, not this package) with its own
+	// auth (api_tokens bearer tokens, not the dashboard's session
+	// cookies) and its own request framing (JSON-RPC over Streamable
+	// HTTP, not this package's REST conventions).
+	r.Handle("/mcp", auth.RequireAPIToken(q)(mcpapi.NewHandler(q, build.Version)))
 
 	// dashboard is nil only in this package's own tests (which never
 	// exercise dashboard-serving); cmd/server.go always supplies a real

@@ -44,7 +44,12 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 import { apiJSON, ApiError } from "../lib/api";
-import type { Device, PairingTokenResponse, Session } from "../lib/types";
+import type {
+  ApiToken,
+  Device,
+  PairingTokenResponse,
+  Session,
+} from "../lib/types";
 import Devices from "./Devices.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
@@ -94,16 +99,25 @@ const otherSession: Session = {
   is_current: false,
 };
 
+const claudeDesktopToken: ApiToken = {
+  id: 5,
+  name: "Claude Desktop",
+  created_at: "2026-06-01T12:00:00Z",
+  last_used_at: "2026-07-19T08:30:15Z",
+};
+
 type LoadOptions = {
   pairingToken?: PairingTokenResponse | null;
   pairingTokenError?: unknown;
   devices?: Device[];
   devicesError?: unknown;
+  apiTokens?: ApiToken[];
+  apiTokensError?: unknown;
   sessions?: Session[];
   sessionsError?: unknown;
 };
 
-// Only handles the three GET-on-mount calls -- action tests layer their own
+// Only handles the four GET-on-mount calls -- action tests layer their own
 // mockImplementationOnce for the specific write endpoint they exercise on
 // top of this (mockImplementationOnce takes priority over the base
 // mockImplementation below it).
@@ -112,6 +126,8 @@ function mockLoad({
   pairingTokenError,
   devices = [],
   devicesError,
+  apiTokens = [],
+  apiTokensError,
   sessions = [],
   sessionsError,
 }: LoadOptions = {}) {
@@ -126,6 +142,10 @@ function mockLoad({
     if (path === "/devices") {
       if (devicesError) return Promise.reject(devicesError);
       return Promise.resolve({ devices });
+    }
+    if (path === "/tokens") {
+      if (apiTokensError) return Promise.reject(apiTokensError);
+      return Promise.resolve({ tokens: apiTokens });
     }
     if (path === "/sessions") {
       if (sessionsError) return Promise.reject(sessionsError);
@@ -435,6 +455,183 @@ describe("Devices", () => {
           await screen.findByRole("img", { name: "Unknown device" }),
         ).toBeTruthy();
       });
+    });
+  });
+
+  describe("api tokens", () => {
+    it("shows a token's name and created/last-used dates", async () => {
+      mockLoad({ apiTokens: [claudeDesktopToken] });
+      render(Devices);
+
+      expect(await screen.findByText("Claude Desktop")).toBeTruthy();
+      expect(screen.getByText(/created.*last used/)).toBeTruthy();
+    });
+
+    it("shows a placeholder when no api tokens exist", async () => {
+      mockLoad({ apiTokens: [] });
+      render(Devices);
+
+      expect(await screen.findByText("No API tokens yet.")).toBeTruthy();
+    });
+
+    it("shows the API's own error message when loading tokens fails", async () => {
+      mockLoad({ apiTokensError: new ApiError(500, "tokens unavailable") });
+      render(Devices);
+
+      expect(await screen.findByText("tokens unavailable")).toBeTruthy();
+    });
+
+    it("falls back to a generic error for a non-ApiError tokens load failure", async () => {
+      mockLoad({ apiTokensError: new Error("network error") });
+      render(Devices);
+
+      expect(await screen.findByText("failed to load API tokens")).toBeTruthy();
+    });
+
+    it("creates a token, reveals it once, and adds it to the list", async () => {
+      mockLoad({ apiTokens: [] });
+      render(Devices);
+
+      const nameInput = await screen.findByPlaceholderText(
+        'Name this token, e.g. "Claude Desktop"',
+      );
+      await fireEvent.input(nameInput, { target: { value: "My Script" } });
+
+      apiJSONMock.mockResolvedValueOnce({
+        id: 9,
+        name: "My Script",
+        token: "rcl_api_abc123",
+        created_at: "2026-08-01T00:00:00Z",
+      });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Create token" }),
+      );
+
+      expect(apiJSONMock).toHaveBeenCalledWith("/tokens", {
+        method: "POST",
+        body: { name: "My Script" },
+      });
+      expect(await screen.findByText("rcl_api_abc123")).toBeTruthy();
+      expect(screen.getByText("Token created")).toBeTruthy();
+      // The new row is already in the list underneath the reveal, from the
+      // same response, without a second /tokens fetch.
+      expect(screen.getAllByText("My Script").length).toBeGreaterThan(0);
+      // The input clears, ready for the next token.
+      expect((nameInput as HTMLInputElement).value).toBe("");
+    });
+
+    it("rejects creating a token with a blank name, without calling the API", async () => {
+      mockLoad({ apiTokens: [] });
+      render(Devices);
+
+      const before = apiJSONMock.mock.calls.length;
+      await fireEvent.click(
+        await screen.findByRole("button", { name: "Create token" }),
+      );
+
+      expect(apiJSONMock.mock.calls.length).toBe(before);
+      expect(await screen.findByText("name is required")).toBeTruthy();
+    });
+
+    it("copies the revealed token to the clipboard", async () => {
+      mockLoad({ apiTokens: [] });
+      render(Devices);
+
+      const nameInput = await screen.findByPlaceholderText(
+        'Name this token, e.g. "Claude Desktop"',
+      );
+      await fireEvent.input(nameInput, { target: { value: "My Script" } });
+      apiJSONMock.mockResolvedValueOnce({
+        id: 9,
+        name: "My Script",
+        token: "rcl_api_abc123",
+        created_at: "2026-08-01T00:00:00Z",
+      });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Create token" }),
+      );
+      await screen.findByText("rcl_api_abc123");
+
+      await fireEvent.click(screen.getByRole("button", { name: "Copy token" }));
+
+      expect(writeTextMock).toHaveBeenCalledWith("rcl_api_abc123");
+      expect(
+        await screen.findByRole("button", { name: "Copied!" }),
+      ).toBeTruthy();
+    });
+
+    it("dismisses the reveal callout without affecting the token list", async () => {
+      mockLoad({ apiTokens: [] });
+      render(Devices);
+
+      const nameInput = await screen.findByPlaceholderText(
+        'Name this token, e.g. "Claude Desktop"',
+      );
+      await fireEvent.input(nameInput, { target: { value: "My Script" } });
+      apiJSONMock.mockResolvedValueOnce({
+        id: 9,
+        name: "My Script",
+        token: "rcl_api_abc123",
+        created_at: "2026-08-01T00:00:00Z",
+      });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Create token" }),
+      );
+      await screen.findByText("rcl_api_abc123");
+
+      await fireEvent.click(screen.getByRole("button", { name: "Done" }));
+
+      expect(screen.queryByText("rcl_api_abc123")).toBeNull();
+      expect(screen.getByText("My Script")).toBeTruthy();
+    });
+
+    it("revokes a token after confirming, removing it from the list", async () => {
+      mockLoad({ apiTokens: [claudeDesktopToken] });
+      confirmMock.mockReturnValue(true);
+      render(Devices);
+
+      apiJSONMock.mockResolvedValueOnce(undefined);
+      await fireEvent.click(
+        await screen.findByRole("button", { name: "Revoke Claude Desktop" }),
+      );
+
+      expect(confirmMock).toHaveBeenCalledWith(
+        'Revoke "Claude Desktop"? Any program using this token will lose access immediately.',
+      );
+      expect(apiJSONMock).toHaveBeenCalledWith("/tokens/5", {
+        method: "DELETE",
+      });
+      expect(await screen.findByText("No API tokens yet.")).toBeTruthy();
+    });
+
+    it("doesn't revoke a token when the confirmation is declined", async () => {
+      mockLoad({ apiTokens: [claudeDesktopToken] });
+      confirmMock.mockReturnValue(false);
+      render(Devices);
+
+      const before = apiJSONMock.mock.calls.length;
+      await fireEvent.click(
+        await screen.findByRole("button", { name: "Revoke Claude Desktop" }),
+      );
+
+      expect(apiJSONMock.mock.calls.length).toBe(before);
+      expect(screen.getByText("Claude Desktop")).toBeTruthy();
+    });
+
+    it("shows the API's own error message when revoking a token fails", async () => {
+      mockLoad({ apiTokens: [claudeDesktopToken] });
+      confirmMock.mockReturnValue(true);
+      render(Devices);
+
+      apiJSONMock.mockRejectedValueOnce(
+        new ApiError(500, "cannot revoke token"),
+      );
+      await fireEvent.click(
+        await screen.findByRole("button", { name: "Revoke Claude Desktop" }),
+      );
+
+      expect(await screen.findByText("cannot revoke token")).toBeTruthy();
+      expect(screen.getByText("Claude Desktop")).toBeTruthy();
     });
   });
 });

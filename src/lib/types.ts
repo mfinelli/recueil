@@ -204,6 +204,28 @@ export interface PairingTokenResponse {
   pairing_token: string;
 }
 
+export interface ApiToken {
+  id: number;
+  name: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface ApiTokenListResponse {
+  tokens: ApiToken[];
+}
+
+// POST /api/tokens' response -- the only place the raw token value ever
+// appears. Deliberately a separate shape from ApiToken (which never
+// carries `token`), so it's not possible to accidentally reuse this type
+// for a list row and assume the raw value is available.
+export interface ApiTokenCreateResponse {
+  id: number;
+  name: string;
+  token: string;
+  created_at: string;
+}
+
 // GET/PATCH /api/settings' response shape. language is null both for "no
 // row yet" and "explicitly cleared".
 export interface UserSettings {

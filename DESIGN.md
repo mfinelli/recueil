@@ -1473,6 +1473,100 @@ sessions have always lived entirely in Postgres.
   the very next request — including whatever the dashboard tried to do next —
   starts 401ing with no obvious explanation.
 
+### API tokens (machine access, e.g. MCP)
+
+A third credential type, distinct from both device tokens and sessions —
+motivated by the planned MCP server (its own future section, not yet written —
+built in a later phase on top of this): a standing credential for a **program**
+acting on a user's behalf against the backend's own HTTP API directly, outside a
+browser, that isn't tied to a login session's TTL/idle-refresh semantics and
+isn't the pairing-token/D1 device-auth path either.
+
+**Why neither existing mechanism fits:**
+
+- **Not a session.** Sessions exist for the dashboard's own browser-based login
+  and are DB-backed with a 30-day absolute TTL, refreshed via `last_seen_at` on
+  every request. A long-running local MCP client (e.g. a desktop app's config
+  pointing at a bearer token) has no browser and no login flow to refresh
+  anything through — it needs a credential that's simply valid until explicitly
+  revoked.
+- **Not a device token.** The pairing-token → device-token flow (above) is
+  specifically the Worker/D1 relay path: a device submits the pairing token to
+  the _Worker_, which issues a bearer token _stored and checked in D1_. That
+  path authenticates the extension/PWA/CLI/shortcut against the Worker's queue
+  endpoints — the backend itself never even inspects that credential. MCP tool
+  calls will hit the backend's own HTTP server directly; routing that through D1
+  for no reason would mean either teaching the backend to verify a D1-shaped
+  credential it currently has no relationship with, or adding a pointless Worker
+  round-trip.
+
+**Decision: a fourth token in the existing hashed-opaque-token family,**
+Postgres-only, same shape as `sessions`/D1 device tokens but with no
+`expires_at` at all — closer in kind to a personal access token:
+
+```sql
+CREATE TABLE api_tokens (
+  id BIGINT GENERATED ALWAYS AS IDENTITY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  name TEXT NOT NULL,           -- user-supplied label, e.g. "Claude Desktop"
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  CONSTRAINT api_tokens_pkey PRIMARY KEY (id),
+  CONSTRAINT api_tokens_token_hash_key UNIQUE (token_hash),
+  CONSTRAINT api_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_api_tokens_user_id ON api_tokens(user_id);
+```
+
+- **Generation and storage reuse existing primitives, not new crypto.**
+  `internal/auth.GenerateSessionToken` already generates a 32-byte CSPRNG value
+  and hashes it via `HashToken` (SHA-256); the new `GenerateAPIToken` is the
+  same call shape with a distinct prefix, `rcl_api_...`, added to the same
+  human-recognizable-prefix convention as
+  `rcl_sess_`/`rcl_pair_`/`rcl_live_`/`rcl_bootstrap_`. Shown once at creation,
+  exactly like a session token or the original device bearer token — never
+  redisplayed, unlike the pairing token (§5's redisplay behavior is specific to
+  the pairing token's role as a long-lived, occasionally-needed-again secret; an
+  API token is a per-client credential where losing it just means minting a new
+  one and revoking the old).
+- **`last_used_at` updated synchronously** on every authenticated MCP request,
+  not the fire-and-forget `waitUntil` pattern used for D1 device tokens (§5) —
+  that pattern exists specifically to stay under Cloudflare Workers' 10ms CPU
+  budget, which doesn't apply here; a plain synchronous `UPDATE` against
+  Postgres is negligible overhead and keeps the write ordered with the request
+  it's attributed to.
+- **Revocation is effectively immediate**, unlike the device-token note above
+  about revocation not being a live push: there's no cross-system propagation
+  here (no Worker, no D1) — Postgres is checked synchronously on every request,
+  so a `DELETE /api/tokens/{id}` takes effect on the very next request made with
+  that token.
+
+**New self-scoped endpoints** (session-gated, dashboard-facing — same tier as
+the pairing-token management endpoints above):
+
+- `POST /api/tokens` — mint a new token; request: `{name}`; response: the raw
+  token, shown exactly once.
+- `GET /api/tokens` — list `{id, name, created_at, last_used_at}` for the
+  current user; never the token or its hash.
+- `DELETE /api/tokens/{id}` — revoke.
+
+**New middleware:** `internal/auth.RequireAPIToken(q *db.Queries)`, structurally
+parallel to the existing `RequireSession` — extracts
+`Authorization: Bearer rcl_api_...`, hashes, looks up `api_tokens`, and loads
+the user into context via the same `auth.UserFromContext` every other handler
+already reads from. Once the MCP server exists, this middleware will be mounted
+only on its route group, not on `/api/*` generally — session cookies remain the
+only credential accepted there.
+
+**Dashboard UI: folded into the existing Manage Devices screen**, as a second
+list alongside paired devices, rather than a new settings page. An API token
+isn't literally a device in the pairing-token/D1 sense, but both lists answer
+the same underlying question — "what has standing access to my archive right
+now" — and a user managing one naturally wants to see the other. The two lists
+stay backed by clearly separate data (`api_tokens` here vs. D1 `tokens` via
+`internal/devices`) and separate endpoints; only the screen groups them.
+
 ### 5a. Backend ↔ Worker service authentication
 
 The backend itself is a distinct, higher-privilege actor from any single user's
@@ -4363,3 +4457,90 @@ rather than the available alternative of never clearing `source_capture_id` —
 which would also have closed this hole, but only by making a durable dedup
 guarantee depend on a client-generated value, which is exactly what §3c's
 collision-retry loop exists because we can't do.
+
+## 16. MCP Server
+
+Read-only access to a user's archive for local MCP clients (Claude Desktop,
+etc.), per the decision recorded in §5's "API tokens" subsection. Deliberately
+scoped to answering questions about the archive, not manipulating it — no write
+tools in this phase, and none planned; if that changes it's a separate design
+decision, not an extension of this one.
+
+**Transport and reachability.** Streamable HTTP, mounted at `POST /mcp` on the
+existing backend HTTP server (`internal/httpapi.NewRouter`) — reachable wherever
+the dashboard already is (LAN or Tailscale, per the deployment decision in this
+section's originating discussion), nothing routed through the Worker/D1.
+`internal/mcpapi` is a sibling to `internal/httpapi`, not a subpackage of it:
+both are HTTP-facing surfaces over the same `internal/db`/`internal/auth`, and
+`/mcp` is mounted in `router.go` alongside `/api`, not nested under it.
+
+**Auth**: `auth.RequireAPIToken`, unchanged from how it was built and tested —
+this phase is the first thing to actually mount it.
+
+**Stateless mode.** `StreamableHTTPOptions.Stateless = true`. Required outright
+for the `2026-07-28` protocol revision (session resumability -- Last-Event-ID,
+standalone GET -- is dropped from that revision entirely), and a reasonable
+default regardless: this is a single-process backend, so there's no
+session-affinity/sticky-routing problem to design around by picking it. Clients
+on an older protocol revision still negotiate down automatically; the SDK
+(`v1.7.0`) supports every revision from `2024-11-05` through `2026-07-28` in one
+build.
+
+**Cross-origin protection, explicitly configured, not left to the SDK's
+default.** The SDK shipped a real CVE
+([GO-2026-5771](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema),
+patched in v1.4.0): pre-patch, a malicious webpage could use DNS rebinding to
+reach a localhost-bound MCP server that had no auth of its own. We're already
+past that fix by virtue of pinning `v1.7.0`, and bearer-token auth changes the
+threat model further in our favor regardless — unlike a cookie, a browser never
+auto-attaches an `Authorization` header, so a malicious page can't ride existing
+credentials the way classic CSRF/rebinding attacks depend on. Even so, defense
+in depth is cheap here: `StreamableHTTPOptions.CrossOriginProtection` is
+explicitly set to `http.NewCrossOriginProtection()` (stdlib, Go 1.25+, already
+satisfied by this project's `go 1.26.5`) rather than relying on the SDK's own
+default, which as of `v1.6.0` is _off_ unless opted back in via the
+`enableoriginverification` `MCPGODEBUG` flag -- itself a compatibility shim
+slated for removal in `v1.8.0`, not something worth building a permanent
+dependency on. With zero trusted origins configured, `CrossOriginProtection`
+still does exactly what's wanted here: browser-context cross-origin requests
+(the only requests that carry `Sec-Fetch-Site`/`Origin` at all) get rejected,
+while genuine MCP clients — which send neither header, being non-browser HTTP
+clients — are unaffected.
+
+**Tools** (all read-only, all scoped to the authenticated user via
+`auth.UserFromContext`, same as every `internal/httpapi` handler):
+
+- `search_archive(query, limit?)` — wraps `SearchPages`.
+- `list_recent(limit?)` — wraps `ListPages` with no query.
+- `list_tags()` — wraps `ListTags`.
+- `list_pages_by_tag(tag_slug, limit?)` — `GetTagBySlug` first (ownership
+  check + resolves the id), then `ListTagPages`.
+- `list_collections()` — wraps `ListCollectionsByUser`.
+- `list_pages_by_collection(collection_id, limit?)` — `GetCollectionByID` first
+  (same ownership-check-then-list shape as tags), then `ListCollectionPages`.
+- `get_page(page_id, capture_id?)` — page metadata (title, url, notes, tags,
+  collections) plus one capture's actual `reader_text`/`ai_summary`, defaulting
+  to the latest capture. Deliberately _not_ a 1:1 mirror of the dashboard's own
+  `GET /api/pages/{id}` + `GET /api/captures/{id}` split: those stay separate
+  because a page-detail _view_ shouldn't eagerly load every capture's full text,
+  but a single MCP tool call is the actual unit of work being asked for, and
+  forcing two round trips for the common case ("give me this page's content")
+  doesn't serve that. The other available captures (id + date, no text) are
+  listed alongside, so a model can ask for a specific `capture_id` without a
+  separate "list this page's versions" tool. `capture_id`, when given, is
+  checked against the resolved page's own id before its text is returned —
+  `GetCaptureByIDForUser` only scopes by `user_id`, not by the specific page
+  passed alongside it, so without this check a caller could name a `page_id` it
+  owns and a `capture_id` belonging to a _different_ one of its own pages and
+  get back metadata from one page paired with content from another.
+
+**`limit` handling.** `SearchPages`/`ListPages` already take `limit`/`offset`
+and return `total_count` via a window function — reused as-is, default 20,
+capped at 100. `ListTagPages`/`ListCollectionPages` have neither (dashboard-
+scale, unpaginated by design, per those queries' own comments) — fetched in full
+and sliced to the same default/cap in Go, rather than adding a new query variant
+for two call sites.
+
+**Dependency.** `github.com/modelcontextprotocol/go-sdk v1.7.0`, no other new
+third-party dependency — tool schemas are derived automatically from Go struct
+tags (`AddTool`'s generic form), so `jsonschema-go` isn't imported directly.
