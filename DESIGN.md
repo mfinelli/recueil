@@ -4457,3 +4457,90 @@ rather than the available alternative of never clearing `source_capture_id` —
 which would also have closed this hole, but only by making a durable dedup
 guarantee depend on a client-generated value, which is exactly what §3c's
 collision-retry loop exists because we can't do.
+
+## 16. MCP Server
+
+Read-only access to a user's archive for local MCP clients (Claude Desktop,
+etc.), per the decision recorded in §5's "API tokens" subsection. Deliberately
+scoped to answering questions about the archive, not manipulating it — no write
+tools in this phase, and none planned; if that changes it's a separate design
+decision, not an extension of this one.
+
+**Transport and reachability.** Streamable HTTP, mounted at `POST /mcp` on the
+existing backend HTTP server (`internal/httpapi.NewRouter`) — reachable wherever
+the dashboard already is (LAN or Tailscale, per the deployment decision in this
+section's originating discussion), nothing routed through the Worker/D1.
+`internal/mcpapi` is a sibling to `internal/httpapi`, not a subpackage of it:
+both are HTTP-facing surfaces over the same `internal/db`/`internal/auth`, and
+`/mcp` is mounted in `router.go` alongside `/api`, not nested under it.
+
+**Auth**: `auth.RequireAPIToken`, unchanged from how it was built and tested —
+this phase is the first thing to actually mount it.
+
+**Stateless mode.** `StreamableHTTPOptions.Stateless = true`. Required outright
+for the `2026-07-28` protocol revision (session resumability -- Last-Event-ID,
+standalone GET -- is dropped from that revision entirely), and a reasonable
+default regardless: this is a single-process backend, so there's no
+session-affinity/sticky-routing problem to design around by picking it. Clients
+on an older protocol revision still negotiate down automatically; the SDK
+(`v1.7.0`) supports every revision from `2024-11-05` through `2026-07-28` in one
+build.
+
+**Cross-origin protection, explicitly configured, not left to the SDK's
+default.** The SDK shipped a real CVE
+([GO-2026-5771](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema),
+patched in v1.4.0): pre-patch, a malicious webpage could use DNS rebinding to
+reach a localhost-bound MCP server that had no auth of its own. We're already
+past that fix by virtue of pinning `v1.7.0`, and bearer-token auth changes the
+threat model further in our favor regardless — unlike a cookie, a browser never
+auto-attaches an `Authorization` header, so a malicious page can't ride existing
+credentials the way classic CSRF/rebinding attacks depend on. Even so, defense
+in depth is cheap here: `StreamableHTTPOptions.CrossOriginProtection` is
+explicitly set to `http.NewCrossOriginProtection()` (stdlib, Go 1.25+, already
+satisfied by this project's `go 1.26.5`) rather than relying on the SDK's own
+default, which as of `v1.6.0` is _off_ unless opted back in via the
+`enableoriginverification` `MCPGODEBUG` flag -- itself a compatibility shim
+slated for removal in `v1.8.0`, not something worth building a permanent
+dependency on. With zero trusted origins configured, `CrossOriginProtection`
+still does exactly what's wanted here: browser-context cross-origin requests
+(the only requests that carry `Sec-Fetch-Site`/`Origin` at all) get rejected,
+while genuine MCP clients — which send neither header, being non-browser HTTP
+clients — are unaffected.
+
+**Tools** (all read-only, all scoped to the authenticated user via
+`auth.UserFromContext`, same as every `internal/httpapi` handler):
+
+- `search_archive(query, limit?)` — wraps `SearchPages`.
+- `list_recent(limit?)` — wraps `ListPages` with no query.
+- `list_tags()` — wraps `ListTags`.
+- `list_pages_by_tag(tag_slug, limit?)` — `GetTagBySlug` first (ownership
+  check + resolves the id), then `ListTagPages`.
+- `list_collections()` — wraps `ListCollectionsByUser`.
+- `list_pages_by_collection(collection_id, limit?)` — `GetCollectionByID` first
+  (same ownership-check-then-list shape as tags), then `ListCollectionPages`.
+- `get_page(page_id, capture_id?)` — page metadata (title, url, notes, tags,
+  collections) plus one capture's actual `reader_text`/`ai_summary`, defaulting
+  to the latest capture. Deliberately _not_ a 1:1 mirror of the dashboard's own
+  `GET /api/pages/{id}` + `GET /api/captures/{id}` split: those stay separate
+  because a page-detail _view_ shouldn't eagerly load every capture's full text,
+  but a single MCP tool call is the actual unit of work being asked for, and
+  forcing two round trips for the common case ("give me this page's content")
+  doesn't serve that. The other available captures (id + date, no text) are
+  listed alongside, so a model can ask for a specific `capture_id` without a
+  separate "list this page's versions" tool. `capture_id`, when given, is
+  checked against the resolved page's own id before its text is returned —
+  `GetCaptureByIDForUser` only scopes by `user_id`, not by the specific page
+  passed alongside it, so without this check a caller could name a `page_id` it
+  owns and a `capture_id` belonging to a _different_ one of its own pages and
+  get back metadata from one page paired with content from another.
+
+**`limit` handling.** `SearchPages`/`ListPages` already take `limit`/`offset`
+and return `total_count` via a window function — reused as-is, default 20,
+capped at 100. `ListTagPages`/`ListCollectionPages` have neither (dashboard-
+scale, unpaginated by design, per those queries' own comments) — fetched in full
+and sliced to the same default/cap in Go, rather than adding a new query variant
+for two call sites.
+
+**Dependency.** `github.com/modelcontextprotocol/go-sdk v1.7.0`, no other new
+third-party dependency — tool schemas are derived automatically from Go struct
+tags (`AddTool`'s generic form), so `jsonschema-go` isn't imported directly.

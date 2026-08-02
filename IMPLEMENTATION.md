@@ -3227,3 +3227,90 @@ the name input clearing), blank-name client-side rejection, copy, dismiss
 (asserts the revealed value disappears but the list row doesn't), revoke
 confirm/decline/error — the confirm-and-error cases mirror
 `TestRevokeDevice`-equivalent coverage on the Go side.
+
+## Phase 19 (MCP Server: read-only tools)
+
+Step two of the MCP feature, on top of Phase 18's auth. Full design record in
+DESIGN.md §16; this entry covers what actually landed and a few things
+discovered along the way that weren't settled at design time.
+
+### New dependency
+
+While researching the SDK, found and factored in
+[GO-2026-5771](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema)
+(DNS rebinding via the SDK's HTTP transport, patched in v1.4.0 -- long since
+covered by pinning v1.7.0) and the more recent removal of the SDK's default
+cross-origin protection as of v1.6.0. `internal/mcpapi.NewHandler` explicitly
+configures
+`StreamableHTTPOptions.CrossOriginProtection = http.NewCrossOriginProtection()`
+rather than relying on the SDK's now-off default or its deprecated
+`enableoriginverification` compatibility flag. See DESIGN.md §16 for the full
+reasoning, including why bearer-token auth already changes the threat model here
+regardless.
+
+### `internal/mcpapi` (new package)
+
+Sibling to `internal/httpapi`, not a subpackage -- `mcpapi.go` (server/handler
+construction, `Stateless: true`, the cross-origin config above, `clampLimit`,
+local `textOrEmpty`/`timestamptzOrEmpty` copies of `internal/httpapi`'s own
+unexported helpers) and `tools.go` (all seven tools).
+
+### Tools
+
+`search_archive`, `list_recent`, `list_tags`, `list_pages_by_tag`,
+`list_collections`, `list_pages_by_collection`, `get_page` -- all read-only, all
+scoped via `auth.UserFromContext`. `list_pages_by_tag`/
+`list_pages_by_collection` resolve-then-list (`GetTagBySlug`/
+`GetCollectionByID` first, for the ownership check neither `ListTagPages` nor
+`ListCollectionPages` does on its own), then clamp to `limit` in Go since
+neither underlying query takes one.
+
+`get_page` checks an explicit `capture_id` against the resolved page's own
+`ListCapturesByPage` results before returning its content -- catches a caller
+naming a `page_id` it owns and a `capture_id` belonging to a _different_ one of
+its own pages, which `GetCaptureByIDForUser` alone wouldn't catch (it only
+scopes by `user_id`, not by the specific page passed alongside it). Covered by
+`TestGetPage/a_capture_id_belonging_to_a_different_page_of_the_same_user_is_rejected`.
+
+Tool-level failures ("no page with that id", a foreign `capture_id`, etc.)
+return `*mcp.CallToolResult{IsError: true, ...}`, not a Go `error` -- the SDK
+surfaces a Go `error` return as a JSON-RPC protocol-level error, which isn't the
+right shape for "this call succeeded, the answer is just a normal failure."
+Every test asserting one of these checks `result.IsError`, not `err`.
+
+### Routing (`internal/httpapi/router.go`)
+
+`POST /mcp` mounted as a top-level route -- sibling to `/api`, not nested under
+it, since it's a different auth mechanism (bearer `api_tokens`, not the session
+cookie every `/api` route uses) and a different request framing (JSON-RPC over
+Streamable HTTP). Guarded by `auth.RequireAPIToken`, unused until now since
+Phase 18 built it with no caller yet. `cmd/server.go` needed no changes --
+`NewRouter` already receives the `*db.Queries` `mcpapi.NewHandler` needs.
+
+### `internal/auth`: one small addition
+
+`auth.NewContextForTesting(ctx, user)` -- exported specifically because
+`internal/mcpapi`'s tool methods are deliberately unexported (only
+`registerTools` should call them), which means testing them means an internal
+(`package mcpapi`) test file, same reasoning as
+`internal/auth/session_test.go`'s own package choice. But `internal/mcpapi`
+can't reach `internal/auth`'s unexported `userContextKey` even from its own
+internal test package -- different package entirely -- so building a context
+`auth.UserFromContext` will actually recognize needed one small exported hook.
+Not usable to forge auth in production code; `userContextKey` itself stays
+unexported.
+
+### Tests (`internal/mcpapi/tools_test.go`)
+
+One top-level test function per tool, `t.Run` subtests, `package mcpapi`
+(internal, per the above). Every tool has an explicit "never returns/touches
+another user's data" case, not just a happy path -- `TestSearchArchive`,
+`TestListTags`, `TestListPagesByTag`, `TestListCollections`,
+`TestListPagesByCollection`, and `TestGetPage` each check this either via a
+second `dbtest.CreateUser` whose data must not appear, or via a direct attempt
+to reach the other user's row by id/slug (expecting `IsError`, not a Go error,
+per above). `TestGetPage` additionally covers: default-to-latest capture, an
+explicit `capture_id` selecting older content and listing the newer one under
+`other_captures`, and the cross-page `capture_id` guard. `TestClampLimit` is a
+direct unit test of the shared clamp, since several other tests only exercise it
+implicitly.
