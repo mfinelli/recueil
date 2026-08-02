@@ -18,7 +18,7 @@
 
 // No framework -- this is small enough (two views: pairing form, paired
 // state) that plain DOM manipulation is less code and less to reason about
-// than reaching for anything heavier. Styling now lives in popup.css's
+// than reaching for anything heavier. Styling now lives in popup.scss's
 // token system (see its own file comment); the class names/ids assigned
 // below are its hooks, not incidental.
 //

@@ -34,6 +34,7 @@
 // parses on every service-worker wake, for no benefit.
 
 import { build } from "esbuild";
+import { compileAsync } from "sass";
 import { readFile, writeFile, mkdir, cp, copyFile } from "node:fs/promises";
 
 const BROWSERS = ["chrome", "firefox"];
@@ -82,6 +83,17 @@ async function copyStatic(browser, filename) {
   );
 }
 
+async function compileStyles(browser) {
+  const result = await compileAsync(
+    new URL("./src/popup/popup.scss", import.meta.url).pathname,
+    { style: watch ? "expanded" : "compressed" },
+  );
+  await writeFile(
+    new URL("popup.css", new URL(`./dist/${browser}/`, import.meta.url)),
+    result.css,
+  );
+}
+
 async function copyLocales(browser) {
   await cp(
     new URL("./_locales/", import.meta.url),
@@ -105,11 +117,12 @@ async function buildAll() {
       entry: "./src/popup/popup.js",
       outfile: "popup.js",
     });
-    // popup.html/popup.css are plain static files -- no bundling needed,
-    // just copied alongside the JS bundle popup.html's <script>/<link>
-    // tags reference by the same relative filename.
+    // popup.html is a plain static file -- no bundling needed, just copied
+    // alongside the JS bundle; popup.html's <script>/<link> tags reference
+    // it and the compiled stylesheet by the same relative filenames.
+    // popup.scss is compiled (not copied) -- see compileStyles.
     await copyStatic(browser, "popup.html");
-    await copyStatic(browser, "popup.css");
+    await compileStyles(browser);
     await copyLocales(browser);
     console.log(`built extension/dist/${browser}`);
   }
