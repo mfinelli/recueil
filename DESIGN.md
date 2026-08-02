@@ -3689,7 +3689,7 @@ README that can drift out of sync with the architecture decisions around it.
   continuously-present-at-0 series than one that silently appears and
   disappears) and `recueil_job_oldest_pending_age_seconds{job}` (absent, not
   zero, for a job type with nothing currently pending — a real backlog signal a
-  raw pending count alone wouldn't surface as clearly). All three are a
+  raw pending count alone wouldn't surface as clearly). Every metric here is a
   `prometheus.Collector` that queries fresh on every scrape rather than
   maintaining cached state. Deliberately built on its own
   `prometheus.NewRegistry()`, not the global `prometheus.DefaultRegisterer` —
@@ -3699,8 +3699,40 @@ README that can drift out of sync with the architecture decisions around it.
   independently-built registries never collide, which they would under the
   global default). A failed collection (e.g. the DB unreachable) is logged and
   simply omits that one metric rather than failing the whole scrape — confirmed
-  for real, both the success and failure paths, independently for each of the
-  three custom gauges now that there's more than one.
+  for real, both the success and failure paths, independently for each custom
+  gauge.
+
+  **Everything here is Postgres-only by design, even where D1 has the more
+  complete picture.** True queue depth (`queue_items`/`pending_captures` counts)
+  lives only in D1, and a Prometheus scrape interval (15-60s typical) hitting
+  the Worker on every tick risks the Cloudflare free tier for no operational
+  benefit worth that cost.
+
+  - `recueil_pages_total`, `recueil_captures_total`, and
+    `recueil_storage_bytes{kind}` (`html_compressed` | `html_uncompressed` |
+    `favicon` | `screenshot`) reuse `GetSystemStats` — the same query the
+    dashboard's admin stats screen already runs — rather than adding a
+    metrics-specific one. Doubles as free ingestion-throughput visibility
+    (`rate()`/`increase()` over either total) without ever asking the Worker,
+    which is the more useful "is the queue actually draining" signal anyway
+    compared to a raw depth count.
+  - `recueil_agent_last_success_seconds{cycle}` (`worker` | `local`, matching
+    `AgentWorkerPollIntervalSeconds`/`AgentLocalPollIntervalSeconds` — see
+    cmd/agent.go) answers a real gap: `recueil agent` is a separate deployed
+    process from `recueil server` (§2), and `/metrics` is only mounted on
+    `server`'s router, so nothing today surfaces whether the agent is still
+    alive and succeeding versus silently stuck. Backed by a new
+    `agent_heartbeats(cycle, last_success_at)` table the agent upserts into
+    itself after a cycle completes — but only when every step in that cycle
+    succeeded, not merely because the cycle ran: `workerCycle.run`'s heartbeat
+    is gated on ingestion _and_ mirror sync both succeeding (explicitly
+    excluding the once-per-`cleanupInterval` D1 sweep, which is best-effort
+    maintenance, not part of every cycle), and `runLocalCycle`'s on screenshot,
+    readability, and AI enrichment (when enabled) all succeeding. Recording a
+    heartbeat regardless of outcome would hide exactly the failure this metric
+    exists to catch. Same absent-not-zero shape as the job-age gauge: a cycle
+    that's never recorded a success has no row at all, not a stale zero.
+
 - **OpenTelemetry (distributed tracing) was considered and intentionally
   deferred, not rejected outright.** The core API/SDK
   (`go.opentelemetry.io/otel`) is actually light on its own (just `go-logr`),
