@@ -37,6 +37,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Plus from "@lucide/svelte/icons/plus";
+  import Key from "@lucide/svelte/icons/key";
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import Monitor from "@lucide/svelte/icons/monitor";
   import Tablet from "@lucide/svelte/icons/tablet";
@@ -49,6 +50,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AppHeader from "../components/AppHeader.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type {
+    ApiToken,
+    ApiTokenCreateResponse,
+    ApiTokenListResponse,
     Device,
     DeviceListResponse,
     PairingTokenResponse,
@@ -111,6 +115,18 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let devices = $state<Device[]>([]);
   let devicesLoading = $state(true);
 
+  let apiTokens = $state<ApiToken[]>([]);
+  let apiTokensLoading = $state(true);
+  let newTokenName = $state("");
+  let creatingToken = $state(false);
+  // The raw value of a just-created token -- held only in memory, never
+  // persisted anywhere client-side, and cleared as soon as the reveal
+  // callout is dismissed or another token is created. This is the one
+  // and only place the raw value ever exists after the create response.
+  let revealedToken = $state<ApiTokenCreateResponse | null>(null);
+  let tokenCopied = $state(false);
+  let revokingTokenId = $state<number | null>(null);
+
   let sessions = $state<Session[]>([]);
   let sessionsLoading = $state(true);
   let revokingSessionId = $state<number | null>(null);
@@ -151,6 +167,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  async function loadApiTokens() {
+    apiTokensLoading = true;
+    try {
+      const res = await apiJSON<ApiTokenListResponse>("/tokens");
+      apiTokens = res.tokens;
+    } catch (err) {
+      loadError =
+        err instanceof ApiError
+          ? err.message
+          : m.devices_apitokens_load_error();
+    } finally {
+      apiTokensLoading = false;
+    }
+  }
+
   async function loadSessions() {
     sessionsLoading = true;
     try {
@@ -167,6 +198,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   $effect(() => {
     loadPairingToken();
     loadDevices();
+    loadApiTokens();
     loadSessions();
   });
 
@@ -227,6 +259,73 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         err instanceof ApiError ? err.message : m.devices_revoke_device_error();
     } finally {
       revokingDeviceId = null;
+    }
+  }
+
+  async function createApiToken() {
+    const name = newTokenName.trim();
+    if (!name) {
+      actionError = m.devices_apitokens_name_required_error();
+      return;
+    }
+    creatingToken = true;
+    actionError = null;
+    try {
+      const res = await apiJSON<ApiTokenCreateResponse>("/tokens", {
+        method: "POST",
+        body: { name },
+      });
+      revealedToken = res;
+      tokenCopied = false;
+      newTokenName = "";
+      apiTokens = [
+        {
+          id: res.id,
+          name: res.name,
+          created_at: res.created_at,
+          last_used_at: null,
+        },
+        ...apiTokens,
+      ];
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.devices_apitokens_create_error();
+    } finally {
+      creatingToken = false;
+    }
+  }
+
+  async function copyRevealedToken() {
+    if (!revealedToken) return;
+    await navigator.clipboard.writeText(revealedToken.token);
+    tokenCopied = true;
+    setTimeout(() => {
+      tokenCopied = false;
+    }, 2000);
+  }
+
+  function dismissRevealedToken() {
+    revealedToken = null;
+    tokenCopied = false;
+  }
+
+  async function revokeApiToken(token: ApiToken) {
+    if (!confirm(m.devices_apitokens_revoke_confirm({ name: token.name })))
+      return;
+    revokingTokenId = token.id;
+    actionError = null;
+    try {
+      await apiJSON(`/tokens/${token.id}`, { method: "DELETE" });
+      apiTokens = apiTokens.filter((t) => t.id !== token.id);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.devices_apitokens_revoke_error();
+    } finally {
+      revokingTokenId = null;
     }
   }
 
@@ -379,6 +478,116 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
               aria-label={m.devices_revoke_aria({ name: device.device_name })}
               onclick={() => revokeDevice(device)}
               disabled={revokingDeviceId === device.id}
+            >
+              <Trash2 size={14} />
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section>
+    <p class="eyebrow">{m.devices_apitokens_heading()}</p>
+    <p class="hint">
+      {m.devices_apitokens_hint()}
+    </p>
+
+    <div class="create-row">
+      <input
+        type="text"
+        placeholder={m.devices_apitokens_name_placeholder()}
+        bind:value={newTokenName}
+        disabled={creatingToken}
+      />
+      <button
+        type="button"
+        class="primary"
+        onclick={createApiToken}
+        disabled={creatingToken}
+      >
+        <Plus size={13} />
+        {m.devices_apitokens_create()}
+      </button>
+    </div>
+
+    {#if revealedToken}
+      <div class="reveal">
+        <p class="reveal-heading">
+          <Check size={14} />
+          {m.devices_apitokens_created_heading()}
+        </p>
+        <p class="reveal-warning">{m.devices_apitokens_created_warning()}</p>
+        <div class="token-row">
+          <code class="token">{revealedToken.token}</code>
+          <button
+            type="button"
+            class="copy-btn"
+            class:copied={tokenCopied}
+            aria-label={tokenCopied
+              ? m.devices_copied()
+              : m.devices_apitokens_copy_aria()}
+            onclick={copyRevealedToken}
+          >
+            {#if tokenCopied}
+              <Check size={13} />
+              {m.devices_copied()}
+            {:else}
+              <Copy size={13} />
+            {/if}
+          </button>
+        </div>
+        <button
+          type="button"
+          class="reveal-dismiss"
+          onclick={dismissRevealedToken}
+        >
+          {m.devices_apitokens_dismiss()}
+        </button>
+      </div>
+    {/if}
+
+    {#if apiTokensLoading}
+      <p class="status">{m.common_loading()}</p>
+    {:else if apiTokens.length === 0}
+      <div class="status-block">
+        <Key size={24} />
+        <span>{m.devices_apitokens_no_tokens()}</span>
+      </div>
+    {:else}
+      <ul class="devices">
+        {#each apiTokens as token (token.id)}
+          <li>
+            <div class="device-left">
+              <span
+                class="type-icon"
+                role="img"
+                aria-label={m.devices_apitokens_type_label()}
+                title={m.devices_apitokens_type_label()}
+              >
+                <Key size={15} />
+              </span>
+              <div class="device-info">
+                <span class="name">{token.name}</span>
+                <span class="meta">
+                  {m.devices_apitokens_created_at({
+                    date: formatDateTime(token.created_at),
+                  })}
+                  ·
+                  {m.devices_last_used_at({
+                    value: token.last_used_at
+                      ? formatDateTime(token.last_used_at)
+                      : m.devices_never(),
+                  })}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="icon-btn"
+              aria-label={m.devices_apitokens_revoke_aria({ name: token.name })}
+              onclick={() => revokeApiToken(token)}
+              disabled={revokingTokenId === token.id}
             >
               <Trash2 size={14} />
             </button>
@@ -563,6 +772,92 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         background: var(--accent);
         color: var(--paper);
       }
+    }
+
+    // Used only by the "Create token" action -- an affirmative,
+    // filled-surface variant distinct from the bordered default, the
+    // same way primary-button distinguishes itself on the auth screens.
+    // Kept as a button-level modifier rather than pulling in
+    // comp.primary-button, since that mixin also sets margin-top/padding
+    // sized for a standalone auth-form submit, not an inline row button.
+    &.primary {
+      background: var(--accent-success);
+      border-color: var(--accent-success);
+      color: var(--paper);
+
+      &:hover:not(:disabled) {
+        opacity: 0.9;
+        color: var(--paper);
+      }
+    }
+  }
+
+  .create-row {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.85rem;
+
+    input {
+      flex: 1;
+      max-width: 20rem;
+      padding: 0.55rem 0.7rem;
+      @include comp.text-input;
+      border-radius: 0.25rem;
+
+      &::placeholder {
+        color: var(--ink-muted);
+      }
+    }
+  }
+
+  // The one-time raw-token reveal, shown immediately after Create until
+  // dismissed -- deliberately not part of .devices' list rows, since
+  // (unlike the pairing token above) this value can never be shown again
+  // once the callout is dismissed.
+  .reveal {
+    margin-bottom: 1rem;
+    padding: 0.85rem 1rem;
+    border: 1px solid var(--accent-success);
+    border-radius: 3px;
+    background: color-mix(
+      in srgb,
+      var(--accent-success) 8%,
+      var(--paper-raised)
+    );
+  }
+
+  .reveal-heading {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--accent-success);
+  }
+
+  .reveal-warning {
+    margin: 0 0 0.65rem;
+    color: var(--ink-muted);
+    font-size: 0.78rem;
+  }
+
+  .reveal-dismiss {
+    margin-top: 0.65rem;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    text-decoration: underline;
+    cursor: pointer;
+
+    &:hover {
+      color: var(--accent);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
     }
   }
 

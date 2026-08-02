@@ -3175,3 +3175,55 @@ not just that the JSON schema omits a field, but that the substring isn't
 present anywhere in the payload), `TestRevokeAPIToken` (self-scoping mirrors
 `TestRevokeDevice`'s "can't revoke another user's by guessing the id" case
 exactly).
+
+### API tokens: Devices screen frontend
+
+#### `Devices.svelte`
+
+- New "API tokens" section, placed directly after "Paired devices" and before
+  "Active sessions" — per DESIGN.md §5's "second list alongside paired devices"
+  call, keeping the two credential-management lists adjacent.
+- **The raw token is a dismissible callout, not a list row.** Unlike the pairing
+  token above it (decrypt-and-redisplay on demand, §5), an API token's raw value
+  only ever exists in the `POST /api/tokens` response — there's no `GET` that
+  could return it again. `revealedToken` is plain `$state`, held only in memory,
+  cleared on dismiss or on creating a second token; it never touches `apiTokens`
+  (the persisted list), which only ever carries the redacted shape
+  (`id`/`name`/`created_at`/`last_used_at`).
+- **The new row is appended from the create response directly, no follow-up
+  `GET /api/tokens`.** The create response already carries everything a list row
+  needs (id/name/created_at); `last_used_at: null` is filled in locally, which
+  is provably correct for a token that's seconds old, not a guess.
+- **`button.primary`** is a new small modifier on the shared bordered-button
+  chrome — an affirmative, filled-surface treatment for "Create token"
+  specifically, distinct from the bordered default every other button on this
+  screen uses. Deliberately not `comp.primary-button` (the auth-screens' mixin):
+  that one carries `margin-top`/padding sized for a standalone form submit,
+  which doesn't fit an inline row button here.
+- **`formatDateTime`, `m.devices_last_used_at`, `m.devices_never`** are reused
+  as-is from the paired-devices list — identical shape (`created_at`/nullable
+  `last_used_at`), no reason for a second copy. `m.devices_apitokens_created_at`
+  is new (`"created {date}"` vs. devices' `"paired {date}"` — the verb genuinely
+  differs, a token is created, not paired).
+
+#### Types (`src/lib/types.ts`)
+
+`ApiToken` (list-row shape, no `token` field), `ApiTokenListResponse`,
+`ApiTokenCreateResponse` (the one shape that does carry `token`) — kept as three
+distinct interfaces rather than one with an optional `token?`, so it's not
+possible to type a list row as if it could ever legitimately carry a raw value.
+
+#### Tests (`Devices.test.ts`)
+
+`mockLoad`'s dispatcher gained a fourth branch (`/tokens`) — required, not
+optional: the mount-time `$effect` now fires four parallel loads instead of
+three, so every existing test would have hit `mockLoad`'s "unexpected apiJSON
+call" throw without it. All 26 pre-existing tests still pass unchanged.
+
+New `describe("api tokens", ...)` block (12 tests), structured like the existing
+`sessions` block: load/empty/error states, create (asserts the exact `{name}`
+body sent, the reveal callout appearing, the new row landing in the list, and
+the name input clearing), blank-name client-side rejection, copy, dismiss
+(asserts the revealed value disappears but the list row doesn't), revoke
+confirm/decline/error — the confirm-and-error cases mirror
+`TestRevokeDevice`-equivalent coverage on the Go side.
