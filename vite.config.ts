@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { defineConfig } from "vite";
+import { defineConfig, minifySync } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { paraglideVitePlugin } from "@inlang/paraglide-js";
 
@@ -48,6 +48,22 @@ export default defineConfig({
       strategy: ["custom-userSettings", "preferredLanguage", "baseLocale"],
       emitTsDeclarations: true,
     }),
+    // index.html's inline theme-flash-prevention script ships unminified.
+    {
+      name: "minify-inline-theme-script",
+      apply: "build",
+      transformIndexHtml(html) {
+        return html.replace(/<script>([\s\S]*?)<\/script>/, (_, code) => {
+          const result = minifySync("theme.js", code);
+          if (result.errors.length > 0) {
+            throw new Error(
+              `failed to minify inline theme script: ${JSON.stringify(result.errors)}`,
+            );
+          }
+          return `<script>${result.code}</script>`;
+        });
+      },
+    },
   ],
   server: {
     proxy: {

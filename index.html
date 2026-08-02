@@ -22,8 +22,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <!--
-         Synchronous, blocking, and NOT type="module" (which would be deferred
+    <script>
+      /* Synchronous, blocking, and NOT type="module" (which would be deferred
          until after parsing, defeating the entire point) -- this is the one
          piece of this app that actually runs before first paint, so it's the
          only place a manual light/dark theme override can be applied without
@@ -37,8 +37,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
          "recueil-theme" is src/lib/theme.ts's STORAGE_KEY, duplicated here as
          a literal on purpose -- this script can't import that module (any
          module import would defer it past first paint too). Keep the two in
-         sync by hand if that key ever changes. -->
-    <script>
+         sync by hand if that key ever changes. */
       try {
         var recueilCachedTheme = localStorage.getItem("recueil-theme");
         if (recueilCachedTheme === "light" || recueilCachedTheme === "dark") {
