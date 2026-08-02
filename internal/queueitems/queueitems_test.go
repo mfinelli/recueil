@@ -71,6 +71,31 @@ func TestClient_List(t *testing.T) {
 		assert.True(t, got[1].ClaimedAt.Equal(time.Date(2026, 7, 19, 8, 31, 0, 0, time.UTC)))
 	})
 
+	t.Run("passes the claiming device's name through", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"items":[
+				{"id":"item-1","url":"https://example.com/a","status":"claimed","manual_retry":0,"claimed_at":"2026-07-19 08:31:00","claimed_by_device":"Firefox on thinkpad","created_at":"2026-07-19 08:30:15"},
+				{"id":"item-2","url":"https://example.com/b","status":"pending","manual_retry":0,"claimed_at":"","claimed_by_device":null,"created_at":"2026-07-19 08:30:15"}
+			]}`))
+		}))
+		defer server.Close()
+
+		client := queueitems.NewClient(server.URL, "test-secret")
+		got, err := client.List(context.Background(), 42)
+		require.NoError(t, err)
+
+		require.Len(t, got, 2)
+		require.NotNil(t, got[0].ClaimedByDevice)
+		assert.Equal(t, "Firefox on thinkpad", *got[0].ClaimedByDevice)
+
+		// A JSON null (nobody has claimed it, or the device was revoked --
+		// tokens are revoked by row delete, so the LEFT JOIN finds nothing)
+		// must stay nil rather than becoming an empty string, which would
+		// render as a dangling "by " with no name after it.
+		assert.Nil(t, got[1].ClaimedByDevice)
+	})
+
 	t.Run("an empty item list decodes to an empty (not nil) slice", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			_, _ = w.Write([]byte(`{"items":[]}`))

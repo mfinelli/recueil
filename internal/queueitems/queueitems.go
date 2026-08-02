@@ -73,7 +73,16 @@ type Item struct {
 	Status      string     `json:"status"`
 	ManualRetry bool       `json:"manual_retry"`
 	ClaimedAt   *time.Time `json:"claimed_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// ClaimedByDevice names the device holding (or last holding) the
+	// claim, resolved by the Worker through a LEFT JOIN against its own
+	// tokens table -- for a claimed item this is which browser to go and
+	// finish the capture in, and for a failed one it's where it went
+	// wrong. Nil both when nothing has claimed the item yet and when the
+	// device that did has since been revoked: device tokens are revoked
+	// by row delete, so there is genuinely no name left rather than one
+	// being withheld.
+	ClaimedByDevice *string   `json:"claimed_by_device"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type Client struct {
@@ -96,7 +105,12 @@ type itemWirePayload struct {
 	Status      string `json:"status"`
 	ManualRetry int    `json:"manual_retry"`
 	ClaimedAt   string `json:"claimed_at"`
-	CreatedAt   string `json:"created_at"`
+	// A pointer, unlike the other string fields here: SQL NULL and the
+	// empty string both decode to "" in a plain string, and this is the
+	// one field where that distinction reaches the UI -- "" would render
+	// as an empty "by " suffix rather than omitting the clause.
+	ClaimedByDevice *string `json:"claimed_by_device"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // List lists every one of userID's queue items the Worker's
@@ -139,12 +153,13 @@ func (c *Client) List(ctx context.Context, userID int64) ([]Item, error) {
 			return nil, fmt.Errorf("queueitems: parsing claimed_at for item %q: %w", w.ID, err)
 		}
 		items = append(items, Item{
-			ID:          w.ID,
-			URL:         w.URL,
-			Status:      w.Status,
-			ManualRetry: w.ManualRetry != 0,
-			ClaimedAt:   claimedAt,
-			CreatedAt:   createdAt,
+			ID:              w.ID,
+			URL:             w.URL,
+			Status:          w.Status,
+			ManualRetry:     w.ManualRetry != 0,
+			ClaimedAt:       claimedAt,
+			ClaimedByDevice: w.ClaimedByDevice,
+			CreatedAt:       createdAt,
 		})
 	}
 	return items, nil

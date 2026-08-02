@@ -3077,3 +3077,28 @@ and `loadAll` now issues three parallel requests rather than two.
 Badge labels are stage-specific ("Waiting"/"Ingesting"/"Ingested") rather than
 reusing the queue's "Pending"/"Claimed"/"Captured": same categories underneath,
 but the words describe what's actually happening at that stage.
+
+### The passthrough clients sit in a test-coverage gap
+
+`claimed_by_device` was added to the Worker's query and to the dashboard's own
+`QueueItem` type, but not to Go's `queueitems.Item` — so `encoding/json`
+silently dropped it in the middle and the Queue screen never showed a device
+name. Found by running it, not by any test.
+
+Worth recording as a structural point rather than a one-off, because neither
+suite could have caught it: the Worker's tests assert against the Worker's own
+response, and the dashboard's tests stub `apiJSON` directly, so the Go client
+between them is exercised by nothing but its own tests. That gap is exactly
+where a hand-rolled, manually-synced API client (§13a's own disclosed tradeoff)
+will fail, and it fails silently — an unknown JSON field is dropped, not an
+error.
+
+The practical rule: a field added at both ends needs an assertion in the
+relevant client's own test. Added for this one;
+`internal/pendingcaptures.ListForUser` was checked against `src/lib/types.ts`'s
+`PendingCapture` and already matches on all five fields.
+
+`Item.ClaimedByDevice` is `*string`, not `string`, so a JSON null (nobody has
+claimed it, or the device was revoked — tokens are revoked by row delete, so the
+LEFT JOIN finds nothing) stays nil rather than becoming `""`, which would render
+as a dangling "by " with no name after it.
