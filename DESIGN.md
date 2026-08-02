@@ -1473,6 +1473,100 @@ sessions have always lived entirely in Postgres.
   the very next request — including whatever the dashboard tried to do next —
   starts 401ing with no obvious explanation.
 
+### API tokens (machine access, e.g. MCP)
+
+A third credential type, distinct from both device tokens and sessions —
+motivated by the planned MCP server (its own future section, not yet written —
+built in a later phase on top of this): a standing credential for a **program**
+acting on a user's behalf against the backend's own HTTP API directly, outside a
+browser, that isn't tied to a login session's TTL/idle-refresh semantics and
+isn't the pairing-token/D1 device-auth path either.
+
+**Why neither existing mechanism fits:**
+
+- **Not a session.** Sessions exist for the dashboard's own browser-based login
+  and are DB-backed with a 30-day absolute TTL, refreshed via `last_seen_at` on
+  every request. A long-running local MCP client (e.g. a desktop app's config
+  pointing at a bearer token) has no browser and no login flow to refresh
+  anything through — it needs a credential that's simply valid until explicitly
+  revoked.
+- **Not a device token.** The pairing-token → device-token flow (above) is
+  specifically the Worker/D1 relay path: a device submits the pairing token to
+  the _Worker_, which issues a bearer token _stored and checked in D1_. That
+  path authenticates the extension/PWA/CLI/shortcut against the Worker's queue
+  endpoints — the backend itself never even inspects that credential. MCP tool
+  calls will hit the backend's own HTTP server directly; routing that through D1
+  for no reason would mean either teaching the backend to verify a D1-shaped
+  credential it currently has no relationship with, or adding a pointless Worker
+  round-trip.
+
+**Decision: a fourth token in the existing hashed-opaque-token family,**
+Postgres-only, same shape as `sessions`/D1 device tokens but with no
+`expires_at` at all — closer in kind to a personal access token:
+
+```sql
+CREATE TABLE api_tokens (
+  id BIGINT GENERATED ALWAYS AS IDENTITY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  name TEXT NOT NULL,           -- user-supplied label, e.g. "Claude Desktop"
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ,
+  CONSTRAINT api_tokens_pkey PRIMARY KEY (id),
+  CONSTRAINT api_tokens_token_hash_key UNIQUE (token_hash),
+  CONSTRAINT api_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_api_tokens_user_id ON api_tokens(user_id);
+```
+
+- **Generation and storage reuse existing primitives, not new crypto.**
+  `internal/auth.GenerateSessionToken` already generates a 32-byte CSPRNG value
+  and hashes it via `HashToken` (SHA-256); the new `GenerateAPIToken` is the
+  same call shape with a distinct prefix, `rcl_api_...`, added to the same
+  human-recognizable-prefix convention as
+  `rcl_sess_`/`rcl_pair_`/`rcl_live_`/`rcl_bootstrap_`. Shown once at creation,
+  exactly like a session token or the original device bearer token — never
+  redisplayed, unlike the pairing token (§5's redisplay behavior is specific to
+  the pairing token's role as a long-lived, occasionally-needed-again secret; an
+  API token is a per-client credential where losing it just means minting a new
+  one and revoking the old).
+- **`last_used_at` updated synchronously** on every authenticated MCP request,
+  not the fire-and-forget `waitUntil` pattern used for D1 device tokens (§5) —
+  that pattern exists specifically to stay under Cloudflare Workers' 10ms CPU
+  budget, which doesn't apply here; a plain synchronous `UPDATE` against
+  Postgres is negligible overhead and keeps the write ordered with the request
+  it's attributed to.
+- **Revocation is effectively immediate**, unlike the device-token note above
+  about revocation not being a live push: there's no cross-system propagation
+  here (no Worker, no D1) — Postgres is checked synchronously on every request,
+  so a `DELETE /api/tokens/{id}` takes effect on the very next request made with
+  that token.
+
+**New self-scoped endpoints** (session-gated, dashboard-facing — same tier as
+the pairing-token management endpoints above):
+
+- `POST /api/tokens` — mint a new token; request: `{name}`; response: the raw
+  token, shown exactly once.
+- `GET /api/tokens` — list `{id, name, created_at, last_used_at}` for the
+  current user; never the token or its hash.
+- `DELETE /api/tokens/{id}` — revoke.
+
+**New middleware:** `internal/auth.RequireAPIToken(q *db.Queries)`, structurally
+parallel to the existing `RequireSession` — extracts
+`Authorization: Bearer rcl_api_...`, hashes, looks up `api_tokens`, and loads
+the user into context via the same `auth.UserFromContext` every other handler
+already reads from. Once the MCP server exists, this middleware will be mounted
+only on its route group, not on `/api/*` generally — session cookies remain the
+only credential accepted there.
+
+**Dashboard UI: folded into the existing Manage Devices screen**, as a second
+list alongside paired devices, rather than a new settings page. An API token
+isn't literally a device in the pairing-token/D1 sense, but both lists answer
+the same underlying question — "what has standing access to my archive right
+now" — and a user managing one naturally wants to see the other. The two lists
+stay backed by clearly separate data (`api_tokens` here vs. D1 `tokens` via
+`internal/devices`) and separate endpoints; only the screen groups them.
+
 ### 5a. Backend ↔ Worker service authentication
 
 The backend itself is a distinct, higher-privilege actor from any single user's

@@ -443,6 +443,137 @@ func (s *Server) RevokeDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type apiTokenCreateRequest struct {
+	Name string `json:"name"`
+}
+
+// apiTokenCreateResponse carries the raw token, shown exactly once, same as
+// a session cookie or the original device bearer token -- unlike the
+// pairing token, an api_tokens row is never redisplayed later; losing it
+// just means revoking and minting a new one.
+type apiTokenCreateResponse struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Token   string `json:"token"`
+	Created string `json:"created_at"`
+}
+
+type apiTokenResponse struct {
+	ID         int64      `json:"id"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
+type apiTokenListResponse struct {
+	Tokens []apiTokenResponse `json:"tokens"`
+}
+
+func apiTokenResponseFromRow(t *db.ApiToken) apiTokenResponse {
+	return apiTokenResponse{
+		ID:         t.ID,
+		Name:       t.Name,
+		CreatedAt:  t.CreatedAt.Time,
+		LastUsedAt: timestamptzOrNil(t.LastUsedAt),
+	}
+}
+
+// POST /api/tokens: mints a new api_tokens row for the calling user. The
+// raw token is returned once, in this response only.
+func (s *Server) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	req, err := decodeJSON[apiTokenCreateRequest](r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	raw, hash, err := auth.GenerateAPIToken()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	row, err := s.Queries.CreateApiToken(r.Context(), db.CreateApiTokenParams{
+		UserID:    user.ID,
+		TokenHash: hash,
+		Name:      req.Name,
+	})
+	if err != nil {
+		log.Printf("warning: failed to create api token for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, apiTokenCreateResponse{
+		ID: row.ID, Name: row.Name, Token: raw, Created: row.CreatedAt.Time.Format(time.RFC3339),
+	})
+}
+
+// GET /api/tokens: lists the calling user's api tokens. Always
+// self-scoped. Never returns the token or its hash.
+func (s *Server) ListAPITokens(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	rows, err := s.Queries.ListApiTokensForUser(r.Context(), user.ID)
+	if err != nil {
+		log.Printf("warning: failed to list api tokens for user %d: %v", user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	resp := apiTokenListResponse{Tokens: []apiTokenResponse{}}
+	for i := range rows {
+		resp.Tokens = append(resp.Tokens, apiTokenResponseFromRow(&rows[i]))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// DELETE /api/tokens/{id}: revokes one of the calling user's own api
+// tokens. Always self-scoped, same reasoning as RevokeDevice above.
+// Unlike device-token revocation, this takes effect immediately.
+func (s *Server) RevokeAPIToken(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	tokenID, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid token id")
+		return
+	}
+
+	rowsAffected, err := s.Queries.DeleteApiTokenForUser(r.Context(), db.DeleteApiTokenForUserParams{
+		ID: tokenID, UserID: user.ID,
+	})
+	if err != nil {
+		log.Printf("warning: failed to revoke api token %d for user %d: %v", tokenID, user.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if rowsAffected == 0 {
+		writeError(w, http.StatusNotFound, "token not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type sessionResponse struct {
 	ID             int64  `json:"id"`
 	Browser        string `json:"browser"`

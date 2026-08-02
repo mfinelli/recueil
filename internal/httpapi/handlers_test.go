@@ -916,6 +916,151 @@ func TestRevokeDevice(t *testing.T) {
 	})
 }
 
+func TestCreateAPIToken(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("mints a token and returns the raw value exactly once", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookieBody(t, server, http.MethodPost, "/api/tokens", cookie, `{"name":"Claude Desktop"}`)
+		assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+		var got struct {
+			ID    int64  `json:"id"`
+			Name  string `json:"name"`
+			Token string `json:"token"`
+		}
+		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+		assert.Equal(t, "Claude Desktop", got.Name)
+		assert.True(t, strings.HasPrefix(got.Token, "rcl_api_"))
+		assert.NotZero(t, got.ID)
+	})
+
+	t.Run("blank name is rejected", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookieBody(t, server, http.MethodPost, "/api/tokens", cookie, `{"name":"   "}`)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Post(server.URL+"/api/tokens", "application/json", strings.NewReader(`{"name":"x"}`))
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestListAPITokens(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a member sees only their own tokens, never the token value itself", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		q := db.New(pool)
+
+		_, hash, err := auth.GenerateAPIToken()
+		require.NoError(t, err)
+		_, err = q.CreateApiToken(context.Background(), db.CreateApiTokenParams{
+			UserID: member.ID, TokenHash: hash, Name: "Claude Desktop",
+		})
+		require.NoError(t, err)
+		_, hash2, err := auth.GenerateAPIToken()
+		require.NoError(t, err)
+		_, err = q.CreateApiToken(context.Background(), db.CreateApiTokenParams{
+			UserID: other.ID, TokenHash: hash2, Name: "someone else's token",
+		})
+		require.NoError(t, err)
+
+		cookie := sessionCookieFor(t, pool, &member)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/tokens", cookie)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "someone else's token")
+		assert.NotContains(t, string(body), hash, "the hash must never be exposed in the response")
+
+		var got struct {
+			Tokens []struct {
+				Name string `json:"name"`
+			} `json:"tokens"`
+		}
+		require.NoError(t, json.Unmarshal(body, &got))
+		require.Len(t, got.Tokens, 1)
+		assert.Equal(t, "Claude Desktop", got.Tokens[0].Name)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		resp, err := http.Get(server.URL + "/api/tokens")
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
+func TestRevokeAPIToken(t *testing.T) {
+	pool := dbtest.Setup(t)
+
+	t.Run("a member can revoke their own token", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		q := db.New(pool)
+
+		_, hash, err := auth.GenerateAPIToken()
+		require.NoError(t, err)
+		row, err := q.CreateApiToken(context.Background(), db.CreateApiTokenParams{
+			UserID: member.ID, TokenHash: hash, Name: "Claude Desktop",
+		})
+		require.NoError(t, err)
+
+		cookie := sessionCookieFor(t, pool, &member)
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/tokens/%d", row.ID), cookie)
+		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+	})
+
+	t.Run("a member cannot revoke another user's token even by guessing the id", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		other := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		q := db.New(pool)
+
+		_, hash, err := auth.GenerateAPIToken()
+		require.NoError(t, err)
+		row, err := q.CreateApiToken(context.Background(), db.CreateApiTokenParams{
+			UserID: other.ID, TokenHash: hash, Name: "other's token",
+		})
+		require.NoError(t, err)
+
+		cookie := sessionCookieFor(t, pool, &member)
+		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/tokens/%d", row.ID), cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("revoking a nonexistent token returns 404", func(t *testing.T) {
+		member := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &member)
+
+		resp := requestWithCookie(t, server, http.MethodDelete, "/api/tokens/999999", cookie)
+		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	})
+
+	t.Run("without a session cookie returns 401", func(t *testing.T) {
+		server, _ := newTestServer(t, pool, unreachable)
+		req, err := http.NewRequest(http.MethodDelete, server.URL+"/api/tokens/1", http.NoBody)
+		require.NoError(t, err)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
+}
+
 // createSessionWithUA is sessionCookieFor's twin for tests that need
 // either a specific User-Agent string (to exercise real parsing) or the
 // created session's own id (to build /api/sessions/{id} URLs, or to

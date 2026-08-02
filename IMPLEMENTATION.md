@@ -3102,3 +3102,76 @@ relevant client's own test. Added for this one;
 claimed it, or the device was revoked — tokens are revoked by row delete, so the
 LEFT JOIN finds nothing) stays nil rather than becoming `""`, which would render
 as a dangling "by " with no name after it.
+
+## Phase 18 (API tokens: MCP-facing auth infrastructure)
+
+Step one of a two-step MCP feature: this phase is the auth credential the MCP
+server (a later phase) will authenticate against, built and merged on its own
+first, deliberately unwired to anything MCP-specific yet — see DESIGN.md §5's
+new "API tokens (machine access, e.g. MCP)" subsection for the decision record.
+Nothing here changes existing behavior; it's new, currently-unused surface area.
+
+### Schema
+
+`migrations/00012_create_api_tokens.sql`: `api_tokens`, same hashed-opaque-
+token shape as `sessions`, but no `expires_at` at all — a standing per-client
+credential, not a login session. `token_hash` is uniquely constrained the same
+way `session_hash` is.
+
+### Auth primitives (`internal/auth/apitoken.go`)
+
+- **`GenerateAPIToken`** is `GenerateSessionToken`'s twin: 32-byte CSPRNG,
+  `rcl_api_...` prefix (joining the existing `rcl_sess_`/`rcl_pair_`/
+  `rcl_live_`/`rcl_bootstrap_` family), hashed via the existing `HashToken` — no
+  new crypto introduced for what's structurally the same credential shape.
+- **`RequireAPIToken`** is structurally parallel to `RequireSession`: resolves
+  `Authorization: Bearer rcl_api_...`, 401s on anything missing/malformed/
+  unrecognized, and on success attaches the user via the _same_ `userContextKey`
+  `RequireSession` uses — so any handler written against `auth.UserFromContext`
+  works unmodified regardless of which of the two middlewares authenticated the
+  request. There's deliberately no `APITokenIDFromContext` counterpart to
+  `SessionIDFromContext`: nothing about an api-token-authenticated request needs
+  to distinguish "this token" from the user's other ones the way session
+  revocation's self-delete guard does.
+- **`last_used_at` is touched synchronously**, not via the fire-and-forget
+  `waitUntil` pattern D1 device tokens use — that pattern exists specifically
+  for Cloudflare Workers' CPU budget, which doesn't apply to a plain Postgres
+  `UPDATE` here.
+
+### Backend endpoints (`internal/httpapi`)
+
+`POST /api/tokens`, `GET /api/tokens`, `DELETE /api/tokens/{id}` — all in the
+existing `RequireSession`-gated group, self-scoped the same way `/api/devices`
+already is (`DeleteApiTokenForUser`'s `:execrows` two-column WHERE is
+`DeleteSessionForUser`'s exact pattern, reused rather than reinvented).
+`GET /api/tokens` never returns the token or its hash, only what's needed to
+recognize/manage a row (`id`, `name`, `created_at`, `last_used_at`); the raw
+token is returned exactly once, from `POST /api/tokens` alone.
+
+### Not built in this phase
+
+- **`RequireAPIToken` is not mounted on any route.** There's no MCP endpoint yet
+  for it to guard; it exists now, tested in isolation, so the MCP phase can
+  mount it without also having to get the credential mechanism right at the same
+  time.
+- **No dashboard UI.** Per the design decision, this will live as a second list
+  on the existing Manage Devices screen rather than a new page — deferred to a
+  frontend-only follow-up phase, mockup-first as usual.
+
+### Tests
+
+`internal/auth/apitoken_test.go`: `TestGenerateAPIToken` (prefix, hash
+correctness, non-collision); `TestRequireAPIToken` split "No Database" (no
+header / non-Bearer scheme / empty Bearer value — all rejected before any query
+runs) and "With Database" (valid token resolves to the right user; unknown token
+rejected; revoked token rejected — the last one is also the executable check on
+§5's "revocation is effectively immediate" claim, since there's no D1/Worker
+propagation delay to wait out).
+
+`internal/httpapi/handlers_test.go`: `TestCreateAPIToken` (mint + blank-name
+rejection + unauthenticated), `TestListAPITokens` (self-scoping, plus an
+explicit assertion that the response body never contains the raw token hash —
+not just that the JSON schema omits a field, but that the substring isn't
+present anywhere in the payload), `TestRevokeAPIToken` (self-scoping mirrors
+`TestRevokeDevice`'s "can't revoke another user's by guessing the id" case
+exactly).
