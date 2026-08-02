@@ -53,7 +53,15 @@ export default defineConfig({
       name: "minify-inline-theme-script",
       apply: "build",
       transformIndexHtml(html) {
-        return html.replace(/<script>([\s\S]*?)<\/script>/, (_, code) => {
+        // js/bad-tag-filter guards against filtering *untrusted* HTML
+        // (e.g. stripping <script> from user-supplied content before
+        // rendering it). This does the opposite of filtering: html is our
+        // own index.html, read from disk at build time, and the regex's job
+        // // is only to find the one inline <script> we wrote ourselves so it
+        // can be minified in place -- there's no untrusted input for a
+        // malformed tag to hide in.
+        // codeql[js/bad-tag-filter]: not filtering untrusted HTML
+        return html.replace(/<script>([\s\S]*?)<\/script>/i, (_, code) => {
           const result = minifySync("theme.js", code);
           if (result.errors.length > 0) {
             throw new Error(
