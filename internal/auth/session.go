@@ -107,8 +107,8 @@ func UserFromContext(ctx context.Context) (db.User, bool) {
 // the way internal/httpapi's handler tests do via httptest. Must not be
 // used outside tests; userContextKey stays unexported specifically so
 // nothing else can forge this.
-func NewContextForTesting(ctx context.Context, user db.User) context.Context {
-	return context.WithValue(ctx, userContextKey, user)
+func NewContextForTesting(ctx context.Context, user *db.User) context.Context {
+	return context.WithValue(ctx, userContextKey, *user)
 }
 
 // SessionIDFromContext returns the id of the sessions row the current

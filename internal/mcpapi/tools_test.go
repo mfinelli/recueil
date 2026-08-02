@@ -33,7 +33,7 @@ import (
 // ctxFor is this file's own shorthand for auth.NewContextForTesting --
 // every tool method reads its user via auth.UserFromContext exactly like
 // an internal/httpapi handler does, so every test needs one of these.
-func ctxFor(user db.User) context.Context {
+func ctxFor(user *db.User) context.Context {
 	return auth.NewContextForTesting(context.Background(), user)
 }
 
@@ -48,7 +48,7 @@ func TestSearchArchive(t *testing.T) {
 		capture := dbtest.CreateCapture(t, pool, page.ID)
 		dbtest.SetCaptureReaderText(t, pool, capture.ID, "a treatise on the history of lighthouses")
 
-		_, out, err := tl.searchArchive(ctxFor(user), nil, searchArchiveInput{Query: "lighthouses"})
+		_, out, err := tl.searchArchive(ctxFor(&user), nil, searchArchiveInput{Query: "lighthouses"})
 		require.NoError(t, err)
 		require.Len(t, out.Pages, 1)
 		assert.Equal(t, page.ID, out.Pages[0].ID)
@@ -62,7 +62,7 @@ func TestSearchArchive(t *testing.T) {
 		otherCapture := dbtest.CreateCapture(t, pool, otherPage.ID)
 		dbtest.SetCaptureReaderText(t, pool, otherCapture.ID, "a shared search term xyzzy")
 
-		_, out, err := tl.searchArchive(ctxFor(user), nil, searchArchiveInput{Query: "xyzzy"})
+		_, out, err := tl.searchArchive(ctxFor(&user), nil, searchArchiveInput{Query: "xyzzy"})
 		require.NoError(t, err)
 		assert.Empty(t, out.Pages)
 	})
@@ -73,7 +73,7 @@ func TestSearchArchive(t *testing.T) {
 		capture := dbtest.CreateCapture(t, pool, page.ID)
 		dbtest.SetCaptureReaderText(t, pool, capture.ID, "quokkas are marsupials")
 
-		_, out, err := tl.searchArchive(ctxFor(user), nil, searchArchiveInput{Query: "quokkas", Limit: 0})
+		_, out, err := tl.searchArchive(ctxFor(&user), nil, searchArchiveInput{Query: "quokkas", Limit: 0})
 		require.NoError(t, err)
 		require.Len(t, out.Pages, 1)
 	})
@@ -91,7 +91,7 @@ func TestListRecent(t *testing.T) {
 		dbtest.CreatePage(t, pool, user.ID, "https://example.com/recent-2")
 		dbtest.CreatePage(t, pool, other.ID, "https://example.com/recent-3")
 
-		_, out, err := tl.listRecent(ctxFor(user), nil, listRecentInput{})
+		_, out, err := tl.listRecent(ctxFor(&user), nil, listRecentInput{})
 		require.NoError(t, err)
 		assert.Len(t, out.Pages, 2)
 		assert.EqualValues(t, 2, out.TotalCount)
@@ -101,7 +101,7 @@ func TestListRecent(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		dbtest.CreatePage(t, pool, user.ID, "https://example.com/recent-4")
 
-		_, out, err := tl.listRecent(ctxFor(user), nil, listRecentInput{Limit: 99999})
+		_, out, err := tl.listRecent(ctxFor(&user), nil, listRecentInput{Limit: 99999})
 		require.NoError(t, err)
 		assert.Len(t, out.Pages, 1)
 	})
@@ -119,7 +119,7 @@ func TestListTags(t *testing.T) {
 	_, err = q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: other.ID, Name: "not-yours", Slug: "not-yours"})
 	require.NoError(t, err)
 
-	_, out, err := tl.listTags(ctxFor(user), nil, listTagsInput{})
+	_, out, err := tl.listTags(ctxFor(&user), nil, listTagsInput{})
 	require.NoError(t, err)
 	require.Len(t, out.Tags, 1)
 	assert.Equal(t, "golang", out.Tags[0].Name)
@@ -140,7 +140,7 @@ func TestListPagesByTag(t *testing.T) {
 			PageID: page.ID, TagID: tag.ID, Source: "manual",
 		}))
 
-		_, out, err := tl.listPagesByTag(ctxFor(user), nil, listPagesByTagInput{TagSlug: "reading"})
+		_, out, err := tl.listPagesByTag(ctxFor(&user), nil, listPagesByTagInput{TagSlug: "reading"})
 		require.NoError(t, err)
 		require.Len(t, out.Pages, 1)
 		assert.Equal(t, page.ID, out.Pages[0].ID)
@@ -150,7 +150,7 @@ func TestListPagesByTag(t *testing.T) {
 	t.Run("an unknown slug is a tool-result error, not a Go error", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 
-		result, _, err := tl.listPagesByTag(ctxFor(user), nil, listPagesByTagInput{TagSlug: "does-not-exist"})
+		result, _, err := tl.listPagesByTag(ctxFor(&user), nil, listPagesByTagInput{TagSlug: "does-not-exist"})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -162,7 +162,7 @@ func TestListPagesByTag(t *testing.T) {
 		_, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: other.ID, Name: "theirs", Slug: "theirs"})
 		require.NoError(t, err)
 
-		result, _, err := tl.listPagesByTag(ctxFor(user), nil, listPagesByTagInput{TagSlug: "theirs"})
+		result, _, err := tl.listPagesByTag(ctxFor(&user), nil, listPagesByTagInput{TagSlug: "theirs"})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -185,7 +185,7 @@ func TestListCollections(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, out, err := tl.listCollections(ctxFor(user), nil, listCollectionsInput{})
+	_, out, err := tl.listCollections(ctxFor(&user), nil, listCollectionsInput{})
 	require.NoError(t, err)
 	require.Len(t, out.Collections, 1)
 	assert.Equal(t, "Recipes", out.Collections[0].Name)
@@ -208,7 +208,7 @@ func TestListPagesByCollection(t *testing.T) {
 			PageID: page.ID, CollectionID: collection.ID,
 		}))
 
-		_, out, err := tl.listPagesByCollection(ctxFor(user), nil, listPagesByCollectionInput{CollectionID: collection.ID})
+		_, out, err := tl.listPagesByCollection(ctxFor(&user), nil, listPagesByCollectionInput{CollectionID: collection.ID})
 		require.NoError(t, err)
 		require.Len(t, out.Pages, 1)
 		assert.Equal(t, page.ID, out.Pages[0].ID)
@@ -217,7 +217,7 @@ func TestListPagesByCollection(t *testing.T) {
 	t.Run("an unknown id is a tool-result error, not a Go error", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 
-		result, _, err := tl.listPagesByCollection(ctxFor(user), nil, listPagesByCollectionInput{CollectionID: 999999})
+		result, _, err := tl.listPagesByCollection(ctxFor(&user), nil, listPagesByCollectionInput{CollectionID: 999999})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -231,7 +231,7 @@ func TestListPagesByCollection(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		result, _, err := tl.listPagesByCollection(ctxFor(user), nil, listPagesByCollectionInput{CollectionID: collection.ID})
+		result, _, err := tl.listPagesByCollection(ctxFor(&user), nil, listPagesByCollectionInput{CollectionID: collection.ID})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -262,7 +262,7 @@ func TestGetPage(t *testing.T) {
 			PageID: page.ID, CollectionID: collection.ID,
 		}))
 
-		_, out, err := tl.getPage(ctxFor(user), nil, getPageInput{PageID: page.ID})
+		_, out, err := tl.getPage(ctxFor(&user), nil, getPageInput{PageID: page.ID})
 		require.NoError(t, err)
 		assert.Equal(t, page.ID, out.ID)
 		assert.Equal(t, capture.ID, out.CaptureID)
@@ -280,7 +280,7 @@ func TestGetPage(t *testing.T) {
 		newer := dbtest.CreateCapture(t, pool, page.ID)
 		dbtest.SetCaptureReaderText(t, pool, newer.ID, "newer content")
 
-		_, out, err := tl.getPage(ctxFor(user), nil, getPageInput{PageID: page.ID, CaptureID: older.ID})
+		_, out, err := tl.getPage(ctxFor(&user), nil, getPageInput{PageID: page.ID, CaptureID: older.ID})
 		require.NoError(t, err)
 		assert.Equal(t, older.ID, out.CaptureID)
 		assert.Equal(t, "older content", out.Content)
@@ -294,7 +294,7 @@ func TestGetPage(t *testing.T) {
 		pageB := dbtest.CreatePage(t, pool, user.ID, "https://example.com/getpage-3b")
 		captureB := dbtest.CreateCapture(t, pool, pageB.ID)
 
-		result, _, err := tl.getPage(ctxFor(user), nil, getPageInput{PageID: pageA.ID, CaptureID: captureB.ID})
+		result, _, err := tl.getPage(ctxFor(&user), nil, getPageInput{PageID: pageA.ID, CaptureID: captureB.ID})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -303,7 +303,7 @@ func TestGetPage(t *testing.T) {
 	t.Run("an unknown page id is a tool-result error, not a Go error", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 
-		result, _, err := tl.getPage(ctxFor(user), nil, getPageInput{PageID: 999999})
+		result, _, err := tl.getPage(ctxFor(&user), nil, getPageInput{PageID: 999999})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)
@@ -314,7 +314,7 @@ func TestGetPage(t *testing.T) {
 		other := dbtest.CreateUser(t, pool, "member")
 		theirPage := dbtest.CreatePage(t, pool, other.ID, "https://example.com/getpage-4")
 
-		result, _, err := tl.getPage(ctxFor(user), nil, getPageInput{PageID: theirPage.ID})
+		result, _, err := tl.getPage(ctxFor(&user), nil, getPageInput{PageID: theirPage.ID})
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		assert.True(t, result.IsError)

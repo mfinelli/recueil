@@ -155,9 +155,9 @@ func (t *tools) searchArchive(ctx context.Context, _ *mcp.CallToolRequest, in se
 	}
 
 	out := searchArchiveOutput{Pages: make([]pageSummary, len(rows))}
-	for i, r := range rows {
-		out.Pages[i] = pageSummaryFromSearchRow(&r)
-		out.TotalCount = r.TotalCount
+	for i := range rows {
+		out.Pages[i] = pageSummaryFromSearchRow(&rows[i])
+		out.TotalCount = rows[i].TotalCount
 	}
 	return nil, out, nil
 }
@@ -183,9 +183,9 @@ func (t *tools) listRecent(ctx context.Context, _ *mcp.CallToolRequest, in listR
 	}
 
 	out := listRecentOutput{Pages: make([]pageSummary, len(rows))}
-	for i, r := range rows {
-		out.Pages[i] = pageSummaryFromListRow(&r)
-		out.TotalCount = r.TotalCount
+	for i := range rows {
+		out.Pages[i] = pageSummaryFromListRow(&rows[i])
+		out.TotalCount = rows[i].TotalCount
 	}
 	return nil, out, nil
 }
@@ -249,8 +249,8 @@ func (t *tools) listPagesByTag(ctx context.Context, _ *mcp.CallToolRequest, in l
 		rows = rows[:limit]
 	}
 	out.Pages = make([]pageSummary, len(rows))
-	for i, r := range rows {
-		out.Pages[i] = pageSummaryFromRow(&r)
+	for i := range rows {
+		out.Pages[i] = pageSummaryFromRow(&rows[i])
 	}
 	return nil, out, nil
 }
@@ -276,10 +276,10 @@ func (t *tools) listCollections(ctx context.Context, _ *mcp.CallToolRequest, _ l
 	}
 
 	out := listCollectionsOutput{Collections: make([]collectionSummary, len(rows))}
-	for i, r := range rows {
-		cs := collectionSummary{ID: r.ID, Name: r.Name}
-		if r.ParentID.Valid {
-			cs.ParentID = r.ParentID.Int64
+	for i := range rows {
+		cs := collectionSummary{ID: rows[i].ID, Name: rows[i].Name}
+		if rows[i].ParentID.Valid {
+			cs.ParentID = rows[i].ParentID.Int64
 		}
 		out.Collections[i] = cs
 	}
@@ -318,8 +318,8 @@ func (t *tools) listPagesByCollection(ctx context.Context, _ *mcp.CallToolReques
 		rows = rows[:limit]
 	}
 	out.Pages = make([]pageSummary, len(rows))
-	for i, r := range rows {
-		out.Pages[i] = pageSummaryFromRow(&r)
+	for i := range rows {
+		out.Pages[i] = pageSummaryFromRow(&rows[i])
 	}
 	return nil, out, nil
 }
@@ -376,9 +376,9 @@ func (t *tools) getPage(ctx context.Context, _ *mcp.CallToolRequest, in getPageI
 	capture := captures[0]
 	if in.CaptureID != 0 {
 		found := false
-		for _, c := range captures {
-			if c.ID == in.CaptureID {
-				capture = c
+		for i := range captures {
+			if captures[i].ID == in.CaptureID {
+				capture = captures[i]
 				found = true
 				break
 			}
@@ -407,11 +407,11 @@ func (t *tools) getPage(ctx context.Context, _ *mcp.CallToolRequest, in getPageI
 	}
 
 	var others []captureRef
-	for _, c := range captures {
-		if c.ID == capture.ID {
+	for i := range captures {
+		if captures[i].ID == capture.ID {
 			continue
 		}
-		others = append(others, captureRef{ID: c.ID, CapturedAt: c.CapturedAt.Time.Format(time.RFC3339)})
+		others = append(others, captureRef{ID: captures[i].ID, CapturedAt: captures[i].CapturedAt.Time.Format(time.RFC3339)})
 	}
 
 	return nil, getPageOutput{
