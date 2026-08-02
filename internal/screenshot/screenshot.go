@@ -58,6 +58,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -240,12 +241,21 @@ func (r *Runner) processOne(ctx context.Context, job db.ClaimDueScreenshotJobsRo
 	sum := sha256.Sum256(shot)
 	shotHash := hex.EncodeToString(sum[:])
 
+	// The capture's archive directory, recovered from the html_path
+	// the claim query already returns -- every asset belonging to a
+	// capture lives beside its HTML, and since that directory belongs to
+	// exactly one capture there is nothing to disambiguate: the thumbnail
+	// is simply "thumbnail.png" inside it. A retried render overwrites the
+	// previous one in place through archive's atomic rename, rather than
+	// leaving a superseded file behind for `recueil gc` to notice later.
+	relDir := filepath.Dir(job.HtmlPath)
+
 	// Not compressed: png is already a compressed binary format, same
 	// reasoning as ingest.go's favicon handling for ico/png -- so
 	// writtenSize here is just len(shot), but going through WriteAsset's
 	// own return value keeps one source of truth rather than this
 	// package re-deriving it independently.
-	relPath, writtenSize, err := r.store.WriteAsset(job.ContentHash, shotHash, "png", shot, false)
+	relPath, writtenSize, err := r.store.WriteAsset(relDir, "thumbnail", "png", shot, false)
 	if err != nil {
 		return r.handleFailure(ctx, job, fmt.Errorf("writing screenshot to local archive: %w", err))
 	}

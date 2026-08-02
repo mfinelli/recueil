@@ -8,7 +8,6 @@
   "nav_toggle": "Menu",
   "settings": "Paramètres",
   "sign_out": "Se déconnecter",
-
   "common_loading": "Chargement…",
   "common_cancel": "Annuler",
   "common_save": "Enregistrer",
@@ -22,11 +21,9 @@
   "common_hide_password": "Masquer le mot de passe",
   "common_language": "Langue",
   "common_theme": "Thème",
-
   "unit_bytes": "{n} o",
   "unit_kilobytes": "{n} Ko",
   "unit_megabytes": "{n} Mo",
-
   "settings_language_hint": "Modifie la langue d'affichage du tableau de bord.",
   "settings_theme_hint": "Modifie le thème de couleur du tableau de bord.",
   "settings_saved": "Enregistré",
@@ -55,14 +52,12 @@
   "theme_option_automatic": "Automatique (paramètre système)",
   "theme_option_light": "Clair",
   "theme_option_dark": "Sombre",
-
   "login_error_generic": "échec de la connexion",
   "login_signing_in": "Connexion…",
   "login_sign_in": "Se connecter",
   "login_register_prompt": "Vous n'avez pas de compte ?",
   "login_register_link": "S'inscrire",
   "login_forgot_password": "Oublié ?",
-
   "register_subtitle": "Créez un compte pour commencer.",
   "register_confirm_password": "Confirmer le mot de passe",
   "register_error_password_mismatch": "les mots de passe ne correspondent pas",
@@ -71,7 +66,6 @@
   "register_create_account": "Créer le compte",
   "register_login_prompt": "Vous avez déjà un compte ?",
   "register_login_link": "Se connecter",
-
   "setup_subtitle": "Créez le premier compte administrateur pour commencer.",
   "setup_bootstrap_token": "Jeton d'amorçage",
   "setup_bootstrap_token_hint": "Affiché dans les journaux du serveur au démarrage.",
@@ -80,7 +74,6 @@
   "setup_error_generic": "échec de la configuration",
   "setup_creating": "Création…",
   "setup_create_account": "Créer le compte administrateur",
-
   "capturereader_load_error": "échec du chargement de la capture",
   "capturereader_back": "Retour à la page",
   "capturereader_captured_via": "Capturé le {date} via {source}",
@@ -114,7 +107,6 @@
   "capturereader_delete": "Supprimer la capture",
   "capturereader_delete_confirm": "Supprimer cette capture ? Cette action est irréversible depuis le tableau de bord.",
   "capturereader_delete_error": "échec de la suppression de la capture",
-
   "devices_pairing_token_heading": "Jeton d'association",
   "devices_pairing_token_hint": "Utilisé une fois pour associer un nouvel appareil (l'extension, la CLI ou la PWA) à votre compte.",
   "devices_load_token_error": "échec du chargement du jeton d'association",
@@ -152,8 +144,8 @@
   "devices_session_unknown_device": "Appareil inconnu",
   "devices_session_signed_in_at": "connecté le {date}",
   "devices_session_last_active_at": "actif {date}",
-
   "queue_load_items_error": "échec du chargement de la file d'attente",
+  "queue_load_pending_captures_error": "échec du chargement des captures en attente",
   "queue_load_jobs_error": "échec du chargement des tâches",
   "queue_retry_item_error": "échec de la nouvelle tentative pour l'élément",
   "queue_retry_job_error": "échec de la nouvelle tentative pour la tâche",
@@ -190,7 +182,16 @@
   "queue_screenshots_label": "Captures d'écran",
   "queue_readability_label": "Extraction d'article",
   "queue_ai_summaries_label": "Résumés IA",
-
+  "queue_ingest_heading": "En attente d'intégration",
+  "queue_ingest_hint": "Téléversées et en attente d'être récupérées par l'archiveur. Cela peut prendre jusqu'à 30 minutes.",
+  "queue_no_pending_captures": "Rien en attente de récupération.",
+  "queue_status_waiting": "En attente",
+  "queue_status_ingesting": "Intégration",
+  "queue_status_ingested": "Intégrée",
+  "queue_pending_captured": "Capturée {time}",
+  "queue_pending_started": "Démarrée {time}",
+  "queue_pending_ingested": "Intégrée {time}",
+  "queue_item_by_device": "par {device}",
   "collections_load_error": "échec du chargement des collections",
   "collections_create_error": "échec de la création de la collection",
   "collections_rename_error": "échec du renommage de la collection",
@@ -208,7 +209,6 @@
   "collections_delete_confirm_with_children_one": "Supprimer « {name} » et sa {count} sous-collection ? Les pages restent archivées, mais elles ne seront plus dans aucune d'entre elles.",
   "collections_delete_confirm_with_children_other": "Supprimer « {name} » et ses {count} sous-collections ? Les pages restent archivées, mais elles ne seront plus dans aucune d'entre elles.",
   "collections_delete_confirm_simple": "Supprimer « {name} » ? Les pages restent archivées, mais elles ne seront plus dans cette collection.",
-
   "tags_load_error": "échec du chargement des étiquettes",
   "tags_rename_error": "échec du renommage de l'étiquette",
   "tags_delete_error": "échec de la suppression de l'étiquette",
@@ -223,14 +223,12 @@
   "tagdetail_back": "Toutes les étiquettes",
   "tagdetail_load_error": "échec du chargement des pages pour cette étiquette",
   "tagdetail_no_pages": "Aucune page n'a encore cette étiquette.",
-
   "collectiondetail_back": "Toutes les collections",
   "collectiondetail_breadcrumb_aria": "Fil d'Ariane",
   "collectiondetail_not_found": "Collection introuvable.",
   "collectiondetail_load_error": "échec du chargement des pages pour cette collection",
   "collectiondetail_no_pages": "Aucune page directement dans cette collection.",
   "collectiondetail_subcollections_heading": "Sous-collections",
-
   "library_load_error": "échec du chargement des pages",
   "library_search_placeholder": "Rechercher dans votre archive…",
   "library_search_label": "Recherche",
@@ -242,7 +240,6 @@
   "library_previous": "Précédent",
   "library_next": "Suivant",
   "library_pagination_summary": "{start}–{end} sur {total}",
-
   "pagedetail_load_error": "échec du chargement de la page",
   "pagedetail_mirror_toggle_label": "Synchroniser avec mes favoris du navigateur",
   "pagedetail_tags_heading": "Étiquettes",

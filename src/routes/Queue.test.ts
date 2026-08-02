@@ -57,7 +57,12 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 import { apiJSON, ApiError } from "../lib/api";
-import type { Job, JobsResponse, QueueItem } from "../lib/types";
+import type {
+  Job,
+  JobsResponse,
+  PendingCapture,
+  QueueItem,
+} from "../lib/types";
 import Queue from "./Queue.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
@@ -78,7 +83,16 @@ const failedItem: QueueItem = {
   status: "failed",
   manual_retry: false,
   claimed_at: null,
+  claimed_by_device: null,
   created_at: "2026-05-01T12:00:00Z",
+};
+
+const waitingCapture: PendingCapture = {
+  id: "pc1",
+  url: "https://example.com/awaiting-ingestion",
+  fetched_by_backend: false,
+  claimed_at: null,
+  captured_at: "2026-05-01T12:00:00Z",
 };
 
 const readabilityJob: Job = {
@@ -102,6 +116,8 @@ const emptyJobs: JobsResponse = {
 type LoadOptions = {
   items?: QueueItem[];
   itemsError?: unknown;
+  pendingCaptures?: PendingCapture[];
+  pendingCapturesError?: unknown;
   jobs?: JobsResponse;
   jobsError?: unknown;
 };
@@ -109,6 +125,8 @@ type LoadOptions = {
 function mockLoad({
   items = [],
   itemsError,
+  pendingCaptures = [],
+  pendingCapturesError,
   jobs = emptyJobs,
   jobsError,
 }: LoadOptions = {}) {
@@ -116,6 +134,10 @@ function mockLoad({
     if (path === "/queue-items") {
       if (itemsError) return Promise.reject(itemsError);
       return Promise.resolve({ items });
+    }
+    if (path === "/pending-captures") {
+      if (pendingCapturesError) return Promise.reject(pendingCapturesError);
+      return Promise.resolve({ pending_captures: pendingCaptures });
     }
     if (path === "/jobs") {
       if (jobsError) return Promise.reject(jobsError);
@@ -464,8 +486,106 @@ describe("Queue", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
-    expect(apiJSONMock.mock.calls.length).toBe(callsBefore + 2);
+    expect(apiJSONMock.mock.calls.length).toBe(callsBefore + 3);
     expect(await screen.findByText(/^Updated /)).toBeTruthy();
+  });
+
+  // The window this whole section exists for: after a device has finished
+  // uploading and before the backend has pulled the capture in, which at
+  // the default poll interval can be half an hour of apparent silence.
+  it("shows each pending-capture state with its own badge", async () => {
+    mockLoad({
+      pendingCaptures: [
+        waitingCapture,
+        {
+          ...waitingCapture,
+          id: "pc2",
+          url: "https://example.com/ingesting",
+          claimed_at: minutesAgo(1),
+        },
+        {
+          ...waitingCapture,
+          id: "pc3",
+          url: "https://example.com/ingested",
+          fetched_by_backend: true,
+          claimed_at: minutesAgo(2),
+        },
+      ],
+    });
+    render(Queue);
+
+    expect(await screen.findByText("Awaiting ingestion")).toBeTruthy();
+    expect(await screen.findByText("Waiting")).toBeTruthy();
+    expect(await screen.findByText("Ingesting")).toBeTruthy();
+    expect(await screen.findByText("Ingested")).toBeTruthy();
+    expect(
+      await screen.findByText("https://example.com/ingesting"),
+    ).toBeTruthy();
+  });
+
+  it("counts pending captures in the summary alongside items and jobs", async () => {
+    mockLoad({
+      items: [failedItem],
+      pendingCaptures: [
+        waitingCapture,
+        { ...waitingCapture, id: "pc2", claimed_at: minutesAgo(1) },
+      ],
+    });
+    render(Queue);
+
+    // 1 waiting capture -> pending, 1 claimed capture -> in progress,
+    // 1 failed queue item -> failed.
+    expect(await screen.findByText("pending")).toBeTruthy();
+    expect(await screen.findByText("in progress")).toBeTruthy();
+    expect(await screen.findByText("failed")).toBeTruthy();
+  });
+
+  it("shows an empty state rather than nothing when no captures are awaiting ingestion", async () => {
+    mockLoad({ pendingCaptures: [] });
+    render(Queue);
+
+    expect(
+      await screen.findByText("Nothing waiting to be pulled in."),
+    ).toBeTruthy();
+  });
+
+  // Which browser to go and finish the capture in is the actionable part of
+  // a claimed item.
+  it("names the device holding a claimed item", async () => {
+    mockLoad({
+      items: [
+        {
+          ...failedItem,
+          id: "q9",
+          status: "claimed",
+          claimed_at: minutesAgo(3),
+          claimed_by_device: "Firefox on thinkpad",
+        },
+      ],
+    });
+    render(Queue);
+
+    expect(await screen.findByText("by Firefox on thinkpad")).toBeTruthy();
+  });
+
+  // A revoked device leaves claimed_by_token_id pointing at a deleted row,
+  // so the item must still list -- just without a name.
+  it("omits the device when there isn't one", async () => {
+    mockLoad({
+      items: [
+        {
+          ...failedItem,
+          id: "q10",
+          status: "claimed",
+          claimed_at: minutesAgo(3),
+          claimed_by_device: null,
+        },
+      ],
+    });
+    render(Queue);
+
+    expect(await screen.findByText("Claimed")).toBeTruthy();
+    expect(screen.queryByText(/^by /)).toBeNull();
   });
 
   it("auto-refreshes on a 15-minute interval, not more often", async () => {
@@ -473,13 +593,14 @@ describe("Queue", () => {
     mockLoad({ items: [] });
     render(Queue);
 
-    // Initial load only.
-    await vi.waitFor(() => expect(apiJSONMock.mock.calls.length).toBe(2));
+    // Initial load only -- three requests: queue items, pending captures,
+    // jobs.
+    await vi.waitFor(() => expect(apiJSONMock.mock.calls.length).toBe(3));
 
     await vi.advanceTimersByTimeAsync(14 * 60 * 1000);
-    expect(apiJSONMock.mock.calls.length).toBe(2);
+    expect(apiJSONMock.mock.calls.length).toBe(3);
 
     await vi.advanceTimersByTimeAsync(1 * 60 * 1000 + 1000);
-    expect(apiJSONMock.mock.calls.length).toBe(4);
+    expect(apiJSONMock.mock.calls.length).toBe(6);
   });
 });

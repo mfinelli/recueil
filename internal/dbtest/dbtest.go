@@ -194,7 +194,7 @@ func CreateCapture(t *testing.T, pool *pgxpool.Pool, pageID int64) db.Capture {
 		Source:                    "extension",
 		RawUrl:                    "https://example.com/test-" + randomSuffix(t),
 		Title:                     pgtype.Text{String: "Test Capture", Valid: true},
-		HtmlPath:                  "test/path.html.zst",
+		HtmlPath:                  PlaceholderHTMLPath(t),
 		HtmlCompressedSizeBytes:   100,
 		HtmlUncompressedSizeBytes: 500,
 		ContentHash:               "test-hash-" + randomSuffix(t),
@@ -211,16 +211,19 @@ func CreateCapture(t *testing.T, pool *pgxpool.Pool, pageID int64) db.Capture {
 // CreateCaptureWithHTML is CreateCapture's twin for tests that need the
 // capture's html_path to point at real, readable content (e.g.
 // GetCaptureHTML's zstd/gzip streaming) rather than the placeholder path
-// CreateCapture uses -- it writes htmlContent through store.WriteHTML
-// first (the same call ingestion itself makes) and uses the real
-// resulting path/sizes for the row, instead of a bespoke insert.
+// CreateCapture uses -- it mints a real capture directory and writes
+// htmlContent through it (the same two calls ingestion itself makes) and
+// uses the real resulting path/sizes for the row, instead of a bespoke
+// insert.
 func CreateCaptureWithHTML(t *testing.T, pool *pgxpool.Pool, store *archive.Store, pageID int64, htmlContent []byte) db.Capture {
 	t.Helper()
 	ctx := context.Background()
 	q := db.New(pool)
 
 	contentHash := "test-hash-" + randomSuffix(t)
-	relPath, compressedSize, err := store.WriteHTML(contentHash, htmlContent)
+	relDir, err := store.NewCapture()
+	require.NoError(t, err)
+	relPath, compressedSize, err := store.WriteHTML(relDir, htmlContent)
 	require.NoError(t, err)
 
 	inserted, err := q.InsertCaptureIdempotent(ctx, db.InsertCaptureIdempotentParams{
@@ -257,6 +260,24 @@ func SetCaptureReaderText(t *testing.T, pool *pgxpool.Pool, captureID int64, rea
 		ReadabilityVersion: pgtype.Text{String: "test", Valid: true},
 	})
 	require.NoError(t, err)
+}
+
+// PlaceholderHTMLPath returns a unique, root-relative html_path for a test
+// that needs a capture row but doesn't care whether anything is actually on
+// disk at that path (nothing is -- opening it will fail, which some tests
+// specifically want).
+//
+// Unique per call because captures.html_path is UNIQUE: every capture owns
+// its own on-disk directory outright and shares it with no other capture
+// (see internal/archive). A fixed literal here -- "unused.html.zst",
+// "does/not/exist.html.zst" -- collides on the second row that uses it,
+// which is not necessarily within one test: dbtest.Setup does not truncate,
+// so every test in a package shares one database and two different tests
+// using the same literal collide just as readily as one test inserting
+// twice.
+func PlaceholderHTMLPath(t *testing.T) string {
+	t.Helper()
+	return "placeholder/" + randomSuffix(t) + "/page.html.zst"
 }
 
 // TODO: we should switch to faker or similar

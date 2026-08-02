@@ -34,6 +34,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import type {
     Job,
     JobsResponse,
+    PendingCapture,
+    PendingCaptureListResponse,
     QueueItem,
     QueueItemListResponse,
   } from "../lib/types";
@@ -47,6 +49,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   let items = $state<QueueItem[]>([]);
   let itemsLoading = $state(true);
+
+  let pendingCaptures = $state<PendingCapture[]>([]);
+  let pendingCapturesLoading = $state(true);
 
   let screenshotJobs = $state<Job[]>([]);
   let readabilityJobs = $state<Job[]>([]);
@@ -72,6 +77,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  async function loadPendingCaptures() {
+    pendingCapturesLoading = true;
+    try {
+      const res =
+        await apiJSON<PendingCaptureListResponse>("/pending-captures");
+      pendingCaptures = res.pending_captures;
+    } catch (err) {
+      loadError =
+        err instanceof ApiError
+          ? err.message
+          : m.queue_load_pending_captures_error();
+    } finally {
+      pendingCapturesLoading = false;
+    }
+  }
+
   async function loadJobs() {
     jobsLoading = true;
     try {
@@ -89,7 +110,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   async function loadAll() {
     loadError = null;
-    await Promise.all([loadItems(), loadJobs()]);
+    await Promise.all([loadItems(), loadPendingCaptures(), loadJobs()]);
     lastUpdatedAt = new Date();
   }
 
@@ -110,6 +131,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       case "failed":
         return "failed";
     }
+  }
+
+  // (fetched_by_backend, claimed_at) is the whole state -- D1 has no status
+  // column for this table. Note the absence of "failed": a capture whose
+  // ingestion keeps failing is indistinguishable from one merely waiting
+  // its turn, so an old timestamp is the only signal available and the
+  // section hint states the expected window rather than pretending to a
+  // precision the data doesn't have.
+  function categoryForPendingCapture(pc: PendingCapture): StatusCategory {
+    if (pc.fetched_by_backend) return "done";
+    return pc.claimed_at ? "active" : "pending";
   }
 
   function categoryForJob(status: Job["status"]): StatusCategory {
@@ -133,6 +165,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       failed: 0,
     };
     for (const item of items) counts[categoryForItem(item.status)]++;
+    for (const pc of pendingCaptures) counts[categoryForPendingCapture(pc)]++;
     for (const job of [...screenshotJobs, ...readabilityJobs, ...aiJobs]) {
       counts[categoryForJob(job.status)]++;
     }
@@ -324,7 +357,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     </p>
   {/if}
 
-  {#if !itemsLoading && !jobsLoading}
+  {#if !itemsLoading && !pendingCapturesLoading && !jobsLoading}
     <div class="summary">
       {#if summary.pending > 0}
         <span class="stat pending"
@@ -403,6 +436,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                     date: formatDateTime(item.created_at),
                   })}
                 {/if}
+                <!-- Which device to go and finish the capture in, for a
+                     claimed item -- and where it went wrong, for a failed
+                     one. Absent both when nothing has claimed the item yet
+                     and when the device that did has since been revoked
+                     (tokens are revoked by row delete, so the name is
+                     genuinely gone, not hidden). -->
+                {#if item.claimed_by_device}
+                  <span class="device"
+                    >{m.queue_item_by_device({
+                      device: item.claimed_by_device,
+                    })}</span
+                  >
+                {/if}
                 {#if item.status === "failed" && item.manual_retry}
                   · <span class="pending-retry">{m.queue_retry_pending()}</span>
                 {/if}
@@ -417,6 +463,54 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                 {item.manual_retry ? m.queue_retry_queued() : m.common_retry()}
               </button>
             {/if}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
+  <section>
+    <p class="eyebrow">{m.queue_ingest_heading()}</p>
+    <p class="hint">
+      {m.queue_ingest_hint()}
+    </p>
+    {#if pendingCapturesLoading}
+      <p class="status">{m.common_loading()}</p>
+    {:else if pendingCaptures.length === 0}
+      <p class="status">{m.queue_no_pending_captures()}</p>
+    {:else}
+      <ul class="items">
+        {#each pendingCaptures as capture (capture.id)}
+          {@const category = categoryForPendingCapture(capture)}
+          <li>
+            <div class="item-info">
+              <div class="item-top">
+                {@render statusBadge(
+                  category,
+                  category === "pending"
+                    ? m.queue_status_waiting()
+                    : category === "active"
+                      ? m.queue_status_ingesting()
+                      : m.queue_status_ingested(),
+                )}
+                <span class="url">{capture.url}</span>
+              </div>
+              <span class="meta">
+                {#if category === "done" && capture.claimed_at}
+                  {m.queue_pending_ingested({
+                    time: formatRelativeTime(capture.claimed_at),
+                  })}
+                {:else if category === "active" && capture.claimed_at}
+                  {m.queue_pending_started({
+                    time: formatRelativeTime(capture.claimed_at),
+                  })}
+                {:else}
+                  {m.queue_pending_captured({
+                    time: formatRelativeTime(capture.captured_at),
+                  })}
+                {/if}
+              </span>
+            </div>
           </li>
         {/each}
       </ul>
@@ -659,6 +753,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .device {
+    color: var(--ink-muted);
   }
 
   .pending-retry {

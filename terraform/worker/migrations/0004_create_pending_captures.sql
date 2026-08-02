@@ -32,6 +32,23 @@
 -- always literally that): the favicon could be svg/png/ico, so the key
 -- itself carries the real extension (e.g. ".../favicon.svg") for the
 -- backend to read back off, rather than a separate mime/type column.
+--
+-- claimed_at makes backend pickup an atomic claim rather than a plain read,
+-- the same shape queue_items already uses for devices. Without it, two agent
+-- processes polling at roughly the same time both ingest the same row, and
+-- the second one silently creates a DUPLICATE capture: captures'
+-- ON CONFLICT (source_capture_id) guard stops protecting the moment the
+-- first agent finishes, because the last thing ingestion does is clear
+-- source_capture_id back to NULL, and Postgres treats NULLs as distinct in
+-- a unique index. Nothing downstream catches that -- the two agents mint
+-- their own separate archive directories, so captures.html_path's own
+-- UNIQUE constraint doesn't fire either.
+--
+-- Deliberately not fixed by keeping source_capture_id populated forever,
+-- which would also have worked: that value is CLIENT-generated, and making
+-- a permanent dedup guarantee depend on it is exactly what the ingestion
+-- pipeline's collision-retry loop exists because we can't do. One worker
+-- per job is the fix; a stronger idempotency key downstream is not.
 CREATE TABLE pending_captures (
   id TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -41,6 +58,7 @@ CREATE TABLE pending_captures (
   r2_key_favicon TEXT,
   captured_at TEXT NOT NULL,
   fetched_by_backend INTEGER NOT NULL DEFAULT 0,
+  claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;
 

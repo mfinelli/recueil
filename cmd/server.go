@@ -45,6 +45,7 @@ import (
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
 	"github.com/mfinelli/recueil/internal/mirror"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 	"github.com/mfinelli/recueil/internal/queueitems"
 )
@@ -113,6 +114,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	devicesClient := devices.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	queueItemsClient := queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+	pendingCapturesClient := pendingcaptures.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
 	// AI enrichment is toggled off entirely via an empty AIBaseURL --
 	// cfg.AIModel itself has no such "unset" meaning of its own (a
@@ -124,7 +126,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if cfg.AIBaseURL != "" {
 		aiModel = cfg.AIModel
 	}
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

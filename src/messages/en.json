@@ -8,7 +8,6 @@
   "nav_toggle": "Menu",
   "settings": "Settings",
   "sign_out": "Sign out",
-
   "common_loading": "Loading…",
   "common_cancel": "Cancel",
   "common_save": "Save",
@@ -22,11 +21,9 @@
   "common_hide_password": "Hide password",
   "common_language": "Language",
   "common_theme": "Theme",
-
   "unit_bytes": "{n} B",
   "unit_kilobytes": "{n} KB",
   "unit_megabytes": "{n} MB",
-
   "settings_language_hint": "Changes the dashboard's display language.",
   "settings_theme_hint": "Changes the dashboard's color theme.",
   "settings_saved": "Saved",
@@ -55,14 +52,12 @@
   "theme_option_automatic": "Automatic (system setting)",
   "theme_option_light": "Light",
   "theme_option_dark": "Dark",
-
   "login_error_generic": "login failed",
   "login_signing_in": "Signing in…",
   "login_sign_in": "Sign in",
   "login_register_prompt": "Don't have an account?",
   "login_register_link": "Register",
   "login_forgot_password": "Forgot?",
-
   "register_subtitle": "Create an account to get started.",
   "register_confirm_password": "Confirm password",
   "register_error_password_mismatch": "passwords do not match",
@@ -71,7 +66,6 @@
   "register_create_account": "Create account",
   "register_login_prompt": "Already have an account?",
   "register_login_link": "Sign in",
-
   "setup_subtitle": "Create the first admin account to get started.",
   "setup_bootstrap_token": "Bootstrap token",
   "setup_bootstrap_token_hint": "Printed to the backend's logs on startup.",
@@ -80,7 +74,6 @@
   "setup_error_generic": "setup failed",
   "setup_creating": "Creating…",
   "setup_create_account": "Create admin account",
-
   "capturereader_load_error": "failed to load capture",
   "capturereader_back": "Back to page",
   "capturereader_captured_via": "Captured {date} via {source}",
@@ -114,7 +107,6 @@
   "capturereader_delete": "Delete capture",
   "capturereader_delete_confirm": "Delete this capture? This can't be undone from the dashboard.",
   "capturereader_delete_error": "failed to delete capture",
-
   "devices_pairing_token_heading": "Pairing token",
   "devices_pairing_token_hint": "Used once to pair a new device (the extension, CLI, or PWA) to your account.",
   "devices_load_token_error": "failed to load pairing token",
@@ -152,8 +144,8 @@
   "devices_session_unknown_device": "Unknown device",
   "devices_session_signed_in_at": "signed in {date}",
   "devices_session_last_active_at": "active {date}",
-
   "queue_load_items_error": "failed to load queue items",
+  "queue_load_pending_captures_error": "failed to load pending captures",
   "queue_load_jobs_error": "failed to load jobs",
   "queue_retry_item_error": "failed to retry item",
   "queue_retry_job_error": "failed to retry job",
@@ -190,7 +182,16 @@
   "queue_screenshots_label": "Screenshots",
   "queue_readability_label": "Article extraction",
   "queue_ai_summaries_label": "AI summaries",
-
+  "queue_ingest_heading": "Awaiting ingestion",
+  "queue_ingest_hint": "Uploaded and waiting for the archiver to pull them in. This can take up to 30 minutes.",
+  "queue_no_pending_captures": "Nothing waiting to be pulled in.",
+  "queue_status_waiting": "Waiting",
+  "queue_status_ingesting": "Ingesting",
+  "queue_status_ingested": "Ingested",
+  "queue_pending_captured": "Captured {time}",
+  "queue_pending_started": "Started {time}",
+  "queue_pending_ingested": "Ingested {time}",
+  "queue_item_by_device": "by {device}",
   "collections_load_error": "failed to load collections",
   "collections_create_error": "failed to create collection",
   "collections_rename_error": "failed to rename collection",
@@ -208,7 +209,6 @@
   "collections_delete_confirm_with_children_one": "Delete \"{name}\" and its {count} sub-collection? Pages stay archived, but they'll no longer be in any of these.",
   "collections_delete_confirm_with_children_other": "Delete \"{name}\" and its {count} sub-collections? Pages stay archived, but they'll no longer be in any of these.",
   "collections_delete_confirm_simple": "Delete \"{name}\"? Pages stay archived, but they'll no longer be in this collection.",
-
   "tags_load_error": "failed to load tags",
   "tags_rename_error": "failed to rename tag",
   "tags_delete_error": "failed to delete tag",
@@ -223,14 +223,12 @@
   "tagdetail_back": "All tags",
   "tagdetail_load_error": "failed to load pages for this tag",
   "tagdetail_no_pages": "No pages have this tag yet.",
-
   "collectiondetail_back": "All collections",
   "collectiondetail_breadcrumb_aria": "Breadcrumb",
   "collectiondetail_not_found": "Collection not found.",
   "collectiondetail_load_error": "failed to load pages for this collection",
   "collectiondetail_no_pages": "No pages directly in this collection yet.",
   "collectiondetail_subcollections_heading": "Sub-collections",
-
   "library_load_error": "failed to load pages",
   "library_search_placeholder": "Search your archive…",
   "library_search_label": "Search",
@@ -242,7 +240,6 @@
   "library_previous": "Previous",
   "library_next": "Next",
   "library_pagination_summary": "{start}–{end} of {total}",
-
   "pagedetail_load_error": "failed to load page",
   "pagedetail_mirror_toggle_label": "Sync with my browser's bookmarks",
   "pagedetail_tags_heading": "Tags",

@@ -22,7 +22,7 @@
 // POST /internal/queue-items (service-secret-gated, backend-initiated
 // enqueue), all gated by the backend<->Worker service secret. Same
 // authenticated-as-the-backend-itself credential tier as internal/devices,
-// internal/mirror, and internal/ingest.WorkerClient -- gets its own package
+// internal/mirror, and internal/pendingcaptures -- gets its own package
 // for the same reason internal/devices does: each service-secret-gated
 // concern here has its own small client, not one shared "Worker API"
 // grab-bag.
@@ -73,7 +73,16 @@ type Item struct {
 	Status      string     `json:"status"`
 	ManualRetry bool       `json:"manual_retry"`
 	ClaimedAt   *time.Time `json:"claimed_at"`
-	CreatedAt   time.Time  `json:"created_at"`
+	// ClaimedByDevice names the device holding (or last holding) the
+	// claim, resolved by the Worker through a LEFT JOIN against its own
+	// tokens table -- for a claimed item this is which browser to go and
+	// finish the capture in, and for a failed one it's where it went
+	// wrong. Nil both when nothing has claimed the item yet and when the
+	// device that did has since been revoked: device tokens are revoked
+	// by row delete, so there is genuinely no name left rather than one
+	// being withheld.
+	ClaimedByDevice *string   `json:"claimed_by_device"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type Client struct {
@@ -96,7 +105,12 @@ type itemWirePayload struct {
 	Status      string `json:"status"`
 	ManualRetry int    `json:"manual_retry"`
 	ClaimedAt   string `json:"claimed_at"`
-	CreatedAt   string `json:"created_at"`
+	// A pointer, unlike the other string fields here: SQL NULL and the
+	// empty string both decode to "" in a plain string, and this is the
+	// one field where that distinction reaches the UI -- "" would render
+	// as an empty "by " suffix rather than omitting the clause.
+	ClaimedByDevice *string `json:"claimed_by_device"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // List lists every one of userID's queue items the Worker's
@@ -139,12 +153,13 @@ func (c *Client) List(ctx context.Context, userID int64) ([]Item, error) {
 			return nil, fmt.Errorf("queueitems: parsing claimed_at for item %q: %w", w.ID, err)
 		}
 		items = append(items, Item{
-			ID:          w.ID,
-			URL:         w.URL,
-			Status:      w.Status,
-			ManualRetry: w.ManualRetry != 0,
-			ClaimedAt:   claimedAt,
-			CreatedAt:   createdAt,
+			ID:              w.ID,
+			URL:             w.URL,
+			Status:          w.Status,
+			ManualRetry:     w.ManualRetry != 0,
+			ClaimedAt:       claimedAt,
+			ClaimedByDevice: w.ClaimedByDevice,
+			CreatedAt:       createdAt,
 		})
 	}
 	return items, nil
@@ -179,6 +194,44 @@ func (c *Client) Retry(ctx context.Context, userID int64, itemID string) error {
 		return fmt.Errorf("queueitems: retrying item: status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// Cleanup sweeps queue_items rows in a terminal, successful state
+// ('captured') that finished long enough ago to be of no further use, and
+// returns how many were deleted.
+//
+// Deployment-wide and unscoped, unlike every other method on this client:
+// List and Retry act on behalf of one signed-in user and take a userID for
+// that reason, but this is the backend's own maintenance sweep across the
+// whole instance, called from `recueil agent` rather than an HTTP handler.
+// 'failed' items are deliberately never swept -- they're the durable
+// "needs attention" state the dashboard's Queue screen lists against.
+func (c *Client) Cleanup(ctx context.Context) (int, error) {
+	reqURL := c.baseURL + "/internal/queue-items/cleanup"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, http.NoBody)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("X-Service-Key", c.serviceSecret)
+	req.Header.Set("User-Agent", userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("queueitems: cleaning up queue items: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("queueitems: cleaning up queue items: status %d", resp.StatusCode)
+	}
+
+	var parsed struct {
+		Deleted int `json:"deleted"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return 0, fmt.Errorf("queueitems: decoding cleanup response: %w", err)
+	}
+	return parsed.Deleted, nil
 }
 
 // enqueuePayload mirrors terraform/worker/index.js's handleServiceEnqueue

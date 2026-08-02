@@ -255,11 +255,35 @@ export interface QueueItem {
   status: "pending" | "claimed" | "captured" | "failed";
   manual_retry: boolean;
   claimed_at: string | null;
+  // Which device holds (or last held) the claim, from a LEFT JOIN against
+  // the Worker's own tokens table. Null both for an item nobody has claimed
+  // yet and for one whose device has since been revoked -- device tokens
+  // are revoked by row delete, so there is nothing left to name.
+  claimed_by_device: string | null;
   created_at: string;
 }
 
 export interface QueueItemListResponse {
   items: QueueItem[];
+}
+
+// GET /api/pending-captures' item shape: a capture a device has finished
+// uploading that the backend hasn't yet pulled in.
+//
+// No status field, because D1 has no status column for this -- the pair
+// (fetched_by_backend, claimed_at) is the entire state, and there is
+// deliberately no failed value among them. See pendingCaptureCategory in
+// Queue.svelte for the mapping.
+export interface PendingCapture {
+  id: string;
+  url: string;
+  fetched_by_backend: boolean;
+  claimed_at: string | null;
+  captured_at: string;
+}
+
+export interface PendingCaptureListResponse {
+  pending_captures: PendingCapture[];
 }
 
 // GET /api/jobs' item shape -- one combined shape for all three job

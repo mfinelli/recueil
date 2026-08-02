@@ -30,9 +30,13 @@
 // - POST /captures/upload-urls, POST /queue/:id/complete,
 //   POST /queue/:id/fail: presigned R2 upload issuance and the
 //   claimed-item-to-captured/failed transition
-// - GET /internal/pending-captures, POST
-//   /internal/pending-captures/:id/fetched: service-secret-gated backend
-//   ingestion polling (list unfetched captures; mark one as pulled)
+// - POST /internal/pending-captures, POST
+//   /internal/pending-captures/:id/fetched, POST
+//   /internal/pending-captures/cleanup, GET /internal/pending-captures:
+//   service-secret-gated backend ingestion polling (atomically claim a
+//   batch of unfetched captures; mark one as pulled; sweep long-since-
+//   ingested rows) plus a read-only, user-scoped listing for the
+//   dashboard's Queue screen
 // - GET /internal/archived-pages/last-sync, POST
 //   /internal/archived-pages/mirror, GET /internal/archived-pages/page-ids,
 //   POST /internal/archived-pages/delete: service-secret-gated bookmark-list
@@ -434,6 +438,12 @@ export default {
     if (method === "POST" && pathname === "/internal/queue-items/cleanup") {
       return handleCleanupQueueItems(request, env);
     }
+    if (method === "POST" && pathname === "/internal/pending-captures") {
+      return handleClaimPendingCaptures(request, env);
+    }
+    // Same path, different verb, genuinely different operation: POST is the
+    // backend claiming work across every user, GET is one user reading their
+    // own. See handleListPendingCaptures.
     if (method === "GET" && pathname === "/internal/pending-captures") {
       return handleListPendingCaptures(request, env);
     }
@@ -442,6 +452,12 @@ export default {
     );
     if (method === "POST" && fetchedMatch) {
       return handleMarkPendingCaptureFetched(request, env, fetchedMatch[1]);
+    }
+    if (
+      method === "POST" &&
+      pathname === "/internal/pending-captures/cleanup"
+    ) {
+      return handleCleanupPendingCaptures(request, env);
     }
     if (method === "POST" && pathname === "/captures/upload-urls") {
       return handleGetUploadUrls(request, env, ctx);
@@ -840,7 +856,13 @@ export async function handleListTokens(request, env) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  // Truthiness rather than a null check: "?user_id=" with no value parses
+  // as null from get() only when the key is absent entirely -- present but
+  // empty gives "", and Number("") is 0, which Number.isInteger happily
+  // accepts. That would turn a malformed request into a silent empty list
+  // for a user id that can never exist, instead of a 400. A real id is
+  // never the empty string, so truthiness is the whole check.
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }
@@ -879,7 +901,7 @@ export async function handleRevokeToken(request, env, tokenIdParam) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   const tokenId = Number(tokenIdParam);
   if (!Number.isInteger(userId) || !Number.isInteger(tokenId)) {
     return new Response("Missing or invalid fields", { status: 400 });
@@ -960,19 +982,47 @@ export async function handleCleanupQueueItems(request, env) {
 const DEFAULT_PENDING_CAPTURES_LIMIT = 50;
 const MAX_PENDING_CAPTURES_LIMIT = 200;
 
+// How long a claimed-but-unfinished pending capture stays claimed before
+// another agent may take it over. Deliberately much longer than the 15
+// minutes queue_items uses, even though both answer "stuck, or merely in
+// progress?": a stuck queue item has a human waiting to capture something,
+// so reclaiming quickly is worth the risk of two devices racing, whereas
+// nothing at all waits on a pending capture -- the backend polls on its own
+// schedule regardless. The only cost of a long window here is that a
+// genuinely dead agent's work waits longer to be retried, and the risk of a
+// short one is real: an ingestion still running when its claim expires lets
+// a second agent in, which is precisely the duplicate this claim exists to
+// prevent. Pulling one blob from R2 and writing it takes seconds, so an
+// hour is enormous headroom.
+const PENDING_CAPTURE_CLAIM_TIMEOUT_MINUTES = 60;
+
 /**
- * GET /internal/pending-captures?limit=: lists captures the backend hasn't
- * yet pulled from R2 (fetched_by_backend = 0), oldest first. Service-secret
- * gated, cross-user -- this is the backend's own ingestion sweep across the
- * whole deployment, not a per-device or per-user operation, so it takes
- * no user_id the way the device-facing queue endpoints do (same shape as
- * handleCleanupQueueItems above).
+ * POST /internal/pending-captures?limit=: atomically CLAIMS captures the
+ * backend hasn't yet pulled from R2 (fetched_by_backend = 0), oldest first,
+ * and returns them. Service-secret gated, cross-user -- this is the
+ * backend's own ingestion sweep across the whole deployment, not a
+ * per-device or per-user operation, so it takes no user_id the way the
+ * device-facing queue endpoints do (same shape as handleCleanupQueueItems
+ * above).
+ *
+ * POST rather than GET, and a claim rather than a plain read, because two
+ * agent processes polling at roughly the same time would otherwise both
+ * ingest the same row and the second would silently write a duplicate
+ * capture -- see the migration's own comment for why the downstream
+ * source_capture_id guard does not stop that.
+ *
+ * SQLite has no FOR UPDATE SKIP LOCKED, but D1 serializes writes, so a
+ * single UPDATE ... RETURNING is atomic on its own -- the same shape
+ * handleClaimQueueItem already relies on. A claim older than
+ * PENDING_CAPTURE_CLAIM_TIMEOUT_MINUTES is treated as abandoned and may be
+ * taken over, which is what stops a crashed agent from stranding a row
+ * forever.
  *
  * @param {Request} request
  * @param {Env} env
  * @returns {Promise<Response>}
  */
-export async function handleListPendingCaptures(request, env) {
+export async function handleClaimPendingCaptures(request, env) {
   const serviceKey = request.headers.get("X-Service-Key");
   if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
     return new Response("Unauthorized", { status: 401 });
@@ -993,14 +1043,23 @@ export async function handleListPendingCaptures(request, env) {
     limit = parsed;
   }
 
+  // The inner SELECT picks the batch; the outer UPDATE claims exactly that
+  // batch and hands it back in one statement, so no second caller can see
+  // these rows as unclaimed in between.
   const { results } = await env.DB.prepare(
-    `SELECT id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at, created_at
-     FROM pending_captures
-     WHERE fetched_by_backend = 0
-     ORDER BY created_at ASC
-     LIMIT ?`,
+    `UPDATE pending_captures
+     SET claimed_at = CURRENT_TIMESTAMP
+     WHERE id IN (
+       SELECT id FROM pending_captures
+       WHERE fetched_by_backend = 0
+         AND (claimed_at IS NULL OR claimed_at < datetime('now', ?))
+       ORDER BY created_at ASC
+       LIMIT ?
+     )
+     RETURNING id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon,
+               captured_at, claimed_at, created_at`,
   )
-    .bind(limit)
+    .bind(`-${PENDING_CAPTURE_CLAIM_TIMEOUT_MINUTES} minutes`, limit)
     .all();
 
   return new Response(JSON.stringify({ pending_captures: results }), {
@@ -1015,9 +1074,16 @@ export async function handleListPendingCaptures(request, env) {
  * the capture to Postgres and deleted the R2 objects -- per the
  * crash-recovery ordering (disk write, then DB commit, then R2 delete, then
  * this D1 flag update), a crash before this call simply means the row shows
- * up in the next poll again, which is safe: ingestion itself is idempotent
- * via source_capture_id, so re-processing an already-ingested row is a no-op
- * on the Postgres side.
+ * up in the next poll again, which is safe: ingestion recognizes an
+ * already-committed capture by its still-populated source_capture_id, so
+ * re-processing it is a no-op on the Postgres side.
+ *
+ * That recognition is what makes a SEQUENTIAL retry safe, and it is
+ * deliberately not what makes CONCURRENT pickup safe -- source_capture_id
+ * is cleared to NULL immediately after this call, so it stops protecting
+ * anything the moment the first agent finishes. Two agents holding the same
+ * row at once is prevented one layer up, by the claim in
+ * handleClaimPendingCaptures, not here.
  *
  * Deliberately not scoped to a queue item or a user -- this is the
  * backend's own bookkeeping on a row it already knows about; the device
@@ -1044,6 +1110,113 @@ export async function handleMarkPendingCaptureFetched(request, env, captureId) {
     return new Response("Not Found", { status: 404 });
   }
   return new Response(null, { status: 204 });
+}
+
+/**
+ * GET /internal/pending-captures?user_id=: lists one user's captures that
+ * are in the window between "a device finished uploading" and "the backend
+ * has ingested it" -- the dashboard's Queue screen has no other way to see
+ * that stage, and at the default 30-minute backend poll interval it can be
+ * a long one to be invisible for.
+ *
+ * Read-only and user-scoped, which is the whole difference from
+ * handleClaimPendingCaptures on the same path: that one is the backend
+ * taking work (POST, cross-user, mutates claimed_at), this one is a person
+ * looking at their own. Service-secret gated like every /internal route --
+ * the dashboard never talks to this Worker directly, the backend proxies
+ * for it and supplies the user_id from the session.
+ *
+ * Includes rows already ingested within the last 15 minutes, matching
+ * handleListQueueItems' own recency window so a capture doesn't vanish from
+ * the screen the instant it moves on. Unlike that handler there is no
+ * status column to filter on: fetched_by_backend plus claimed_at is the
+ * entire state, and the three combinations map to waiting / ingesting /
+ * ingested. There is deliberately no failed state to surface -- a row that
+ * keeps failing ingestion is indistinguishable from one merely waiting, and
+ * inventing a distinction the data can't support would be worse than
+ * showing the elapsed time and letting an obviously-stale row speak for
+ * itself.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleListPendingCaptures(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const userIdParam = url.searchParams.get("user_id");
+  const userId = userIdParam ? Number(userIdParam) : NaN;
+  if (!Number.isInteger(userId)) {
+    return new Response("Missing or invalid user_id", { status: 400 });
+  }
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, url, fetched_by_backend, claimed_at, captured_at, created_at
+     FROM pending_captures
+     WHERE user_id = ?
+       AND (fetched_by_backend = 0
+            OR claimed_at > datetime('now', '-15 minutes'))
+     ORDER BY created_at ASC`,
+  )
+    .bind(userId)
+    .all();
+
+  return new Response(JSON.stringify({ pending_captures: results }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * POST /internal/pending-captures/cleanup: deletes pending_captures rows the
+ * backend finished ingesting long enough ago that nothing will ever look at
+ * them again. Service-secret gated, cross-user, deployment-wide -- the same
+ * maintenance-sweep shape as handleCleanupQueueItems, whose reasoning mostly
+ * applies verbatim.
+ *
+ * Only successfully-ingested rows (fetched_by_backend = 1) are ever deleted.
+ * A row still at 0 is either waiting for pickup or failing ingestion
+ * repeatedly, and this table has no status column that could tell those
+ * apart -- so both are kept indefinitely rather than risk sweeping away the
+ * only record of a capture that never landed. Surfacing and retrying
+ * persistently-failing rows needs an attempts/error column and something
+ * equivalent to POST /queue/:id/fail, neither of which exists yet; until
+ * then, accumulating is the safe direction to be wrong in.
+ *
+ * The retention clock is claimed_at, for the same "time since actual
+ * completion, not time since the row was created" reasoning
+ * handleCleanupQueueItems already documents -- a capture can sit unclaimed
+ * for a long time before an agent picks it up. Unlike queue_items, though,
+ * claimed_at here isn't merely a reasonable proxy: fetched_by_backend = 1
+ * is only reachable by an agent that claimed the row first, so it is
+ * guaranteed non-NULL on exactly the rows this deletes.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleCleanupPendingCaptures(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const result = await env.DB.prepare(
+    `DELETE FROM pending_captures
+     WHERE fetched_by_backend = 1
+       AND claimed_at < datetime('now', ?)`,
+  )
+    .bind(`-${CAPTURED_RETENTION_HOURS} hours`)
+    .run();
+
+  return new Response(JSON.stringify({ deleted: result.meta.changes }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 // How long a presigned upload URL remains valid. Comfortably more than
@@ -1574,18 +1747,28 @@ export async function handleListQueueItems(request, env) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }
 
+  // LEFT JOIN, not an inner one: claimed_by_token_id is NULL for an item
+  // nobody has picked up yet, and the token row it points at can be deleted
+  // outright when a device is revoked (tokens are revoked by row delete --
+  // there is no soft-delete). Either way the item itself must still be
+  // listed, just without a device name.
   const { results } = await env.DB.prepare(
-    `SELECT id, url, status, manual_retry, claimed_at, created_at
+    `SELECT queue_items.id, queue_items.url, queue_items.status,
+            queue_items.manual_retry, queue_items.claimed_at,
+            queue_items.created_at,
+            tokens.device_name AS claimed_by_device
      FROM queue_items
-     WHERE user_id = ?
-       AND (status IN ('pending', 'claimed', 'failed')
-            OR (status = 'captured' AND claimed_at > datetime('now', '-15 minutes')))
-     ORDER BY created_at ASC`,
+     LEFT JOIN tokens ON tokens.id = queue_items.claimed_by_token_id
+     WHERE queue_items.user_id = ?
+       AND (queue_items.status IN ('pending', 'claimed', 'failed')
+            OR (queue_items.status = 'captured'
+                AND queue_items.claimed_at > datetime('now', '-15 minutes')))
+     ORDER BY queue_items.created_at ASC`,
   )
     .bind(userId)
     .all();
@@ -1621,7 +1804,7 @@ export async function handleRetryQueueItem(request, env, itemId) {
 
   const url = new URL(request.url);
   const userIdParam = url.searchParams.get("user_id");
-  const userId = userIdParam !== null ? Number(userIdParam) : NaN;
+  const userId = userIdParam ? Number(userIdParam) : NaN;
   if (!Number.isInteger(userId)) {
     return new Response("Missing or invalid user_id", { status: 400 });
   }

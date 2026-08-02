@@ -178,12 +178,30 @@ describe("fetch (router)", () => {
     expect(response.status).toBe(404);
   });
 
+  it("routes POST /internal/pending-captures to handleClaimPendingCaptures", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/pending-captures",
+      { method: "POST" },
+    );
+    // No service key -> 401, which still confirms routing (not 404) reached
+    // handleClaimPendingCaptures.
+    expect(response.status).toBe(401);
+  });
+
+  // Same path, different verb, different operation: GET is the dashboard's
+  // read-only per-user listing, not a non-claiming variant of the POST.
   it("routes GET /internal/pending-captures to handleListPendingCaptures", async () => {
     const response = await SELF.fetch(
       "https://example.com/internal/pending-captures",
     );
-    // No service key -> 401, which still confirms routing (not 404) reached
-    // handleListPendingCaptures.
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /internal/pending-captures/cleanup to handleCleanupPendingCaptures", async () => {
+    const response = await SELF.fetch(
+      "https://example.com/internal/pending-captures/cleanup",
+      { method: "POST" },
+    );
     expect(response.status).toBe(401);
   });
 

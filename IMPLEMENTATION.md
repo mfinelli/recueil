@@ -2862,3 +2862,243 @@ dotted-rule between body rows, eyebrow-style headers, data-mono applied only to
 the numeric `<td>` cells (caught and fixed a first pass that also applied it to
 header words like "Captures," which read oddly — data-mono is for data, not
 labels).
+
+## Phase 15 (Storage model: per-capture directories; `gc` hardening)
+
+A pre-release review of the storage model, done deliberately before the first
+tagged release since the on-disk layout is one of the few things here that gets
+genuinely hard to change once real archives exist. See DESIGN.md §4 for the
+model and §15's own entry for the decision record; this covers what actually
+landed.
+
+### `internal/archive`: `NewCapture`, and directories that belong to one capture
+
+- **`Store.NewCapture() (relDir string, err error)`** replaces `CaptureDir` (now
+  unexported as `captureDir`, and taking a capture id rather than a content
+  hash). Mints a UUIDv7 via `google/uuid` (already a direct dependency), shards
+  three levels deep, creates the directory, returns the root-relative path.
+- **The shard is the id's trailing four hex characters, not its leading ones.**
+  UUIDv7 puts a millisecond timestamp in the leading bits, so leading-char
+  sharding would put every capture from the same period in one bucket — the
+  exact opposite of what sharding is for. The last group of a v7 id is entirely
+  `rand_b`, so it distributes uniformly. This is the one non-obvious consequence
+  of choosing v7 over v4, and worth stating because a future reader reaching for
+  "just take the first two characters, like git does" would be quietly wrong.
+- **`MkdirAll` for the shard levels, plain `os.Mkdir` for the leaf.** The shard
+  directories are shared by many captures, so already-exists is the normal case
+  there; the leaf is the collision signal. `EEXIST` regenerates the id (bounded
+  loop, `newCaptureAttempts = 5`) rather than adopting the directory. This check
+  has to be at mkdir time, not a Postgres constraint, because the disk write
+  precedes the commit — a constraint alone would reject the row only after
+  `writeAtomic` had already overwritten the other capture's bytes.
+- **`WriteHTML(relDir, data)` /
+  `WriteAsset(relDir, name, ext, data, compress)`** now take the capture
+  directory rather than a hash. Filenames are role-based: `page.html.zst`,
+  `favicon.{ext}[.zst]`, `thumbnail.png`. A directory holds exactly one of each,
+  so nothing needs a hash to stay distinct — and a re-render (retried
+  screenshot, re-extraction after a Readability.js upgrade) now overwrites in
+  place through the existing atomic rename rather than writing a new file and
+  orphaning its predecessor.
+- **New: `Store.WalkEmptyDirs` and `Store.RemoveEmptyDir`.** `Walk` reports
+  regular files only, so a capture directory created by `NewCapture` for an
+  ingestion that then failed early is invisible to it. `RemoveEmptyDir`
+  re-checks emptiness immediately before removing and reports "no longer
+  applicable" as `(false, nil)` rather than an error — both ways that happens (a
+  parent already pruned by an earlier file removal; a concurrent `NewCapture`
+  claiming the directory) are ordinary, not failures a caller should have to
+  recognize and discard. Doing the re-check inside the package also avoids
+  exposing the Store's root, which is the only thing "relative to" actually
+  means.
+- **`Walk` now also reports `modTime`**, and tolerates a root that doesn't exist
+  yet (zero files, which is exactly right for an instance that hasn't ingested
+  anything). Parent-pruning was factored out of `Remove` into
+  `pruneEmptyParents`, shared with `RemoveEmptyDir`.
+
+### Callers
+
+Small surface, which is most of why this was worth doing now:
+
+- **`internal/ingest`** calls `NewCapture` before `WriteHTML`, and threads
+  `relDir` into `captureFavicon` in place of the html hash.
+- **`internal/screenshot`** derives the directory as
+  `filepath.Dir(job.HtmlPath)`. `ClaimDueScreenshotJobs` already returned
+  `html_path` alongside `content_hash`, so this needed no new query — just
+  dropping the now-unused `content_hash` from the `RETURNING` list.
+- **Manual upload (§3d) is not built yet**, so there was no second ingestion
+  path to keep in sync.
+- `content_hash`/`favicon_hash`/`thumbnail_hash` are untouched as columns and
+  still in the capture DTO. §3c's retry-vs-collision disambiguation, which
+  compares the returned row's `content_hash` against the freshly computed one,
+  works exactly as before.
+
+### Schema
+
+`migrations/00004_create_captures.sql` edited in place (nothing has shipped, so
+no stacked `ALTER`): `CONSTRAINT captures_html_path_key UNIQUE (html_path)`.
+`html_path` is one-to-one with the capture directory, so this is the
+database-side statement of the same invariant — belt-and-suspenders behind
+`NewCapture`'s exclusive mkdir, and notably a constraint that would have been
+_wrong_ under the previous layout, where identical HTML deliberately shared a
+path.
+
+### `internal/gc`: two safety rails and an empty-directory pass
+
+`Run` now takes `gc.Options{DryRun, Force}` rather than a bare bool, and is
+restructured **collect-then-remove** rather than removing inline during the
+walk. That restructure is what lets the orphan-fraction check be a clean
+all-or-nothing refusal instead of an abort partway through a deletion pass.
+
+- **`recentThreshold` (15 minutes)** — anything modified more recently is left
+  alone regardless of the live set. Reused from the D1 claim-visibility timeout
+  and `internal/screenshot`'s `claimStaleTimeout` rather than inventing a third
+  number for the same question. The concrete bug this fixes existed before this
+  round: `archive.Store`'s `.tmp-*` files are in `Walk`'s namespace and _by
+  construction_ can never be in the live set, so a sweep concurrent with an
+  ingestion would unlink one mid-write and the writer's `os.Rename` would then
+  fail `ENOENT`. Not silent corruption, but a spurious failure appearing only
+  under concurrency — the kind that gets diagnosed slowly.
+- **`maxOrphanFraction` (0.5), floored at `safetyCheckMinFiles` (100)** —
+  refuses the run with `*TooManyOrphansError` if too much comes back orphaned.
+  Guards a footgun rather than a known bug: the live set is stored path strings
+  compared against walked path strings, and any future normalization divergence
+  between the two sides produces an empty intersection and marks the whole
+  archive as garbage. The floor exists because a four-file archive with three
+  orphans is 75% and means nothing. `--force` overrides; a dry run reports that
+  the real run would refuse (`Result.SafetyCheckTripped`) rather than silently
+  proceeding, which would make `--dry-run` misleading in exactly the situation
+  it matters most.
+- **Empty-directory pass**, per `WalkEmptyDirs` above, age-floored the same way
+  — an unreferenced-and-empty directory a few seconds old is just a capture
+  between `NewCapture` and `WriteHTML`.
+- `Result` gained `FilesSkippedRecent`, `EmptyDirsRemoved`,
+  `SafetyCheckTripped`. `cmd/gc.go` grew `--force`, reports the new counters,
+  and returns `TooManyOrphansError` unwrapped (it already explains itself in
+  full, including what to do; `fmt.Errorf("running gc: %w")` would only prefix
+  noise onto an actionable message).
+
+### Tests
+
+`internal/archive` and `internal/gc` test files rewritten. New coverage worth
+naming: `NewCapture` never returning the same directory twice across 500
+same-millisecond mints; identical content producing two independent files such
+that removing one leaves the other intact (a test that could not have been
+written under the previous layout); `.tmp-*` files surviving a sweep; empty
+capture directories being pruned while recently-created ones are not; and all
+three states of the orphan-fraction check (refuse, `--force`, dry-run-reports).
+
+One honest gap: `NewCapture`'s `EEXIST` branch can't be reached from an external
+test package without injecting the id generator, and adding that seam purely to
+cover a branch guarding an unreachable event wasn't judged worth it. The test
+there asserts the property the branch protects instead — an already-populated
+capture directory is never handed back out — and says so in its own comment
+rather than implying more coverage than exists.
+
+## Phase 17 (Queue screen: awaiting-ingestion section; device attribution)
+
+Closes the last invisible stage of a capture's life on the Queue screen. See
+DESIGN.md §8's "Pending-capture claiming and cleanup" for the endpoint design.
+
+### The gap
+
+The screen already showed the capture queue and the enrichment jobs, but nothing
+in between — so from the moment a device finished uploading until the backend's
+next poll picked the capture up, there was no evidence anywhere that anything
+was happening. At the default `agent_worker_poll_interval_seconds` of 1800
+that's up to half an hour of apparent silence, which is exactly long enough to
+make someone assume it failed.
+
+### The move (`internal/pendingcaptures`)
+
+The pending-captures Worker client moved out of `internal/ingest` into its own
+package, taking `PendingCapture` with it. `WorkerClient` became `Client`,
+`NewWorkerClient` became `NewClient`.
+
+The reason is the dashboard call site, not tidiness: `internal/httpapi` needs to
+list these rows, and having `cmd/server.go` construct an
+`ingest.NewWorkerClient` would read as though `recueil server` ingests things.
+It doesn't. `pendingcaptures.NewClient` sitting beside `queueitems.NewClient`
+and `devices.NewClient` is obviously right; the alternative was obviously wrong.
+
+The seam is one package per Worker _resource_, not per caller — the agent claims
+/marks/sweeps, the dashboard lists, both through the same client.
+`internal/queueitems` already worked this way (its `List`/`Retry` serve the
+dashboard, its `Cleanup` serves the agent), so this follows an existing shape
+rather than inventing one. Adding a second client for the same table, split by
+caller, was the alternative and would have put the seam in the wrong place.
+
+`parseD1Timestamp` (RFC 3339) now exists in both `internal/ingest` and
+`internal/pendingcaptures`, following the duplicate-don't-share convention
+`queueitems` and `devices` already record for their own
+`parseD1NativeTimestamp`.
+
+### Worker
+
+- **`GET /internal/pending-captures?user_id=`**, alongside the existing `POST`
+  claim on the same path. Read-only and user-scoped; the `POST` is cross-user
+  and mutates `claimed_at`. A test asserts the `GET` doesn't claim — a dashboard
+  left open must not be able to starve the ingester.
+- The `GET` route added last round's test asserting a 404 on that path had to be
+  rewritten. That test's rationale (a stale caller should fail loudly rather
+  than silently read rows without claiming) is now moot: nothing has shipped, so
+  there are no stale callers, and the routes should be whatever makes sense.
+- **`GET /internal/queue-items` gained `claimed_by_device`** via a `LEFT JOIN`
+  on `tokens`. Left, not inner: unclaimed items have a `NULL`
+  `claimed_by_token_id`, and revocation is a row delete, so a revoked device has
+  no name left. The item still lists either way, and both cases are tested.
+
+### Timestamps: two formats on one row
+
+`UserCapture` parses into real `time.Time` values rather than passing D1's
+strings through, and this is the part most likely to be quietly broken by a
+future change:
+
+- `captured_at` is written by the **capturing device** as RFC 3339.
+- `claimed_at` is written by **D1's own `CURRENT_TIMESTAMP`** as
+  `YYYY-MM-DD HH:MM:SS` — no `T`, no `Z`, no offset of any kind.
+
+Passing the latter through to the browser would have been silently wrong rather
+than visibly broken: `new Date("2026-07-12 12:05:09")` is parsed as _local_ time
+by every engine, so every relative timestamp in the new section would have been
+off by the viewer's UTC offset — correct in UTC, wrong everywhere else. Same
+reason `queueitems.Item` already does this. `internal/pendingcaptures`' own
+tests cover both formats on one row explicitly.
+
+`fetched_by_backend` maps from an integer, since SQLite has no boolean type.
+
+### Frontend
+
+A third `<section>` between the two existing ones, reusing the same
+`StatusCategory`/badge/`.items` machinery so it's visually indistinguishable
+from its neighbours. `categoryForPendingCapture` maps
+`(fetched_by_backend, claimed_at)` onto pending/active/done — with no `failed`,
+deliberately. Pending captures feed the summary pills alongside items and jobs,
+and `loadAll` now issues three parallel requests rather than two.
+
+Badge labels are stage-specific ("Waiting"/"Ingesting"/"Ingested") rather than
+reusing the queue's "Pending"/"Claimed"/"Captured": same categories underneath,
+but the words describe what's actually happening at that stage.
+
+### The passthrough clients sit in a test-coverage gap
+
+`claimed_by_device` was added to the Worker's query and to the dashboard's own
+`QueueItem` type, but not to Go's `queueitems.Item` — so `encoding/json`
+silently dropped it in the middle and the Queue screen never showed a device
+name. Found by running it, not by any test.
+
+Worth recording as a structural point rather than a one-off, because neither
+suite could have caught it: the Worker's tests assert against the Worker's own
+response, and the dashboard's tests stub `apiJSON` directly, so the Go client
+between them is exercised by nothing but its own tests. That gap is exactly
+where a hand-rolled, manually-synced API client (§13a's own disclosed tradeoff)
+will fail, and it fails silently — an unknown JSON field is dropped, not an
+error.
+
+The practical rule: a field added at both ends needs an assertion in the
+relevant client's own test. Added for this one;
+`internal/pendingcaptures.ListForUser` was checked against `src/lib/types.ts`'s
+`PendingCapture` and already matches on all five fields.
+
+`Item.ClaimedByDevice` is `*string`, not `string`, so a JSON null (nobody has
+claimed it, or the device was revoked — tokens are revoked by row delete, so the
+LEFT JOIN finds nothing) stays nil rather than becoming `""`, which would render
+as a dangling "by " with no name after it.

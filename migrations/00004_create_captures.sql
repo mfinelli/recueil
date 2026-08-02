@@ -46,6 +46,10 @@ CREATE TABLE captures (
   CONSTRAINT captures_page_id_fkey FOREIGN KEY (page_id)
     REFERENCES pages(id) ON DELETE CASCADE,
   CONSTRAINT captures_source_capture_id_key UNIQUE (source_capture_id),
+  -- This is belt-and-suspenders, not the primary defense: the disk write
+  -- happens before this insert, so a violation caught here would already be
+  -- too late to prevent one capture's bytes overwriting another's.
+  CONSTRAINT captures_html_path_key UNIQUE (html_path),
   CONSTRAINT captures_source_check CHECK (source IN ('extension', 'manual_upload'))
 );
 

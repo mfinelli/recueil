@@ -44,24 +44,25 @@ import (
 
 	"github.com/mfinelli/recueil/internal/archive"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
 // defaultBatchLimit bounds how many captures a single RunOnce call
-// processes -- matches the Worker's own GET /internal/pending-captures
+// processes -- matches the Worker's POST /internal/pending-captures
 // default limit (terraform/worker/index.js), so a single poll cycle's work is
 // naturally bounded without RunOnce needing its own separate cap.
 const defaultBatchLimit = 50
 
 // r2Client and workerClient are narrow interfaces over *r2.Client and
-// *WorkerClient -- just the methods Ingester actually calls. Depending on
+// *pendingcaptures.Client -- just the methods Ingester actually calls. Depending on
 // interfaces here (rather than the concrete types directly) means this
 // package's own tests can substitute lightweight in-memory fakes for R2
 // and the Worker, while still exercising real Postgres (via dbtest), real
 // local disk (via archive.Store against a t.TempDir()), and real URL
 // normalization -- trusting internal/r2's and this package's own
-// WorkerClient tests to separately validate that those two dependencies
-// are correct, rather than re-proving it here via a hand-rolled fake S3
+// internal/pendingcaptures' tests to separately validate that those two
+// dependencies are correct, rather than re-proving it here via a hand-rolled fake S3
 // server.
 type r2Client interface {
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
@@ -69,7 +70,7 @@ type r2Client interface {
 }
 
 type workerClient interface {
-	ListPendingCaptures(ctx context.Context, limit int) ([]PendingCapture, error)
+	ClaimPendingCaptures(ctx context.Context, limit int) ([]pendingcaptures.PendingCapture, error)
 	MarkFetched(ctx context.Context, captureID string) error
 }
 
@@ -123,9 +124,13 @@ func New(p Params) *Ingester {
 // succeeds). RunOnce only returns an error when it can't even get a batch to
 // work on.
 func (ing *Ingester) RunOnce(ctx context.Context) error {
-	pending, err := ing.worker.ListPendingCaptures(ctx, defaultBatchLimit)
+	// Claims the batch, rather than merely reading it: this is what stops
+	// a second agent process from picking up the same rows and silently
+	// writing duplicate captures. See
+	// pendingcaptures.Client.ClaimPendingCaptures.
+	pending, err := ing.worker.ClaimPendingCaptures(ctx, defaultBatchLimit)
 	if err != nil {
-		return fmt.Errorf("ingest: listing pending captures: %w", err)
+		return fmt.Errorf("ingest: claiming pending captures: %w", err)
 	}
 
 	for _, pc := range pending {
@@ -142,7 +147,7 @@ func (ing *Ingester) RunOnce(ctx context.Context) error {
 // ordering: local disk write, then the Postgres transaction commits, then the
 // R2 object is deleted, then the D1 flag is set, then (once both cleanup
 // calls have actually succeeded) source_capture_id is cleared.
-func (ing *Ingester) processOne(ctx context.Context, pc *PendingCapture) error {
+func (ing *Ingester) processOne(ctx context.Context, pc *pendingcaptures.PendingCapture) error {
 	captureRowID, commitErr := ing.captureAndCommit(ctx, pc)
 	if commitErr != nil {
 		existing, lookupErr := ing.queries.GetCaptureBySourceCaptureID(ctx, pgtype.Text{String: pc.ID, Valid: true})
@@ -206,7 +211,7 @@ func (ing *Ingester) processOne(ctx context.Context, pc *PendingCapture) error {
 // pull from R2, hash, compress to local disk, normalize the URL, and
 // commit to Postgres. Returns the new (or, via collision-handling,
 // possibly a pre-existing) captures row's id.
-func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (int64, error) {
+func (ing *Ingester) captureAndCommit(ctx context.Context, pc *pendingcaptures.PendingCapture) (int64, error) {
 	capturedAt, err := parseD1Timestamp(pc.CapturedAt)
 	if err != nil {
 		return 0, fmt.Errorf("parsing captured_at %q: %w", pc.CapturedAt, err)
@@ -225,7 +230,19 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 	sum := sha256.Sum256(data)
 	contentHash := hex.EncodeToString(sum[:])
 
-	relPath, compressedSize, err := ing.store.WriteHTML(contentHash, data)
+	// Every capture gets its own directory, independent of its content.
+	// Note for the retry path specifically: a retry that turns out to be
+	// a duplicate mints a fresh directory, writes into it, and only then
+	// learns from the insert below that the capture was already committed.
+	// The freshly-written directory is then unreferenced by any row and
+	// gets reclaimed by `recueil gc`, exactly like any other orphan -- it
+	// is not something this function needs to unwind by hand.
+	relDir, err := ing.store.NewCapture()
+	if err != nil {
+		return 0, fmt.Errorf("creating local archive directory: %w", err)
+	}
+
+	relPath, compressedSize, err := ing.store.WriteHTML(relDir, data)
 	if err != nil {
 		return 0, fmt.Errorf("writing to local archive: %w", err)
 	}
@@ -261,7 +278,7 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 	var faviconSizeBytes int32
 	var faviconHash string
 	if pc.R2KeyFavicon != nil && *pc.R2KeyFavicon != "" {
-		faviconPath, faviconSizeBytes, faviconHash = ing.captureFavicon(ctx, pc, contentHash)
+		faviconPath, faviconSizeBytes, faviconHash = ing.captureFavicon(ctx, pc, relDir)
 	}
 
 	captureID, inserted, err := ing.writeToPostgres(ctx, pc, &writeInput{
@@ -290,15 +307,18 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *PendingCapture) (
 
 // captureFavicon pulls the favicon object from R2 (if the extension
 // actually uploaded one), stores it alongside the HTML in the same capture
-// directory (see internal/archive's package doc for why it's keyed by its
-// own content hash, not htmlHash), and returns the resulting relative path,
-// its on-disk size, and its own content hash (the same hash already used
-// as its filename -- see migration 00009's own doc for why it's also
-// stored as a column rather than only ever implicit in the path) -- or
-// ("", 0, "") if anything goes wrong, having already logged why. Never
-// returns an error: a favicon is cosmetic, and a broken/unreachable one is
-// not a reason to fail an otherwise-good capture.
-func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htmlHash string) (faviconPath string, writtenSize int32, faviconHash string) {
+// directory (relDir, as returned by archive.Store.NewCapture), and returns
+// the resulting relative path, its on-disk size, and its own content hash
+// -- or ("", 0, "") if anything goes wrong, having already logged why.
+//
+// The hash is still recorded as a column even though it no longer names
+// the file on disk: it's the only way to tell after the fact whether two
+// captures of the same page carried the same icon, and the only integrity
+// check available for a file nothing else ever re-derives.
+//
+// Never returns an error: a favicon is cosmetic, and a broken/unreachable
+// one is not a reason to fail an otherwise-good capture.
+func (ing *Ingester) captureFavicon(ctx context.Context, pc *pendingcaptures.PendingCapture, relDir string) (faviconPath string, writtenSize int32, faviconHash string) {
 	key := *pc.R2KeyFavicon
 
 	body, err := ing.r2.Get(ctx, key)
@@ -334,7 +354,7 @@ func (ing *Ingester) captureFavicon(ctx context.Context, pc *PendingCapture, htm
 	// aren't worth it.
 	compress := ext == "svg"
 
-	faviconPath, writtenSizeRaw, err := ing.store.WriteAsset(htmlHash, faviconHash, ext, data, compress)
+	faviconPath, writtenSizeRaw, err := ing.store.WriteAsset(relDir, "favicon", ext, data, compress)
 	if err != nil {
 		ing.logger.WarnContext(ctx, "ingest: failed to write favicon to local archive, continuing without one",
 			"capture_id", pc.ID, "error", err)
@@ -373,7 +393,7 @@ type writeInput struct {
 // inserts as one transaction -- either all of it lands, or none of it
 // does, so a crash mid-transaction can never leave a capture row without
 // its corresponding job rows.
-func (ing *Ingester) writeToPostgres(ctx context.Context, pc *PendingCapture, in *writeInput) (captureID int64, inserted bool, err error) {
+func (ing *Ingester) writeToPostgres(ctx context.Context, pc *pendingcaptures.PendingCapture, in *writeInput) (captureID int64, inserted bool, err error) {
 	tx, err := ing.pool.Begin(ctx)
 	if err != nil {
 		return 0, false, fmt.Errorf("beginning transaction: %w", err)
