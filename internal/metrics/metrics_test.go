@@ -256,6 +256,7 @@ func TestNewRegistry_QueryFailureIsGraceful(t *testing.T) {
 	require.NoError(t, err, "a failed collector must not fail the whole scrape")
 
 	var sawUsersMetric, sawJobsMetric, sawJobAgeMetric, sawGoCollector bool
+	var sawPagesMetric, sawCapturesMetric, sawStorageBytesMetric, sawAgentHeartbeatMetric bool
 	for _, f := range families {
 		switch f.GetName() {
 		case "recueil_users_total":
@@ -264,6 +265,14 @@ func TestNewRegistry_QueryFailureIsGraceful(t *testing.T) {
 			sawJobsMetric = true
 		case "recueil_job_oldest_pending_age_seconds":
 			sawJobAgeMetric = true
+		case "recueil_pages_total":
+			sawPagesMetric = true
+		case "recueil_captures_total":
+			sawCapturesMetric = true
+		case "recueil_storage_bytes":
+			sawStorageBytesMetric = true
+		case "recueil_agent_last_success_seconds":
+			sawAgentHeartbeatMetric = true
 		case "go_goroutines":
 			sawGoCollector = true
 		}
@@ -271,8 +280,112 @@ func TestNewRegistry_QueryFailureIsGraceful(t *testing.T) {
 	assert.False(t, sawUsersMetric, "recueil_users_total should be absent when the query fails, not zero or an error")
 	assert.False(t, sawJobsMetric, "recueil_jobs_total should be absent when its query fails too")
 	assert.False(t, sawJobAgeMetric, "recueil_job_oldest_pending_age_seconds should be absent when its query fails too")
+	assert.False(t, sawPagesMetric, "recueil_pages_total should be absent when its query fails too")
+	assert.False(t, sawCapturesMetric, "recueil_captures_total should be absent when its query fails too")
+	assert.False(t, sawStorageBytesMetric, "recueil_storage_bytes should be absent when its query fails too")
+	assert.False(t, sawAgentHeartbeatMetric, "recueil_agent_last_success_seconds should be absent when its query fails too")
 	assert.True(t, sawGoCollector, "other collectors must still report even when one fails")
 
 	// Double-close should also be safe.
 	pool.Close()
+}
+
+// TestNewRegistry_StorageStats deliberately sets favicon/thumbnail bytes
+// via a raw UPDATE rather than InsertCaptureIdempotentParams -- that
+// struct has no ThumbnailSizeBytes field (the screenshot job writes it
+// later, well after the initial insert), so a raw tweak here is the same
+// "reach past sqlc for one field the happy-path insert doesn't set" the
+// job-age test above already does for created_at.
+func TestNewRegistry_StorageStats(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	captureID := newTestCapture(t, pool, q) // html_compressed=1, html_uncompressed=1
+	_, err := pool.Exec(ctx,
+		"UPDATE captures SET favicon_size_bytes = 30, thumbnail_size_bytes = 400 WHERE id = $1", captureID)
+	require.NoError(t, err)
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_pages_total Current number of archived pages, system-wide.
+# TYPE recueil_pages_total gauge
+recueil_pages_total 1
+`), "recueil_pages_total"))
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_captures_total Current number of captures (a page's version history), system-wide.
+# TYPE recueil_captures_total gauge
+recueil_captures_total 1
+`), "recueil_captures_total"))
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_storage_bytes Bytes of local archive storage in use, by content kind.
+# TYPE recueil_storage_bytes gauge
+recueil_storage_bytes{kind="favicon"} 30
+recueil_storage_bytes{kind="html_compressed"} 1
+recueil_storage_bytes{kind="html_uncompressed"} 1
+recueil_storage_bytes{kind="screenshot"} 400
+`), "recueil_storage_bytes"))
+}
+
+// TestNewRegistry_AgentHeartbeat_AbsentUntilRecorded confirms the
+// absent-not-zero contract this table's own migration comment
+// documents -- a freshly-migrated instance (or, here, a freshly-reset
+// test database) has recorded no heartbeat for either cycle yet, so both
+// must be absent rather than reporting 0 (which would misleadingly claim
+// the agent succeeded moments ago). Recording one for "worker" only must
+// leave "local" still absent -- confirming the two cycles are tracked
+// independently, not as a single combined heartbeat.
+func TestNewRegistry_AgentHeartbeat_AbsentUntilRecorded(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	count, err := testutil.GatherAndCount(reg, "recueil_agent_last_success_seconds")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "no cycle has ever recorded a heartbeat yet")
+
+	require.NoError(t, q.RecordAgentHeartbeat(ctx, "worker"))
+
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	var sawWorker, sawLocal bool
+	for _, f := range families {
+		if f.GetName() != "recueil_agent_last_success_seconds" {
+			continue
+		}
+		for _, m := range f.Metric {
+			var cycle string
+			for _, l := range m.Label {
+				if l.GetName() == "cycle" {
+					cycle = l.GetValue()
+				}
+			}
+			switch cycle {
+			case "worker":
+				sawWorker = true
+				assert.InDelta(t, 0, m.Gauge.GetValue(), 5, "expected a just-recorded heartbeat to be a few seconds old at most")
+			case "local":
+				sawLocal = true
+			}
+		}
+	}
+	assert.True(t, sawWorker, "expected an age metric for the cycle that just recorded a heartbeat")
+	assert.False(t, sawLocal, "a cycle that's never recorded a heartbeat should stay absent, not zero")
+
+	// A second recording for the same cycle upserts rather than erroring
+	// or duplicating -- cycle is the primary key.
+	require.NoError(t, q.RecordAgentHeartbeat(ctx, "worker"))
+	count, err = testutil.GatherAndCount(reg, "recueil_agent_last_success_seconds")
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "re-recording the same cycle should still be exactly one row/metric, not two")
 }

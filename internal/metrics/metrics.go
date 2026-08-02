@@ -18,7 +18,11 @@
 
 // Package metrics builds the Prometheus registry served at /metrics: the
 // standard Go runtime and process collectors, plus Recueil-specific
-// gauges -- user count, and background job counts/ages by type and status.
+// gauges -- user/page/capture counts, storage bytes by kind, background
+// job counts/ages by type and status, and recueil agent's own last-
+// success age by cycle. Everything here is Postgres-only by design: none
+// of it ever calls the Cloudflare Worker, so scrape frequency has no
+// effect on Worker request volume/free-tier budget.
 package metrics
 
 import (
@@ -43,6 +47,13 @@ import (
 var jobTypes = []string{"screenshot", "readability", "ai"}
 var jobStatuses = []string{"pending", "processing", "done", "failed"}
 
+// storageBytesKinds enumerates every label GetSystemStats' byte totals can
+// report, the same explicit-enumeration reasoning as jobTypes/jobStatuses
+// above -- iterated in collectStorageStats against a map built from
+// GetSystemStatsRow's fields, so the two lists have to be kept in
+// sync by hand; nothing here is generated from the struct.
+var storageBytesKinds = []string{"html_compressed", "html_uncompressed", "favicon", "screenshot"}
+
 // collector queries the database fresh on every scrape rather than
 // maintaining its own cached/periodically-updated state. Simple, and
 // correct by construction (no separate "when did we last update this"
@@ -55,6 +66,10 @@ type collector struct {
 	usersDesc               *prometheus.Desc
 	jobsDesc                *prometheus.Desc
 	jobOldestPendingAgeDesc *prometheus.Desc
+	pagesDesc               *prometheus.Desc
+	capturesDesc            *prometheus.Desc
+	storageBytesDesc        *prometheus.Desc
+	agentLastSuccessDesc    *prometheus.Desc
 }
 
 func newCollector(queries *db.Queries) prometheus.Collector {
@@ -76,6 +91,27 @@ func newCollector(queries *db.Queries) prometheus.Collector {
 				"Absent (not zero) for a job type with no pending jobs right now.",
 			[]string{"job"}, nil,
 		),
+		pagesDesc: prometheus.NewDesc(
+			"recueil_pages_total",
+			"Current number of archived pages, system-wide.",
+			nil, nil,
+		),
+		capturesDesc: prometheus.NewDesc(
+			"recueil_captures_total",
+			"Current number of captures (a page's version history), system-wide.",
+			nil, nil,
+		),
+		storageBytesDesc: prometheus.NewDesc(
+			"recueil_storage_bytes",
+			"Bytes of local archive storage in use, by content kind.",
+			[]string{"kind"}, nil,
+		),
+		agentLastSuccessDesc: prometheus.NewDesc(
+			"recueil_agent_last_success_seconds",
+			"Seconds since recueil agent last completed this cycle "+
+				"successfully. Absent (not zero) if it never has.",
+			[]string{"cycle"}, nil,
+		),
 	}
 }
 
@@ -83,6 +119,10 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.usersDesc
 	ch <- c.jobsDesc
 	ch <- c.jobOldestPendingAgeDesc
+	ch <- c.pagesDesc
+	ch <- c.capturesDesc
+	ch <- c.storageBytesDesc
+	ch <- c.agentLastSuccessDesc
 }
 
 // Collect can't return an error (it's not part of the interface), so each
@@ -98,6 +138,8 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectUsers(ctx, ch)
 	c.collectJobCounts(ctx, ch)
 	c.collectOldestPendingAge(ctx, ch)
+	c.collectStorageStats(ctx, ch)
+	c.collectAgentLastSuccess(ctx, ch)
 }
 
 func (c *collector) collectUsers(ctx context.Context, ch chan<- prometheus.Metric) {
@@ -143,6 +185,56 @@ func (c *collector) collectOldestPendingAge(ctx context.Context, ch chan<- prome
 	}
 	for _, row := range rows {
 		ch <- prometheus.MustNewConstMetric(c.jobOldestPendingAgeDesc, prometheus.GaugeValue, row.AgeSeconds, row.Job)
+	}
+}
+
+// collectStorageStats reuses GetSystemStats -- the same query the
+// dashboard's admin stats screen already runs -- rather than adding a
+// metrics-specific one. Page/capture counts double as free ingestion-rate
+// visibility (rate()/increase() over either gauge), which is the closer
+// signal to "is the queue actually draining" than a raw queue-depth count
+// would be anyway, and getting it doesn't require ever asking the Worker.
+func (c *collector) collectStorageStats(ctx context.Context, ch chan<- prometheus.Metric) {
+	stats, err := c.queries.GetSystemStats(ctx)
+	if err != nil {
+		log.Printf("metrics: failed to compute storage stats: %v", err)
+		return
+	}
+
+	ch <- prometheus.MustNewConstMetric(c.pagesDesc, prometheus.GaugeValue, float64(stats.PageCount))
+	ch <- prometheus.MustNewConstMetric(c.capturesDesc, prometheus.GaugeValue, float64(stats.CaptureCount))
+
+	// One MustNewConstMetric call per kind, driven by storageBytesKinds
+	// so the emitted set matches jobsDesc's always-emit-every-combination
+	// behavior above -- see that comment for why. bytesByKind's four
+	// entries are kept in sync with storageBytesKinds and
+	// GetSystemStatsRow's fields by hand; nothing enforces it structurally.
+	bytesByKind := map[string]int64{
+		"html_compressed":   stats.HtmlCompressedBytes,
+		"html_uncompressed": stats.HtmlUncompressedBytes,
+		"favicon":           stats.FaviconBytes,
+		"screenshot":        stats.ScreenshotBytes,
+	}
+	for _, kind := range storageBytesKinds {
+		ch <- prometheus.MustNewConstMetric(c.storageBytesDesc, prometheus.GaugeValue,
+			float64(bytesByKind[kind]), kind)
+	}
+}
+
+// collectAgentLastSuccess emits one gauge per cycle that has ever recorded
+// a heartbeat -- not one per known cycle unconditionally, the same
+// absent-not-zero reasoning as collectOldestPendingAge: a cycle that's
+// never succeeded (a freshly-migrated instance, or an agent that's never
+// managed to complete one) has no row in agent_heartbeats at all, and 0
+// would misleadingly claim it succeeded moments ago.
+func (c *collector) collectAgentLastSuccess(ctx context.Context, ch chan<- prometheus.Metric) {
+	rows, err := c.queries.AgentHeartbeatAges(ctx)
+	if err != nil {
+		log.Printf("metrics: failed to compute agent heartbeat ages: %v", err)
+		return
+	}
+	for _, row := range rows {
+		ch <- prometheus.MustNewConstMetric(c.agentLastSuccessDesc, prometheus.GaugeValue, row.AgeSeconds, row.Cycle)
 	}
 }
 

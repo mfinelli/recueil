@@ -3103,6 +3103,44 @@ claimed it, or the device was revoked — tokens are revoked by row delete, so t
 LEFT JOIN finds nothing) stays nil rather than becoming `""`, which would render
 as a dangling "by " with no name after it.
 
+### Metrics: storage stats and agent heartbeat
+
+Revisited `internal/metrics` post-1.0 to see what was worth adding now that the
+job pipeline, queue, and storage model all actually exist. Two additions, both
+Postgres-only — see `DESIGN.md`'s metrics section for why that's a hard
+constraint, not an oversight (real queue depth lives only in D1, and scraping
+the Worker on every Prometheus tick risks the Cloudflare free tier for no real
+benefit).
+
+**Storage stats.** `recueil_pages_total`, `recueil_captures_total`, and
+`recueil_storage_bytes{kind}` reuse `GetSystemStats` — the same query the
+dashboard's admin stats screen already runs. No new query needed.
+
+**Agent heartbeat.** New `agent_heartbeats(cycle, last_success_at)` table
+(migration `00012`), upserted into by `cmd/agent.go`'s `workerCycle.run` and
+`runLocalCycle` after a cycle completes — but only when every step in that cycle
+actually succeeded, not just because the cycle ran. Recording unconditionally
+would hide exactly the failure mode this metric exists to catch: an agent
+process that's alive and ticking but whose ingestion has been silently failing
+every cycle. The D1 cleanup sweep (only runs every `cleanupInterval`, not every
+cycle) is deliberately excluded from the gate for `cycle="worker"` — tying
+heartbeat freshness to something that doesn't run every cycle would make the
+metric's cadence depend on which ticks happened to also trigger a sweep.
+
+Considered whether this holds up under multiple concurrent `agent` processes
+before building it — worth recording since it's a real, deliberate scope
+decision, not an oversight. `pending_captures.claimed_at` already exists
+specifically because two agents can otherwise double-ingest the same row, so the
+codebase already tolerates concurrent agents correctly. But a shared,
+cycle-keyed heartbeat (not scoped per instance) answers "is at least one agent
+still working," not "is my agent healthy" — it can't catch one of several agents
+silently dying while the others keep going. Confirmed this project runs exactly
+one `agent` process per deployment (aside from a redeploy's brief overlap, which
+an upsert on `cycle` tolerates fine) before shipping the shared-row version
+rather than the per-instance one; per-instance would need a stable identity
+(hostname/ container ID aren't stable across a redeploy) and is a deliberate
+future redesign, not a gap in this one.
+
 ## Phase 18 (API tokens: MCP-facing auth infrastructure)
 
 Step one of a two-step MCP feature: this phase is the auth credential the MCP

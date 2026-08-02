@@ -215,6 +215,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		syncer:     syncer,
 		worker:     workerClient,
 		queueItems: queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret),
+		queries:    queries,
 		logger:     logger.Logger,
 	}
 
@@ -222,7 +223,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// for their first tick -- otherwise a freshly-deployed agent sits
 	// idle for a full interval before doing anything.
 	worker.run(cmd.Context())
-	runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+	runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 
 	workerTicker := time.NewTicker(workerInterval)
 	defer workerTicker.Stop()
@@ -246,7 +247,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			// since each is just another case in the same select.
 			worker.run(cmd.Context())
 		case <-localTicker.C:
-			runLocalCycle(cmd.Context(), screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+			runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
 		case <-cmd.Context().Done():
 			log.Println("shutting down...")
 			return nil
@@ -272,6 +273,15 @@ func runAgent(cmd *cobra.Command, args []string) error {
 // DELETEs against a handful of indexed rows.
 const cleanupInterval = 12 * time.Hour
 
+// The two agent_heartbeats.cycle values -- named here rather than typed
+// as literals at each call site so a typo becomes a compile error rather
+// than a heartbeat that silently never matches what internal/metrics
+// reads back. Must match the CHECK constraint in that table's migration.
+const (
+	cycleWorker = "worker"
+	cycleLocal  = "local"
+)
+
 // workerCycle runs one ingestion pass, one mirror-sync pass, and
 // (occasionally) D1's maintenance sweeps -- everything that talks to the
 // Cloudflare Worker (and, through it, D1), which is why it's on the
@@ -288,6 +298,7 @@ type workerCycle struct {
 	syncer     *mirror.Syncer
 	worker     *pendingcaptures.Client
 	queueItems *queueitems.Client
+	queries    *db.Queries
 	logger     *slog.Logger
 
 	// lastCleanup is the zero Time until the first sweep, which is what
@@ -299,12 +310,30 @@ type workerCycle struct {
 // returned/propagated: a failed cycle shouldn't crash the agent process, it
 // should just try again next tick -- the same "log and continue" philosophy
 // RunOnce/SyncOnce already apply at the per-item level, just one level up.
+//
+// The heartbeat only advances if both ingestion and mirror sync succeeded
+// -- not unconditionally on the cycle merely running. An agent process
+// that's alive and ticking but whose ingestion has been failing every
+// cycle is exactly the failure recueil_agent_last_success_seconds exists
+// to catch; recording a heartbeat regardless of outcome would hide it.
+// The cleanup sweep below is deliberately excluded from that gate: it's
+// best-effort maintenance that only runs every cleanupInterval, not every
+// cycle, so tying heartbeat freshness to it would make the metric's
+// cadence depend on which ticks happened to also trigger a sweep.
 func (w *workerCycle) run(ctx context.Context) {
+	ok := true
 	if err := w.ingester.RunOnce(ctx); err != nil {
 		w.logger.ErrorContext(ctx, "agent: ingestion cycle failed", "error", err)
+		ok = false
 	}
 	if err := w.syncer.SyncOnce(ctx); err != nil {
 		w.logger.ErrorContext(ctx, "agent: mirror sync cycle failed", "error", err)
+		ok = false
+	}
+	if ok {
+		if err := w.queries.RecordAgentHeartbeat(ctx, cycleWorker); err != nil {
+			w.logger.ErrorContext(ctx, "agent: failed to record worker heartbeat", "error", err)
+		}
 	}
 
 	// Last, and only sometimes: pure maintenance, so a failure here
@@ -339,17 +368,31 @@ func (w *workerCycle) runCleanup(ctx context.Context) {
 // (AgentLocalPollIntervalSeconds), since none of them have any
 // Worker/free-tier request budget to respect. aiRunner may be nil (AI
 // enrichment disabled entirely, via an empty AIBaseURL), in which case
-// this cycle simply skips it -- not an error, just nothing to run.
-func runLocalCycle(ctx context.Context, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, logger *slog.Logger) {
+// this cycle simply skips it -- not an error, just nothing to run, and
+// not something that blocks the heartbeat below.
+//
+// Same success-gated heartbeat as workerCycle.run, for the same reason:
+// recueil_agent_last_success_seconds{cycle="local"} should mean these
+// jobs are actually running, not just that the process is up.
+func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, logger *slog.Logger) {
+	ok := true
 	if err := screenshotRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: screenshot cycle failed", "error", err)
+		ok = false
 	}
 	if err := readabilityRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: readability cycle failed", "error", err)
+		ok = false
 	}
 	if aiRunner != nil {
 		if err := aiRunner.RunOnce(ctx); err != nil {
 			logger.ErrorContext(ctx, "agent: ai enrichment cycle failed", "error", err)
+			ok = false
+		}
+	}
+	if ok {
+		if err := queries.RecordAgentHeartbeat(ctx, cycleLocal); err != nil {
+			logger.ErrorContext(ctx, "agent: failed to record local heartbeat", "error", err)
 		}
 	}
 }
