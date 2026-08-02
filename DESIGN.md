@@ -3204,13 +3204,21 @@ CREATE INDEX idx_tokens_user_id ON tokens(user_id);
 -- UUID-primary-key reason as pending_captures below; the composite index is
 -- not a bare user_id index because every poll/claim query filters on both
 -- user_id and status together (§8).
+--
+-- added_by_token_id/claimed_by_token_id are ON DELETE SET NULL: device
+-- revocation (§8) is DELETE FROM tokens, and without SET NULL that DELETE
+-- throws a foreign key violation the moment the revoked device has ever
+-- added or claimed a queue item -- discovered as a real 500 in testing,
+-- not by design review. SET NULL is what actually makes the "revoked
+-- device leaves nothing to name" LEFT JOIN behavior described below true,
+-- rather than merely intended.
 CREATE TABLE queue_items (
   id TEXT PRIMARY KEY,              -- client-generated UUID
   user_id INTEGER NOT NULL REFERENCES users(id),
   url TEXT NOT NULL,
-  added_by_token_id INTEGER REFERENCES tokens(id),
+  added_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
-  claimed_by_token_id INTEGER REFERENCES tokens(id),
+  claimed_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
   claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;

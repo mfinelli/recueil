@@ -30,9 +30,9 @@ CREATE TABLE queue_items (
   id TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
   url TEXT NOT NULL,
-  added_by_token_id INTEGER REFERENCES tokens(id),
+  added_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
-  claimed_by_token_id INTEGER REFERENCES tokens(id),
+  claimed_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
   manual_retry INTEGER NOT NULL DEFAULT 0,
   claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP

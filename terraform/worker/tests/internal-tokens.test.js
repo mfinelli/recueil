@@ -143,6 +143,53 @@ describe("handleRevokeToken", () => {
     expect(row).toBeNull();
   });
 
+  // Regression test: added_by_token_id/claimed_by_token_id used to be plain
+  // (NO ACTION) foreign keys, so revoking a device that had ever added or
+  // claimed a queue item threw FOREIGN KEY constraint failed instead of
+  // succeeding.
+  it("revokes a device that has added and claimed queue items, nulling both references", async () => {
+    const userId = await seedUser();
+    const tokenId = await seedToken(
+      userId,
+      "rcl_live_revoke-referenced",
+      "Laptop",
+      "extension",
+    );
+
+    await env.DB.prepare(
+      `INSERT INTO queue_items (id, user_id, url, added_by_token_id, claimed_by_token_id, status)
+       VALUES (?, ?, ?, ?, ?, 'claimed')`,
+    )
+      .bind(
+        "revoke-referenced-item-1",
+        userId,
+        "https://example.com/referenced",
+        tokenId,
+        tokenId,
+      )
+      .run();
+
+    const response = await handleRevokeToken(
+      serviceRequest("DELETE", `/internal/tokens/${tokenId}?user_id=${userId}`),
+      env,
+      String(tokenId),
+    );
+    expect(response.status).toBe(204);
+
+    const tokenRow = await env.DB.prepare("SELECT id FROM tokens WHERE id = ?")
+      .bind(tokenId)
+      .first();
+    expect(tokenRow).toBeNull();
+
+    const item = await env.DB.prepare(
+      "SELECT added_by_token_id, claimed_by_token_id FROM queue_items WHERE id = ?",
+    )
+      .bind("revoke-referenced-item-1")
+      .first();
+    expect(item.added_by_token_id).toBeNull();
+    expect(item.claimed_by_token_id).toBeNull();
+  });
+
   it("does not revoke a token if user_id doesn't match (backend-bug safety net)", async () => {
     const userId = await seedUser();
     const otherUserId = await seedUser();
