@@ -30,7 +30,9 @@
 //    @fontsource files/ directory -- each package ships every weight of the
 //    family, and we only want the handful this project actually uses.
 //
-// 2. Icons -- copies specific SVGs out of simple-icons into static/icons/.
+// 2. Icons -- copies specific SVGs out of simple-icons (brand marks) and
+//    lucide-static (UI glyphs, matching what @lucide/svelte gives the
+//    dashboard) into static/icons/. Used as CSS mask-images.
 
 import { readFile, writeFile, mkdir, copyFile } from "node:fs/promises";
 
@@ -49,6 +51,8 @@ const FONT_PACKAGES = {
 
 const ICONS = {
   github: "simple-icons/icons/github.svg",
+  sun: "lucide-static/icons/sun.svg",
+  moon: "lucide-static/icons/moon.svg",
 };
 
 async function vendorFonts() {

@@ -13,6 +13,7 @@
   "dependencies": {
     "@fontsource/fraunces": "^5.2.9",
     "@fontsource/ibm-plex-mono": "^5.2.7",
+    "lucide-static": "^1.25.0",
     "simple-icons": "^16.27.1"
   }
 }

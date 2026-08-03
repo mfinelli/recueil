@@ -167,10 +167,6 @@ a {
 .topbar__link:hover {
   color: var(--ink);
 }
-.topbar__link svg {
-  width: 16px;
-  height: 16px;
-}
 
 .icon {
   display: inline-block;
@@ -187,6 +183,14 @@ a {
 .icon-github {
   mask-image: url("/icons/github.svg");
   -webkit-mask-image: url("/icons/github.svg");
+}
+.icon-sun {
+  mask-image: url("/icons/sun.svg");
+  -webkit-mask-image: url("/icons/sun.svg");
+}
+.icon-moon {
+  mask-image: url("/icons/moon.svg");
+  -webkit-mask-image: url("/icons/moon.svg");
 }
 
 .theme-toggle {
@@ -206,7 +210,7 @@ a {
   color: var(--ink);
   border-color: var(--brass);
 }
-.theme-toggle svg {
+.theme-toggle .icon {
   width: 15px;
   height: 15px;
 }
@@ -223,7 +227,12 @@ a {
 .layout {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
-  max-width: 1180px;
+}
+.layout--full {
+  grid-template-columns: 1fr;
+}
+.layout--full main {
+  max-width: 760px;
   margin: 0 auto;
 }
 
