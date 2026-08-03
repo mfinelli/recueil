@@ -10,8 +10,10 @@
   "scripts": {
     "build": "vite build",
     "check": "prettier --check .",
+    "check:www": "pnpm exec prettier --plugin=prettier-plugin-jinja-template --parser=jinja-template --ignore-path '.gitignore' --check 'www/**/*.html'",
     "dev": "vite",
     "fmt": "prettier --write .",
+    "fmt:www": "pnpm exec prettier --plugin=prettier-plugin-jinja-template --parser=jinja-template --ignore-path '.gitignore' --write 'www/**/*.html'",
     "lint": "eslint",
     "paraglide:compile": "paraglide-js compile --project ./src/project.inlang --outdir ./src/paraglide --strategy custom-userSettings preferredLanguage baseLocale --emit-ts-declarations",
     "test": "pnpm run paraglide:compile && vitest run",
@@ -36,6 +38,7 @@
     "globals": "^17.7.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.5",
+    "prettier-plugin-jinja-template": "^2.2.0",
     "prettier-plugin-svelte": "^4.1.1",
     "sass": "^1.101.0",
     "svelte": "^5.56.6",

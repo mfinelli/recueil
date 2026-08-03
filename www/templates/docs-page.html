@@ -185,9 +185,7 @@ shows up in the nav on its own once it exists.
           >
             {% if page.lower %}
               <a href="{{ page.lower.permalink }}"
-                ><span class="dir">← Previous</span>{{
-                  page.lower.title
-                }}</a
+                ><span class="dir">← Previous</span>{{ page.lower.title }}</a
               >
             {% else %}
               <a href="{{ current_section.permalink }}"

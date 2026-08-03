@@ -27,6 +27,7 @@ create-migration NAME:
 fmt:
   go fmt ./...
   pnpm run fmt
+  pnpm run fmt:www
   tofu fmt -recursive
 
 lint:

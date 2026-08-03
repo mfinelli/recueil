@@ -63,6 +63,7 @@ jobs:
       - run: tofu fmt -check -recursive
       - run: pnpm ci
       - run: pnpm run check
+      - run: pnpm run check:www
       - run: pnpm run types
       - run: pnpm run lint
       - run: go mod download
