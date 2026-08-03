@@ -5,44 +5,37 @@ template = "docs-page.html"
 
 [extra]
 audience = "readers"
-dek = "Pair a device with your recueil instance and send your first page to be archived."
+dek = "Install the extension, pair it with your recueil instance, and capture your first page."
 +++
 
-{% callout(label="Before you start") %} You'll need a **worker URL** and login
-credentials from whoever runs your recueil instance. Once you're signed in,
-generate your own **pairing token** from the dashboard's Devices screen — that
-part is self-service and doesn't need any further help from your administrator.
-{% end %}
+1. **Get your pairing token and worker URL.** Sign in to your recueil dashboard
+   and open the _Devices_ screen — both are there.
 
-1. **Get your pairing token.** Sign in to your recueil dashboard and open the
-   _Devices_ screen. Copy the pairing token shown there — it identifies your
-   account and is safe to reuse across every device you pair.
+2. **Install the extension.** Add it from the [Chrome Web Store](#) or
+   [Firefox Add-ons](#) <!-- TODO: real store links --> — see
+   [Browser Extension](/docs/readers/browser-extension/) for details.
 
-2. **Install the CLI** (optional — skip this if you'll only be using the browser
-   extension). Grab the latest release binary for your platform from GitHub.
+3. **Pair it.** Open the extension and paste in your worker URL and pairing
+   token.
 
-3. **Pair this device.**
+4. **Capture something.** Browse to any page and click the toolbar icon —
+   recueil takes it from there, and it'll show up in your library shortly.
 
-   ```
-   $ recueil auth --url https://your-worker.example.workers.dev
-   # paste your pairing token when prompted
-   ```
+## Capturing something you queued
 
-4. **Send your first page.**
+If you queued a page instead of capturing it directly — from the share-sheet
+PWA, an iOS Shortcut, or another device — the extension shows a notification
+badge when something's waiting. Open the popup, click a queued URL to open it,
+take care of anything in the way (a CAPTCHA, a login wall), and capture it the
+same way you just did.
 
-   ```
-   $ recueil enqueue https://example.com/some-article
-   enqueued https://example.com/some-article
-   ```
+{% callout(label="Tip") %} No extension installed yet? Queued pages simply wait
+— nothing expires. Install it on any browser you use regularly and it'll pick up
+the queue automatically. {% end %}
 
-## What happens next
+## How this gets past logins and paywalls
 
-Enqueuing a page doesn't archive it right away. recueil only captures pages from
-a real, already logged-in browser tab — so login walls, paywalls, and CAPTCHAs
-don't defeat it the way they would a headless crawler. That means your page sits
-in the queue until a paired browser picks it up: open the extension's toolbar
-popup, and it'll offer to capture anything waiting for you.
-
-{% callout(label="Tip") %} No paired browser yet? Enqueued pages will simply
-wait — nothing expires. Install the extension on any device you browse from
-regularly and it'll pick up the queue automatically. {% end %}
+recueil only captures pages from a real, already logged-in browser tab, not a
+headless crawler fetching pages cold — that's the whole reason login walls,
+paywalls, and CAPTCHAs don't defeat it: whatever you can see in your own browser
+is what gets saved.
