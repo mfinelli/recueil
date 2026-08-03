@@ -96,21 +96,6 @@ shows up in the nav on its own once it exists.
         <span class="brand__sub">docs</span>
       </a>
       <div class="topbar__right">
-        <nav
-          class="audience-toggle audience-toggle--desktop"
-          aria-label="Documentation audience"
-        >
-          <a
-            href="{{ readers_section.permalink }}"
-            {% if ctx_audience=="readers" %}class="active"{% endif %}
-            >For Readers</a
-          >
-          <a
-            href="{{ operators_section.permalink }}"
-            {% if ctx_audience=="operators" %}class="active"{% endif %}
-            >For Operators</a
-          >
-        </nav>
         <button
           class="theme-toggle"
           type="button"
@@ -127,39 +112,43 @@ shows up in the nav on its own once it exists.
       </div>
     </div>
 
-    <div class="layout {% if not current_section %}layout--full{% endif %}">
-      {% if current_section %}
-        <aside class="drawer">
-          <nav
-            class="audience-toggle audience-toggle--mobile"
-            aria-label="Documentation audience"
+    <div class="layout">
+      <aside class="drawer">
+        <div class="drawer__cards">
+          <a
+            class="drawer__card {% if docs_index.permalink==ctx_permalink %}active{% endif %}"
+            href="{{ docs_index.permalink }}"
+            >Overview</a
           >
-            <a
-              href="{{ readers_section.permalink }}"
-              {% if ctx_audience=="readers" %}class="active"{% endif %}
-              >For Readers</a
-            >
-            <a
-              href="{{ operators_section.permalink }}"
-              {% if ctx_audience=="operators" %}class="active"{% endif %}
-              >For Operators</a
-            >
-          </nav>
-          <a class="drawer__label" href="{{ current_section.permalink }}"
-            >For {{ ctx_audience }}</a
+
+          <a
+            class="drawer__label {% if readers_section.permalink==ctx_permalink %}active{% endif %}"
+            href="{{ readers_section.permalink }}"
+            >For Readers</a
           >
-          <div class="drawer__cards">
-            {% for item in current_section.pages %}
-              <a
-                class="drawer__card {% if item.permalink==ctx_permalink %}active{% endif %}"
-                href="{{ item.permalink }}"
-                >{{ item.title }}</a
-              >
-            {% endfor %}
-          </div>
-          <div class="drawer__hole-row"><div class="drawer__hole"></div></div>
-        </aside>
-      {% endif %}
+          {% for item in readers_section.pages %}
+            <a
+              class="drawer__card {% if item.permalink==ctx_permalink %}active{% endif %}"
+              href="{{ item.permalink }}"
+              >{{ item.title }}</a
+            >
+          {% endfor %}
+
+          <a
+            class="drawer__label {% if operators_section.permalink==ctx_permalink %}active{% endif %}"
+            href="{{ operators_section.permalink }}"
+            >For Operators</a
+          >
+          {% for item in operators_section.pages %}
+            <a
+              class="drawer__card {% if item.permalink==ctx_permalink %}active{% endif %}"
+              href="{{ item.permalink }}"
+              >{{ item.title }}</a
+            >
+          {% endfor %}
+        </div>
+        <div class="drawer__hole-row"><div class="drawer__hole"></div></div>
+      </aside>
 
       <main>
         <div class="page-header">
