@@ -342,7 +342,13 @@ h1.page-title {
     margin: 0 0 1.75rem;
     padding: 0;
 
-    li {
+    // `>` matters here: a nested `<ul>` sub-list inside a step (see the
+    // Mobile Capture Shortcut recipe) is still a descendant of this `ol`,
+    // and without the child combinator its `<li>`s inherited both the
+    // `step` counter (continuing the outer numbering instead of getting
+    // their own bullet) and the circle styling below, stacked on top of
+    // their own native bullet marker.
+    > li {
       counter-increment: step;
       position: relative;
       padding: 0 0 1.35rem 2.6rem;
@@ -375,6 +381,9 @@ h1.page-title {
       }
       pre {
         margin-top: 0.75rem;
+      }
+      ul {
+        margin-top: 0.5rem;
       }
     }
   }

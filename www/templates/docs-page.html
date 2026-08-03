@@ -170,9 +170,7 @@ shows up in the nav on its own once it exists.
         <div class="prose">{{ ctx_content | safe }}</div>
 
         {% if page %}
-          <div
-            class="page-nav {% if not page.higher %}page-nav--end{% endif %}"
-          >
+          <div class="page-nav">
             {% if page.lower %}
               <a href="{{ page.lower.permalink }}"
                 ><span class="dir">← Previous</span>{{ page.lower.title }}</a
