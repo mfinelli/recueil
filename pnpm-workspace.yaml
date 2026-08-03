@@ -11,3 +11,4 @@ allowBuilds:
 packages:
   - extension
   - terraform/worker
+  - www

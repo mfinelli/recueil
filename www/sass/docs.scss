@@ -1,0 +1,569 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// Docs-section stylesheet. Kept independent of style.scss (the landing
+// page's dark ledger "stage") rather than sharing tokens through a partial --
+// the two are never loaded on the same page, and the landing page's card
+// motif and the docs' flatter reading-room treatment diverge enough that a
+// shared token file would mostly just be indirection. The one thing
+// literally reused is the punch-hole device (see .drawer__hole below),
+// carried over as a deliberate callback, not a shared variable.
+
+:root {
+  --ink: #2b2924;
+  --ink-muted: #746c5c;
+  --paper: #f2ede1;
+  --paper-raised: #fdfbf6;
+  --rule: #ddd2b8;
+  --accent: #8a3223;
+  --accent-success: #3c5c3a;
+  --focus: #4a6b8a;
+  --brass: #b68a2e;
+
+  --font-display: "Fraunces", Georgia, serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  --font-body:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #ece5d4;
+    --ink-muted: #a89c86;
+    --paper: #1d1b17;
+    --paper-raised: #29261f;
+    --rule: #40392d;
+    --accent: #d17b64;
+    --accent-success: #8bb385;
+    --focus: #7fa8c9;
+    --brass: #d9ae52;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: #ece5d4;
+  --ink-muted: #a89c86;
+  --paper: #1d1b17;
+  --paper-raised: #29261f;
+  --rule: #40392d;
+  --accent: #d17b64;
+  --accent-success: #8bb385;
+  --focus: #7fa8c9;
+  --brass: #d9ae52;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+a {
+  color: inherit;
+}
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 0.85rem 1.75rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  text-decoration: none;
+}
+.brand__mark {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-style: italic;
+  font-size: 1.35rem;
+  color: var(--ink);
+}
+.brand__sub {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass);
+}
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+// audience pill toggle -- same pattern as the dashboard's Theme/List-Grid
+// pill toggles, not a bespoke control.
+.audience-toggle {
+  display: inline-flex;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+}
+.audience-toggle a {
+  padding: 0.38rem 0.9rem;
+  border-radius: 999px;
+  text-decoration: none;
+  color: var(--ink-muted);
+}
+.audience-toggle a.active {
+  background: var(--accent);
+  color: var(--paper-raised);
+}
+.audience-toggle--mobile {
+  display: none;
+}
+
+.topbar__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+.topbar__link:hover {
+  color: var(--ink);
+}
+.topbar__link svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+}
+.icon-github {
+  mask-image: url("/icons/github.svg");
+  -webkit-mask-image: url("/icons/github.svg");
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--rule);
+  background: var(--paper-raised);
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0;
+}
+.theme-toggle:hover {
+  color: var(--ink);
+  border-color: var(--brass);
+}
+.theme-toggle svg {
+  width: 15px;
+  height: 15px;
+}
+.theme-toggle .icon-moon {
+  display: none;
+}
+:root[data-theme="dark"] .theme-toggle .icon-sun {
+  display: none;
+}
+:root[data-theme="dark"] .theme-toggle .icon-moon {
+  display: inline-block;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.drawer {
+  position: sticky;
+  top: 57px;
+  align-self: start;
+  height: calc(100svh - 57px);
+  border-right: 1px solid var(--rule);
+  padding: 1.5rem 0 0;
+  display: flex;
+  flex-direction: column;
+}
+.drawer__label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brass);
+  padding: 0 1.5rem 0.75rem;
+}
+.drawer__cards {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 0.75rem;
+}
+.drawer__card {
+  display: block;
+  padding: 0.55rem 0.75rem;
+  margin: 0 0 1px;
+  border-bottom: 1px dotted var(--rule);
+  text-decoration: none;
+  color: var(--ink-muted);
+  font-size: 0.88rem;
+  border-left: 2px solid transparent;
+}
+.drawer__card:hover {
+  color: var(--ink);
+  background: var(--paper-raised);
+}
+.drawer__card.active {
+  color: var(--ink);
+  font-weight: 600;
+  border-left-color: var(--accent);
+  background: var(--paper-raised);
+}
+
+// the punch hole -- borrowed from the marketing site's card motif
+// (see www/sass/style.scss's .card__hole).
+.drawer__hole-row {
+  display: flex;
+  justify-content: center;
+  padding: 0.9rem 0;
+  border-top: 1px solid var(--rule);
+}
+.drawer__hole {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1.5px solid var(--brass);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+main {
+  padding: 2.5rem 3rem 5rem;
+  min-width: 0;
+}
+.page-header {
+  margin-bottom: 2.25rem;
+}
+.catalog-line {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin-bottom: 0.6rem;
+}
+.catalog-line .sep {
+  color: var(--rule);
+  margin: 0 0.4em;
+}
+.catalog-line .current {
+  color: var(--brass);
+}
+
+h1.page-title {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 2.4rem;
+  margin: 0 0 0.6rem;
+  line-height: 1.15;
+}
+.page-dek {
+  font-size: 1.05rem;
+  color: var(--ink-muted);
+  max-width: 42em;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.prose {
+  max-width: 42em;
+  line-height: 1.7;
+  font-size: 0.98rem;
+
+  h2 {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 600;
+    font-size: 1.4rem;
+    margin: 2.5rem 0 0.9rem;
+  }
+  p {
+    margin: 0 0 1.1rem;
+  }
+  a {
+    color: var(--accent);
+    text-decoration-thickness: 1px;
+  }
+
+  // Real ordered lists double as the numbered-step pattern -- a page like
+  // Getting Started is a genuine sequence, so plain Markdown `1. ` authoring
+  // gets the connected-circle treatment for free, no shortcode needed.
+  ol {
+    list-style: none;
+    counter-reset: step;
+    margin: 0 0 1.75rem;
+    padding: 0;
+
+    li {
+      counter-increment: step;
+      position: relative;
+      padding: 0 0 1.35rem 2.6rem;
+      border-left: 1px solid var(--rule);
+      margin-left: 0.7rem;
+
+      &::before {
+        content: counter(step);
+        position: absolute;
+        left: -0.7rem;
+        top: -0.1rem;
+        width: 1.4rem;
+        height: 1.4rem;
+        border-radius: 50%;
+        background: var(--paper-raised);
+        border: 1px solid var(--brass);
+        color: var(--brass);
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      &:last-child {
+        border-left-color: transparent;
+        padding-bottom: 0;
+      }
+      p:last-child {
+        margin-bottom: 0;
+      }
+      pre {
+        margin-top: 0.75rem;
+      }
+    }
+  }
+
+  ul {
+    margin: 0 0 1.1rem;
+    padding-left: 1.3rem;
+  }
+
+  code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 0.1em 0.4em;
+  }
+  pre {
+    font-family: var(--font-mono);
+    font-size: 0.86rem;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    line-height: 1.6;
+    margin: 0 0 1.5rem;
+
+    code {
+      background: none;
+      border: none;
+      padding: 0;
+      font-size: 1em;
+    }
+  }
+}
+
+.callout {
+  border-left: 3px solid var(--brass);
+  background: var(--paper-raised);
+  padding: 0.9rem 1.1rem;
+  margin: 0 0 1.6rem;
+  border-radius: 0 3px 3px 0;
+
+  p:last-child {
+    margin-bottom: 0;
+  }
+}
+.callout__label {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass);
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+// dt/dd intake-method list on Overview -- echoes the marketing card's own
+// dt/dd treatment (www/templates/index.html's .entries), flattened for a
+// docs page.
+.intake-list {
+  margin: 0 0 1.75rem;
+  padding: 0;
+
+  dt {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--brass);
+    margin: 1.1rem 0 0.3rem;
+
+    &:first-of-type {
+      margin-top: 0;
+    }
+  }
+  dd {
+    margin: 0;
+    color: var(--ink);
+  }
+}
+
+.cross-links {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0 0 1.75rem;
+}
+.cross-link {
+  flex: 1 1 220px;
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  border: 1px solid var(--rule);
+  background: var(--paper-raised);
+  border-radius: 3px;
+  padding: 0.9rem 1.05rem;
+}
+.cross-link:hover {
+  border-color: var(--brass);
+}
+.cross-link__label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--brass);
+  margin-bottom: 0.3rem;
+}
+.cross-link__title {
+  display: block;
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 1.15rem;
+  margin-bottom: 0.25rem;
+}
+.cross-link__desc {
+  font-size: 0.86rem;
+  color: var(--ink-muted);
+}
+
+.page-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+}
+.page-nav--end {
+  justify-content: flex-end;
+}
+.page-nav a {
+  text-decoration: none;
+  color: var(--ink-muted);
+}
+.page-nav a:hover {
+  color: var(--accent);
+}
+.page-nav .dir {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--rule);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.2rem;
+}
+.page-nav .next {
+  text-align: right;
+}
+
+@media (max-width: 860px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .drawer {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+  }
+  main {
+    padding: 2rem 1.25rem 4rem;
+  }
+
+  .audience-toggle--desktop {
+    display: none;
+  }
+  .audience-toggle--mobile {
+    display: flex;
+    margin: 1.5rem 1.5rem 1.25rem;
+    width: fit-content;
+  }
+}

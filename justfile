@@ -43,6 +43,18 @@ serve:
   make all
   ./recueil server --config local.toml
 
+[private]
+www-assets:
+  pnpm run --filter=@recueil/www assets
+
+[working-directory: 'www']
+www-build: www-assets
+  zola build --minify
+
+[working-directory: 'www']
+www-serve: www-assets
+  zola serve
+
 test:
   go test -p 1 ./...
   pnpm run test

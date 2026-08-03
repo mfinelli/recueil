@@ -154,6 +154,7 @@ jobs:
         with:
           tool: zola@0.22.1
       - run: pnpm ci
+      - run: pnpm run --filter=@recueil/www assets
       - run: zola build --minify
         working-directory: www
       - run: pnpm exec wrangler pages deploy www/public --project-name recueil

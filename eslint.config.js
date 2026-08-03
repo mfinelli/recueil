@@ -132,6 +132,14 @@ export default [
     },
   },
   {
+    files: ["www/build-assets.mjs"],
+    languageOptions: {
+      ecmaVersion: "latest",
+      sourceType: "module",
+      globals: { ...globals.node },
+    },
+  },
+  {
     ignores: [
       "dist/**/*",
       "extension/dist/**/*",
