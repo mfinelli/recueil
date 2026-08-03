@@ -23,11 +23,11 @@ dek = "Install the extension, pair it with your recueil instance, and capture yo
 
 ## Capturing something you queued
 
-If you queued a page instead of capturing it directly — from the share-sheet
-PWA, an iOS Shortcut, or another device — the extension shows a notification
-badge when something's waiting. Open the popup, click a queued URL to open it,
-take care of anything in the way (a CAPTCHA, a login wall), and capture it the
-same way you just did.
+If you queued a page instead of capturing it directly — from the
+[share-sheet PWA or an iOS Shortcut](@/docs/readers/mobile-capture.md), or
+another device — the extension shows a notification badge when something's
+waiting. Open the popup, click a queued URL to open it, take care of anything in
+the way (a CAPTCHA, a login wall), and capture it the same way you just did.
 
 {% callout(label="Tip") %} No extension installed yet? Queued pages simply wait
 — nothing expires. Install it on any browser you use regularly and it'll pick up

@@ -22,7 +22,8 @@ finished processing.
 
 ## Working through your queue
 
-Pages queued from somewhere else — the share-sheet PWA, an iOS Shortcut, or
+Pages queued from somewhere else — the
+[share-sheet PWA or an iOS Shortcut](@/docs/readers/mobile-capture.md), or
 another paired device — show up under **Queue** in the popup, listed by URL.
 Click one to claim it: this opens it in a new tab so you can deal with
 whatever's in the way (if necessary) — a CAPTCHA or a login wall, for example —
