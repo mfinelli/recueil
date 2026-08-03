@@ -1299,9 +1299,21 @@ never used to pair a device:
     used for bearer/session tokens, was considered and rejected specifically for
     this credential: losing it would otherwise force a regenerate, which is a
     worse default for something a person may not immediately save to a password
-    manager, unlike a login password or session token.)
+    manager, unlike a login password or session token.) Also returns
+    `worker_url` (`Server.WorkerURL`, set from `cfg.WorkerURL`) alongside the
+    token. Pairing a device needs both values together, and the URL isn't a
+    secret, so making someone ask whoever deployed the instance for it was
+    friction with no security purpose. Bundled into this response rather than a
+    new endpoint or `GetCaptureConfig` (which is purpose-built for that screen's
+    regenerate-button drift detection, not a general instance-config catch-all)
+    since pairing is the one place both values are actually needed together. One
+    consequence: a user who's never generated a pairing token yet won't see the
+    Worker URL until they do (this endpoint 404s with no token issued) -- a
+    first-run-only gap judged acceptable, since generating a token is the very
+    next thing they'd do anyway.
   - `POST /api/pairing-token/regenerate` — issues a new token, overwrites both
-    the Postgres (encrypted) and D1 (hashed) copies.
+    the Postgres (encrypted) and D1 (hashed) copies. Returns `worker_url` too,
+    for the same reason GET does.
   - `DELETE /api/pairing-token` — revokes without reissuing, blocking further
     device pairing until a regenerate.
   - All three are built alongside Phase 2's device-auth work even though the

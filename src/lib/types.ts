@@ -202,6 +202,7 @@ export interface SessionListResponse {
 
 export interface PairingTokenResponse {
   pairing_token: string;
+  worker_url: string;
 }
 
 export interface ApiToken {
