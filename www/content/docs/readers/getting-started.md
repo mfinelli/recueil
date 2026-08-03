@@ -13,7 +13,7 @@ dek = "Install the extension, pair it with your recueil instance, and capture yo
 
 2. **Install the extension.** Add it from the [Chrome Web Store](#) or
    [Firefox Add-ons](#) <!-- TODO: real store links --> — see
-   [Browser Extension](/docs/readers/browser-extension/) for details.
+   [Browser Extension](@/docs/readers/browser-extension.md) for details.
 
 3. **Pair it.** Open the extension and paste in your worker URL and pairing
    token.
