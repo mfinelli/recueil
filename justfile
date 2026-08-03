@@ -37,6 +37,7 @@ lint:
   pnpm run types
   pnpm run --filter=@recueil/extension types
   pnpm run --filter=@recueil/terraform types
+  mandoc -Tlint recueil.1
 
 serve:
   make all

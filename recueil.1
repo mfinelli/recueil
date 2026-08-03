@@ -1,0 +1,218 @@
+.Dd $Mdocdate: August 3 2026 $
+.Dt RECUEIL 1
+.Os
+.Sh NAME
+.Nm recueil
+.Nd pair a device with, and enqueue pages to, a self-hosted Recueil archive
+.Sh SYNOPSIS
+.Nm
+.Cm auth
+.Fl -url Ar worker-url
+.Op Fl -name Ar device-name
+.Nm
+.Cm enqueue
+.Ar url No ...
+.Nm
+.Op Fl c Ar file | Fl -config Ar file
+.Cm server | agent | gc | user | device
+.Op Ar ...
+.Nm
+.Op Fl -help | Fl -version
+.Sh DESCRIPTION
+.Nm
+is the single binary behind Recueil, a self-hosted personal web archiver.
+Most people will only ever need two of its subcommands:
+.Cm auth ,
+which pairs the machine
+.Nm
+is running on with your Recueil instance, and
+.Cm enqueue ,
+which sends a URL to be archived.
+.Pp
+Everything else the binary can do
+.Pq Cm server , Cm agent , Cm gc , Cm user , Cm device
+is there to run and administer a Recueil instance itself, rather than to use
+one day-to-day, and is only summarized here; see
+.Sx ADMINISTRATIVE COMMANDS
+below and the full documentation at
+.Lk https://recueil.app/docs .
+.Pp
+Note that
+.Nm
+is only one of several ways to send a page to Recueil.
+The browser extension, the share-sheet Progressive Web App, and the iOS
+Shortcut all do the same job as
+.Cm enqueue
+without needing a terminal; reach for
+.Nm
+when you want to script it or you're saving links from a machine that
+doesn't have the extension installed.
+.Sh GETTING STARTED
+.Bl -enum
+.It
+Sign in to your Recueil dashboard and open the
+.Em Devices
+screen.
+Copy the pairing token shown there.
+A pairing token identifies your account; it is not itself a password
+and is safe to reuse across every device you pair.
+.It
+Run
+.Ic recueil auth --url https://your-worker.example.workers.dev
+and paste the pairing token when prompted.
+This exchanges it for a device-specific credential and stores that
+credential locally; see
+.Sx FILES .
+.It
+Run
+.Ic recueil enqueue https://example.com/some-article
+to send a page for archiving.
+.El
+.Pp
+Enqueuing a URL does not archive it immediately.
+Recueil only captures pages from a real, already logged-in
+browser tab rather than fetching them headlessly, so that login walls,
+paywalls, and CAPTCHAs don't defeat it.
+Concretely, this means the URL sits in your queue until a paired
+browser
+.Pq the extension's toolbar popup
+picks it up, at which point a tab opens for you to confirm the page
+loaded correctly.
+If you have no paired browser, enqueued URLs will simply wait.
+.Sh COMMANDS
+.Ss recueil auth
+.Nm
+.Cm auth
+.Fl -url Ar worker-url
+.Op Fl -name Ar device-name
+.Pp
+Pairs the current machine with a Recueil instance, exchanging a pairing
+token for a device credential that
+.Cm enqueue
+.Pq and any other client on this machine
+can then use.
+.Pp
+The pairing token is read from standard input: interactively, with the
+terminal's echo disabled, if standard input is a terminal; otherwise as
+a single line, which allows scripted use such as
+.Ic echo "$TOKEN" | recueil auth --url ... .
+.Pp
+The arguments are:
+.Bl -tag -width Ds
+.It Fl -url Ar worker-url
+The address of your Recueil instance's Worker, as given to you by
+whoever set it up.
+Required.
+.It Fl -name Ar device-name
+A label for this device, shown later in the dashboard's Devices
+screen so you can tell your paired devices apart.
+Defaults to the machine's hostname.
+.El
+.Pp
+Running
+.Cm auth
+again on a machine that is already paired registers it as a new,
+additional device rather than replacing the existing pairing; the old
+one keeps working until separately revoked from the dashboard.
+.Ss recueil enqueue
+.Nm
+.Cm enqueue
+.Ar url No ...
+.Pp
+Sends one or more URLs to be archived.
+Requires that this device has already been paired via
+.Cm auth ;
+if it hasn't,
+.Cm enqueue
+fails immediately with a reminder to run
+.Cm auth
+first.
+.Pp
+Each argument is enqueued independently: a malformed URL, or a single
+failed request, is reported to standard error and does not stop the
+remaining URLs from being enqueued.
+If any URL failed,
+.Nm
+exits non-zero once all of them have been attempted; see
+.Sx EXIT STATUS .
+.Pp
+.Sy Example :
+.Bd -literal -offset indent
+$ recueil enqueue https://example.com/article https://example.org/post
+enqueued https://example.com/article
+enqueued https://example.org/post
+.Ed
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa $XDG_CONFIG_HOME/recueil/credentials.json
+The device credential written by
+.Cm auth
+and read by
+.Cm enqueue .
+Falls back to
+.Pa $HOME/.config/recueil/credentials.json
+if
+.Ev XDG_CONFIG_HOME
+is unset.
+Deleting this file has the same effect as revoking the device from the
+dashboard: this machine can no longer enqueue anything until
+.Cm auth
+is run again.
+.El
+.Sh ADMINISTRATIVE COMMANDS
+The remaining subcommands run and administer a Recueil instance itself
+.Pq the backend server, its background job agent, and account and device management .
+They're intended for whoever deployed the instance, are
+configured via a TOML file or environment variables rather than
+anything
+.Cm auth
+sets up, and are documented in full, alongside deployment
+instructions, at
+.Lk https://recueil.app/docs .
+In brief:
+.Bl -tag -width "recueil device"
+.It Ic recueil server
+Runs the backend web server and dashboard API.
+.It Ic recueil agent
+Runs the background jobs that pull queued captures in, generate
+thumbnails and readable text, and run optional AI enrichment.
+.It Ic recueil gc
+Reclaims disk space left behind by deleted pages and captures.
+.It Ic recueil user
+Creates accounts, resets passwords, and repairs the device-pairing
+mirror, directly against the instance's database.
+.It Ic recueil device
+Lists or revokes a user's paired devices; the operator-side escape
+hatch for when the dashboard's own Devices screen isn't reachable.
+.El
+.Pp
+Every administrative subcommand accepts
+.Fl c Ar file
+.Pq or Fl -config Ar file
+to point at a TOML configuration file; see the documentation site for
+its contents.
+.Cm auth
+and
+.Cm enqueue
+ignore this flag entirely, since they have nothing to do with
+configuring an instance.
+.Sh EXIT STATUS
+.Ex -std
+.Cm enqueue
+exits non-zero if any
+.Pq not necessarily all
+of the given URLs failed to enqueue, after attempting every one of
+them.
+.Sh SEE ALSO
+Full documentation, including deployment and administration:
+.Lk https://recueil.app/docs
+.Pp
+Source code and issue tracker:
+.Lk https://github.com/mfinelli/recueil
+.Sh AUTHORS
+.An Mario Finelli
+.Sh COPYRIGHT
+Copyright \(co 2026 Mario Finelli.
+.Nm
+is free software, licensed under the GNU Affero General Public
+License, version 3 or later.
