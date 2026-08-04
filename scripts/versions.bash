@@ -97,11 +97,12 @@ function myversion() {
 
 function sqlc() {
   echo "CHECKING SQLC VERSION"
-  local dockerfile github ghsqlc
+  local dockerfile github ghsqlc readme
 
   ghsqlc=sqlc-dev/setup-sqlc@v5
   github="$(yq e ".jobs.main.steps[] | select(.uses == \"$ghsqlc\") | \
     .with.sqlc-version" .github/workflows/default.yml)"
+  readme="$(grep sqlc.dev README.md | awk -F\` '{print $2}')"
 
   if [[ -z $github ]]; then
     echo >&2 "error: can't get sqlc version from github workflow"
@@ -115,6 +116,11 @@ function sqlc() {
 
   if [[ v$github != "$dockerfile" ]]; then
     echo >&2 "error: Dockerfile version mismatch"
+    exit 1
+  fi
+
+  if [[ $github != "$readme" ]]; then
+    echo >&2 "error: README.md version mismatch"
     exit 1
   fi
 
