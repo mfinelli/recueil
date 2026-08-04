@@ -44,6 +44,10 @@ serve:
   make all
   ./recueil server --config local.toml
 
+agent:
+  make all
+  ./recueil agent --config local.toml
+
 [private]
 www-assets:
   pnpm run --filter=@recueil/www assets
