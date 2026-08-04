@@ -188,8 +188,8 @@ services:
 Every setting here can also come from a TOML file instead of environment
 variables — mount it into the container and point `server`/`agent` at it with
 `-c`/`--config`. See
-[Configuration Reference](/docs/operators/configuration-reference/) for the file
-format and the full list of settings either way.
+[Configuration Reference](@/docs/operators/configuration-reference.md) for the
+file format and the full list of settings either way.
 
 ### Running the binary directly instead
 

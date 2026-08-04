@@ -393,6 +393,38 @@ h1.page-title {
     padding-left: 1.3rem;
   }
 
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 0 0 1.75rem;
+    font-size: 0.9rem;
+  }
+  thead {
+    border-bottom: 1px solid var(--brass);
+  }
+  th {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--brass);
+    text-align: left;
+    padding: 0 0.75rem 0.5rem 0;
+    font-weight: 600;
+  }
+  td {
+    padding: 0.6rem 0.75rem 0.6rem 0;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  tr:last-child td {
+    border-bottom: none;
+  }
+  td:first-child,
+  td code {
+    white-space: nowrap;
+  }
+
   code {
     font-family: var(--font-mono);
     font-size: 0.88em;
