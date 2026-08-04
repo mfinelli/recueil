@@ -9,8 +9,8 @@ audience = "operators"
 dek = "Deploying, configuring, and administering your own recueil instance."
 +++
 
-Operator documentation is coming soon — deployment, configuration reference,
-administration commands, and storage/garbage collection will land here.
-
-In the meantime, [Getting Started](@/docs/readers/getting-started.md) covers
-what an end user needs from you: a worker URL and an account.
+New to running an instance?
+[Deploying recueil](@/docs/operators/deploying-recueil.md) covers the whole path
+— Cloudflare infrastructure, the backend itself, and creating your first
+account. The rest of this section is reference material for along the way:
+configuration, day-to-day administration, and how storage and backups work.
