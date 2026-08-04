@@ -2,8 +2,10 @@
 
 recueil is a self-hosted personal web archiver.
 
-> [!NOTE] This README is for building and hacking on recueil. Looking to
-> self-host or use it instead? See [the docs](https://recueil.app/docs/).
+> [!NOTE]
+>
+> This README is for building and hacking on recueil. Looking to self-host or
+> use it instead? See [the docs](https://recueil.app/docs/).
 
 ## Building from source
 
@@ -114,10 +116,12 @@ just agent   # recueil agent, against local.toml
 Both rebuild (`make all`) before running, so they always reflect your current
 changes.
 
-> [!IMPORTANT] **`local.toml` as committed will let `server`/`agent` start, but
-> not do anything Cloudflare-facing.** Postgres-only things (the dashboard,
-> logging in) work as-is; pairing, enqueuing, and the rest of the capture flow
-> need a real Worker/D1/R2 to talk to. The `"todo"` values (`worker_url`,
+> [!IMPORTANT]
+>
+> **`local.toml` as committed will let `server`/`agent` start, but not do
+> anything Cloudflare-facing.** Postgres-only things (the dashboard, logging in)
+> work as-is; pairing, enqueuing, and the rest of the capture flow need a real
+> Worker/D1/R2 to talk to. The `"todo"` values (`worker_url`,
 > `worker_service_secret`, `cloudflare_account_id`, `cloudflare_d1_database_id`,
 > `cloudflare_api_token`, `r2_*`) need to point at an actual Cloudflare
 > deployment — see
@@ -127,11 +131,13 @@ changes.
 > you're testing that specifically — `ai_base_url`/`ai_model` are already set
 > for [OpenRouter](https://openrouter.ai), swap them if you use something else.
 
-> [!CAUTION] **`local.toml` is a tracked file, not gitignored — be careful not
-> to commit real values into it.** Check `git diff local.toml` before committing
-> anything that touches it. This is a real rough edge that I'll smooth out at
-> some point (e.g., untracking it in favor of a checked-in
-> `local.toml.example`), just not done yet.
+> [!CAUTION]
+>
+> **`local.toml` is a tracked file, not gitignored — be careful not to commit
+> real values into it.** Check `git diff local.toml` before committing anything
+> that touches it. This is a real rough edge that I'll smooth out at some point
+> (e.g., untracking it in favor of a checked-in `local.toml.example`), just not
+> done yet.
 
 For frontend work on the dashboard specifically, `pnpm run dev` (Vite, with HMR)
 is faster than `just serve` — no Go rebuild or manual page refresh needed for
