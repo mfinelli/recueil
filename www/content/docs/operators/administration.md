@@ -98,9 +98,10 @@ recueil user resync
 ```
 
 Rebuilds the D1 pairing-token mirror for every account in one pass. This is the
-repair step after restoring Postgres from a backup: any account created,
-password-changed, or pairing-token-regenerated after the backup was taken
-wouldn't be reflected in D1 otherwise.
+repair step after restoring Postgres from a
+[backup](@/docs/operators/storage-and-backups.md#restoring): any account
+created, password-changed, or pairing-token-regenerated after the backup was
+taken wouldn't be reflected in D1 otherwise.
 
 ## device
 
