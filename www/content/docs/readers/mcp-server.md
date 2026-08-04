@@ -9,10 +9,9 @@ dek = "Point an AI client at your archive — search, browse, and read pages wit
 +++
 
 recueil runs a read-only [MCP](https://modelcontextprotocol.io) server — your
-dashboard's own backend can also speak directly to an AI client, not just a
-browser. It can search and read your archive; it can't add, edit, or delete
-anything. Nothing it does gets around what you can already see in the dashboard
-yourself.
+dashboard's backend can also speak directly to an AI client, not just a browser.
+It can search and read your archive; it can't add, edit, or delete anything.
+Nothing it does gets around what you can already see in the dashboard yourself.
 
 ## Get an API token
 
@@ -24,7 +23,7 @@ old, the same as any other credential here.
 
 ## Connect a client
 
-The server itself lives at your dashboard's own URL with `/mcp` on the end —
+The server itself lives at your dashboard's normal URL with `/mcp` on the end —
 something like `https://your-instance.example.com/mcp`. Any MCP client that
 supports a remote server with a bearer token can use it: send
 `Authorization: Bearer <your API token>` with every request.

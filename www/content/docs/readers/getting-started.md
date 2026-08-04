@@ -37,5 +37,5 @@ the queue automatically. {% end %}
 
 recueil only captures pages from a real, already logged-in browser tab, not a
 headless crawler fetching pages cold — that's the whole reason login walls,
-paywalls, and CAPTCHAs don't defeat it: whatever you can see in your own browser
-is what gets saved.
+paywalls, and CAPTCHAs don't defeat it: whatever you can see in your browser is
+what gets saved.

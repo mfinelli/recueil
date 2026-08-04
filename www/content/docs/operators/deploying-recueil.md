@@ -82,7 +82,7 @@ again with the new values, then revoking the old one from the same screen.
 ### What you'll need for the next step
 
 `terraform apply` prints `worker_url`, `d1_database_id`, `r2_bucket_name`, and
-`service_secret` — all four go into the backend's own configuration below.
+`service_secret` — all four go into the backend's configuration below.
 
 ## Running the backend
 
@@ -252,7 +252,7 @@ It's valid for one hour and regenerated on restart if unused. Visit your
 instance's dashboard and it'll show a "create first admin" screen asking for
 that token alongside a username and password. Once that account exists, use it
 to sign in normally; create any further accounts with `recueil user create` (see
-[Administration](/docs/operators/administration/)).
+[Administration](@/docs/operators/administration.md)).
 
 ## Staying updated
 
