@@ -54,7 +54,8 @@ notes and can be linked to related pages you've saved.
 It's 2026 — we obviously can't _not_ talk about AI. If you'd rather point an AI
 client at your own archive than search it by hand, recueil runs a read-only MCP
 server: connect a local MCP client with your archive and ask it things like what
-you saved about a topic last month. See the MCP Server page for setup.
+you saved about a topic last month. See
+[MCP Server](@/docs/readers/mcp-server.md) for setup.
 
 <div class="cross-links">
 {{ cross_link(href="/docs/readers/", title="For Readers", label="Using recueil", desc="Pair a device, capture pages, and work with your archive.") }}
