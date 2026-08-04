@@ -137,8 +137,39 @@ function gover() {
   echo "GO VERSION OK"
 }
 
+function psqlver() {
+  echo "CHECKING POSTGRESQL VERSION"
+  local ghver composelocal composetest deploydocs deploydocpage
+
+  ghver="$(yq e .jobs.main.services.postgres.image \
+    .github/workflows/default.yml)"
+  composelocal="$(yq e .services.postgresql-local.image compose.yaml)"
+  composetest="$(yq e .services.postgresql-test.image compose.yaml)"
+
+  deploydocpage=www/content/docs/operators/deploying-recueil.md
+  deploydocs="$(grep 'image: postgres:' $deploydocpage | awk '{print $2}')"
+
+  if [[ $ghver != "$composelocal" ]]; then
+    echo >&2 "error: compose local profile version mismatch"
+    exit 1
+  fi
+
+  if [[ $ghver != "$composetest" ]]; then
+    echo >&2 "error: compose test profile version mismatch"
+    exit 1
+  fi
+
+  if [[ $ghver != "$deploydocs" ]]; then
+    echo >&2 "error: deploy docs version mismatch"
+    exit 1
+  fi
+
+  echo "POSTGRESQL VERSION OK"
+}
+
 myversion
 sqlc
 gover
+psqlver
 
 exit 0
