@@ -35,8 +35,8 @@ the first time.
 
 recueil only captures pages from a real, already logged-in browser tab, not a
 headless crawler fetching pages cold. That's the whole reason login walls,
-paywalls, and CAPTCHAs don't defeat it: whatever you can see in your own browser
-is what gets saved.
+paywalls, and CAPTCHAs don't defeat it: whatever you can see in your browser is
+what gets saved.
 
 None of this would be possible without
 [SingleFile](https://www.getsinglefile.com), the open-source extension recueil's
@@ -52,7 +52,7 @@ notes and can be linked to related pages you've saved.
 ## Ask your archive questions
 
 It's 2026 — we obviously can't _not_ talk about AI. If you'd rather point an AI
-client at your own archive than search it by hand, recueil runs a read-only MCP
+client at your archive than search it by hand, recueil runs a read-only MCP
 server: connect a local MCP client with your archive and ask it things like what
 you saved about a topic last month. See
 [MCP Server](@/docs/readers/mcp-server.md) for setup.

@@ -1,6 +1,6 @@
 +++
 title = "MCP Server"
-weight = 4
+weight = 5
 template = "docs-page.html"
 
 [extra]
