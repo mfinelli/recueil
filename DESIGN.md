@@ -247,161 +247,59 @@ content) signal for that specific UI feature.
 
 ### 3c. Capture idempotency (crash recovery)
 
-The `pending_captures.id` (a client-generated UUID, already required for
-retry-safety on the upload-complete notification — see §8) doubles as a
-transient idempotency key for backend ingestion:
+`captures.source_capture_id` is a transient idempotency key — nullable, uniquely
+constrained, real only while a capture is in flight (client-generated for the
+extension/queue flow, backend-generated for manual uploads, §3d), cleared to
+`NULL` once ingestion is fully done. It exists to solve two problems a naive
+retry gets wrong:
 
-```sql
-ALTER TABLE captures ADD COLUMN source_capture_id TEXT UNIQUE;
-```
+- **A retry must not fail forever re-fetching an R2 object a prior attempt
+  already deleted** (e.g. a crash between the R2 delete and confirming D1's
+  `fetched_by_backend` flag).
+- **A conflict on this column isn't necessarily a retry.** It could be a genuine
+  collision between two different captures sharing an id (astronomically
+  unlikely, not impossible) — treating any conflict as "already handled" would
+  silently drop the second capture's data.
 
-**`source_capture_id` is nullable, and is cleared back to `NULL` once ingestion
-of that capture is fully done** — corrected twice over from earlier revisions of
-this document (which first left it `NULL` only for manual uploads, then briefly
-made it `NOT NULL` for every capture, before landing here). Its only job is
-letting a retry recognize an already-committed capture without redoing the whole
-pipeline, and that job has a natural end: once the R2 object is deleted **and**
-D1's `fetched_by_backend` flag is confirmed set, there is no further retry
-window left to protect, and nothing else ever reads this column. Clearing it
-isn't just tidiness — it's what keeps a permanent, forever-growing table from
-carrying a column whose entire purpose is transient, and it's what lets the
-`UNIQUE` constraint mean something meaningful (many "done" rows can all hold
-`NULL` simultaneously without conflict, since Postgres never treats two `NULL`s
-as equal).
+**Resolution:** ingestion always tries the full pipeline first — pull from R2,
+hash, compress to disk, then
+`INSERT ... ON CONFLICT (source_capture_id) DO UPDATE ... RETURNING`. The
+returned row's `content_hash` disambiguates the two cases: a match means a
+legitimate retry (no-op); a mismatch means a real collision, so a fresh UUID is
+generated and the insert retried (bounded to 5 attempts). Only if that whole
+attempt fails does ingestion fall back to checking Postgres for an
+already-committed row under the original id — safe to treat as "already done" if
+found, a real failure otherwise. This fallback never runs as an upfront gate,
+since that would skip the `content_hash` check and reopen the same collision
+risk.
 
-Every capture gets a real, unique value while it's actually in flight,
-regardless of source: **client-generated** for the extension/queue flow (the
-device already generates this UUID before ever talking to the Worker, for the
-upload-complete notification's own retry-safety), or **backend-generated** for
-manual uploads (§3d), which have no client in the loop to generate one.
+> The insert also uses Postgres's `xmax = 0` idiom to report whether the row was
+> newly inserted or returned via `ON CONFLICT` — that's what tells the caller
+> whether to enqueue screenshot/readability jobs, so a retry never
+> double-enqueues them.
 
-**Two separate problems, both real, both need solving — this section used to
-only solve one of them:**
+Cleanup runs disk write → DB commit → R2 delete → D1 flag → clear
+`source_capture_id`, in that order, so a crash at any point either leaves the R2
+object in place for a safe retry, or leaves only harmless orphaned state (a
+failed clear is harmless, since nothing looks the value up again once
+`fetched_by_backend` is set).
 
-1. **A retry must not fail forever trying to re-fetch an R2 object that a prior
-   attempt already deleted.** If the backend crashes between deleting the R2
-   object and confirming the D1 flag, the next poll cycle sees the same
-   `pending_captures.id` again — and naively re-running the whole pipeline would
-   try to pull an object that's already gone.
-2. **A conflict on `source_capture_id` must not be assumed to mean "this is a
-   retry."** It could instead be a genuine collision — two different captures
-   that happen to share an ID (astronomically unlikely for a random UUID, but
-   not impossible, and not something to just hope never happens). Treating any
-   conflict as "already handled, return the existing row" would silently discard
-   the second capture's real data in that case, with no error and no visible
-   sign anything was lost.
+**Disk storage is keyed the same way, one layer down:**
+`archive.Store.NewCapture` mints a backend-generated UUIDv7 directory
+exclusively (`os.Mkdir`, bounded to 5 attempts on `EEXIST`), never a
+client-supplied id — so a `source_capture_id` collision can never overwrite
+another capture's files. An `EEXIST` means zero bytes were written yet (retry
+with a new id, nothing at risk); a `source_capture_id` duplicate caught later by
+the insert means a _different_ attempt already committed this pending capture,
+so the directory this attempt just wrote is a harmless redundant copy left for
+`recueil gc` (§4) to reclaim — not a collision, and nothing to retry.
 
-**The resolution to both, together:** ingestion always attempts the full
-pipeline first — pull from R2, hash, compress to local disk (keyed by
-`content_hash`, not `source_capture_id`; see the note on this below), then a
-single Postgres transaction that upserts the page and inserts the capture. That
-insert uses `content_hash` to tell the two problems above apart:
-`INSERT ... ON CONFLICT (source_capture_id) DO UPDATE ... RETURNING`, then
-compare the returned row's `content_hash` against the one just computed. A match
-means a legitimate retry of the identical upload — safe no-op, return the
-existing row. A mismatch means a genuine collision between two different
-captures — generate a fresh UUID for _this_ capture and retry the insert (a
-small bounded loop), never silently dropping the new capture's data.
-
-**Only if that whole first attempt fails** does ingestion fall back to checking
-Postgres for an already-committed row matching the original `source_capture_id`
-(problem 1's actual fix): if found, whatever just failed — almost always the R2
-fetch, because a prior attempt's delete already succeeded — is safe to treat as
-"already done," and processing jumps straight to R2/D1 cleanup. If nothing is
-found, the failure is real and gets surfaced normally (logged, retried on the
-next poll). This fallback never runs _instead of_ the first attempt, only
-_after_ it fails — gating it upfront (checking Postgres before ever touching R2)
-was tried and rejected during implementation, specifically because it would skip
-the content_hash comparison above entirely and reintroduce problem 2 in a
-different place. R2's own `DeleteObject` (and R2's S3-compatible equivalent) is
-documented to be idempotent — deleting an already-gone key returns success, not
-an error — so the cleanup steps themselves need no special "tolerate already
-deleted" handling either way.
-
-Ordering the steps this way — disk write, then DB commit, then R2 delete, then
-D1 flag, then (only once both cleanup calls have actually succeeded) clearing
-`source_capture_id` — means a crash at any point either leaves the R2 object in
-place for a safe retry (nothing durable happened yet), or leaves only harmless
-orphaned cleanup state (the durable parts already succeeded; a failure to clear
-`source_capture_id` specifically is harmless on its own, since D1 will never
-resurface that capture's id once `fetched_by_backend` is set, so nothing will
-ever look the stale value up again regardless).
-
-This whole scheme is uniform across capture sources, not split into two code
-paths as an earlier revision of this document assumed: manual upload (§3d) just
-starts the process with a backend-generated UUID as its first candidate
-`source_capture_id` instead of a client-supplied one, since it has no client to
-supply one. Everything downstream — the content_hash-based conflict
-disambiguation, the collision retry loop, the try-first/fallback-on-failure
-pattern — is identical either way.
-
-**Local disk storage is keyed by a backend-minted id, never by anything the
-client supplied** (see §4/`internal/archive`'s docs for the full reasoning). The
-failure this avoids is the closely related disk-side twin of problem 2 above:
-two captures whose `source_capture_id`s collide would also collide on a
-`source_capture_id`-keyed disk path, and the atomic-rename write this project
-uses silently overwrites whatever's already at the destination — corrupting an
-unrelated, already-successfully-stored capture's file rather than merely failing
-to store the new one. Because `archive.Store.NewCapture` mints its own UUIDv7
-and creates the directory exclusively (a plain `os.Mkdir`, so an
-already-existing directory is regenerated past rather than adopted), a client-id
-collision simply cannot reach an existing capture's path at all.
-
-An earlier revision keyed the disk path by `content_hash` instead, which solved
-the same problem by a different route — but at the cost of aliasing every two
-captures with byte-identical HTML onto one directory. That is now reversed; see
-§4.
-
-**Two distinct things can go "wrong" here, and they are worth keeping apart,
-because the collision reasoning above primes a reader to conflate them:**
-
-- **A directory collision** — `NewCapture`'s `os.Mkdir` returns `EEXIST`. Zero
-  bytes have been written at that point, so nothing is at risk and nothing is
-  left behind: a new UUIDv7 is generated and the mint is retried. This is the
-  case that actually protects an already-completed capture's data, and it
-  resolves entirely inside `NewCapture` before ingestion ever reaches a write.
-- **A `source_capture_id` duplicate** — detected later, by the insert, and _not_
-  a collision of any kind. No directory collided; `NewCapture` handed back a
-  fresh, unique directory that no other capture has ever touched, and this
-  attempt wrote its bytes into that directory of its own. What the insert then
-  reports is that an earlier attempt already ingested this same pending capture,
-  so the committed row (and its `html_path`) belongs to that earlier attempt's
-  directory, not this one's.
-
-  Regenerating a UUID is not the response to this one: there is nothing to
-  retry, since the capture is already correctly stored — a fresh id would only
-  produce a second redundant copy. Ingestion takes the existing row and proceeds
-  to cleanup, and the copy this attempt wrote is left for `recueil gc` to
-  reclaim, exactly like any other unreferenced file. Nothing was overwritten and
-  no other capture's data was ever in reach; the cost is a redundant copy in a
-  private directory, not damage.
-
-Reaching that second case at all requires a prior attempt to have committed
-while its R2 object survives — either a crash strictly between the Postgres
-commit and the R2 delete, or two `agent` processes polling the same
-`pending_captures` row concurrently (`GET /internal/pending-captures` is a plain
-read, with no claim). The far more common crash-retry, where the R2 object was
-already deleted, never mints a directory at all: the R2 pull fails first and
-ingestion routes straight into the already-committed fallback above.
-
-Avoiding the redundant write would mean checking Postgres for
-`source_capture_id` _before_ touching disk, which is exactly the upfront gating
-rejected above — it would skip the `content_hash` comparison and reintroduce
-problem 2. Write first, discover second, and eat a rare redundant copy.
-
-One incidental improvement over content-addressing, in the concurrent-agents
-case specifically: under the old scheme both agents wrote to the _same_ path at
-once, which was safe only because the bytes were identical and the rename
-atomic. Per-capture directories make those writes disjoint, so they cannot
-interact at all.
-
-### Re-archiving the same URL
+#### Re-archiving the same URL
 
 Re-archiving a previously captured URL is **not** an update — it's a new version
-under the same logical page. The backend groups captures by `normalized_url`
-(see §9, URL normalization) into a `pages` row, and each individual capture
-becomes a new `captures` row linked to that page. The dashboard shows all
-historical versions of a page with their capture timestamps.
+under the same logical page. Captures are grouped by `normalized_url` (§9) into
+a `pages` row; the dashboard shows all historical versions with their capture
+timestamps.
 
 ### 3d. Manual upload (bypassing the queue)
 
@@ -772,144 +670,34 @@ correct answer anyway.
 
 ### 3h. Browser extension architecture
 
-**Single Manifest V3 codebase covers Chrome and Firefox.** Chrome's MV2 support
-is fully gone (dead since October 2024); Firefox supports both indefinitely, but
-nothing recueil needs (no blocking `webRequest`) actually requires MV2 there.
-Upstream SingleFile forked into two separate repos (`SingleFile` for
-Firefox/MV2, `SingleFile-MV3` for Chrome/Edge) specifically because migrating a
-large, mature, feature-heavy extension is real, risky work its own maintainer is
-intentionally delaying — confirmed directly by gildas-lormeau in a GitHub
-discussion: Firefox is technically MV3-ready, he's "waiting until the last
-moment to migrate" because "Manifest V3 extension development is a real pain."
-That asymmetry doesn't apply to recueil: there's no existing MV2 codebase to
-preserve, so a single MV3 codebase from day one is the right call, even though
-it wasn't the right call for him. Safari is MV3-capable too but needs a
-genuinely separate packaging/distribution pipeline (Xcode-wrapped,
-`safari-web-extension-converter`) — deferred as a later, mechanical step once
-the extension itself works, not attempted yet.
+A single Manifest V3 codebase covers both Chrome and Firefox — Chrome's MV2
+support is gone entirely, and nothing recueil needs requires staying on MV2 for
+Firefox. Safari is MV3-capable too but needs a separate packaging/distribution
+pipeline so deferred for now (§16).
 
-**`single-file-core` is a direct dependency, not a vendored fork of either
-official extension.** Both `SingleFile` and `SingleFile-MV3` are full end-user
-extensions (options pages, multiple upload destinations, auto-save, annotation)
-built around a separate, genuinely engine-only npm package that also backs
-`single-file-cli` headlessly with zero browser-extension APIs involved. recueil
-depends on that same package directly and writes its own thin MV3 wrapper around
-it — recueil's surface area (no auto-save, no annotation, no multiple upload
-destinations) is much smaller than upstream's, so there was never a reason to
-inherit their UI or their Firefox/Chrome fork split. Both share the same
-AGPL-3.0-or-later license, so no licensing mismatch either.
+**Capture is a two-step injection.** `scripting.executeScript` first loads the
+capture bundle as a file (a `func`-injected function can't import anything
+itself, so the bundle has to land as a global first), then a second call invokes
+it and returns the result. Background, the capture bundle, and the popup are
+three separate esbuild entry points — different contexts (service worker,
+content-script world, extension page) loading at different times, so bundling
+them together would mean the largest thing in the build (`single-file-core`)
+parses on every service-worker wake for no benefit.
 
-**Capture is a two-step injection**, not a single call:
-`scripting .executeScript({files: ["capture-inject.js"]})` loads the bundle
-(defines a global, since `func`-injected functions can't themselves import
-anything), then a separate
-`executeScript({func: () => globalThis.__recueilSingleFile .captureFrame()})`
-actually invokes it and returns the result. Background
-(`extension/src/background/`), the injectable capture bundle
-(`extension/src/capture-inject/`), and the popup (`extension/src/popup/`) are
-three genuinely separate esbuild entry points/bundles, not one — they run in
-different contexts (service worker vs. a page's content-script world vs. an
-extension page) and load at different times, so bundling them together would
-mean the largest thing in this build (`single-file-core`) parses on every
-service-worker wake for no benefit.
+**Resource fetching tries the page's own `fetch()` first, relaying through the
+background only on failure.** A background-context fetch bypasses a page's CORS
+restrictions, which is why the relay exists at all — but routing every resource
+through the background unconditionally would tie a capture's success to the
+background staying alive for the whole operation, the wrong shape under MV3's
+non-persistent background model. Most resources are same-origin or already
+CORS-permitted, so this resolves the large majority of fetches with no
+background round-trip.
 
-**Resource fetching is direct-fetch-first, background-relay-fallback** — not the
-reverse. A background-context fetch bypasses a page's own CORS restrictions (the
-reason the relay exists at all: `single-file-core` needs to inline resources the
-page itself couldn't otherwise read), but routing _every_ resource through the
-background unconditionally means a capture's success depends on the background
-staying alive for the entire operation, which is exactly the wrong shape under
-MV3's non-persistent background model. Modeled directly on `SingleFile-MV3`'s
-own `fetchResource` (`src/lib/single-file/fetch/content/content-fetch.js`),
-which tries the page's own `fetch()` first and only relays on failure — most
-resources on most pages are same-origin or already CORS-permitted, so this
-resolves the large majority of fetches with no background round-trip at all.
-Notably, `SingleFile-MV3` has no keepalive mechanism anywhere in its source (no
-`runtime.connect` port, no alarm-based ping) — this fetch ordering is _why_, not
-a gap they left unaddressed.
-
-**Multi-frame (iframe) capture is implemented — embedded frames are inlined into
-the top document, not dropped.** `single-file-core` already unconditionally
-bundles frame-tree collection logic as a transitive dependency
-(`processors/index.js` → `content-frame-tree.js`), gated behind the
-`removeFrames` option and requiring the bundle to be injected into every frame
-(`target.allFrames: true`), not just the top one. Turning it on took three
-pieces, staged in isolated steps after an initial single-change attempt broke
-even single-frame pages in a way that was hard to diagnose:
-
-1. Injecting the bundle into every frame (`allFrames: true` on the `files` step,
-   `removeFrames` still `true` so collection never runs) — confirmed safe on its
-   own, both plain and iframe-containing pages captured correctly.
-2. Flipping `removeFrames: false` — where the symptom appeared: `getPageData()`
-   hung and Firefox reported
-   `Could not establish connection. Receiving end does not exist.`, on _any_
-   page including ones with zero iframes (the top frame still runs `getAsync`
-   there, because `globalThis.frames` is always truthy — it reports its own
-   empty frame list through the same path).
-3. Adding a **background frame-tree relay**
-   (`extension/src/background/frame-tree-relay.js`) — the actual fix.
-
-The root cause is a transport split inside `content-frame-tree.js`'s
-`sendMessage`, which chooses how a frame hands its serialized DOM back to the
-top frame by reading `globalThis.browser`:
-
-```js
-if (targetWindow == top && browser && browser.runtime && browser.runtime.sendMessage) {
-  browser.runtime.sendMessage(message); // expects the background to forward to frameId 0
-} else {
-  targetWindow.postMessage(...);        // in-page, no background involved
-}
-```
-
-- On **Chrome**, `globalThis.browser` is `undefined` in the content-script world
-  — `webextension-polyfill` is bundled as a module import, which under esbuild's
-  CJS path never assigns `globalThis.browser`, and Chrome has no native
-  `browser`. So the collector takes the `postMessage`/`MessageChannel` branch
-  and coordinates entirely in-page; no background is involved and step 1's
-  injection is all it needs.
-- On **Firefox** (where `web-ext run` puts iterative testing),
-  `globalThis .browser` is native, so a frame posts its result through
-  `browser.runtime.sendMessage` and _expects the background to relay it to the
-  top frame_. With no relay listener, that send both rejects with "Receiving end
-  does not exist." _and_ never delivers the frame data — so the top frame's
-  collection never completes. The hang and the error are the same event, which
-  is why it fired even on zero-iframe pages.
-
-`SingleFile-MV3` has exactly this relay and recueil simply lacked it: its
-`background.js` imports `frame-tree/bg/frame-tree.js`, a small listener that
-forwards `singlefile.frameTree.initResponse` / `ackInitRequest` to
-`tabs.sendMessage(tabId, message, { frameId: 0 })` and returns a resolved
-promise so the sender settles instead of rejecting. recueil's
-`frame-tree-relay.js` is modeled directly on it, registered alongside the fetch
-relay in `background/index.js`. It's a hard requirement on Firefox and a no-op
-on Chrome (never invoked there), so both targets stay on one background code
-path even though the content side diverges — which also keeps Chrome on its
-background-independent in-page path, consistent with the direct-fetch-first
-reasoning above.
-
-Two earlier source-reading theories pointed at the content side rather than the
-background, and neither fixed it — the more instructive one:
-`content-frame-tree.js`'s `sendInitResponse` _first_ tries a synchronous
-same-realm call, `top.singlefile.processors.frameTree.initResponse(message)`,
-before falling back to `sendMessage`. Both official extensions get
-`globalThis.singlefile` for free because their Rollup builds emit
-`single-file-core/single-file.js` as its own output with
-`output.name: "singlefile"`; recueil's wrapper entry point has no exports of its
-own, so the equivalent esbuild `globalName` wouldn't reproduce it, and
-`globalThis.singlefile = singlefile` (the already-imported namespace) would. But
-that leg only matters for the top frame's own frames — cross-origin subframes
-always throw on `top.singlefile` and fall through regardless — and the leg it
-falls _through to_ is the `runtime.sendMessage` transport above, the one with no
-receiver. That's why assigning the global didn't resolve the hang on its own: it
-fixes a path the code only sometimes takes. It's left out of the shipped fix; at
-most it's a latency optimization (one fewer round-trip for the top frame's own
-frames) worth adding later as its own isolated step.
-
-This was confirmed in a real capture, not just the toolchain — closing out the
-earlier state where source-reading had twice produced a plausible theory that
-didn't match observed behavior. `frameFetch` is wired to `relayFetch` explicitly
-in `bundle-entry.js`, though that's documentation only: `core/util.js`'s own
-`frameFetch || fetch` default already resolves to `relayFetch`.
+> A second relay (`background/frame-tree-relay.js`) exists for the same reason,
+> one layer up: Firefox requires the background to forward a frame's captured
+> DOM back to the top frame, and without it, multi-frame capture silently fails
+> — even on pages with no iframes at all. Chrome needs no equivalent; it
+> coordinates entirely in-page.
 
 ---
 
