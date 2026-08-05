@@ -2,31 +2,29 @@
 
 ## 1. Overview
 
-Recueil is a self-hosted personal web archiving tool. It replaces a Frankenstein
-setup of ArchiveBox + Linkwarden + Karakeep (plus custom sync scripts) with a
-single purpose-built system.
+Recueil is a self-hosted personal web archiving tool, built to replace a
+patchwork of several existing self-hosted archivers — each storing content
+differently, none of them syncing with one another — held together with custom
+glue scripts.
 
-### Motivating problems with the current setup
+### Motivating problems with the previous setup
 
-- Headless-browser archivers (ArchiveBox-style) fail on sites with CAPTCHAs,
-  paywalls, or content behind interaction (click-to-expand, infinite scroll,
-  login walls).
+- Headless-browser archivers fail on sites with CAPTCHAs, paywalls, or content
+  behind interaction (click-to-expand, infinite scroll, etc).
 - Multiple tools store multiple redundant formats (WARC, PDF, screenshots,
   MHTML, etc.), most of which are never used.
-- Keeping three self-hosted tools in sync requires custom glue scripts.
+- Keeping several self-hosted tools in sync requires custom glue scripts.
 
 ### Core design principle
 
 **Capture happens in a real, already-authenticated, already-rendered browser tab
-— not a headless fetch.** This is the actual fix for the CAPTCHA/paywall
-problem, not a workaround. Because of this, the system deliberately does **not**
-add any server-side "fetch and archive a URL" fallback — doing so would
-reintroduce the exact failure mode being solved.
+— not a headless fetch.** This is the fix for the CAPTCHA/paywall problem. The
+system deliberately does **not** add any server-side "fetch and archive a URL"
+fallback — doing so would reintroduce the exact failure mode being solved.
 
-Note that this principle applies to the _initial capture_ only. Once a page has
-been captured as a fully inlined HTML file, deriving further artifacts from that
-already-captured file (e.g. a thumbnail — see §6a) is a different, safe
-operation: it's rendering static, already-authenticated content offline, not
+This principle applies to the _initial capture_ only. Deriving further artifacts
+from an already-captured file (e.g. a thumbnail — see §6a) is a different, safe
+operation: rendering static, already-authenticated content offline, not
 re-fetching a live page.
 
 ### Format decision
@@ -36,7 +34,7 @@ Store exactly one artifact format per capture: a fully inlined single HTML file
 Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML. The
 HTML is the only artifact ever uploaded by a capturing client; the Readability
 extraction and the thumbnail are both produced later, offline, by the backend
-(see §6/§6b) — not synchronously at capture time.
+(§6a/§6b) — not synchronously at capture time.
 
 ---
 
@@ -78,11 +76,8 @@ extraction and the thumbnail are both produced later, offline, by the backend
         │         Desktop Browser Extension            │
         │  - reads queue from D1 (via Worker)          │
         │  - user selects item → loads URL             │
-        │  - captures HTML only (via vendored          │
-        │    SingleFile library — no Readability       │
-        │    vendored here; see §3a/§6b)               │
+        │  - captures HTML only (via SingleFile)       │
         │  - uploads to R2 via presigned URL           │
-        │  (no longer captures a screenshot — see §6a) │
         └──────────────────────────────────────────────┘
                     │
                     │ (async, outbound-only polling)
