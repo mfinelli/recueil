@@ -1199,6 +1199,41 @@ once it actually runs.
   random bits, and two ids would have to collide across all of them within the
   same millisecond — but the guard is nearly free.
 
+- **Deleting a page or capture doesn't reclaim its on-disk files
+  synchronously.** `DELETE /api/pages/{id}`/`DELETE /api/captures/{id}` remove
+  the Postgres rows (cascading to jobs/tags/collection-memberships) but
+  deliberately leave the HTML/favicon/thumbnail files in place — per-capture
+  directories mean there's no sharing to reason about, but reclaiming correctly
+  still means comparing every on-disk path against everything Postgres currently
+  references, which isn't safe to do inline on a single delete request.
+- **`recueil gc` (`internal/gc`) is the operator-run sweep that reclaims them.**
+  It reads the live set of paths Postgres still references
+  (`ListReferencedArchivePaths`), walks every file `archive.Store`'s root
+  actually contains, and removes whatever isn't in that live set — `--dry-run`
+  reports the same scan/removal counts and reclaimable bytes without deleting
+  anything. Two safety rails, both because the failure mode they guard against
+  would otherwise be silent and total:
+  - **A 15-minute recency floor.** Ingestion writes to disk _before_ committing
+    to Postgres (§3c), so a capture genuinely in flight — including
+    `archive.Store`'s own `.tmp-*` files mid-write — is legitimately absent from
+    the live set. Anything modified more recently than that is left alone
+    regardless. Reused from the D1 queue's claim-visibility timeout and the
+    screenshot/readability jobs' own stale-claim window, rather than inventing a
+    third number for the same "stuck, or merely in progress?" question.
+  - **An orphan-fraction refusal.** If more than half of at least 100 scanned
+    files come back unreferenced, the run removes nothing and reports an error
+    instead (`--force` overrides). The live set is built by comparing stored
+    path strings against walked path strings, so any future normalization
+    mismatch between the two — a leading `./`, a separator difference — would
+    silently produce an empty intersection and mark the entire archive as
+    garbage; this refusal is what stops that from being a silent, one-shot way
+    to delete every capture on the instance.
+
+  A companion pass (`Store.WalkEmptyDirs`) prunes now-empty shard directories
+  left behind once their last file is removed, since a capture's directory is
+  created before anything is written into it and would otherwise accumulate
+  indefinitely as captures get collected over an instance's lifetime.
+
 - **Backup is entirely the operator's responsibility** — see §14. The
   application itself performs no automated backup.
 - **Database choice: Postgres, not SQLite**, despite this being a personal
@@ -1614,14 +1649,13 @@ Alternatives considered and rejected:
 The backend applies D1 schema migrations itself, at startup, rather than
 requiring the operator to install and run `wrangler d1 migrations apply` —
 consistent with the same "no external tool needed to run the binary" goal that
-keeps Postgres migrations tool-managed only by current-implementation choice,
-not architectural necessity (see §15 for that side's open status). This means
-the backend needs to reach Cloudflare's D1 query API directly — the one place in
-the system where the backend talks to Cloudflare directly rather than
-exclusively through the Worker. This doesn't weaken the "backend stays fully
-non-public" property elsewhere in this document (§2, §11): that property is
-about _inbound_ reachability, which is unaffected; this is a new _outbound_ path
-only, initiated by the backend, never received by it.
+also keeps Postgres migrations self-applied (§13a). This means the backend needs
+to reach Cloudflare's D1 query API directly — the one place in the system where
+the backend talks to Cloudflare directly rather than exclusively through the
+Worker. This doesn't weaken the "backend stays fully non-public" property
+elsewhere in this document (§2, §11): that property is about _inbound_
+reachability, which is unaffected; this is a new _outbound_ path only, initiated
+by the backend, never received by it.
 
 - **Migrations live at `terraform/worker/migrations/*.sql`** — the same files
   that define the D1 schema conceptually, embedded into the Go binary via
@@ -1629,10 +1663,10 @@ only, initiated by the backend, never received by it.
   tracked in a `schema_migrations` table (§10) that the backend creates and owns
   itself.
 - Deliberately **not** wrangler's `d1_migrations` table/convention — wrangler is
-  not part of this project's toolchain anywhere (see §15), and reusing that name
-  would risk two independent, uncoordinated bookkeeping systems touching the
-  same table if an operator ever pointed `wrangler` at the database directly out
-  of habit.
+  not part of this project's toolchain anywhere, and reusing that name would
+  risk two independent, uncoordinated bookkeeping systems touching the same
+  table if an operator ever pointed `wrangler` at the database directly out of
+  habit.
 - **Credential: a Cloudflare API token scoped to `D1:Edit` on this one
   database** — provisioned via Terraform's `cloudflare_api_token` resource,
   output as `sensitive`, copied into the backend's `.env` alongside the Worker
@@ -2067,7 +2101,7 @@ chromedp itself.
   screenshot job today; readability and AI enrichment will join it on the same
   schedule). This is what makes "runs comfortably on Cloudflare's free tier" and
   "picks up new captures quickly" both true at once, rather than trading one off
-  against the other on a single shared interval — see §15.
+  against the other on a single shared interval.
 - **`thumbnail_size_bytes`/`favicon_size_bytes`.** Two new nullable columns on
   `captures`, mirroring `html_compressed_size_bytes`'s own "so the dashboard can
   surface real numbers" reasoning for the two other on-disk assets a capture can
@@ -3269,7 +3303,7 @@ because the extension generates the ID before the row exists server-side.
 ```sql
 -- Bookkeeping for the backend's own D1 migration runner (§5b) — not
 -- wrangler's `d1_migrations` table; wrangler is not used anywhere in this
--- project's toolchain (see §15).
+-- project's toolchain.
 CREATE TABLE schema_migrations (
   id TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -3624,10 +3658,10 @@ recueil/
 │       │                              # share them today) rather than a new
 │       │                              # palette -- full reconciliation
 │       │                              # against the marketing site's own
-│       │                              # ledger/brass/stamp palette is still
-│       │                              # the separate, still-deferred
-│       │                              # "dashboard visual design system"
-│       │                              # item (§15)
+│       │                              # ledger/brass/stamp palette was its
+│       │                              # own separate "dashboard visual
+│       │                              # design system" pass -- see
+│       │                              # DESIGN_SYSTEM.md
 │       ├── app.js                  # pairs and enqueues same-origin (no
 │       │                              # Worker URL field anywhere in this
 │       │                              # app -- it's served by the Worker it
@@ -3717,10 +3751,9 @@ README that can drift out of sync with the architecture decisions around it.
   backend instances, a stray manual invocation — serialize rather than
   interleave. Takes an already-open `*pgxpool.Pool` rather than a database URL,
   so a caller that already has a pool (production startup, the test harness
-  below) doesn't open a second connection just to migrate. This resolves the
-  goose-as-library question raised and deferred earlier (see §15) — and ends up
-  going a step further than D1's migration runner by adding the session lock,
-  which D1's Cloudflare-API-based approach has no equivalent for.
+  below) doesn't open a second connection just to migrate. This goes a step
+  further than D1's migration runner by adding the session lock, which D1's
+  Cloudflare-API-based approach has no equivalent for.
 - **Postgres test harness:** `internal/dbtest` — connects to a dedicated,
   ephemeral test Postgres container (`docker-compose.test.yml`; a distinct port
   from the dev database so both can run at once; `tmpfs` data directory so every
@@ -4132,377 +4165,7 @@ should be backed up in the same job/window.
 
 ---
 
-## 15. Open Questions / Future Decisions
-
-All items from the previous revision have been resolved (AI tag styling,
-manage-devices design, bootstrap hardening, and registration model — see §5,
-§7). Phase 0 (Cloudflare scaffolding — D1, R2, and a bare Worker, provisioned
-via a public Terraform module) is also complete and resolved the module layout
-question below in favor of a reusable module in `terraform/`, consumed via
-source = `"..."` (pinned to a tag once releases exist) from the operator's own
-root config.
-
-Phase 1 (backend + Postgres + bootstrap admin, §5) is also complete: session
-auth, the bootstrap-admin flow (§5, now in-memory as described there), and the
-Worker's first real route (`/internal/users/mirror`, §5, §5b) are built and
-tested. **`wrangler` is deliberately absent from this project's toolchain
-entirely** — the Worker deploys via Terraform's Cloudflare provider directly
-(not `wrangler deploy`), and D1 schema migrations run via a direct,
-backend-embedded call to Cloudflare's D1 query API (§5b) rather than
-`wrangler d1 migrations apply`. This is worth stating plainly since it's a real,
-deliberate absence rather than something that just hasn't come up yet.
-
-Since that revision, Postgres migrations were also moved off the external
-`goose` CLI and onto goose-as-a-library (§13a), resolving the item this section
-previously left open — Postgres now mirrors D1's "the binary applies its own
-migrations" shape, and in one respect goes further (a session advisory lock
-around the migration run, which D1's Cloudflare-API-based approach has no
-equivalent for). `chi` also replaced stdlib `net/http`'s own routing (§13a) once
-route grouping and middleware composition became the actual friction as the API
-surface grew past a handful of routes; `cobra` and `viper` were adopted for CLI
-structure and configuration. None of these supersede an architectural decision
-recorded elsewhere in this document — they're implementation-phase tooling
-choices, tracked in §13a rather than here.
-
-What remains open is purely implementation-phase, not architectural:
-
-- **Resolved this round (Phase 9): `ENABLE_OPEN_REGISTRATION` is built**
-  (config: `enable_open_registration`, default `false`) — gates
-  `POST /api/auth/register` directly in the handler rather than conditionally
-  registering the route, so routing stays static. Defaulted closed rather than
-  matching the previously-unconditional-open behavior: a self-hosted personal
-  archiving tool has no business letting anyone who can reach the dashboard
-  create their own account by default, and nothing was depending on the old
-  behavior since this was pre-1.0.
-- The pairing-token redesign (round five) retrofitted already-built Phase 1
-  code: the `/internal/users/mirror` Worker route and D1 `users` schema both
-  changed from password-hash mirroring to pairing-token-hash mirroring before
-  Phase 2's device-pairing endpoint could be built against them. This is now
-  complete.
-- **Resolved this round:** the Worker API endpoint surface flagged as "the
-  logical next design step" in the previous revision — device pairing
-  (`POST /pair`), the queue (`POST /queue`, `GET /queue`,
-  `POST /queue/:id/claim`), device-token management
-  (`GET`/`DELETE /internal/tokens`), and queue-item cleanup
-  (`POST /internal/queue-items/cleanup`) — is now built and tested (§5, §8,
-  §10). What's _not_ built yet, and remains the next logical step: presigned R2
-  upload URLs, and the `complete`/`fail` endpoints that transition a claimed
-  queue item to `captured`/`failed` and write the corresponding
-  `pending_captures` row — deliberately deferred out of Phase 2, since that work
-  is entangled with the capture-upload pipeline's shape rather than the
-  queue/auth mechanics Phase 2 was scoped to.
-- **Resolved this round (Phase 9): `failed` queue items are now surfaced to the
-  user with a manual-retry action**, not just kept forever with no further
-  recourse. A new `queue_items.manual_retry` D1 column (cleared on claim), two
-  new service-secret-gated Worker endpoints
-  (`GET /internal/queue-items?status=failed` at the time -- broadened since, see
-  §8's own entry on this), `POST /internal/queue-items/:id/retry`), a backend
-  `internal/queueitems` client mirroring `internal/devices`'s shape,
-  session-protected `GET`/`POST /api/queue-items...` (self-scoped, same
-  reasoning as Manage Devices), and a new dashboard Queue screen. §8's cleanup
-  endpoint is otherwise unchanged — `captured` items are still swept, `failed`
-  items are still never deleted, now a deliberate decision (low expected volume
-  at this project's scale, and an operator can always clean up by hand) rather
-  than a deferred one.
-- **Resolved this round: Readability extraction moved from the extension (and
-  the dashboard's browser, for manual uploads) to a single deferred, async
-  backend job, sharing the headless-Chrome sidecar with the screenshot job — see
-  §3a, §3d, §6a.** This was prompted by manual upload (§3d) forcing the question
-  of how to extract reader text with no live DOM available at all; the answer
-  generalized to every capture path, not just that one. Chosen explicitly over a
-  native-Go Readability port (e.g. `go-shiori/go-readability`) on the reasoning
-  that the headless-Chrome sidecar already exists for screenshots, so running
-  the actual upstream Readability.js inside it is less net-new machinery than it
-  would be without that sidecar already being built — this is the _same_
-  tradeoff reasoning as §6's own chromedp choice, just applied a second time now
-  that there are two things worth rendering a page for. Real, stated
-  consequences: `captures.reader_text`/`reader_text_hash` are now nullable
-  (previously implicitly synchronous), a new `readability_jobs` table exists
-  (§10), and `pending_captures.r2_key_readable` is removed from D1 entirely. The
-  already-built Phase 3 Worker code (`handleGetUploadUrls`/
-  `handleCompleteQueueItem`, and the `pending_captures` migration), which had
-  been built against this design's _previous_ (two-object-upload) shape, has
-  since been revised to match — single-object (HTML-only) upload throughout.
-- **New this round: `screenshot_jobs` given an actual schema entry (§10),
-  closing a gap in the previous revision.** §6 already said the screenshot job
-  needed "bounded retry with backoff, same shape as §7," but no table was ever
-  defined for it — only `ai_jobs` and, later, `readability_jobs` were. Also
-  decided explicitly this round: `screenshot_jobs` and `readability_jobs` stay
-  as two separate tables despite both running through the same headless-Chrome
-  sidecar and often the same page load, rather than merging them into one — see
-  §6's "Design" subsection for the reasoning (independent failure modes;
-  re-extraction after a Readability.js upgrade shouldn't force a redundant
-  re-screenshot).
-- **Resolved this round (Phase 7): the screenshot job is built** —
-  `internal/screenshot`, wired into `cmd/agent.go`. This also resolves §6's own
-  "whether to actually combine [screenshot and readability] into one job/one
-  page-load ... is an implementation-phase decision, not resolved here": they
-  stay two fully independent runners, not a shared page-load, judged simpler for
-  a modest-scale self-hosted workload than the coordination a combined scheduler
-  would need. See §6's "Implementation (Phase 7)" subsection for the
-  ephemeral-render-server design this needed (the sidecar has no filesystem
-  access to the agent's local archive), the two new, direction-specific config
-  values it introduced (`sidecar_url`, `sidecar_render_host`), and its "Revised
-  after a first review pass" subsection for what changed after initial review
-  (fixed-viewport screenshots, atomic multi-claimant job claiming, and —
-  resolving the per-job scheduling cadence question this bullet used to leave
-  open — two independent agent tickers: a slower Worker-facing one and a faster
-  Postgres-only one). Still open: the readability and AI jobs themselves, which
-  this same phase builds next.
-- **Resolved this round: every piece of the original five-step extension plan
-  (pairing, capture, upload, queue-driven capture, bookmark sync — §3h–§3j) is
-  now built and confirmed working end to end**, including two mid-phase design
-  pivots (queue-driven capture's human-in-the-loop redesign, bookmark sync's
-  switch to native browser bookmarks) that only became the right call once
-  actually tested or directly questioned, not apparent from the original plan
-  alone. What's left, all explicitly deferred rather than forgotten: Safari
-  packaging (mechanical, Xcode-wrapped, not a current priority); a real visual
-  design pass on the popup (deferred to a separate session — expected to be
-  larger, iterative work); and moving settings into a dedicated extension
-  options page, considered and declined for now after actually using the popup
-  during testing — everything stays there unless/until there are enough settings
-  that it stops making sense to.
-- **Resolved this round (Phase 6): the Manage Devices dashboard screen's third
-  piece — the backend API passthrough — is built** (`internal/devices`,
-  `GET`/`DELETE /api/devices[/{id}]`), closing out §5's Manage Devices section
-  entirely (all three pieces now built). Role-based auth gets exercised for the
-  first time beyond login, per this phase's original brief, but not as a
-  route-level `RequireAdmin` gate: member-vs-admin scoping happens per-request
-  inside the handlers themselves (`resolveTargetUserID` in `internal/httpapi`),
-  since a member and an admin hit the exact same routes with different allowed
-  `?user_id=` values — an all-or-nothing route gate doesn't fit that shape. Also
-  fixed a real bug in §10's previously-documented `collections` schema, caught
-  while building its migration: a single `UNIQUE(user_id, parent_id, name)`
-  constraint doesn't actually enforce anything for top-level collections, since
-  Postgres treats a NULL `parent_id` as distinct from itself — replaced with two
-  partial unique indexes (see §10). The rest of Phase 6's dashboard-facing
-  read/write API (library browsing/search, capture detail/HTML
-  streaming/language correction, tags, collections CRUD) is also built; see
-  IMPLEMENTATION.md for the full route table and remaining Svelte-side work.
-- **Resolved this round (Phase 6, continued): the dashboard's first real screens
-  are built** — Setup/Login (with the session-state and route-guard plumbing
-  behind them), Library (list and grid views, search, pagination), and
-  PageDetail (display-only: capture history, tags, collections). Two small
-  backend additions came out of actually building against the API rather than
-  just designing it: `GET /api/setup-status` (there was no way for the frontend
-  to tell "needs setup" from "needs login" on first load without one) and
-  `GET /api/pages/{id}/favicon`/`GET /api/pages/{id}/thumbnail` (the response
-  DTOs already carried `favicon_path`/`thumbnail_path`, but nothing ever served
-  the actual bytes). Also closed a real gap in the toolchain itself, not the
-  app: Prettier had never actually been checking `.svelte` files — it has no
-  built-in parser for them and silently skips what it can't parse rather than
-  erroring, so CI's `pnpm run check` had been a false pass on every `.svelte`
-  file since the skeleton. See §13a's Svelte Dashboard subsection and
-  IMPLEMENTATION.md for the details.
-- **Resolved this round (Phase 6, continued): `PageDetail` is now a full
-  read/write loop**, not display-only — tag/collection add-remove, the
-  mirror-exclusion toggle, and per-capture language correction all call their
-  real endpoints. A dedicated **Collections management screen** landed too (tree
-  view, create/rename/delete), after two real gaps surfaced from actually using
-  the write actions rather than being planned ahead of time: AI-sourced tags
-  weren't visually distinguished from manual ones, and there was no way to
-  create a collection from the dashboard at all, let alone browse the tree to
-  choose a parent for a nested one. Frontend logic testing also started (a
-  `"dashboard"` Vitest project), and a shared `AppHeader` component got
-  extracted once three real screens existed to repeat the same title/nav/account
-  bar across. See §13a's Svelte Dashboard subsection and IMPLEMENTATION.md for
-  the details.
-- **Resolved this round (Phase 13): three gaps flagged while building
-  PageDetail's read/write loop (Phase 6) are now closed — page delete
-  (`DELETE /api/pages/{id}`), a manual title override (`PATCH /api/pages/{id}`
-  now also accepts `title`, direct-overwrite semantics — see §10's `pages.title`
-  comment for why a recapture clearing it is deliberate, not a gap), and manual
-  recapture (§8's own new subsection covers the enqueue path).** Delete cascades
-  cleanly through Postgres (captures/jobs/tags/collection-memberships all
-  already `ON DELETE CASCADE`) and the D1 bookmark mirror self-heals via the
-  existing periodic sync's deletion reconciliation — nothing new needed on
-  either front. What it deliberately does **not** do: reclaim the deleted page's
-  on-disk archive files. Those are content-hash-addressed (§4) and can be shared
-  across captures or even across pages (identical content recaptured
-  independently), so a safe per-page delete would need a reference-counting pass
-  across every capture's hash, not a simple "delete this page's files." Left
-  genuinely open: a **`recueil gc` CLI command**, operator-run (scheduled or
-  manual, matching the `recueil user resync`/device-management precedent of
-  operator-only tooling over dashboard automation), that walks every capture's
-  referenced hash and removes anything on disk with no remaining referent — not
-  built this round, tracked here as the next piece of this same gap.
-- **Resolved this round: the capture reader view (`/captures/{id}`, Phase 13's
-  "Capture rows now link to..." note) gained the same delete/regenerate loop
-  PageDetail's own Phase 13 gave pages.** `DELETE /api/captures/{id}` extends
-  this project's no-empty-pages policy down a level: deleting a page's _last_
-  capture deletes the page too, in the same transaction
-  (`internal/httpapi.DeleteCapture`), rather than leaving a zero-capture page
-  around as a new edge case nothing else in this project anticipates.
-  `POST /api/captures/{id}/regenerate-summary` and
-  `POST /api/captures/{id}/regenerate-readability` both just reset the relevant
-  job row back to `pending` (`ai_jobs`/`readability_jobs` respectively) and let
-  the already-running `ai.Runner`/readability job runner pick it up on their own
-  schedule — no new processing logic, same "enqueue, don't do the work here"
-  shape as Phase 13's own recapture. Regenerate-readability deliberately does
-  **not** also requeue the AI job: today there's no extra state to track that
-  decision by, so a stale AI summary just stays exactly as stale as it already
-  was until someone clicks regenerate-summary too, separately. Also added
-  `GET /api/capture-config`, reporting this running agent's own
-  currently-configured `readability_version`/`ai_model` (the same values
-  `cmd/agent.go` threads into `readability.Params`/`ai.Params`). Separately,
-  task A of this same round exposed six columns (`readability_version`,
-  `content_hash`, `thumbnail_size_bytes`, `thumbnail_hash`,
-  `favicon_size_bytes`, `favicon_hash`) that were already tracked in Postgres
-  but never surfaced in `GET /api/captures/{id}`'s own response — DTO/mapping
-  work only, no schema change, no new decision to record here.
-- `recueil gc` CLI command: `internal/gc.Runner.Run` is the actual sweep: read
-  every path Postgres still references (`ListReferencedArchivePaths`, spanning
-  `captures.{html,thumbnail,favicon}_path` **and** `pages.favicon_path` — see
-  below for why the latter matters on its own), walk every file
-  `archive.Store`'s root actually contains (`Store.Walk`, new), and remove
-  whatever isn't in that live set (`Store.Remove`, new — also prunes each
-  now-empty parent shard directory it leaves behind, the three shard levels
-  collapsed back down once nothing's left in them). A `--dry-run` flag reports
-  the same scan/removal counts and byte total without calling `Store.Remove` at
-  all. (Both safety rails and the empty-directory pass described further down
-  this section came later, in the storage-model round.) Also, since
-  `pages.favicon_path` is a denormalized copy of whichever capture last provided
-  one (`UpsertPage`, same pattern as `pages.title`) — deleting _that_ capture
-  (while the page survives via others) used to leave it pointing at a path no
-  capture row referenced anymore. `DeleteCapture` now refreshes it from
-  `GetLatestCaptureByPage` whenever the page isn't also being deleted (new
-  `SetPageFavicon` query) — always recomputed, not just when the deleted capture
-  happens to be the source, since detecting which case that is would be more
-  complex than just doing the recomputation unconditionally (a no-op write when
-  it wasn't the source). `ListReferencedArchivePaths` still includes
-  `pages.favicon_path` in its own right regardless — belt-and-suspenders, not a
-  substitute for the real fix, since the live-set query shouldn't have to lean
-  on that recomputation always having happened correctly everywhere it could
-  matter.
-- **Resolved this round: dark mode is a real `Settings`-screen preference, not
-  just automatic `prefers-color-scheme`.** `user_settings.theme` — same
-  `NULL`-means-automatic convention, same full-replace `PATCH /api/settings`
-  shape (both `language` and `theme` sent together on every save; see
-  `patchSettingsRequest`'s own doc comment for why that stayed the deliberate
-  choice once a second field showed up, not pointer-based partial updates), same
-  CHECK-constraint treatment §10's schema already gives closed enums like
-  `role`/`status` (unlike `language`, which is deliberately open-ended and
-  validated at the application layer instead — see its own migration comment).
-  `src/styles/_tokens.scss` gained `[data-theme="light"|"dark"]` attribute
-  selectors (higher specificity than the existing `prefers-color-scheme` media
-  query's bare `:root`, so an explicit override always wins) alongside two Sass
-  mixins so the light/dark palettes are each defined once, not duplicated
-  between the automatic and explicit paths.
-  - One accepted gap: the `localStorage` cache is global per browser, not scoped
-    per account — two different users sharing one browser (a real scenario for a
-    self-hosted, multi-account tool) could see one frame of the _other_
-    account's last-applied theme before the real value loads and corrects it.
-    Same tradeoff every other production site using this exact technique already
-    accepts; not worth an account-scoped cache key for a one-frame, purely
-    cosmetic edge case.
-
-### Storage model: per-capture directories, replacing content-hash addressing
-
-**Resolved this round, deliberately before the first tagged release**, since
-this is one of the few decisions in the project that becomes genuinely hard to
-revisit once real archives exist in the wild. The full reasoning lives in §4;
-what follows is the account of the decision itself, kept here rather than
-narrated as history there.
-
-The question raised was whether content-addressed storage was the right call for
-security, privacy, and correctness — specifically whether two users' captures
-could ever overlap with different content. On the security question the answer
-was no: reads are gated by Postgres ownership (`pages.user_id`, self-scoped
-handlers), paths are never guessed or client-supplied, the Worker recomputes R2
-keys itself rather than trusting a client, and SHA-256 collision is not a
-reachable attack even for a malicious account with manual-upload access. Nor was
-there an existence oracle: ingestion is asynchronous and backend-side, so a user
-never observes whether their bytes already existed.
-
-The scheme was replaced anyway, for reasons that turned out not to be about
-security at all:
-
-- **The benefit was one the project doesn't want.** Deduplication is explicitly
-  not a goal here, and §3b already observed it would rarely fire regardless.
-- **The read path never used it.** `html_path` and friends are stored columns.
-  Nothing derives a path from a hash, so content-addressing was a naming scheme
-  wearing the clothes of an addressing scheme.
-- **The costs were structural rather than acute.** A shared directory turns "is
-  this file still referenced?" into a set-membership question, makes per-tenant
-  deletion unprovable (relevant to the hosted/multi-tenant door §4 leaves open),
-  and made `CaptureDir` a name for something that wasn't a capture's directory.
-
-**What made the switch cheap was that `internal/gc` already existed.** The
-expensive part of moving off content-addressing would otherwise have been
-crash-retry: a retry that mints a fresh id writes a directory it may then
-discover it didn't need. With a mark-and-sweep collector already in place for
-page/capture deletion, that orphan is reclaimed by the same machinery as any
-other, and no staging-and-rename scheme was needed. Worth recording as the
-general shape: this was the second time the sweep paid for itself somewhere it
-wasn't designed for.
-
-**§3c's original objection to id-keyed paths was satisfied rather than
-overruled.** That objection was about _client-supplied_ ids colliding and
-silently overwriting through the atomic rename. A backend-minted id created via
-an exclusive `os.Mkdir` addresses it directly, so the reasoning recorded there
-still stands — it just now points at a different mechanism.
-
-Two related changes landed alongside, both in §4's own terms: asset filenames
-inside a capture directory dropped their content hashes in favour of plain role
-names (`favicon.{ext}`, `thumbnail.png`), since there is now exactly one of each
-per directory — which also means a re-render overwrites in place rather than
-orphaning its predecessor — and `captures.html_path` gained a `UNIQUE`
-constraint.
-
-**`recueil gc` was hardened in the same round**, partly because the sweep is now
-load-bearing for more than deletion:
-
-- **A 15-minute recency floor.** Ingestion writes to disk _before_ committing to
-  Postgres (§3c), so a genuinely in-flight capture is legitimately absent from
-  the live set. The sharpest case is `archive.Store`'s own `.tmp-*` files, which
-  are in the walk's namespace and by construction can never appear in the live
-  set — without the floor a sweep would delete one mid-write and the writer's
-  rename would fail. 15 minutes is reused from the D1 queue's claim-visibility
-  timeout and `internal/screenshot`'s `claimStaleTimeout` rather than
-  introducing a third number for the same "stuck, or merely in progress?"
-  question.
-- **An empty-directory pass** (`Store.WalkEmptyDirs`/`RemoveEmptyDir`).
-  `NewCapture` creates a capture's directory before anything is written into it,
-  so an ingestion failing early leaves a directory that `Store.Walk` — which
-  reports regular files only — would never see.
-- **An orphan-fraction refusal.** If more than half of the scanned files come
-  back unreferenced (and at least 100 files were scanned, below which the
-  fraction carries no information), the run removes nothing and returns
-  `TooManyOrphansError`; `--force` overrides. This guards a footgun rather than
-  a known bug: the live set is built by comparing stored path strings against
-  walked path strings, so any future divergence in how the two sides are
-  normalized — a leading `./`, a separator difference, a `filepath.Clean`
-  applied on one side only — would silently produce an empty intersection and
-  mark the entire archive as garbage. That failure would be silent, total, and
-  aimed at the half §14 calls irreplaceable. The check runs after the full scan
-  but before the first deletion, so the refusal is always clean rather than a
-  partial sweep. A dry run reports that the real run would refuse rather than
-  silently proceeding, which would be actively misleading.
-
-### Pending-capture claiming, and wiring up the D1 maintenance sweeps
-
-**Resolved this round.** Raised while reviewing the per-capture-storage change's
-own crash-retry behaviour, and turned out to be a latent correctness bug
-predating it: `pending_captures` had no claim, so two `agent` processes polling
-at roughly the same time both ingest the same row, and the second silently
-writes a **duplicate capture**. §8's own section covers the mechanism in full;
-the short version is that `captures`' `ON CONFLICT (source_capture_id)` guard
-stops protecting the moment the first agent finishes, because ingestion's last
-step clears that column to `NULL` and Postgres treats `NULL`s as distinct in a
-unique index.
-
-Worth being explicit that this is **not** a consequence of moving off
-content-addressed storage. Under the previous layout the same duplicate row
-would have been inserted; it would simply have pointed at the same file rather
-than a second copy of it.
-
-The fix is a claim (`POST /internal/pending-captures`, one-hour stale window),
-rather than the available alternative of never clearing `source_capture_id` —
-which would also have closed this hole, but only by making a durable dedup
-guarantee depend on a client-generated value, which is exactly what §3c's
-collision-retry loop exists because we can't do.
-
-## 16. MCP Server
+## 15. MCP Server
 
 Read-only access to a user's archive for local MCP clients (Claude Desktop,
 etc.), per the decision recorded in §5's "API tokens" subsection. Deliberately
@@ -4588,3 +4251,14 @@ for two call sites.
 **Dependency.** `github.com/modelcontextprotocol/go-sdk v1.7.0`, no other new
 third-party dependency — tool schemas are derived automatically from Go struct
 tags (`AddTool`'s generic form), so `jsonschema-go` isn't imported directly.
+
+## 16. Known Limitations
+
+- **Safari packaging.** The extension is MV3-capable on Safari, but Safari
+  requires a separate packaging/distribution pipeline (Xcode-wrapped, via
+  `safari-web-extension-converter`) rather than loading the same build the other
+  browsers use. Not attempted yet — see §3h.
+- **Fragment-aware URL canonicalization for SPAs.** `urlnorm.Canonicalize` drops
+  every URL fragment unconditionally. The intended exception — preserving a
+  fragment for a known SPA that encodes meaningful route state there — has no
+  implementation and no site list to check against yet. See §9.
