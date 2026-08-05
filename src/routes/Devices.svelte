@@ -112,6 +112,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let revokingPairing = $state(false);
   let copied = $state(false);
 
+  // Set from the same /pairing-token (and /pairing-token/regenerate)
+  // responses that carry the token itself -- see PairingTokenResponse.
+  // Stays null whenever pairingToken does (a 404, meaning no token has
+  // ever been generated yet): there's genuinely nothing to pair until
+  // then, so the worker URL has nothing useful to accompany.
+  let workerURL = $state<string | null>(null);
+  let workerUrlCopied = $state(false);
+
   let devices = $state<Device[]>([]);
   let devicesLoading = $state(true);
 
@@ -140,11 +148,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     try {
       const res = await apiJSON<PairingTokenResponse>("/pairing-token");
       pairingToken = res.pairing_token;
+      workerURL = res.worker_url;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
         // No token yet -- a normal starting state (e.g. right after
         // setup), not a load failure.
         pairingToken = null;
+        workerURL = null;
       } else {
         loadError =
           err instanceof ApiError ? err.message : m.devices_load_token_error();
@@ -214,6 +224,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         { method: "POST" },
       );
       pairingToken = res.pairing_token;
+      workerURL = res.worker_url;
     } catch (err) {
       actionError =
         err instanceof ApiError ? err.message : m.devices_regenerate_error();
@@ -229,6 +240,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     try {
       await apiJSON("/pairing-token", { method: "DELETE" });
       pairingToken = null;
+      workerURL = null;
     } catch (err) {
       actionError =
         err instanceof ApiError ? err.message : m.devices_revoke_token_error();
@@ -243,6 +255,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     copied = true;
     setTimeout(() => {
       copied = false;
+    }, 2000);
+  }
+
+  async function copyWorkerUrl() {
+    if (!workerURL) return;
+    await navigator.clipboard.writeText(workerURL);
+    workerUrlCopied = true;
+    setTimeout(() => {
+      workerUrlCopied = false;
     }, 2000);
   }
 
@@ -405,6 +426,33 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         </div>
       {:else}
         <p class="status">{m.devices_no_token()}</p>
+      {/if}
+      {#if workerURL}
+        <p class="eyebrow worker-url-heading">
+          {m.devices_worker_url_heading()}
+        </p>
+        <p class="hint">
+          {m.devices_worker_url_hint()}
+        </p>
+        <div class="token-row">
+          <code class="token">{workerURL}</code>
+          <button
+            type="button"
+            class="copy-btn"
+            class:copied={workerUrlCopied}
+            aria-label={workerUrlCopied
+              ? m.devices_copied()
+              : m.devices_copy_worker_url_aria()}
+            onclick={copyWorkerUrl}
+          >
+            {#if workerUrlCopied}
+              <Check size={13} />
+              {m.devices_copied()}
+            {:else}
+              <Copy size={13} />
+            {/if}
+          </button>
+        </div>
       {/if}
       <div class="token-actions">
         <button
@@ -679,6 +727,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   .eyebrow {
     @include type.eyebrow;
     margin: 0 0 0.4rem;
+  }
+
+  // A second .eyebrow nested inside the same section as the pairing
+  // token's own -- needs breathing room above it that the bare .eyebrow
+  // rule doesn't have, since it's not the first thing in the section.
+  .worker-url-heading {
+    margin-top: 1.1rem;
   }
 
   .hint {

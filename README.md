@@ -1,277 +1,176 @@
 # recueil
 
-## install
+recueil is a self-hosted personal web archiver.
 
-Step 1: create the cloudflare infrastructure using terraform: see the README in
-the terraform directory. This produces the values `worker_url`,
-`worker_service_secret`, and the `r2_*`/`cloudflare_*` config values the
-production deployment below needs.
+> [!NOTE]
+>
+> This README is for building and hacking on recueil. Looking to self-host or
+> use it instead? See [the docs](https://recueil.app/docs/).
 
-Step 2: run the self-hosted backend (Postgres, the `recueil server` web process,
-the `recueil agent` background-job process, and the headless-Chrome sidecar the
-screenshot job needs) via Docker Compose -- see "production" below for a sample.
+## Building from source
 
-## production
+Prerequisites:
 
-This is a starting point, not a drop-in final config -- fill in the placeholder
-values, generate real secrets, and put a real reverse proxy (TLS termination,
-etc.) in front of `server`'s published port rather than exposing it directly as
-shown here.
+- Go, matching the version in `go.mod`
+- Node.js (any current LTS) and pnpm
+- [sqlc](https://sqlc.dev) `1.31.1` (generates `internal/db` from
+  `migrations/`/`queries/` which isn't checked in, see below)
+- `jq` (reads the build version out of `package.json`)
 
-**Why `chromedp-proxy` is here too, not just in local dev's `compose.yaml`:** it
-might look like the kind of workaround that's only needed for the local dev
-split (running `recueil agent` directly on your own machine against a
-containerized sidecar). It isn't -- since Chromium M113/M114, Chromium silently
-forces its DevTools listener to `127.0.0.1` no matter what
-`--remote-debugging-address` is passed, as a deliberate, non-configurable
-security decision. That makes the sidecar's real listener unreachable from _any_
-other network participant, including another container on this exact same
-Compose network. `chromedp-proxy` (a plain TCP forward sharing `chromedp`'s
-network namespace) is the fix either way, which is why it's a permanent part of
-this sidecar's architecture rather than a local-dev-only detail. The only things
-that actually differ from the local dev `compose.yaml` at the root of this repo:
-no `ports:` published for `chromedp`/`chromedp-proxy` at all (nothing outside
-this Compose network ever needs to reach them, since `agent` is on the same
-network now), and no `extra_hosts` entry (that was specifically for reaching a
-`recueil agent` process running directly on the host's own machine, which isn't
-the case here -- `sidecar_render_host` points at the `agent` service's own
-Compose DNS name instead).
+Clone with submodules — the build embeds `internal/urlnorm/clearurls-rules` (a
+pinned snapshot of the [ClearURLs ruleset](https://github.com/ClearURLs/Rules))
+directly into the Go binary, and `go:embed` fails without it checked out:
 
-```yaml
----
-services:
-  postgres:
-    image: postgres:18-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: recueil
-      POSTGRES_USER: recueil
-      POSTGRES_PASSWORD: "<generate a real password>"
-    volumes:
-      - ./data/postgres:/var/lib/postgresql
-
-  # See compose.yaml at the repo root for the fuller explanation of every
-  # flag/setting here -- this is the same sidecar, just without the
-  # local-dev-only host reachability bits (no published ports, no
-  # extra_hosts).
-  chromedp:
-    image: chromedp/headless-shell:latest
-    restart: unless-stopped
-    user: nobody
-    entrypoint:
-      - /headless-shell/headless-shell
-      - --remote-debugging-port=9223
-      - --disable-gpu
-      - --enable-unsafe-swiftshader
-      - --headless
-      - --no-sandbox
-    shm_size: "1gb"
-
-  chromedp-proxy:
-    image: alpine/socat:latest
-    restart: unless-stopped
-    network_mode: "service:chromedp"
-    depends_on:
-      - chromedp
-    command: ["tcp-listen:9222,fork,reuseaddr", "tcp:127.0.0.1:9223"]
-
-  server:
-    image: mfinelli/recueil:latest # pin a real version tag in practice
-    restart: unless-stopped
-    command: ["recueil", "server"]
-    depends_on:
-      - postgres
-    ports:
-      - "8080:8080" # put a reverse proxy in front of this in practice
-    environment: &recueil-env
-      DATABASE_URL:
-        postgres://recueil:<same password as above>@postgres:5432/recueil
-      LISTEN_ADDR: ":8080"
-      WORKER_URL: "<from terraform output>"
-      WORKER_SERVICE_SECRET: "<from terraform output>"
-      PAIRING_TOKEN_KEY: "<openssl rand -base64 32>"
-      CLOUDFLARE_ACCOUNT_ID: "<from terraform output>"
-      CLOUDFLARE_D1_DATABASE_ID: "<from terraform output>"
-      CLOUDFLARE_API_TOKEN: "<from terraform output>"
-      ARCHIVE_DIR: /data/archive
-      R2_ACCOUNT_ID: "<from terraform output>"
-      R2_BUCKET_NAME: "<from terraform output>"
-      R2_ACCESS_KEY_ID: "<from terraform output>"
-      R2_ACCESS_KEY_SECRET: "<from terraform output>"
-    volumes:
-      - ./data/archive:/data/archive
-
-  agent:
-    image: mfinelli/recueil:latest # pin a real version tag in practice
-    restart: unless-stopped
-    command: ["recueil", "agent"]
-    depends_on:
-      - postgres
-      - chromedp
-      - chromedp-proxy
-    environment:
-      <<: *recueil-env
-      # Both directions of the sidecar connection use this service's own
-      # Compose DNS name -- agent -> sidecar (sidecar_url) and
-      # sidecar -> agent's ephemeral render server (sidecar_render_host)
-      # are different connections, but "chromedp"/"agent" resolve correctly
-      # either way since everything's on the same Compose network here.
-      SIDECAR_URL: "http://chromedp:9222"
-      SIDECAR_RENDER_HOST: "agent"
-    volumes:
-      # Same volume, same path, as `server` above -- the agent writes
-      # captures/screenshots/favicons here; the server reads them back out.
-      - ./data/archive:/data/archive
-```
-
-### Backup
-
-recueil doesn't back itself up -- baking `pg_dump` into the application image,
-or shelling out to it from the Go binary, is an awkward dependency for an
-application binary to carry, and would commit the project to tracking Postgres
-version compatibility indefinitely. It's the operator's responsibility, same as
-the reverse proxy above. Two things, **on the same schedule**:
-
-1. **The Postgres database** -- via `pg_dump`, not a raw copy of the
-   `./data/postgres` directory. Postgres's on-disk format isn't safe to copy
-   directly while the container is running, bind mount or not (no WAL-aware
-   tooling involved), so this has to go through `pg_dump` or an equivalent
-   backup tool that actually understands it.
-2. **The `./data/archive` directory** -- the captured HTML/screenshots/favicons
-   `server` and `agent` both write to. A plain file copy is fine here, since
-   these are static files once written.
-
-If the two drift out of sync -- backed up on different schedules, or one
-succeeds while the other fails silently -- a restore can leave a `captures` row
-pointing at a file that isn't actually in that backup window, or a file with no
-row pointing at it. Run them as one job.
-
-A starting point, the same spirit as the compose file above -- adapt it to
-whatever backup tooling you actually use (`restic`, `rclone`, a managed backup
-service pointed at `./data`, etc.), this is just the two commands any of those
-need to wrap:
-
-```sh
-#!/bin/sh
-set -eu
-
-backup_dir="./backups/$(date +%Y%m%dT%H%M%S)"
-mkdir -p "$backup_dir"
-
-# -Fc: pg_dump's own custom format -- compressed by default, and
-# restorable with pg_restore's selective/parallel options later, unlike a
-# plain .sql dump. `compose exec`'s own -T disables pseudo-TTY allocation,
-# which matters here since the dump is binary output being redirected to
-# a file, not something meant to be displayed. Running this inside the
-# postgres container itself (rather than pg_dump from the host) also
-# means nothing needs 5432 reachable from wherever this script runs.
-docker compose exec -T postgres \
-  pg_dump -U recueil -Fc recueil > "$backup_dir/postgres.dump"
-
-# ./data/archive is a real host directory (a bind mount, not a named
-# Docker volume -- see the compose file above), so this is a plain tar,
-# no disposable container needed to reach it.
-tar czf "$backup_dir/archive.tar.gz" -C ./data/archive .
-```
-
-**What's deliberately _not_ in this list**, since it's an easy thing to get
-backwards: R2 and D1 don't need backing up. R2 is documented as a temporary
-upload buffer only -- every object is deleted once the backend finishes
-ingesting it, so there's nothing durable there to lose. D1 holds device tokens
-(and the read-only bookmark-list mirror), not canonical data -- Postgres is the
-source of truth for both, and D1 is rebuilt from it, not the other way around.
-
-**Restoring**: bring `postgres` up empty, `pg_restore` the dump into it (or load
-the plain-SQL equivalent), and untar the archive backup into a fresh
-`./data/archive` directory before starting `server`/`agent`. Then run
-`recueil user resync` (see `recueil user --help`) once the database is back --
-password changes, new accounts, or pairing-token regenerations made after the
-backup was taken won't be reflected in D1's credential mirror otherwise, and
-this rebuilds it from the now-restored Postgres state for every account in one
-pass.
-
-## clients
-
-Beyond the desktop browser extension (paired via the dashboard's Devices screen,
-same as everything below), two thin remote-enqueue clients are served straight
-off the same Cloudflare Worker the terraform module provisions -- neither needs
-its own deploy step.
-
-### Share-sheet PWA (Android, and anywhere else that supports Web Share Target)
-
-Visit the Worker's own URL (the `worker_url` terraform output) on your phone and
-add it to your home screen. The first launch asks for a pairing token (same
-Devices screen as the extension) and a name for the device; after that, sharing
-a page to it from any app enqueues the URL, no separate app install needed.
-There's no "Worker URL" field to fill in here -- the page is served by the same
-Worker it talks to, so pairing and enqueuing are both same-origin requests.
-
-### iOS Shortcut
-
-Apple Shortcuts aren't plain-text source -- they're built and exported through
-the Shortcuts app itself, so there's no file in this repo to install directly.
-This is the recipe for building one by hand.
-
-The one real wrinkle, worth calling out up front: **a pairing token and a device
-bearer token are not the same thing.** Pairing tokens (from the dashboard's
-Devices screen) are exchanged once for a bearer token (`POST /pair`), and it's
-the bearer token that actually authenticates `POST /queue` afterward. A Shortcut
-has no way to run that exchange itself -- but it doesn't need to: a Shortcut's
-own action fields (like a static `Authorization` header value) persist as part
-of the shortcut's own definition once you type them in, the same as any other
-hardcoded setting, so this only needs **one** shortcut, not two. The one extra
-step is getting the bearer token in the first place, since it's not something
-you'd otherwise see anywhere:
-
-1. On any device, visit `https://<worker_url>/token.html` -- a small page served
-   by the same Worker, built for exactly this: paste in a pairing token and a
-   name for the device, and it exchanges it for a bearer token and displays it
-   once (it isn't saved anywhere by that page itself -- copy it before
-   navigating away). It shows up afterward in the dashboard's Devices screen
-   like any other paired device, so it can be revoked independently later
-   without affecting anything else.
-2. Copy that token.
-
-**"Recueil: Save Page"** (enable **Show in Share Sheet**, accepting URLs and
-Safari web pages, in the shortcut's own settings):
-
-1. **Get Current Date**, formatted as Unix time, combined with **Random Number**
-   (0-999999) into one **Text** step (e.g.
-   `Save-{Formatted Date}-{Random Number}`) -- Shortcuts has no built-in UUID
-   generator, and `POST /queue` needs some client-generated, reasonably-unique
-   `id` for each enqueue (see `terraform/worker/index.js`'s `handleEnqueue`); it
-   only needs to be unique enough to not collide with another enqueue in the
-   same second, not an actual UUID.
-2. **Get Contents of URL** -- URL: `https://<worker_url>/queue`, method POST,
-   headers `Content-Type: application/json` and
-   `Authorization: Bearer <paste the token from step 1 above>`, request body
-   (JSON): `{"id": <generated id>, "url": <Shortcut Input>}`.
-3. **Show Notification** -- e.g. "Saved to Recueil".
-
-Two things worth knowing about this approach: the token lives in plain text
-inside the shortcut's own saved configuration (viewable if you open the shortcut
-to edit it, same exposure any other client's stored credential has -- don't
-export or share this particular shortcut with anyone), and Shortcuts'
-`Get Contents of URL` treats the request as successful once it gets _any_ HTTP
-response, including a 401 (a revoked or expired token) or a 500 -- it won't
-surface that as a failure on its own. If enqueues silently stop landing, revisit
-`token.html` for a fresh token and update the header.
-
-## development
-
-This repo uses a git submodule (`internal/urlnorm/clearurls-rules`, a pinned
-snapshot of the [ClearURLs ruleset](https://github.com/ClearURLs/Rules) used by
-`internal/urlnorm` for URL normalization) embedded directly into the Go binary
-at build time. Clone with submodules, or initialize them afterward:
-
-```sh
+```shell
 git clone --recurse-submodules https://github.com/mfinelli/recueil.git
 # or, if already cloned:
 git submodule update --init
 ```
 
-The Go build (and `go:embed` specifically) will fail without this checked out.
 To pull in a newer ruleset snapshot later:
 `cd internal/urlnorm/clearurls-rules && git pull origin master` (or pin to a
 specific commit/tag), then commit the resulting submodule pointer change as its
 own commit.
+
+Then:
+
+```shell
+make
+```
+
+Runs `sqlc generate`, builds the dashboard frontend, and compiles `recueil` with
+version info baked in via `-ldflags`. The resulting binary is the same thing
+`server`/`agent`/`gc`/`user`/`device`/`auth`/`enqueue` all live inside of — see
+[CLI Reference](https://recueil.app/docs/readers/cli-reference/) and
+[Administration](https://recueil.app/docs/operators/administration/) for what
+each subcommand does.
+
+## Repository layout
+
+A monorepo — everything lives here rather than split across repos, including the
+parts with their own independent build tooling.
+
+- **`cmd/`** — the CLI's subcommands (`server`, `agent`, `gc`, `user`, `device`,
+  `auth`, `enqueue`), all one binary.
+- **`internal/`** — the Go backend, see below.
+- **`src/`** — the Svelte dashboard, served by `server` via `go:embed`.
+- **`extension/`** — the browser extension. It has its own build tooling and
+  README — see [`extension/README.md`](extension/README.md).
+- **`terraform/`** — the Cloudflare Worker (plain JS, no build step) and the
+  OpenTofu/Terraform module that provisions it, D1, and R2. It has its own
+  README — see [`terraform/README.md`](terraform/README.md).
+- **`www/`** — the docs site and the marketing site, both Zola.
+- **`migrations/`** — Postgres schema migrations (goose).
+- **`queries/`** — SQL queries sqlc generates `internal/db` from.
+- **`scripts/`** — small standalone maintenance scripts (e.g. checking that
+  pinned tool versions agree across `go.mod`/`Dockerfile`/CI).
+
+### `internal/`
+
+| Package           | What it is                                                                                          |
+| ----------------- | --------------------------------------------------------------------------------------------------- |
+| `ai`              | The async AI enrichment job: summarize a capture's extracted text.                                  |
+| `archive`         | The local, canonical disk store for captures.                                                       |
+| `auth`            | Password hashing, session tokens, pairing-token encryption, the bootstrap flow.                     |
+| `clicreds`        | Where `recueil auth` stores, and `recueil enqueue` reads, this device's pairing credential.         |
+| `config`          | Loads backend configuration via Viper — TOML file, env vars, defaults.                              |
+| `d1migrate`       | Applies pending D1 schema migrations at backend startup.                                            |
+| `dbtest`          | The Postgres integration-test harness.                                                              |
+| `deviceapi`       | What a paired device (the CLI) uses to talk to the Worker's device-facing endpoints.                |
+| `devices`         | The backend's client for the dashboard's Manage Devices screen.                                     |
+| `gc`              | Reclaims disk space `DELETE /api/pages/{id}`/`DELETE /api/captures/{id}` deliberately leave behind. |
+| `httpapi`         | The dashboard-facing HTTP API.                                                                      |
+| `ingest`          | The ingestion pipeline: pulls completed captures in from R2/D1.                                     |
+| `mcpapi`          | The MCP-facing surface over a user's archive — read-only tools.                                     |
+| `metrics`         | Builds the Prometheus registry served at `/metrics`.                                                |
+| `mirror`          | Pushes backend-owned data outward to D1, via the Worker.                                            |
+| `pendingcaptures` | The backend's client for the Worker's pending-captures endpoints.                                   |
+| `pgmigrate`       | Applies pending Postgres schema migrations via goose.                                               |
+| `queueitems`      | The backend's client for the dashboard's Queue screen.                                              |
+| `r2`              | The backend's R2 client (distinct from the Worker's presigned-upload path).                         |
+| `readability`     | The async reader-text extraction job.                                                               |
+| `screenshot`      | The async screenshot/thumbnail job.                                                                 |
+| `sidecar`         | Plumbing shared by every job that renders through the headless-Chrome sidecar.                      |
+| `slug`            | Generates and validates the URL-facing slugs stored on tags/collections.                            |
+| `urlnorm`         | Computes `normalized_url` for captures/pages.                                                       |
+
+`internal/db` (sqlc-generated query code) isn't checked in — `make` generates
+it. See [DESIGN.md](DESIGN.md) for the architecture and reasoning behind how
+these fit together; this list is just a map.
+
+## Local development
+
+Postgres via Docker Compose:
+
+```sh
+just compose local   # or: just compose test, for the test-profile database
+```
+
+Then, for the backend itself:
+
+```sh
+just serve   # recueil server, against local.toml
+just agent   # recueil agent, against local.toml
+```
+
+Both rebuild (`make all`) before running, so they always reflect your current
+changes.
+
+> [!IMPORTANT]
+>
+> **`local.toml` as committed will let `server`/`agent` start, but not do
+> anything Cloudflare-facing.** Postgres-only things (the dashboard, logging in)
+> work as-is; pairing, enqueuing, and the rest of the capture flow need a real
+> Worker/D1/R2 to talk to. The `"todo"` values (`worker_url`,
+> `worker_service_secret`, `cloudflare_account_id`, `cloudflare_d1_database_id`,
+> `cloudflare_api_token`, `r2_*`) need to point at an actual Cloudflare
+> deployment — see
+> [Deploying recueil](https://recueil.app/docs/operators/deploying-recueil/) for
+> provisioning one; a small deployment kept separate from any real archive works
+> fine for this. AI enrichment (`ai_api_key`) is optional and only needed if
+> you're testing that specifically — `ai_base_url`/`ai_model` are already set
+> for [OpenRouter](https://openrouter.ai), swap them if you use something else.
+
+> [!CAUTION]
+>
+> **`local.toml` is a tracked file, not gitignored — be careful not to commit
+> real values into it.** Check `git diff local.toml` before committing anything
+> that touches it. This is a real rough edge that I'll smooth out at some point
+> (e.g., untracking it in favor of a checked-in `local.toml.example`), just not
+> done yet.
+
+For frontend work on the dashboard specifically, `pnpm run dev` (Vite, with HMR)
+is faster than `just serve` — no Go rebuild or manual page refresh needed for
+every change.
+
+`just www-serve` is for the docs/marketing site specifically (Zola), not general
+frontend work.
+
+## Testing, linting, formatting
+
+```sh
+just test
+just lint
+just fmt
+```
+
+These closely mirror what CI runs and should be a good indicator if CI will
+eventually pass on a changeset..
+
+## License
+
+    recueil: self-hosted webpage bookmarker and archiver
+    Copyright © 2026 Mario Finelli
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Affero General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Affero General Public License for more details.
+
+    You should have received a copy of the GNU Affero General Public License
+    along with this program. If not, see <https://www.gnu.org/licenses/>.

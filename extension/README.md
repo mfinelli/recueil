@@ -4,6 +4,10 @@ Pairing, capture (via
 [`single-file-core`](https://github.com/gildas-lormeau/single-file-core)), and
 upload to a self-hosted recueil instance.
 
+See the [root README](../README.md) for repo-wide setup (submodules,
+`just fmt`/`just lint`/`just test`) — this one only covers what's specific to
+the extension.
+
 ## Build
 
 ```sh
@@ -30,15 +34,16 @@ other settings worth building a picker alongside.
 
 **Adding a language**: copy `_locales/en/messages.json` to
 `_locales/<code>/messages.json` and translate each `message` value (leave
-`description` as-is — it's developer-facing only, shown in some browsers' own
-translation tooling, never rendered to a user). No code changes needed;
-`just build`/`build.js` picks up any directory under `_locales/` automatically.
+`description` as-is — it's developer-facing only, shown in some browsers'
+translation tooling, never rendered to a user). No code changes needed —
+`build.js` picks up any directory under `_locales/` automatically the next time
+you build.
 
 **Adding a string in code**: add the key to `_locales/en/messages.json` (and
 every other locale — a key missing from a non-default locale silently falls back
 to `en`, which is fine short-term but shouldn't be left that way), then call
 `t("yourKey")` from `src/common/i18n.js` — never `browser.i18n.getMessage()`
-directly (see that file's own doc comment for why: centralizing the call site is
+directly (see that file's doc comment for why: centralizing the call site is
 what keeps a future manual-locale-override feature from requiring a rewrite of
 every call site).
 
@@ -49,6 +54,20 @@ every call site).
 - **Firefox**: `about:debugging#/runtime/this-firefox` → "Load Temporary
   Add-on…" → select `dist/firefox/manifest.json` (or the packaged `.xpi`, see
   below — either works here).
+
+## Testing
+
+There's no `pnpm --filter @recueil/extension test` — tests run from the repo
+root, since `extension/tests/**` is one of three named projects in the root
+`vitest.config.js` (`jsdom` environment), not its own separate suite:
+
+```sh
+pnpm run test                        # everything, extension included
+pnpm exec vitest run --project extension   # just this one
+```
+
+`pnpm run --filter=@recueil/extension types` runs this package's JSDoc-driven
+`tsc` type-check on its own, without the rest of `just lint`.
 
 ## Package
 

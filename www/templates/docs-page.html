@@ -1,0 +1,216 @@
+<!--
+recueil: self-hosted webpage bookmarker and archiver
+Copyright © 2026 Mario Finelli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+Used by both a section's _index.md (the audience's "Overview" landing page)
+and every ordinary page within it -- `page` is set for the latter, `section`
+for the former. Rather than hand-maintaining a sidebar list per page the way
+the review mockup did, the drawer and prev/next links are derived from the
+real section/page data, so a new page in docs/readers/ or docs/operators/
+shows up in the nav on its own once it exists.
+-->
+{% set docs_index = get_section(path="docs/_index.md") %}
+{% set readers_section = get_section(path="docs/readers/_index.md") %}
+{% set operators_section = get_section(path="docs/operators/_index.md") %}
+
+{% if page %}
+  {% set ctx_title = page.title %}
+  {% if page.extra.dek is defined %}
+    {% set ctx_dek = page.extra.dek %}
+  {% else %}
+    {% set ctx_dek = "" %}
+  {% endif %}
+  {% set ctx_content = page.content %}
+  {% set ctx_permalink = page.permalink %}
+  {% if page.extra.audience is defined %}
+    {% set ctx_audience = page.extra.audience %}
+  {% else %}
+    {% set ctx_audience = "" %}
+  {% endif %}
+{% else %}
+  {% set ctx_title = section.title %}
+  {% if section.extra.dek is defined %}
+    {% set ctx_dek = section.extra.dek %}
+  {% else %}
+    {% set ctx_dek = "" %}
+  {% endif %}
+  {% set ctx_content = section.content %}
+  {% set ctx_permalink = section.permalink %}
+  {% if section.extra.audience is defined %}
+    {% set ctx_audience = section.extra.audience %}
+  {% else %}
+    {% set ctx_audience = "" %}
+  {% endif %}
+{% endif %}
+
+{% if ctx_audience == "operators" %}
+  {% set current_section = operators_section %}
+{% elif ctx_audience == "readers" %}
+  {% set current_section = readers_section %}
+{% else %}
+  {% set current_section = false %}
+{% endif %}
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ ctx_title }} — recueil docs</title>
+    {% if ctx_dek %}
+      <meta name="description" content="{{ ctx_dek }}" />
+    {% endif %}
+
+    <script>
+      (function () {
+        var saved = localStorage.getItem("recueil-docs-theme");
+        if (saved) document.documentElement.setAttribute("data-theme", saved);
+      })();
+    </script>
+
+    <link rel="stylesheet" href="/fonts/fraunces/500.css" />
+    <link rel="stylesheet" href="/fonts/fraunces/600.css" />
+    <link rel="stylesheet" href="/fonts/fraunces/500-italic.css" />
+    <link rel="stylesheet" href="/fonts/fraunces/600-italic.css" />
+    <link rel="stylesheet" href="/fonts/ibm-plex-mono/400.css" />
+    <link rel="stylesheet" href="/fonts/ibm-plex-mono/500.css" />
+    <link rel="stylesheet" href="{{ get_url(path='docs.css') }}" />
+  </head>
+  <body>
+    <div class="topbar">
+      <a class="brand" href="{{ docs_index.permalink }}">
+        <span class="brand__mark">recueil</span>
+        <span class="brand__sub">docs</span>
+      </a>
+      <div class="topbar__right">
+        <button
+          class="theme-toggle"
+          type="button"
+          aria-label="Toggle dark mode"
+          onclick="toggleTheme()"
+        >
+          <span class="icon icon-sun" aria-hidden="true"></span>
+          <span class="icon icon-moon" aria-hidden="true"></span>
+        </button>
+        <a class="topbar__link" href="{{ config.extra.github_url }}">
+          <span class="icon icon-github" aria-hidden="true"></span>
+          github
+        </a>
+      </div>
+    </div>
+
+    <div class="layout">
+      <aside class="drawer">
+        <div class="drawer__cards">
+          <a
+            class="drawer__card {% if docs_index.permalink==ctx_permalink %}active{% endif %}"
+            href="{{ docs_index.permalink }}"
+            >Overview</a
+          >
+
+          <a
+            class="drawer__label {% if readers_section.permalink==ctx_permalink %}active{% endif %}"
+            href="{{ readers_section.permalink }}"
+            >For Readers</a
+          >
+          {% for item in readers_section.pages %}
+            <a
+              class="drawer__card {% if item.permalink==ctx_permalink %}active{% endif %}"
+              href="{{ item.permalink }}"
+              >{{ item.title }}</a
+            >
+          {% endfor %}
+
+          <a
+            class="drawer__label {% if operators_section.permalink==ctx_permalink %}active{% endif %}"
+            href="{{ operators_section.permalink }}"
+            >For Operators</a
+          >
+          {% for item in operators_section.pages %}
+            <a
+              class="drawer__card {% if item.permalink==ctx_permalink %}active{% endif %}"
+              href="{{ item.permalink }}"
+              >{{ item.title }}</a
+            >
+          {% endfor %}
+        </div>
+        <div class="drawer__hole-row"><div class="drawer__hole"></div></div>
+      </aside>
+
+      <main>
+        <div class="page-header">
+          <div class="catalog-line">
+            {% if page %}
+              {{ ctx_audience | capitalize }}
+              <span class="sep">▸</span>
+              <span class="current">{{ ctx_title }}</span>
+            {% else %}
+              <span class="current">{{ ctx_title }}</span>
+            {% endif %}
+          </div>
+          <h1 class="page-title">{{ ctx_title }}</h1>
+          {% if ctx_dek %}
+            <p class="page-dek">{{ ctx_dek }}</p>
+          {% endif %}
+        </div>
+
+        <div class="prose">{{ ctx_content | safe }}</div>
+
+        {% if page %}
+          <div class="page-nav">
+            {% if page.lower %}
+              <a href="{{ page.lower.permalink }}"
+                ><span class="dir">← Previous</span>{{ page.lower.title }}</a
+              >
+            {% else %}
+              <a href="{{ current_section.permalink }}"
+                ><span class="dir">← Previous</span
+                >{{ current_section.title }}</a
+              >
+            {% endif %}
+            {% if page.higher %}
+              <a class="next" href="{{ page.higher.permalink }}"
+                ><span class="dir">Next →</span>{{ page.higher.title }}</a
+              >
+            {% endif %}
+          </div>
+        {% elif current_section and current_section.pages | length > 0 %}
+          {% set first_page = current_section.pages | first %}
+          <div class="page-nav page-nav--end">
+            <a class="next" href="{{ first_page.permalink }}"
+              ><span class="dir">Next →</span>{{ first_page.title }}</a
+            >
+          </div>
+        {% endif %}
+      </main>
+    </div>
+
+    <script>
+      function toggleTheme() {
+        var root = document.documentElement;
+        var current = root.getAttribute("data-theme");
+        if (!current) {
+          current = window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        }
+        var next = current === "dark" ? "light" : "dark";
+        root.setAttribute("data-theme", next);
+        localStorage.setItem("recueil-docs-theme", next);
+      }
+    </script>
+  </body>
+</html>

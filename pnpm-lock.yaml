@@ -57,6 +57,9 @@ importers:
       prettier:
         specifier: ^3.9.5
         version: 3.9.5
+      prettier-plugin-jinja-template:
+        specifier: ^2.2.0
+        version: 2.2.0(prettier@3.9.5)
       prettier-plugin-svelte:
         specifier: ^4.1.1
         version: 4.1.1(prettier@3.9.5)(svelte@5.56.6(@typescript-eslint/types@8.64.0))
@@ -139,6 +142,21 @@ importers:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
+
+  www:
+    dependencies:
+      '@fontsource/fraunces':
+        specifier: ^5.2.9
+        version: 5.2.9
+      '@fontsource/ibm-plex-mono':
+        specifier: ^5.2.7
+        version: 5.2.7
+      lucide-static:
+        specifier: ^1.25.0
+        version: 1.27.0
+      simple-icons:
+        specifier: ^16.27.1
+        version: 16.27.1
 
 packages:
 
@@ -2228,6 +2246,9 @@ packages:
     resolution: {integrity: sha512-4pfM1Ff0x50o0tQwb5ucw/RzNyD0/YJME6IVcStalZuMWxdt3sR3huStTtxz4PUmvZfRguvDejasvQ2kifR11g==}
     engines: {node: 20 || >=22}
 
+  lucide-static@1.27.0:
+    resolution: {integrity: sha512-ev1Wufm+RsKpQ6CfmS0PgYF+NTB1aaltfE+jUgBYGB8PV5b5qqHpzsTLPsMWFRFdpVMv66eIK8/Xf9d8cl3HhA==}
+
   lz-string@1.5.0:
     resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
     hasBin: true
@@ -2422,6 +2443,11 @@ packages:
     resolution: {integrity: sha512-vkcDPrRZo1QZLbn5RLGPpg/WmIQ65qoWWhcGKf/b5eplkkarX0m9z8ppCat4mlOqUsWpyNuYgO3VRyrYHSzX5g==}
     engines: {node: '>= 0.8.0'}
 
+  prettier-plugin-jinja-template@2.2.0:
+    resolution: {integrity: sha512-FVZtWvSW8RKvHToWHgI9j1eau7t2mekYoVKg7GdDS16QVOYM8f08yzVptBUvSXKQR2xJAXCLi0rGGvJGFtCUrA==}
+    peerDependencies:
+      prettier: ^3.0.0
+
   prettier-plugin-svelte@4.1.1:
     resolution: {integrity: sha512-wXvbXMjSvb4C9ENWTHXyd+ihakKCsJ6rJhLP6/8HFNj4GkZr48jqL9PoKsl2sk7SyCZRTnJ7O2TTowUpOxP/KA==}
     engines: {node: '>=20'}
@@ -2582,6 +2608,10 @@ packages:
 
   siginfo@2.0.0:
     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
+
+  simple-icons@16.27.1:
+    resolution: {integrity: sha512-slZF8iKxkv7Lb9SF3L1AcIl5iYLNvDrKKm8yV69cG66XvxJ12SX+bYTgxRwCY4bXSmklGXoXaKEyVmEypOCeqw==}
+    engines: {node: '>=0.12.18'}
 
   single-file-core@1.5.84:
     resolution: {integrity: sha512-P6rhA92eZNGZfc35Uudki4Z+H5Ged3gee9qSNcnfHnKZ2/R+V30USgLCooQf+ydraqYZYFe1NawKr0A4zz6Iog==}
@@ -4997,6 +5027,8 @@ snapshots:
 
   lru-cache@11.5.2: {}
 
+  lucide-static@1.27.0: {}
+
   lz-string@1.5.0: {}
 
   magic-string@0.30.21:
@@ -5201,6 +5233,10 @@ snapshots:
 
   prelude-ls@1.2.1: {}
 
+  prettier-plugin-jinja-template@2.2.0(prettier@3.9.5):
+    dependencies:
+      prettier: 3.9.5
+
   prettier-plugin-svelte@4.1.1(prettier@3.9.5)(svelte@5.56.6(@typescript-eslint/types@8.64.0)):
     dependencies:
       prettier: 3.9.5
@@ -5374,6 +5410,8 @@ snapshots:
   shell-quote@1.8.4: {}
 
   siginfo@2.0.0: {}
+
+  simple-icons@16.27.1: {}
 
   single-file-core@1.5.84: {}
 

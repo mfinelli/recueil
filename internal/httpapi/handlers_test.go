@@ -104,7 +104,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	// happy-path coverage, keep exercising the real /api/auth/register
 	// flow unchanged. TestRegisterDisabledByDefault covers the
 	// default-false gate directly against its own server.
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -131,7 +131,7 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -225,7 +225,7 @@ func TestNewRouter_DashboardSPA(t *testing.T) {
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
@@ -462,7 +462,7 @@ func TestRegisterDisabledByDefault(t *testing.T) {
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model")
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example")
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -626,6 +626,7 @@ func TestMe(t *testing.T) {
 
 type pairingTokenBody struct {
 	PairingToken string `json:"pairing_token"`
+	WorkerURL    string `json:"worker_url"`
 }
 
 // requestWithCookie issues method against path carrying cookie, for the
@@ -3414,7 +3415,7 @@ func TestGetCaptureConfig(t *testing.T) {
 		// Deliberately "", "" here -- a dev build (no `make`-injected
 		// readability_version) with AI enrichment disabled entirely
 		// (cmd/server.go's own empty-AIBaseURL-means-disabled reasoning).
-		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "")
+		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example")
 		logger := httplog.NewLogger("recueil-test")
 		logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 		r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -4396,6 +4397,8 @@ func TestPairingToken(t *testing.T) {
 		var got pairingTokenBody
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		assert.True(t, strings.HasPrefix(got.PairingToken, "rcl_pair_"))
+		assert.Equal(t, "https://worker.test.example", got.WorkerURL,
+			"must be this server's actual configured Worker URL, not blank or something client-supplied")
 
 		require.Len(t, *bodies, 1, "registration must push exactly one mirror row")
 		pushedHash, _ := (*bodies)[0]["pairing_token_hash"].(string)
@@ -4425,6 +4428,8 @@ func TestPairingToken(t *testing.T) {
 		require.NoError(t, json.NewDecoder(regenResp.Body).Decode(&second))
 
 		assert.NotEqual(t, first.PairingToken, second.PairingToken, "regenerate must issue a genuinely new token")
+		assert.Equal(t, "https://worker.test.example", second.WorkerURL,
+			"regenerate's response must include the worker URL too, not just GET's")
 
 		require.Len(t, *bodies, 2, "one push at registration, one at regenerate")
 		lastHash, _ := (*bodies)[1]["pairing_token_hash"].(string)

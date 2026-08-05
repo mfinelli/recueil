@@ -10,3 +10,5 @@
 /terraform/node_modules/*
 /tmp/*
 /www/public/*
+/www/static/fonts/*
+/www/static/icons/*

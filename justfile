@@ -27,6 +27,7 @@ create-migration NAME:
 fmt:
   go fmt ./...
   pnpm run fmt
+  pnpm run fmt:www
   tofu fmt -recursive
 
 lint:
@@ -42,6 +43,22 @@ lint:
 serve:
   make all
   ./recueil server --config local.toml
+
+agent:
+  make all
+  ./recueil agent --config local.toml
+
+[private]
+www-assets:
+  pnpm run --filter=@recueil/www assets
+
+[working-directory: 'www']
+www-build: www-assets
+  zola build --minify
+
+[working-directory: 'www']
+www-serve: www-assets
+  zola serve
 
 test:
   go test -p 1 ./...

@@ -122,7 +122,10 @@ type LoadOptions = {
 // top of this (mockImplementationOnce takes priority over the base
 // mockImplementation below it).
 function mockLoad({
-  pairingToken = { pairing_token: "the-pairing-token" },
+  pairingToken = {
+    pairing_token: "the-pairing-token",
+    worker_url: "https://worker.test.example",
+  },
   pairingTokenError,
   devices = [],
   devicesError,
@@ -184,6 +187,47 @@ describe("Devices", () => {
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
   });
 
+  it("shows the worker URL alongside the pairing token", async () => {
+    mockLoad();
+    render(Devices);
+
+    expect(await screen.findByText("the-pairing-token")).toBeTruthy();
+    expect(screen.getByText("https://worker.test.example")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copy worker URL" }),
+    ).toBeTruthy();
+  });
+
+  it("doesn't show a worker URL when there's no pairing token yet", async () => {
+    mockLoad({ pairingToken: null });
+    render(Devices);
+
+    expect(await screen.findByText("No pairing token yet.")).toBeTruthy();
+    expect(screen.queryByText("https://worker.test.example")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Copy worker URL" }),
+    ).toBeNull();
+  });
+
+  it("copies the worker URL to the clipboard, independently of the pairing token's own copy button", async () => {
+    mockLoad();
+    render(Devices);
+
+    const copyButton = await screen.findByRole("button", {
+      name: "Copy worker URL",
+    });
+    await fireEvent.click(copyButton);
+
+    expect(writeTextMock).toHaveBeenCalledWith("https://worker.test.example");
+    expect(await screen.findByRole("button", { name: "Copied!" })).toBeTruthy();
+    // The pairing token's own copy button must still read as
+    // not-yet-copied -- confirms the two buttons track separate state
+    // rather than sharing one `copied` flag.
+    expect(
+      screen.getByRole("button", { name: "Copy pairing token" }),
+    ).toBeTruthy();
+  });
+
   it("shows the API's own error message when loading the token fails", async () => {
     mockLoad({
       pairingTokenError: new ApiError(500, "token store unavailable"),
@@ -225,7 +269,10 @@ describe("Devices", () => {
     confirmMock.mockReturnValue(true);
     render(Devices);
 
-    apiJSONMock.mockResolvedValueOnce({ pairing_token: "new-token" });
+    apiJSONMock.mockResolvedValueOnce({
+      pairing_token: "new-token",
+      worker_url: "https://worker.test.example",
+    });
     await fireEvent.click(
       await screen.findByRole("button", { name: "Regenerate" }),
     );

@@ -28,7 +28,9 @@ fi
 
 function myversion() {
   echo "CHECKING MY VERSION"
-  local dockerfile dockerlabel cmdroot packagejson
+  local dockerfile dockerlabel cmdroot packagejson extpackagejson \
+    extmanifestjson tfpackagejson docstfversion docsimageversion \
+    deployingdoc docsserverversion
 
   packagejson="$(jq -r .version package.json)"
   cmdroot="$(grep -m1 Version: cmd/root.go | awk -F\" '{print $2}')"
@@ -37,6 +39,13 @@ function myversion() {
   extpackagejson="$(jq -r .version extension/package.json)"
   extmanifestjson="$(jq -r .version extension/manifest.base.json)"
   tfpackagejson="$(jq -r .version terraform/worker/package.json)"
+
+  deployingdoc=www/content/docs/operators/deploying-recueil.md
+  docstfversion="$(grep '//terraform?ref=' $deployingdoc |
+    awk -F= '{print $3}')"
+  docsimageversion="$(grep 'image: mfinelli/recueil:' $deployingdoc)"
+  docsserverversion="$(head -n1 <<< "$docsimageversion" |
+    awk -F: '{print $3}')"
 
   if [[ $packagejson != "$cmdroot" ]]; then
     echo >&2 "error: cmd/root.go version mismatch"
@@ -63,16 +72,37 @@ function myversion() {
     exit 1
   fi
 
+  if [[ v$packagejson\" != "$docstfversion" ]]; then
+    echo >&2 "error: docs terraform module version mismatch"
+    exit 1
+  fi
+
+  if [[ $(wc -l <<< "$docsimageversion") -ne 2 ]]; then
+    echo >&2 "error: didn't find two images in deploying docs"
+    exit 1
+  fi
+
+  if [[ $(sort -u <<< "$docsimageversion" | wc -l) -ne 1 ]]; then
+    echo >&2 "error: deploying docs image mismatch"
+    exit 1
+  fi
+
+  if [[ $packagejson != "$docsserverversion" ]]; then
+    echo >&2 "error: deploying docs version mismatch"
+    exit 1
+  fi
+
   echo "MY VERSION OK"
 }
 
 function sqlc() {
   echo "CHECKING SQLC VERSION"
-  local dockerfile github ghsqlc
+  local dockerfile github ghsqlc readme
 
   ghsqlc=sqlc-dev/setup-sqlc@v5
   github="$(yq e ".jobs.main.steps[] | select(.uses == \"$ghsqlc\") | \
     .with.sqlc-version" .github/workflows/default.yml)"
+  readme="$(grep sqlc.dev README.md | awk -F\` '{print $2}')"
 
   if [[ -z $github ]]; then
     echo >&2 "error: can't get sqlc version from github workflow"
@@ -86,6 +116,11 @@ function sqlc() {
 
   if [[ v$github != "$dockerfile" ]]; then
     echo >&2 "error: Dockerfile version mismatch"
+    exit 1
+  fi
+
+  if [[ $github != "$readme" ]]; then
+    echo >&2 "error: README.md version mismatch"
     exit 1
   fi
 
@@ -108,8 +143,39 @@ function gover() {
   echo "GO VERSION OK"
 }
 
+function psqlver() {
+  echo "CHECKING POSTGRESQL VERSION"
+  local ghver composelocal composetest deploydocs deploydocpage
+
+  ghver="$(yq e .jobs.main.services.postgres.image \
+    .github/workflows/default.yml)"
+  composelocal="$(yq e .services.postgresql-local.image compose.yaml)"
+  composetest="$(yq e .services.postgresql-test.image compose.yaml)"
+
+  deploydocpage=www/content/docs/operators/deploying-recueil.md
+  deploydocs="$(grep 'image: postgres:' $deploydocpage | awk '{print $2}')"
+
+  if [[ $ghver != "$composelocal" ]]; then
+    echo >&2 "error: compose local profile version mismatch"
+    exit 1
+  fi
+
+  if [[ $ghver != "$composetest" ]]; then
+    echo >&2 "error: compose test profile version mismatch"
+    exit 1
+  fi
+
+  if [[ $ghver != "$deploydocs" ]]; then
+    echo >&2 "error: deploy docs version mismatch"
+    exit 1
+  fi
+
+  echo "POSTGRESQL VERSION OK"
+}
+
 myversion
 sqlc
 gover
+psqlver
 
 exit 0

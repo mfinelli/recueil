@@ -66,13 +66,18 @@ type Server struct {
 	// with, threaded through here purely for GetCaptureConfig to report.
 	ReadabilityVersion string
 	AIModel            string
+
+	// WorkerURL is this instance's Cloudflare Worker address -- surfaced
+	// alongside the pairing token (see pairingTokenResponse) so a user
+	// configuring a new device has everything they need on one screen.
+	WorkerURL string
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel string) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string) *Server {
 	return &Server{
 		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
-		ReadabilityVersion: readabilityVersion, AIModel: aiModel,
+		ReadabilityVersion: readabilityVersion, AIModel: aiModel, WorkerURL: workerURL,
 	}
 }
 
@@ -95,6 +100,7 @@ type userResponse struct {
 
 type pairingTokenResponse struct {
 	PairingToken string `json:"pairing_token"`
+	WorkerURL    string `json:"worker_url"`
 }
 
 type setupStatusResponse struct {
@@ -303,6 +309,10 @@ func (s *Server) Me(w http.ResponseWriter, r *http.Request) {
 // token, so it's always viewable on the dashboard rather than only shown
 // once at creation (this credential's stakes differ from a login password or
 // session token, and losing it shouldn't force an immediate regenerate).
+// Also returns this instance's Worker URL (see pairingTokenResponse) --
+// bundled here rather than a separate endpoint since pairing a device is
+// the one place both values are actually needed together, and this is
+// already the screen that has to be authenticated to see the token anyway.
 func (s *Server) GetPairingToken(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -322,7 +332,7 @@ func (s *Server) GetPairingToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, pairingTokenResponse{PairingToken: raw})
+	writeJSON(w, http.StatusOK, pairingTokenResponse{PairingToken: raw, WorkerURL: s.WorkerURL})
 }
 
 // POST /api/pairing-token/regenerate: issues a new pairing token, replacing
@@ -361,7 +371,7 @@ func (s *Server) RegeneratePairingToken(w http.ResponseWriter, r *http.Request) 
 		log.Printf("warning: failed to push regenerated pairing-token mirror for user %d: %v", user.ID, err)
 	}
 
-	writeJSON(w, http.StatusOK, pairingTokenResponse{PairingToken: raw})
+	writeJSON(w, http.StatusOK, pairingTokenResponse{PairingToken: raw, WorkerURL: s.WorkerURL})
 }
 
 // DELETE /api/pairing-token: revokes without reissuing, blocking further

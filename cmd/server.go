@@ -126,7 +126,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if cfg.AIBaseURL != "" {
 		aiModel = cfg.AIModel
 	}
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

@@ -63,6 +63,7 @@ jobs:
       - run: tofu fmt -check -recursive
       - run: pnpm ci
       - run: pnpm run check
+      - run: pnpm run check:www
       - run: pnpm run types
       - run: pnpm run lint
       - run: go mod download
@@ -154,6 +155,7 @@ jobs:
         with:
           tool: zola@0.22.1
       - run: pnpm ci
+      - run: pnpm run --filter=@recueil/www assets
       - run: zola build --minify
         working-directory: www
       - run: pnpm exec wrangler pages deploy www/public --project-name recueil
