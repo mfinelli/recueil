@@ -1,6 +1,6 @@
 base_url = "https://recueil.app"
 title = "Recueil"
-description = "Recueil is a self-hosted personal web archive. Coming soon."
+description = "Recueil is a self-hosted personal web archive."
 
 compile_sass = true
 build_search_index = false

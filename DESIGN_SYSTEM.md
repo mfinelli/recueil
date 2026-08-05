@@ -32,18 +32,21 @@ beyond plain system sans. Those are the two things this pass added.
 **Self-hosted-first stance:** the dashboard is the authenticated half of a
 self-hosted tool. Fonts are vendored via `@fontsource` rather than pulled from a
 CDN (Google Fonts, etc.) — no external request happens on every authenticated
-page load. The marketing site is a public "coming soon" page and is exempt from
-this; it currently uses the Google Fonts CDN and may move to `@fontsource`
-later, but that's tracked separately.
+page load. The marketing site originally used the Google Fonts CDN as a public
+page was considered exempt from this stance, but once the docs site
+(`docs.scss`) set up `www/build-assets.mjs` to vendor the same weight files into
+`static/fonts/`, there was no remaining reason for the landing page to differ —
+it now links the same self-hosted `@fontsource` files as `docs.scss`, just via
+`style.scss` / `index.html` instead.
 
 ## Relationship to the extension and marketing site
 
-|                                      | Extension popup                    | Marketing site          | Dashboard                                                                               |
-| ------------------------------------ | ---------------------------------- | ----------------------- | --------------------------------------------------------------------------------------- |
-| Paper/ink/rule/accent/focus tokens   | ✅ originated here                 | mostly compatible       | ✅ same values                                                                          |
-| Brass label accent                   | ❌                                 | ✅ originated here      | ✅ adopted                                                                              |
-| Fraunces/IBM Plex Mono               | ad hoc (`ui-serif`/`ui-monospace`) | ✅ via Google Fonts CDN | ✅ via self-hosted `@fontsource`                                                        |
-| Stamp motif (rotated bordered badge) | ✅                                 | ✅ (seal)               | ❌ **not reused** — considered for Queue/job status but dropped; extension-only for now |
+|                                      | Extension popup                    | Marketing site                   | Dashboard                                                                               |
+| ------------------------------------ | ---------------------------------- | -------------------------------- | --------------------------------------------------------------------------------------- |
+| Paper/ink/rule/accent/focus tokens   | ✅ originated here                 | mostly compatible                | ✅ same values                                                                          |
+| Brass label accent                   | ❌                                 | ✅ originated here               | ✅ adopted                                                                              |
+| Fraunces/IBM Plex Mono               | ad hoc (`ui-serif`/`ui-monospace`) | ✅ via self-hosted `@fontsource` | ✅ via self-hosted `@fontsource`                                                        |
+| Stamp motif (rotated bordered badge) | ✅                                 | ✅ (seal)                        | ❌ **not reused** — considered for Queue/job status but dropped; extension-only for now |
 
 ## Design tokens
 

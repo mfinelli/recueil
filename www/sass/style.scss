@@ -1,3 +1,24 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+// Landing-page stylesheet -- the dark ledger "stage". Dark-only and
+// independent of docs.scss's light/dark token pair.
+
 $ledger-bg: #182a20;
 $ledger-bg-deep: #101c16;
 $paper: #f1e9d8;
@@ -7,6 +28,7 @@ $ink-soft: #4a4136;
 $brass: #b68a2e;
 $stamp-red: #8c3b34;
 $sage: #3e5847;
+$rod: rgba($paper, 0.32);
 
 $font-display: "Fraunces", Georgia, "Times New Roman", serif;
 $font-mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
@@ -21,7 +43,6 @@ $font-body:
 }
 html,
 body {
-  height: 100%;
   margin: 0;
 }
 
@@ -29,51 +50,138 @@ body {
   font-family: $font-body;
   color: $ink;
   -webkit-font-smoothing: antialiased;
+  background: $ledger-bg-deep;
 }
 
 a {
   color: inherit;
 }
 
-.stage {
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1.25rem;
-  padding: 6vh 5vw;
+:focus-visible {
+  outline: 2px solid $stamp-red;
+  outline-offset: 3px;
+}
 
+.mono {
+  font-family: $font-mono;
+}
+
+.stage {
   background:
-    radial-gradient(ellipse at 50% 15%, rgba($sage, 0.35), transparent 60%),
+    radial-gradient(ellipse at 50% 8%, rgba($sage, 0.35), transparent 55%),
     radial-gradient(ellipse at 50% 100%, $ledger-bg-deep, $ledger-bg 70%);
 }
 
-.stage__footnote {
-  color: rgba($paper, 0.45);
-  font-size: 0.7rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.1rem clamp(1.25rem, 4vw, 3rem);
+  backdrop-filter: blur(6px);
+  background: rgba($ledger-bg-deep, 0.55);
+  border-bottom: 1px solid rgba($paper, 0.1);
+}
+
+.brand {
+  font-family: $font-display;
+  font-style: italic;
+  font-weight: 600;
+  font-size: 1.15rem;
+  color: $paper;
+  text-decoration: none;
+  letter-spacing: 0.01em;
+}
+
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.topbar__link {
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-decoration: none;
+  color: rgba($paper, 0.85);
+
+  &:hover {
+    color: $brass;
+  }
+}
+
+.rail-wrap {
+  position: relative;
+}
+
+.rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    $rod 0,
+    $rod 2px,
+    transparent 2px,
+    transparent 9px
+  );
+  z-index: 0;
+
+  @media (max-width: 640px) {
+    display: none;
+  }
+}
+
+.drawer {
+  position: relative;
+  z-index: 1;
+  max-width: 620px;
+  margin: 0 auto;
+  padding: clamp(3rem, 8vh, 6rem) 1.25rem 5rem;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(3rem, 7vh, 4.5rem);
 }
 
 .card {
   position: relative;
-  width: min(440px, 100%);
   background: $paper;
   color: $ink;
-  padding: 2.5rem 2.25rem 2rem;
+  padding: 2.5rem 2.25rem 2.25rem;
   border-radius: 3px;
-  transform: rotate(-1.1deg);
   box-shadow:
     0 1px 0 rgba($ink, 0.06),
-    0 24px 48px rgba(0, 0, 0, 0.4),
-    0 6px 16px rgba(0, 0, 0, 0.28);
+    0 20px 40px rgba(0, 0, 0, 0.35),
+    0 4px 12px rgba(0, 0, 0, 0.22);
+}
 
+.card--hero {
+  transform: rotate(-1.1deg);
   animation: card-in 700ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 
   @media (prefers-reduced-motion: reduce) {
     animation: none;
   }
+}
+.card--a {
+  transform: rotate(0.6deg);
+}
+.card--b {
+  transform: rotate(-0.5deg);
+}
+.card--c {
+  transform: rotate(0.8deg);
+}
+.card--d {
+  transform: rotate(-0.7deg);
+}
+.card--e {
+  transform: rotate(-0.4deg);
 }
 
 .card__hole {
@@ -100,10 +208,31 @@ a {
   color: $ink-soft;
 }
 
-.card__row--bottom {
-  margin-top: 2rem;
-  padding-top: 1rem;
-  border-top: 1px solid rgba($ink, 0.14);
+.card h2 {
+  margin: 0.6rem 0 0.85rem;
+  font-family: $font-display;
+  font-style: italic;
+  font-weight: 600;
+  font-size: clamp(1.5rem, 4vw, 1.85rem);
+  line-height: 1.15;
+}
+
+.card p {
+  margin: 0 0 0.9rem;
+  font-size: 0.98rem;
+  line-height: 1.65;
+  color: $ink-soft;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.eyebrow {
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: $brass;
 }
 
 .stamp {
@@ -138,7 +267,7 @@ a {
 }
 
 .title {
-  margin: 3.75rem 0 0.25rem;
+  margin: 3.75rem 0 0.35rem;
   font-family: $font-display;
   font-style: italic;
   font-weight: 600;
@@ -147,12 +276,20 @@ a {
 }
 
 .tagline {
-  margin: 0;
-  max-width: 22ch;
+  margin: 0 0 1.5rem;
+  max-width: 26ch;
   font-family: $font-mono;
   font-size: 0.78rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+  color: $ink-soft;
+}
+
+.lede {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 1.02rem;
+  line-height: 1.6;
   color: $ink-soft;
 }
 
@@ -168,6 +305,80 @@ a {
   );
 }
 
+.cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: $font-mono;
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+  padding: 0.7rem 1.2rem;
+  border-radius: 2px;
+  text-decoration: none;
+  border: 1.5px solid $ink;
+  background: $ink;
+  color: $paper;
+
+  &:hover {
+    background: $stamp-red;
+    border-color: $stamp-red;
+  }
+}
+
+.link {
+  font-size: 0.82rem;
+  letter-spacing: 0.03em;
+  font-family: $font-mono;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba($ink, 0.4);
+
+  &:hover {
+    text-decoration-color: $stamp-red;
+  }
+}
+
+.steps {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 2.1rem 1fr;
+  gap: 0.85rem;
+}
+
+.step__n {
+  font-size: 0.85rem;
+  color: $brass;
+  padding-top: 0.15rem;
+}
+
+.step__body {
+  h3 {
+    margin: 0 0 0.2rem;
+    font-size: 0.98rem;
+    font-weight: 600;
+  }
+
+  p {
+    margin: 0;
+    font-size: 0.92rem;
+  }
+}
+
 .entries {
   margin: 0;
   display: flex;
@@ -175,11 +386,19 @@ a {
   gap: 1.1rem;
 }
 
+.entries--wide {
+  margin-top: 1.5rem;
+}
+
 .entry {
   display: grid;
   grid-template-columns: 5.5rem 1fr;
   gap: 0.75rem;
   align-items: baseline;
+}
+
+.entries--wide .entry {
+  grid-template-columns: 7.5rem 1fr;
 }
 
 .entry dt {
@@ -196,19 +415,23 @@ a {
   color: $ink;
 }
 
-.mono {
-  font-family: $font-mono;
-}
+.footer {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 0 1.25rem 4rem;
 
-.link {
-  font-size: 0.78rem;
-  letter-spacing: 0.03em;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: rgba($ink, 0.4);
+  p {
+    margin: 0.4rem 0;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba($paper, 0.4);
+  }
 
-  &:hover {
-    text-decoration-color: $stamp-red;
+  a {
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
 }
 

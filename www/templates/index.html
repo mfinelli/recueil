@@ -1,65 +1,246 @@
+<!--
+recueil: self-hosted webpage bookmarker and archiver
+Copyright © 2026 Mario Finelli
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+The marketing landing page. Structured as a card catalog drawer: each
+section is an index card threaded on the same rod (the `.rail`, a nod to
+`.card__hole`/`.drawer__hole` elsewhere), rather than a generic feature
+grid. Deliberately dark-only -- see DESIGN_SYSTEM.md's note on why this
+page doesn't share tokens with docs.scss; a light variant was mocked up
+and dropped, the dark ledger "stage" stays as the singular composition.
+-->
+{% set docs_index = get_section(path="docs/_index.md") %}
+{% set deploying_page = get_page(path="docs/operators/deploying-recueil.md") %}
+{% set mcp_page = get_page(path="docs/readers/mcp-server.md") %}
+
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Recueil — coming soon</title>
+    <title>Recueil — self-hosted webpage bookmarker and archiver</title>
     <meta
       name="description"
       content="Recueil is a self-hosted personal web archive. Capture pages exactly as your browser sees them."
     />
 
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;1,500;1,600&family=IBM+Plex+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
-
+    <link rel="stylesheet" href="/fonts/fraunces/500.css" />
+    <link rel="stylesheet" href="/fonts/fraunces/600.css" />
+    <link rel="stylesheet" href="/fonts/fraunces/500-italic.css" />
+    <link rel="stylesheet" href="/fonts/fraunces/600-italic.css" />
+    <link rel="stylesheet" href="/fonts/ibm-plex-mono/400.css" />
+    <link rel="stylesheet" href="/fonts/ibm-plex-mono/500.css" />
     <link rel="stylesheet" href="{{ get_url(path='style.css') }}" />
   </head>
   <body>
-    <main class="stage">
-      <div class="card">
-        <div class="card__hole" aria-hidden="true"></div>
-
-        <div class="card__row card__row--top">
-          <span class="mono">REC&ndash;0001</span>
-          <span class="mono">ARCHIVE PENDING</span>
-        </div>
-
-        <div class="stamp" aria-hidden="true">
-          <span>coming<br />soon</span>
-        </div>
-
-        <h1 class="title">Recueil</h1>
-        <p class="tagline">self-hosted webpage bookmarker and archiver</p>
-
-        <div class="leader" aria-hidden="true"></div>
-
-        <dl class="entries">
-          <div class="entry">
-            <dt class="mono">capture</dt>
-            <dd>
-              Runs in your actual browser tab. No headless Chrome fighting
-              CAPTCHAs, no paywall workarounds needed.
-            </dd>
-          </div>
-          <div class="entry">
-            <dt class="mono">storage</dt>
-            <dd>
-              Runs on hardware you control, backed by a single Postgres
-              instance.
-            </dd>
-          </div>
-        </dl>
-
-        <div class="card__row card__row--bottom">
-          <a class="mono link" href="{{ config.extra.github_url }}"
-            >Follow the build on GitHub</a
+    <div class="stage">
+      <div class="topbar">
+        <a class="brand" href="{{ config.base_url }}">recueil</a>
+        <div class="topbar__right">
+          <a class="topbar__link mono" href="{{ docs_index.permalink }}"
+            >docs</a
+          >
+          <a class="topbar__link mono" href="{{ config.extra.github_url }}"
+            >github</a
           >
         </div>
       </div>
 
-      <p class="stage__footnote mono">recueil &middot; not yet accessioned</p>
-    </main>
+      <div class="rail-wrap">
+        <div class="rail" aria-hidden="true"></div>
+
+        <main class="drawer">
+          <!-- hero -->
+          <section class="card card--hero">
+            <div class="card__hole" aria-hidden="true"></div>
+
+            <div class="card__row card__row--top">
+              <span class="mono">REC&ndash;0001</span>
+              <span class="mono">ARCHIVED</span>
+            </div>
+
+            <div class="stamp" aria-hidden="true">
+              <span>self<br />hosted</span>
+            </div>
+
+            <h1 class="title">Recueil</h1>
+            <p class="tagline">self-hosted webpage bookmarker and archiver</p>
+            <p class="lede">
+              Recueil keeps a full copy of every page you save &mdash; the
+              original, a clean readable version, and a search index &mdash; on
+              hardware you control. Not a pile of links that quietly rot.
+            </p>
+
+            <div class="leader" aria-hidden="true"></div>
+
+            <div class="cta-row">
+              <a class="btn" href="{{ docs_index.permalink }}"
+                >Read the docs &rarr;</a
+              >
+              <a class="link" href="{{ config.extra.github_url }}"
+                >View on GitHub</a
+              >
+            </div>
+          </section>
+
+          <!-- why -->
+          <section class="card card--a">
+            <div class="card__hole" aria-hidden="true"></div>
+            <span class="eyebrow mono">Why</span>
+            <h2>Bookmarks rot. Archives shouldn&rsquo;t.</h2>
+            <p>
+              Pages get edited, paywalled, or taken down entirely. A saved link
+              is a promise your browser doesn&rsquo;t keep &mdash; the page you
+              bookmarked and the page you find later are rarely the same one.
+            </p>
+            <p>
+              I ended up running a stitched-together stack of separate tools to
+              cover that gap, each good at one piece and fighting me on the
+              rest. Recueil is the tool I actually wanted: one purpose-built
+              system for keeping what you save.
+            </p>
+          </section>
+
+          <!-- how it works -->
+          <section class="card card--b">
+            <div class="card__hole" aria-hidden="true"></div>
+            <span class="eyebrow mono">How it works</span>
+            <h2>Capture happens in your own browser tab</h2>
+            <p>
+              Not a headless crawler fetching pages cold. Whatever you can
+              already see &mdash; logged in, past the paywall, scrolled open
+              &mdash; is what gets saved.
+            </p>
+            <ol class="steps">
+              <li class="step">
+                <span class="step__n mono">1</span>
+                <span class="step__body">
+                  <h3>Send a page</h3>
+                  <p>
+                    From the extension, your phone&rsquo;s share sheet, a
+                    Shortcut, or the CLI.
+                  </p>
+                </span>
+              </li>
+              <li class="step">
+                <span class="step__n mono">2</span>
+                <span class="step__body">
+                  <h3>Open it, once</h3>
+                  <p>
+                    The extension loads it in a real, already-authenticated tab.
+                  </p>
+                </span>
+              </li>
+              <li class="step">
+                <span class="step__n mono">3</span>
+                <span class="step__body">
+                  <h3>Capture</h3>
+                  <p>
+                    A complete, self-contained snapshot &mdash; styles, images,
+                    and all.
+                  </p>
+                </span>
+              </li>
+              <li class="step">
+                <span class="step__n mono">4</span>
+                <span class="step__body">
+                  <h3>Archived</h3>
+                  <p>Readable, searchable, and stored on your own hardware.</p>
+                </span>
+              </li>
+            </ol>
+          </section>
+
+          <!-- what's inside -->
+          <section class="card card--c">
+            <div class="card__hole" aria-hidden="true"></div>
+            <span class="eyebrow mono">What&rsquo;s inside</span>
+            <h2>More than a copy of the page</h2>
+            <dl class="entries entries--wide">
+              <div class="entry">
+                <dt class="mono">search</dt>
+                <dd>
+                  Every capture is searchable by its full extracted text, not
+                  just its title.
+                </dd>
+              </div>
+              <div class="entry">
+                <dt class="mono">organize</dt>
+                <dd>Tags and nested collections, organized your own way.</dd>
+              </div>
+              <div class="entry">
+                <dt class="mono">notes &amp; links</dt>
+                <dd>Keep notes on a page and link it to related saves.</dd>
+              </div>
+              <div class="entry">
+                <dt class="mono">history</dt>
+                <dd>
+                  Re-save a page later and keep every version, not just the
+                  latest.
+                </dd>
+              </div>
+            </dl>
+          </section>
+
+          <!-- mcp -->
+          <section class="card card--d">
+            <div class="card__hole" aria-hidden="true"></div>
+            <span class="eyebrow mono">Ask your archive</span>
+            <h2>Point an AI client at your own library</h2>
+            <p>
+              Recueil runs a read-only MCP server. Connect a local MCP client
+              and ask it what you saved about a topic last month, instead of
+              digging through tags by hand.
+            </p>
+            <a class="link" href="{{ mcp_page.permalink }}"
+              >MCP Server docs &rarr;</a
+            >
+          </section>
+
+          <!-- self hosted -->
+          <section class="card card--e">
+            <div class="card__hole" aria-hidden="true"></div>
+            <span class="eyebrow mono">On your terms</span>
+            <h2>Runs on hardware you control</h2>
+            <p>
+              Go and Postgres, deployed with Docker Compose. The whole capture
+              path is outbound-only &mdash; no inbound ports required to keep
+              the queue moving.
+            </p>
+            <div class="leader" aria-hidden="true"></div>
+            <div class="cta-row">
+              <a class="btn" href="{{ deploying_page.permalink }}"
+                >Deploying recueil &rarr;</a
+              >
+              <a class="link" href="{{ config.extra.github_url }}"
+                >Read the source</a
+              >
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <footer class="footer">
+        <p class="mono">recueil &middot; AGPL-3.0-or-later</p>
+        <p class="mono">
+          <a href="{{ config.extra.github_url }}"
+            >github.com/mfinelli/recueil</a
+          >
+        </p>
+      </footer>
+    </div>
   </body>
 </html>
