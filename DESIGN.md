@@ -142,103 +142,54 @@ specific networking solution.
 
 1. User adds a URL to the queue, either:
    - Directly in the desktop extension while browsing, or
-   - Remotely via the share-sheet PWA (Android) or iOS Shortcut (phone) or CLI —
-     these only enqueue, they never capture.
+   - Remotely via the share-sheet PWA (Android), iOS Shortcut, or CLI — these
+     only enqueue, they never capture.
 2. Enqueueing hits the Worker, which writes a row to `queue_items` in D1.
-3. The desktop extension polls D1 (via the Worker) for pending queue items, on
-   an infrequent schedule (see §7), and can notify the user something needs
-   archiving. The extension also exposes a manual "check now" action in its
-   popup for on-demand polling.
+3. The desktop extension polls D1 (via the Worker) for pending queue items on an
+   infrequent schedule (§8) and can notify the user something needs archiving,
+   plus a manual "check now" action in its popup.
 4. User selects a queued item (or a page they're currently on, for direct/
    unqueued capture) and triggers capture.
-5. Extension captures full inlined single-page HTML, via SingleFile's own
-   capture code **vendored directly into the extension as a library** (see §3a)
-   — not by messaging a separately installed SingleFile extension. The extension
-   does **not** run Readability extraction itself — see §3a and §6b for why that
-   moved to an async backend job.
-6. Extension requests a presigned R2 upload URL from the Worker, uploads the
-   HTML directly to R2 (bypassing Worker body-size limits; presigned R2 PUT
-   supports objects far larger than any archived page will ever be).
+5. Extension captures full inlined single-page HTML via SingleFile's capture
+   code (§3a).
+6. Extension requests a presigned R2 upload URL from the Worker and uploads the
+   HTML directly to R2 (bypassing Worker body-size limits).
 7. Extension notifies the Worker that the upload is complete → Worker writes a
-   `pending_captures` row to D1, using a **client-generated UUID** as the row's
-   id (and marks the `queue_items` row, if any, as `captured`).
+   `pending_captures` row to D1, using a client-generated UUID as the row's id
+   (and marks the `queue_items` row, if any, as `captured`).
 8. Backend, on its own polling schedule, discovers the new `pending_captures`
    row, pulls the HTML blob from R2, zstd-compresses it, stores it on local
-   disk, computes the content hash (see §3b), deletes the R2 object, writes rows
-   to Postgres (idempotently — see §3c), and finally pushes a lightweight mirror
-   row back to D1 for the bookmark-list feature (see §8).
-9. Backend enqueues a **screenshot job** (async, decoupled — see §6a) and a
-   **Readability extraction job** (async, decoupled — see §6b) against the same
-   locally-stored HTML.
-10. (Optional, async) Once the Readability job has populated `reader_text` for
-    the capture, backend enqueues an AI job to summarize/tag it (see §7) — AI
-    enrichment has a real dependency on readability extraction having already
-    completed, unlike the screenshot job, which has no such dependency.
-11. Backup of the resulting Postgres data and local archive directory is the
-    operator's own responsibility (see §14) — not part of this pipeline.
+   disk, computes the content hash (§3b), deletes the R2 object, writes rows to
+   Postgres (idempotently — §3c), and pushes a lightweight mirror row back to D1
+   for the bookmark-list feature (§8).
+9. Backend enqueues a screenshot job (§6a) and a Readability extraction job
+   (§6b) against the same locally-stored HTML.
+10. Once the Readability job has populated `reader_text`, backend enqueues an AI
+    job to summarize/tag it (§7) — AI enrichment has a real dependency on
+    readability extraction, unlike the screenshot job.
 
 ### 3a. SingleFile integration
 
-SingleFile is not invoked as a separate, independently installed browser
-extension via cross-extension messaging — that path isn't well-supported
-(SingleFile is designed to be user-triggered via its own toolbar button, and
-there's no first-class API for a third-party extension to invoke it and get the
-result back programmatically).
-
-Instead, SingleFile publishes its own capture logic as embeddable script files
-intended for exactly this kind of reuse. The Recueil extension vendors these
-files directly (e.g. `single-file-background.js`, plus a WebExtension polyfill)
-and calls `extension.getPageData(...)` from its own content script to get back
-`{ content, title, filename }`. This is "use SingleFile as a library within our
-own extension," not "talk to a second installed extension" — it avoids any
-dependency on a stable cross-browser extension ID, `externally_connectable`
-support, or requiring the user to separately install SingleFile at all.
-
-The extension **does not vendor Readability.js**. An earlier revision of this
-design had the extension run Readability against the live, rendered DOM
-immediately at capture time, on the reasoning that this happens "before any
-re-archival loses render-time state." That reasoning no longer drives the
-architecture: §3d's manual-upload pathway forced the question of how to extract
-reader text from an already-captured HTML file with no live DOM available at
-all, and the answer — run Readability against the file offline, in a real
-(headless) browser — turned out to work just as well for every other capture
-path too, not just manual upload. Extraction was therefore deferred uniformly to
-a single async backend job (§6b), and the extension was simplified to produce
-and upload HTML only. The one honest tradeoff, stated plainly rather than
-glossed over: this bets on SingleFile's serialization being a faithful enough
-snapshot of the live page that nothing Readability actually needs gets lost
-between "live DOM" and "SingleFile's static output" — a reasonable bet given
-SingleFile's whole purpose is producing a faithful static snapshot, but a real
-relaxation of the original guarantee, not a free lunch.
-
-The extension's own `package.json`/bundler setup exists to vendor SingleFile's
-capture code and a WebExtension polyfill — no longer Readability.js, which was
-the original reason this setup existed at all. Whether the extension still needs
-a real bundler for just those two things, or whether that setup can be
-simplified now that Readability.js is out of the picture entirely, is worth
-revisiting once the extension is actually built.
+SingleFile isn't invoked as a separately installed extension via cross-extension
+messaging — there's no API for a third-party extension to do that and get a
+result back programmatically. Instead, the extension depends directly on
+SingleFile's own capture library (`single-file-core`) and calls it from its own
+capture bundle (§3h covers the injection mechanism) — avoiding any dependency on
+a stable extension id, or requiring the user to install SingleFile separately.
 
 ### 3b. Content hashing
 
-Each capture stores **two** hashes:
+Each capture stores two hashes:
 
-- `content_hash` — over the full inlined HTML. Useful for exact byte-for-byte
-  dedup detection. Computed synchronously at ingestion (§3), since the HTML is
-  the one artifact available immediately.
-- `reader_text_hash` — over the Readability-extracted plain text. This is the
-  hash that drives the dashboard's "unchanged since last capture" flag. Unlike
-  `content_hash`, this is populated asynchronously, once the Readability
-  extraction job (§6b) completes — `reader_text`/`reader_text_hash` are both
-  nullable on `captures` and simply absent (not zero, not empty-string) until
-  then. The "unchanged since last capture" feature has nothing to compare
-  against for a capture whose extraction hasn't run yet, or has failed.
+- `content_hash` — over the full inlined HTML, for exact dedup detection.
+  Computed synchronously at ingestion (§3).
+- `reader_text_hash` — over the Readability-extracted text, driving the
+  dashboard's "unchanged since last capture" flag. Populated asynchronously once
+  the Readability job (§6b) completes; nullable and absent until then.
 
-The full-HTML hash is a poor signal for "did the visible content change" — most
-real pages embed per-load-unique content (CSRF tokens, cache-busted asset URLs,
-session IDs, timestamps) even when nothing meaningful changed, so it will almost
-never repeat in practice. The reader-text hash is a much more reliable (though
-still imperfect — Readability output can shift for reasons unrelated to the main
-content) signal for that specific UI feature.
+The full-HTML hash rarely repeats in practice — most pages embed per-load-unique
+content (CSRF tokens, timestamps) even when nothing meaningful changed — so the
+reader-text hash is the more useful signal for that feature.
 
 ### 3c. Capture idempotency (crash recovery)
 
@@ -298,369 +249,132 @@ timestamps.
 
 ### 3d. Manual upload (bypassing the queue)
 
-For the case where a page was captured somewhere Recueil's own extension wasn't
-installed — received as an email attachment, saved from a device without the
-extension, handed over by someone else — the dashboard supports directly
-uploading an already-captured, fully inlined SingleFile-style HTML file plus the
-URL it came from. This is a genuinely different pathway from §3's queue-based
-flow, not a variant of it:
+For a page captured somewhere the extension wasn't installed — an email
+attachment, a device without the extension, a file handed over by someone else —
+the dashboard supports directly uploading an already-captured, fully inlined
+SingleFile-style HTML file plus its URL. This bypasses R2, D1, and the Worker
+entirely: a single authenticated `POST` straight into the backend, gated the
+same way as any other dashboard endpoint.
 
-- **Bypasses R2, D1, and the Worker entirely.** The dashboard already talks
-  directly to the backend (§2, §11 — that's the one thing dashboard reachability
-  is for), so this is a single authenticated `POST` straight into the backend,
-  gated by the same `RequireSession` middleware as any other dashboard endpoint,
-  scoped to the authenticated user the same way any other capture is
-  (`pages.user_id`).
-- **Reader text is no longer extracted client-side for this pathway either.** An
-  earlier revision of this design had the dashboard's own browser run
-  Readability.js against the uploaded HTML at upload time, specifically to keep
-  "extraction happens in a real browser, never server-side" consistent with how
-  the extension worked. That reasoning inverted once this very pathway exposed
-  the actual question underneath it: manual upload has no live DOM at all, only
-  an already-captured static file — and Readability runs against that file just
-  as validly whether it's a headless Chrome tab or the dashboard's own tab. Once
-  that was true for manual uploads, it was true for every capture path, so
-  extraction was unified into a single async backend job (§6b) that all captures
-  share, extension-sourced or manually uploaded alike. This pathway needs no
-  Readability-specific handling of its own anymore — a manually uploaded capture
-  simply gets a `readability_jobs` row created the same as any other new capture
-  (see §6b). The page title is read from the uploaded HTML's `<title>` tag at
-  ingestion time, uniformly for every capture regardless of source (not a
-  Readability output) — this pathway needs no special handling for title either;
-  see §10's `captures` schema for why this ended up being the one real source of
-  title for extension-sourced captures too, not just this pathway.
-- **A backend-generated UUID as the starting `source_capture_id`, transient and
-  eventually cleared to `NULL`** — this pathway's own account of §3c has gone
-  through a couple of revisions: first `NULL` for manual uploads specifically,
-  then briefly `NOT NULL` for every capture, before landing on what §3c now
-  describes in full: nullable, real while a capture is actually in flight,
-  cleared once ingestion is fully done. Manual upload doesn't need its own
-  insert logic to fit this — it uses the exact same content_hash-based conflict
-  handling and try-first/fallback-on-failure pattern as the extension/queue flow
-  (§3c), just starting with a backend-generated candidate ID instead of a
-  client-supplied one, since there's no client in the loop to supply one.
-- **Everything downstream of ingestion is unchanged**: content hashing (§3b),
-  URL normalization (§9), grouping into `pages` by `normalized_url` — a manual
+- Reader-text extraction, title parsing, content hashing, URL normalization, and
+  grouping into `pages` are all identical to any other capture path — a manual
   upload of an already-captured URL is just another new version under the same
-  page, identical in kind to any other re-archive above. The async screenshot
-  job (§6) and the async Readability extraction job (§6b) both apply unmodified,
-  since both already explicitly operate on "already-captured, fully inlined
-  SingleFile HTML on local disk" — which is exactly the shape of a manually
-  uploaded file once ingestion has stored it. AI enrichment (§7) applies
-  unmodified too, once (and only once) the Readability job has populated
-  `reader_text` for this capture, same as any other capture.
-- **One real, concrete conflict with existing infrastructure, worth flagging
-  rather than discovering later**: SingleFile archives with inlined images/fonts
-  routinely run tens of megabytes, while the global
-  `middleware.RequestSize(1 << 20)` (§13a) caps every request body at 1MB. This
-  upload endpoint needs its own, much larger `RequestSize` scoped to just that
-  route — the same "scope it, don't rely on the global default" pattern already
-  used for `AllowContentType` on `/api` (§13a).
-- **Schema addition**: `captures.source TEXT` (`'extension'` |
-  `'manual_upload'`), mirroring the existing `page_tags.source` (`'manual'` |
-  `'ai'`) pattern — lets the dashboard show capture origin directly rather than
-  inferring it from whether `source_capture_id` happens to be `NULL`. See §10.
-
----
+  page.
+- Uses a backend-generated UUID as the starting `source_capture_id` (§3c already
+  covers the idempotency scheme in full; manual upload just supplies the id
+  itself, since there's no client to generate one).
+- Needs its own, larger `RequestSize` limit scoped to this one route — the
+  global 1MB cap (§13a) would reject a real SingleFile archive immediately,
+  since inlined images/fonts routinely push these into the tens of megabytes.
+- `captures.source` (`'extension'` | `'manual_upload'`, §10) records which path
+  a capture came through, for the dashboard to show directly.
 
 ### 3e. The agent process (background job triggering)
 
-Both backend ingestion (§3c's `Ingester.RunOnce`) and the D1 bookmark-list
-mirror sync (§8's `Syncer.SyncOnce`) were built as fully self-contained, fully
-tested callable units with nothing actually invoking them — deliberate, not an
-oversight, since the trigger mechanism was a genuinely separate decision worth
-settling on its own.
+`recueil agent` is a separate subcommand/process from `recueil server`, sharing
+the same binary and deployed as its own container — so it can coordinate its own
+shutdown independently of in-flight HTTP requests, and a runaway job (a hung
+screenshot render, say) stays isolated from the web process rather than
+degrading request latency.
 
-**`recueil agent`: a dedicated subcommand/process, not a goroutine inside
-`recueil server`.** Both share the same binary/image, deployed as separate
-services in the same compose file with different commands. Two other shapes were
-seriously considered and rejected:
+Job coordination is plain Postgres, not a message broker: the only real ordering
+need — AI enrichment must not run before readability extraction succeeds — is
+expressed simply as "when does the job row get created" (an `ai_jobs` row
+doesn't exist until the readability job creates it, in the same transaction),
+not a broker-level dependency feature.
 
-- **A goroutine inside `server`** — the obvious lightest-weight option, and
-  rejected specifically over shutdown coordination: cleanly stopping two
-  different kinds of concurrent work (serving in-flight HTTP requests vs.
-  finishing or abandoning a background job) inside one process, on one
-  `SIGTERM`, is real complexity a separate process sidesteps entirely — each
-  process only ever has to coordinate shutdown for its own single kind of work.
-- **Cron** — ruled out early. The primary deploy target (Docker Compose) has no
-  cron mechanism of its own; the host scheduling `docker exec`/ `docker run`
-  invocations against a running compose stack isn't ergonomic; and a "poor man's
-  cron" (a tick embedded in some other process) just reintroduces the same
-  shutdown-coordination problem the goroutine option already lost on, while
-  adding scheduling complexity on top.
+`agent` doesn't run migrations itself — only `server` does, since D1 migrations
+have no equivalent of Postgres's advisory lock to safely coordinate two
+processes starting at once. `agent`'s earliest cycles simply retry until
+`server` catches up.
 
-A dedicated process also gets independent failure and resource isolation for
-free, as a consequence of the deployment shape rather than anything special
-built for it: a runaway or hung job (a headless-Chrome screenshot job spiking
-memory, say — not built yet, but the same reasoning applies in advance) is
-contained to the agent container and can't degrade HTTP request latency, and
-Docker's own per-service restart policy handles recovering it without touching
-the web process at all.
-
-**Coordination layer: Postgres, not a message broker.** RabbitMQ and a
-Redis-backed queue (`asynq`, the Go equivalent of Sidekiq — Redis itself isn't
-Ruby-specific even though Sidekiq is) were both seriously considered, on the
-reasoning that there's real job-ordering to coordinate: AI enrichment (§7) can
-only run after readability extraction (§6b) succeeds. Neither was adopted,
-because that ordering doesn't actually need a message-broker-level
-dependency/DAG feature at all — it's expressed simply as _when a job row gets
-created_: an `ai_jobs` row doesn't exist until whatever marks the corresponding
-`readability_jobs` row `done` creates it, in the same transaction. The queue
-itself never needs to understand the dependency; it only ever needs to answer
-"give me pending rows," which Postgres already does. What a real message broker
-actually buys over this — routing topologies, fan-out, many concurrent
-independent consumers, back-pressure across separate services — isn't something
-a single agent process at personal-archive scale ever exercises, and either
-option would be a second stateful service (deploy it, back it up, keep it
-patched) purely to gain capability this project doesn't need, when Postgres is
-already a hard dependency regardless. The claim pattern this needs
-(`UPDATE ... SET status = 'processing' WHERE status = 'pending' RETURNING *`) is
-exactly what `queue_items.claim` (§2) already does in the Worker — not a new
-pattern, the same one reused a layer down.
-
-`screenshot_jobs`/`readability_jobs` (§6, §6b) already have the shape this
-implies (`status`, `attempts`, `next_attempt_at`, `error`, `completed_at`) — not
-incidentally job-queue-shaped, built that way on purpose.
-
-**Postgres `LISTEN`/`NOTIFY`** (near-instant job pickup, layered on top of the
-poll loop as a pure latency optimization — the poll loop stays the actual
-correctness guarantee regardless, since `NOTIFY` isn't durable and a missed
-notification with no fallback poll would just silently never process that job)
-was discussed and intentionally deferred, not rejected. Plain polling is
-entirely sufficient at this project's scale for now; worth reconsidering only if
-poll-interval latency ever actually becomes a real complaint.
-
-**Startup and migrations**: `agent` does **not** run migrations itself, unlike
-`server`. Postgres migrations are safe to run from multiple processes
-concurrently (goose's own session-level advisory lock, via `internal/pgmigrate`,
-serializes that) — but D1 migrations have no equivalent locking, and
-`server`/`agent` starting together in Compose gives no ordering guarantee
-between them. Rather than have `agent` run Postgres migrations but not D1 (an
-asymmetry that would need its own explanation every time someone reads the
-code), it runs neither: `server` owns migrations exclusively, and `agent`
-assumes they're already applied. If `agent` happens to start first, its earliest
-cycle(s) simply fail against a not-yet-ready schema, get logged, and self-heal
-on the next tick once `server` catches up — the same graceful-degradation shape
-`RunOnce`/`SyncOnce` already have for a single failed item, just one level up,
-at the whole-cycle granularity.
-
-**Two tickers, split by destination, each running its jobs sequentially per
-tick** — corrected from an earlier revision of this section, which described a
-single shared `agent_poll_interval_seconds` (default 120) and predates the split
-actually landing. What's built: `agent_worker_poll_interval_seconds`
-(default 1800) drives everything that talks to the Cloudflare Worker
-(`Ingester.RunOnce`, then `Syncer.SyncOnce`, then — see below — the D1
-maintenance sweeps), and `agent_local_poll_interval_seconds` (default 300)
-drives everything that only touches this process's own Postgres (the screenshot,
-readability and AI jobs). The split is by _destination_, not by job: that's what
-lets the Worker-facing side stay comfortably inside Cloudflare's free tier while
-local work still picks up quickly.
-
-**The D1 maintenance sweeps ride the worker ticker behind an elapsed-time
-check**, rather than getting a third ticker. `queue_items` and
-`pending_captures` both accumulate terminal rows that need sweeping (§8), but
-against a 72-hour retention window there's nothing to gain from checking every
-half hour, so a `workerCycle.lastCleanup` field gates them to roughly every 12
-hours. Two reasons this isn't its own ticker: the existing split is by
-destination and these sweeps are Worker-facing, so a per-job ticker would
-quietly redefine the taxonomy as "one ticker per job"; and a 12-hour
-`time.Ticker` restarts from zero on every process start, so an agent redeployed
-or restarted more often than that would sweep **never**. The elapsed check has
-the opposite failure — it sweeps shortly after each restart — which costs two
-idempotent `DELETE`s against a handful of indexed rows. Cleanup runs last in the
-cycle and its failures are logged, never allowed to delay the work something
-actually waits on.
-
-A cycle runs synchronously within the same `select` loop iteration that reads
-the ticker channel, not spawned into its own goroutine per tick —
-`time.Ticker`'s channel buffers exactly one pending tick, so a cycle that runs
-longer than the interval simply means some ticks are silently dropped rather
-than a backlog of queued cycles building up; the next cycle starts as soon as
-the current one finishes and at least one tick has fired since, not once per
-missed interval. Either job failing is logged, not propagated as the agent
-process's own failure — the same "log and continue" philosophy
-`RunOnce`/`SyncOnce` already apply at their own per-item/per-batch level, one
-layer further up.
-
----
+Two tickers, split by destination: `agent_worker_poll_interval_seconds`
+(default 1800) for everything talking to the Cloudflare Worker, and
+`agent_local_poll_interval_seconds` (default 300) for everything touching only
+this process's own Postgres — keeping the Worker-facing side comfortably inside
+Cloudflare's free tier while local work still picks up quickly.
 
 ### 3f. The CLI (`recueil auth` / `recueil enqueue`)
 
-The CLI's own two commands, and specifically why their configuration handling
-differs from `server`/`agent`'s:
+Two different config postures for two different audiences. `server`/`agent`
+require an explicit `--config` file or environment variables (§13a) — no
+automatic discovery, since a production process silently picking up an
+unintended file is a real risk. `auth`/`enqueue` are the opposite: a personal
+tool, where automatic `$XDG_CONFIG_HOME` discovery is the expected UX (the same
+shape `git`/`ssh` already train people on). Neither command touches Viper or
+`internal/config` — everything they need is read from their own dedicated
+credentials file instead.
 
-- **Two different config postures for two different audiences.**
-  `server`/`agent` require an explicit `--config` file or environment variables
-  — no automatic search of `$HOME` or the working directory (§13a) — a
-  deliberate choice for production processes, where implicit config-discovery
-  could silently pick up an unintended file. `auth`/`enqueue` are the opposite
-  kind of thing: an end user's personal tool, where automatic discovery is the
-  expected, idiomatic UX (the same shape `git`, `ssh`, and most CLI tools
-  already have people trained on). This isn't a reversal of the earlier
-  decision, it's a second, narrower one for a genuinely different audience —
-  `server`/`agent`'s existing explicit-only behavior is completely unchanged.
-- **No shared/nested `config.toml` at all, in the end** — considered (a
-  `[server]` section vs. flat top-level keys) and set aside, for a sharper
-  reason than "the CLI has nothing to configure yet": once the pairing token
-  needed its own dedicated file anyway (below), and `worker_url` turned out to
-  belong with that token rather than as an independent setting, there was
-  nothing left for the CLI to read from `config.toml` at all. `enqueue`/`auth`
-  don't touch Viper or `internal/config` in any way; every server-only key stays
-  exactly as it is.
-- **Pairing token input: masked prompt if a TTY, stdin otherwise — never a
-  `--token` flag.** A flag would be visible in shell history and system-wide
-  `ps` output for the process's whole lifetime — a real exposure for a bearer
-  credential, not a theoretical one. `mattn/go-isatty` (already a dependency)
-  decides which path to take; `golang.org/x/term.ReadPassword` (new, small,
-  official) does the actual no-echo read. This gets scriptability for free
-  without ever needing the flag: `echo "$TOKEN" | recueil auth --url ...` reads
-  from stdin directly since stdin isn't a terminal in that case.
-- **`internal/clicreds`: a dedicated file, not a field in `config.toml`.**
-  `$XDG_CONFIG_HOME/recueil/credentials.json` (falling back to
-  `$HOME/.config/recueil/`, the Base Directory spec's own documented default),
-  `0600`, written via temp-file-then-atomic-rename (the same pattern
-  `internal/archive` already uses, for the same reason: a crash or error partway
-  through a write must never leave a half-written file at the real path). Two
-  reasons this isn't just a `config.toml` field: `auth` rewriting part of a file
-  a user might also hand-edit risks clobbering their formatting (nothing this
-  project uses for TOML writing round-trips cleanly), and a bearer credential
-  arguably deserves its own tighter-scoped file rather than sharing a general
-  settings file's permissions regardless. `XDG_CONFIG_HOME` specifically, not
-  `XDG_STATE_HOME` or `XDG_DATA_HOME` -- the Base Directory spec doesn't
-  perfectly disambiguate this by its own letter (a token isn't quite
-  "configuration," but it's even less "state"/session data or generated "data"
-  either), so this follows the ecosystem's own precedent instead of relitigating
-  the spec: `gh` (GitHub CLI) stores its own auth under `XDG_CONFIG_HOME` too.
-- **`worker_url` is stored alongside the token, not as an independent setting.**
-  A token is only ever meaningful for the specific Worker that issued it, so the
-  two are one unit that's always captured, stored, and read together — not two
-  related-but-separate values. Concretely:
-  `recueil auth --url <worker-url> [--name <name>]` requires `--url` (there's no
-  default to fall back to, and no config file to read one from either);
-  `recueil enqueue` then reads both back from the one stored file, with no
-  `--url` override flag on `enqueue` itself. A per-call override, or real
-  multi-server profile support, was considered and deferred: there's no
-  supporting machinery on the `auth` side yet (nothing to switch between), so
-  adding the flag now would just be confusing rather than actually useful — an
-  honest 401 if you ever do point a stored token at the wrong Worker is a fine
-  failure mode until multi-profile support is worth building for real.
-- **`internal/deviceapi`: `Pair` and `Client` are intentionally separate, not
-  one unified type.** `POST /pair` is unauthenticated by nature — it's how a
-  device obtains a bearer token in the first place, so it can't require one —
-  while `Client.Enqueue` (`POST /queue`) requires a token already in hand.
-  Forcing both into one type would mean either a `Client` that's usable before
-  it has real credentials, or a separate construction path for pairing anyway —
-  no simpler than just keeping them apart. Neither authenticates as the backend
-  itself (unlike `internal/mirror` and `internal/ingest.WorkerClient`, both
-  service-secret-gated); this package is specifically what a paired _device_
-  does against the Worker's public, device-facing endpoints.
-- **`recueil enqueue <url> [<url>...]`** accepts multiple URLs in one invocation
-  (`POST /queue` has no batch form, so this is a client-side loop, one call per
-  URL) and continues past an individual failure rather than stopping the whole
-  batch — the same "one bad item shouldn't block the rest" philosophy already
-  applied to `Ingester.RunOnce`/`Syncer.SyncOnce` (§3c, §8), reported as a
-  summary and a non-zero exit if anything failed, rather than aborting partway
-  through. Each URL gets its own freshly-generated `google/uuid` (already a
-  dependency) as `POST /queue`'s client-generated `id` — the same
-  idempotency-key pattern already established for that endpoint (a retried call
-  with the same `id` is a safe no-op, not a duplicate enqueue).
-- Schema-wise, there was nothing to add: `tokens.device_name` and `device_type`
-  (already including `'cli'` in its allowed set) were already in place from
-  Phase 2, and `POST /pair` already required and stored `device_name` in its
-  request body. `recueil auth`'s only actual job here is supplying a sensible
-  one — `os.Hostname()` by default, `--name` to override.
-
----
+- **`internal/clicreds`: `$XDG_CONFIG_HOME/recueil/credentials.json`, mode
+  `0600`, written via temp-file-then-atomic-rename** (the same pattern
+  `internal/archive` uses, for the same reason: a crash partway through a write
+  must never leave a half-written file at the real path). Not a `config.toml`
+  field: rewriting part of a file the user might hand-edit risks clobbering
+  their formatting, and a bearer credential deserves its own tighter-scoped file
+  regardless.
+- **`worker_url` is stored alongside the pairing-derived token, not as an
+  independent setting** — a token is only ever meaningful for the Worker that
+  issued it, so the two are captured, stored, and read together.
+  `recueil auth --url <worker-url>` requires `--url` explicitly (there's no
+  default and nothing to read one from); `recueil enqueue` reads both back from
+  the stored file, with no override flag of its own.
+- **Pairing token input is a masked prompt on a TTY, or stdin otherwise — never
+  a `--token` flag.** A flag would sit in shell history and system-wide `ps`
+  output for the process's whole lifetime — a real exposure for a bearer
+  credential. `mattn/go-isatty` decides which path to take;
+  `golang.org/x/term.ReadPassword` does the no-echo read. This gets
+  scriptability for free (`echo "$TOKEN" | recueil auth --url ...`) without ever
+  needing the flag.
+- **`internal/deviceapi`'s `Pair` and `Client` are separate, not one unified
+  type.** `POST /pair` is unauthenticated by nature — it's how a device obtains
+  a bearer token in the first place — while `Client.Enqueue` requires one
+  already in hand.
+- `recueil enqueue <url> [<url>...]` loops one `POST /queue` call per URL
+  (there's no batch endpoint) and continues past an individual failure rather
+  than stopping the whole batch, reporting a summary and a non-zero exit if
+  anything failed — the same "one bad item shouldn't block the rest" shape as
+  `Ingester.RunOnce`/`Syncer.SyncOnce` (§3c, §8). Each URL gets its own
+  freshly-generated UUID as the idempotency key.
 
 ### 3g. Favicon capture
 
-Captured client-side, the same way HTML is — not fetched by the backend. This is
-a deliberate extension of §1's core principle, not an exception to it: a favicon
+Captured client-side, the same way HTML is — not fetched by the backend. This
+extends §1's core principle rather than exempting an exception to it: a favicon
 fetch is still a live request against a URL the extension already has an
-authenticated browser context for (most favicons don't need that, but some do —
-an intranet tool or private wiki is a real if narrow case), so the backend never
-touches the live web at all, full stop, with no carve-out to reason about later.
+authenticated browser context for, so the backend never touches the live web at
+all.
 
-**Selection — link-level, not pixel-level.** The extension resolves a candidate
-URL by checking, in order: any `<link rel="icon">` /
-`<link rel="apple-touch-icon">` tags declared on the page (preferring
-`type="image/svg+xml"` over a raster candidate, and the largest declared `sizes`
-among raster candidates), then falling back to the conventional root-relative
-`/favicon.svg`, `/favicon.png`, `/favicon.ico`, tried in that order. If none of
-that resolves to anything, `favicon_path` simply stays `NULL` for that capture —
-not every site has one, and not finding one is never an error.
-
-**No image processing.** Whatever bytes come back — including a legacy
-multi-resolution `.ico` container — are stored exactly as received. Every modern
-browser renders `.ico` directly in an `<img>` tag, so there's no real need to
-decode "the largest embedded image" out of one; that's a "revisit if it becomes
-a felt problem" item, not a day-one requirement.
-
-**Favicon is per-capture state, not page state**, the same way the HTML itself
-is: `captures.favicon_path` (§10) is written once per capture and never mutated
-or cleaned up afterward, so there's no dangling-reference risk across a page's
-capture history (an old capture's favicon, if any, stays exactly as it was
-captured). `pages.favicon_path` is denormalized from the _latest_ capture the
-same way `pages.title` already is — including being overwritten back to `NULL`
-if the latest capture genuinely didn't find one, not preserved from an earlier
-capture that did.
-
-**Disk layout — shares the capture's directory.** Every asset belonging to one
-capture (the HTML, the favicon, the screenshot) lives together under that
-capture's single directory (§4). Because that directory belongs to exactly one
-capture, each asset just takes a plain role-based filename — `page.html.zst`,
-`favicon.{ext}`, `thumbnail.png`. An earlier revision named each secondary asset
-by _its own_ content hash, which was necessary only because the directory was
-then keyed by the HTML's `content_hash` and could therefore be shared by two
-captures with identical HTML but different favicons; with per-capture
-directories that collision can't arise, so the hash no longer has to appear in
-the filename. `favicon_hash`/`thumbnail_hash` remain columns regardless —
-they're how you tell after the fact whether two captures of a page carried the
-same icon, and the only integrity check available for a file nothing re-derives.
-Compression is per-asset-type, not a blanket zstd: SVG (plain XML) compresses
-well and gets it; PNG/ICO are already-compressed binary formats and are stored
-raw.
-
-**R2 key convention mirrors the HTML object's.** `POST /captures/upload-urls`
-accepts an optional `(favicon_ext, content_sha256_favicon)` pair — both present
-or both absent, no half-specified request — and, when present, issues a second
-presigned PUT alongside the HTML one, at a deterministic key
-`pending/{userId}/{captureId}/favicon.{ext}` (`ext` ∈ `svg | png | ico`). The
-extension itself is baked into the key (unlike `page.html`'s implicit,
-always-the-same suffix) specifically so the backend can recover the real format
-by reading the key back at ingestion (`filepath.Ext`), rather than needing a
-separate mime/type column anywhere in Postgres or D1. `POST /queue/:id/complete`
-and its direct-capture counterpart `POST /captures/complete` (added once actual
-extension work reached this point — completing a capture that was never enqueued
-in the first place, e.g. archiving a page the user is already on; see
-`pending_captures.queue_item_id`'s own nullability) both take the same
-treatment: the caller declares _whether_ it uploaded a favicon and in what
-format (`favicon_ext`), and the Worker recomputes the deterministic key itself —
-the same never-trust-a-client-supplied-key posture `r2_key_html` already has.
-
-**Ingestion is best-effort, and never fails the capture.** A favicon fetch or
-disk write failing at ingestion time is logged and otherwise ignored — an
-unreachable or malformed favicon object is a cosmetic loss, never a reason to
-lose an otherwise-good HTML capture. The favicon's R2 object gets cleaned up
-alongside the HTML object's the same way, best-effort on that side too (a
-leftover favicon object in R2's temporary buffer is harmless).
-
-**The extension's own bookmark-list menu (§8) does not carry a stored favicon at
-all — it live-fetches the site's current favicon at render time**, the same way
-a browser's native bookmarks UI would. This was a deliberate choice among three
-options considered: storing favicon bytes inline as a D1 `BLOB` on
-`archived_pages` (favicons are small enough that this would've worked, and
-remains the natural next step if live-fetching proves unsatisfying), a durable
-copy in R2 (rejected outright — R2 is documented as a temporary buffer only, §4,
-and every other object in it is deleted right after the backend pulls it;
-keeping favicons there permanently would be a new, different lifecycle with no
-other precedent in this design), or live-fetching with no sync/storage at all
-(what's actually built). Live-fetching also sidesteps a real semantic question
-the other two don't: whether the menu should show the favicon _as archived_ or
-_as it is right now_ — for a live bookmark list, current is arguably the more
-correct answer anyway.
-
----
+- **Selection is link-level, not pixel-level.** The extension checks
+  `<link rel="icon">`/`<link rel="apple-touch-icon">` tags first (preferring
+  SVG, then the largest declared raster size), then falls back to
+  `/favicon.svg`, `/favicon.png`, `/favicon.ico` in that order. `favicon_path`
+  simply stays `NULL` if none resolve — not every site has one, and not finding
+  one is never an error.
+- **No image processing.** Whatever bytes come back — including a legacy
+  multi-resolution `.ico` — are stored exactly as received; every modern browser
+  already renders `.ico` directly.
+- **Per-capture state, like the HTML itself**: `captures.favicon_path` (§10) is
+  written once and never mutated. `pages.favicon_path` is denormalized from the
+  latest capture the same way `pages.title` is, including reverting to `NULL` if
+  the latest capture didn't find one.
+- **Shares the capture's directory (§4)**, taking a plain role-based filename
+  (`favicon.{ext}`) since a capture directory holds exactly one of each asset.
+  `favicon_hash`/`thumbnail_hash` remain columns regardless — the only integrity
+  check available for a file nothing re-derives. Compression is per-asset-type:
+  SVG gets zstd'd, PNG/ICO (already compressed) are stored raw.
+- **The R2 key bakes in the real extension** (`.../favicon.{ext}`, `ext` ∈
+  `svg | png | ico`) so the backend recovers the format from the key itself at
+  ingestion, rather than needing a separate mime/type column. The Worker always
+  recomputes this key itself — never trusts one supplied by the client, the same
+  posture `r2_key_html` already has.
+- **Ingestion is best-effort and never fails the capture.** A favicon fetch or
+  disk-write failure is logged and ignored — a cosmetic loss, never a reason to
+  lose an otherwise-good HTML capture.
+- **The extension's bookmark-list menu (§8) live-fetches the current favicon at
+  render time rather than storing one** — the same way a browser's native
+  bookmarks UI would. This sidesteps a real semantic question a stored copy
+  wouldn't: should the menu show the favicon as archived, or as it is right now?
+  For a live bookmark list, current is the more correct answer.
 
 ### 3h. Browser extension architecture
 
@@ -693,235 +407,104 @@ background round-trip.
 > — even on pages with no iframes at all. Chrome needs no equivalent; it
 > coordinates entirely in-page.
 
----
-
 ### 3i. Queue-driven capture
 
-**Human-in-the-loop by default, not as a detected-failure fallback.** The
-original design assumed queue-driven capture would open a tab in the background
-(`active: false`), wait for it to load, capture it, and close it — unsupervised,
-the same shape as a headless-browser cron job. That assumption turned out to be
-wrong for a specific, concrete reason: a CAPTCHA or paywall page captures
-_successfully_ from `single-file-core`'s point of view — no error, no timeout,
-just the wrong content, silently archived as if it were the real page (confirmed
-directly: pages already archived this way exist in testing). There is no generic
-signal — no DOM marker, no HTTP status, nothing — that distinguishes "this page
-needs a human" from "this page loaded fine." Any design that tries to detect
-that automatically doesn't work, and trying to solve it (auto-bypassing
-CAPTCHAs, defeating paywalls) isn't something this project should be doing
-anyway. So the design puts a human in the loop for every queue item, always —
-not as a fallback path for failures the system noticed, since it fundamentally
-can't notice this particular kind of failure.
+**Human-in-the-loop by default, not a fallback for detected failures.** The
+original design assumed an unsupervised background tab: open it, wait for it to
+load, capture it, close it. That's wrong for a specific reason: a CAPTCHA or
+paywall page captures _successfully_ from `single-file-core`'s point of view —
+no error, no timeout, just the wrong content, silently archived as if it were
+the real page. There's no generic signal — no DOM marker, no HTTP status — that
+distinguishes "this page needs a human" from "this page loaded fine," and
+building one (auto-bypassing CAPTCHAs, defeating paywalls) isn't something this
+project should do anyway. So a human is in the loop for every queue item,
+always.
 
-**Concretely:**
-
-- The popup shows a plain list of pending items (`GET /queue` — id and url are
-  all that's meaningful to show), cached in `storage.local` and refreshed from
-  four places: `runtime.onStartup`/`onInstalled`, a 6-hour alarm, the popup's
-  own manual refresh button, and immediately after a successful pairing
-  (otherwise the popup shows "nothing in the queue" until whichever of the first
-  three happens to fire next, even when the instance already has real pending
-  items). None of these run on every service-worker wake, which would mean an
-  extra Worker round-trip on nearly every message this background handles,
-  including ones with nothing to do with the queue.
-- **This cached list is never authoritative.** Clicking an item sends the real,
-  live `POST /queue/:id/claim` — reusing Phase 2's existing atomic claim
-  (`UPDATE ... WHERE status = 'pending' OR (status = 'claimed' AND claimed_at < ...)`)
-  and its 404/409/410 distinctions untouched; no new backend work was needed for
-  any of this. A claim failure's status code is translated into a human-readable
-  message in the background, before it ever crosses the `runtime.sendMessage`
-  boundary back to the popup — a custom property like an error's `.status` isn't
-  reliably preserved across that boundary the way `.message` is, so the
-  translation has to happen while it's still a real, in-process object, not be
-  reconstructed from whatever survives the crossing.
-- **On a successful claim, a new tab opens focused, in the current window**
-  (`tabs.create({url, active: true})`) — intentionally stealing focus, unlike
-  the original background-tab assumption, precisely because this is now an
-  explicit action the user just asked for, the same as clicking any other link.
-- **The user solves whatever the page needs entirely by hand** — no detection,
-  no automation, ever attempted.
-- **Completion reuses the exact existing direct-capture pipeline, not a separate
-  "queue capture" path.** `capture.js`'s `captureTab`/`captureActiveTab` take an
-  optional `queueItemId`, sourced from a small `tabId -> queueItemId` map
-  (`storage.js`, written by the claim step) — when set, completion calls
-  `POST /queue/:id/complete` instead of `POST /captures/complete`; everything
-  upstream of that one call (inject, hash, presign, upload) is identical either
-  way. The map entry is only cleared on success, not on failure — a failed
-  attempt (a transient network error) shouldn't lose the tab's association with
-  the item it's fulfilling; retrying is just clicking "Save this page" again on
-  the same tab, not going back to re-claim (which would be redundant anyway —
-  this device already holds the claim).
-- **An abandoned claim needs no explicit handling.** If the user closes the tab
-  without ever completing it, nothing further happens on the extension side —
-  the Worker's own claim already goes stale and becomes reclaimable (by any
-  device) after 15 minutes, a mechanism that already existed before any of this
-  was built. A `tabs.onRemoved` listener does tidy up the `tabId -> queueItemId`
-  map entry on tab close, but purely for storage hygiene (so it doesn't grow
-  without bound over a long browsing session), not because leaving it would be
-  incorrect.
-- **The tab auto-closes on success, but only for queue-driven captures, never
-  direct ones.** A direct capture's tab is one the user already had open for
-  their own reasons — closing it out from under them would be genuinely
-  disruptive. A queue-driven tab exists _only_ because clicking a queue item
-  created it; once the capture succeeds it's served its entire purpose, the same
-  way a print-preview window closing after printing feels natural rather than
-  disruptive. Left open on failure, so the user can see what went wrong or just
-  retry. Best-effort (`.catch(() => {})`) either way: the capture itself has
-  already fully succeeded by the point the tab close is attempted, so a failure
-  to close (the user having already closed it themselves in the interim, say) is
-  not a reason to report the capture as failed.
-- **A missed periodic alarm doesn't accumulate.** Confirmed against Chrome's own
-  documentation ("repeating alarms will fire at most once and then be
-  rescheduled using the specified period starting from when the device wakes")
-  and consistent with Firefox's own bug history (reports describe a missed alarm
-  firing _late_, never multiple times to catch up) — a laptop suspended through
-  several missed 6-hour ticks triggers exactly one refresh on resume, not one
-  per missed tick.
-
-The toolbar badge (`action.setBadgeText`/`setBadgeBackgroundColor`, cleared to
-empty when the queue is empty) is updated in the same function that refreshes
-the cache, so there's exactly one place that can ever disagree with the list the
-popup shows — not a separately-maintained count that could drift from it.
-
----
+- The popup shows a plain list of pending items (`GET /queue`), cached in
+  `storage.local` and refreshed on startup, a 6-hour alarm, manual refresh, and
+  right after pairing. The cache is never authoritative: clicking an item sends
+  the real, live `POST /queue/:id/claim` (the same atomic claim/404/409/410
+  shape as §2), and on success opens a new, focused tab — deliberately stealing
+  focus, since this is now an explicit action the user just asked for.
+- The user solves whatever the page needs entirely by hand — no detection, no
+  automation attempted.
+- Completion reuses the exact direct-capture pipeline: `captureTab`/
+  `captureActiveTab` take an optional `queueItemId` (tracked in a small
+  `tabId -> queueItemId` map), and call `POST /queue/:id/complete` instead of
+  `POST /captures/complete` when it's set. Everything upstream (inject, hash,
+  presign, upload) is identical either way.
+- An abandoned claim needs no explicit handling — the Worker's own claim already
+  goes stale and becomes reclaimable after 15 minutes, the same mechanism the
+  queue already has (§2). A tab-close listener tidies up the tracking map purely
+  for storage hygiene.
+- The tab auto-closes on success, but only for queue-driven captures, never
+  direct ones — a direct capture's tab is one the user already had open for
+  their own reasons, and closing it out from under them would be disruptive.
+  Left open on failure so the user can see what went wrong.
+- A missed periodic alarm doesn't accumulate: Chrome/Firefox both fire a
+  repeating alarm at most once on wake, never once per missed tick, so a laptop
+  suspended through several 6-hour periods triggers exactly one refresh on
+  resume.
 
 ### 3j. Bookmark sync (native browser bookmarks, not a custom list)
 
-**The original plan was a custom in-popup bookmark list, mirroring the same
-`archived_pages` D1 table §8 already maintains — that changed mid-phase, in
-favor of syncing into the browser's own native bookmarks instead.** Prompted
-directly by asking whether the browser's own bookmarks machinery could be used,
-rather than discovered as a problem with the custom-list plan. The reasoning
-that made the switch worthwhile: native bookmarks already come with a
-full-featured, familiar UI (search, folders, the browser's own sidebar/manager)
-that a cramped popup view would never match, and favicon display is handled
-entirely by the browser itself, for free — no separate favicon-fetching or
-caching logic needed on the extension side at all, for this specific feature.
+Syncs archived pages into the browser's own native bookmarks, not a custom
+in-popup list — native bookmarks already have a full-featured, familiar UI
+(search, folders, the browser's own manager) a cramped popup view would never
+match, and favicon display comes for free from the browser itself.
 
-**The one rule reconciliation is built around: recueil only ever touches
-bookmarks that are children of one dedicated folder it creates and manages
-itself.** It never searches the user's whole bookmark tree and never touches
-anything outside that folder. Any bookmark management inside that folder — the
-user adding their own bookmarks there, renaming or moving the ones recueil
-created, anything — is unsupported: it isn't preserved and isn't specially
-detected, it gets overwritten or removed the next time sync runs, on the same
-ordinary schedule as everything else, not just when disabling sync or unpairing.
-An earlier version of this document's own comments described that sweeping-away
-as a risk specific to teardown specifically — that was a real inconsistency in
-the write-up, not the behavior: `syncBookmarks` already applies this on every
-ordinary sync, and the comment was corrected to say so plainly once the
-inconsistency was pointed out.
-
-**Reconciled by URL, not by tracking bookmark ids at all — no stored
-`page_id -> bookmark id` map anywhere.** This is a real simplification found by
-asking a direct question (why not just diff by URL against the folder's actual
-contents?) rather than assumed safe: it depends on `raw_url` (what
-`GET /archived-pages` returns) actually being a stable, unique identity key,
-which turned out to already be true but wasn't obvious from the field name.
-`raw_url` is sourced from `pages.normalized_url` (`internal/mirror/sync.go`'s
-`RawURL: p.NormalizedUrl`), the exact column `pages`' own
-`UNIQUE (user_id, normalized_url)` constraint is built on — not the literal URL
-string from whichever capture happened to run last, which could differ across
-captures of the same page (tracking parameters, trailing slashes) even though
-the identity stays the same. With that confirmed, diffing the fetched
-archived-pages list directly against `browser.bookmarks.getChildren(folderId)`
-by URL is simpler than _and_ at least as correct as a tracked-id map: the
-browser's own bookmark tree already _is_ the persisted state to compare against,
-so keeping a redundant local copy of it would only be a second thing that could
-drift from the truth. It also means the cross-device-sync case (a bookmark
-recueil created on another device, already propagated here by Firefox Sync or
-similar, before this device's own next sync tick runs) needs no special "adopt"
-branch at all: it just looks like "a URL that's already there," identical to one
-created locally.
-
-**The dedicated folder itself needed the same create-or-adopt treatment, one
-level up — a second real gap, found the same way as the first.** An initial
-version only ever created the folder fresh if no tracked id resolved, which
-would blindly create a _second_ "recueil" folder on a fresh device where one had
-already arrived via native sync before this device's own first sync ran. The fix
-enforces the same standard as individual bookmarks: create or adopt, never
-duplicate. Finding the right place to look is the tricky part — Chrome and
-Firefox use different, non-portable ids for "Other Bookmarks"/"Unfiled
-Bookmarks" (and the title itself can be locale-translated), so neither a
-hardcoded id nor a title match on the container itself is reliable. The actual
-fix: a throwaway probe bookmark, created the same way the real folder is
-(`parentId` omitted), discovers the real default container's id empirically —
-whatever the browser just used for the probe is exactly where
-`bookmarks.create()` would also put the real folder, then the probe itself is
-removed. Confirmed directly against both Chrome's and Firefox's own docs that
-there's no way to do better than this — a genuinely top-level folder (a sibling
-of "Bookmarks Bar"/"Other Bookmarks" rather than nested inside one of them)
-isn't possible at all: both browsers explicitly block creating anything as a
-child of the true root node ("The bookmark root cannot be modified"), so landing
-inside the default container is the closest to top-level actually achievable,
-not a fallback settled for over a better option.
-
-**Opt-in, not bundled into pairing.** `bookmarks` is a distinct, user-visible
-permission (`optional_permissions` in the manifest) unrelated to capture itself,
-requested only when the popup's own toggle is turned on — synchronously in that
-toggle's change handler, same user-gesture reasoning as pairing's own
-`<all_urls>` request (§3h). Turning sync off relinquishes the permission too,
-not just stops syncing while holding it; turning it back on later just requests
-it again. The same teardown (delete the folder, clear tracked state, relinquish
-the permission) is shared between the popup's toggle and `unpair()` — with one
-ordering requirement where it's called from unpair specifically: it has to run
-_before_ unpair's own `storage.local.clear()`, since it needs to read the
-tracked folder id from storage before that wipe would otherwise have already
-erased it.
-
-**No incremental sync on the extension side either** — see §8's own
-bookmark-list-mirror section for why a full-list pull, diffed locally, is the
-right level of complexity at a personal archive's actual scale, rather than
-reusing the backend's own checkpoint-based approach.
-
----
+- **Recueil only ever touches bookmarks inside one dedicated folder it creates
+  and manages.** It never searches the user's wider bookmark tree. Anything a
+  person does inside that folder by hand — adding, renaming, moving — is
+  unsupported: it gets overwritten or removed on the next ordinary sync, not
+  just at teardown.
+- **Reconciled by URL, not by tracking bookmark ids.** `GET /archived-pages`'s
+  `raw_url` is sourced from `pages.normalized_url` — the exact column `pages`'
+  own `UNIQUE (user_id, normalized_url)` constraint is built on — so it's
+  already a stable, unique identity key. Diffing the fetched list directly
+  against `browser.bookmarks.getChildren(folderId)` by URL is simpler than a
+  tracked-id map and avoids a second copy of the tree that could drift from the
+  truth. It also means a bookmark that arrived via the browser's own sync from
+  another device needs no special "adopt" handling — it just looks like a URL
+  that's already there.
+- **The dedicated folder gets the same create-or-adopt treatment.** Chrome and
+  Firefox use different, non-portable ids for "Other Bookmarks"/ "Unfiled
+  Bookmarks" (and the title itself can be locale-translated), so neither a
+  hardcoded id nor a title match is reliable. A throwaway probe bookmark
+  (created the same way the real folder would be) discovers the real default
+  container's id empirically, then removes itself. Neither browser allows
+  creating anything as a genuine sibling of "Bookmarks Bar" — landing inside the
+  default container is the closest to top-level actually achievable.
+- **Opt-in, not bundled into pairing.** `bookmarks` is a distinct, user-visible
+  optional permission, requested only when the popup's own toggle is turned on.
+  Turning sync off relinquishes the permission too, not just stops syncing while
+  holding it.
+- No incremental sync on the extension side — a full-list pull, diffed locally,
+  is the right level of complexity at a personal archive's scale (§8 covers the
+  same reasoning from the backend's own sync job).
 
 ### 3k. Internationalization (i18n)
 
-**The native WebExtensions i18n API, not a library.**
-`_locales/<locale> /messages.json` files, `__MSG_key__` substitution in
-`manifest.json`, `browser.i18n.getMessage()` in code — built into Chrome and
-Firefox both, zero new dependencies. This fits the project's existing bias
-against pulling in a library where a platform primitive already does the job
-(the same reasoning already applied to, e.g., not using a JWT library for bearer
-tokens, §5).
+The native WebExtensions i18n API, not a library:
+`_locales/<locale>/messages.json` files, `__MSG_key__` substitution in
+`manifest.json`, `browser.i18n.getMessage()` in code — zero new dependencies,
+consistent with this project's bias toward a platform primitive over a library
+wherever one exists.
 
-**Every lookup goes through one wrapper (`src/common/i18n.js`'s `t()`), never
-`browser.i18n.getMessage()` directly from a call site.** This isn't defensive
-architecture-for-its-own-sake — it's a real answer to a real, concrete
-constraint: the native API has no supported way to select a locale other than
-the browser's own current UI language. There's no "pass a locale" parameter
-anywhere in it. If the popup ever grows a manual language override (there's no
-settings UI at all today for one to attach to, so this is speculative, not
-planned), the only way to build it is for `t()` to stop delegating to
-`browser.i18n.getMessage()` and instead fetch a specific
-`_locales/<lang>/messages.json` itself and look keys up from that — a change
-confined to one file precisely because every call site already goes through it,
-not a rearchitecture of `popup.js`.
-
-**Scope: only strings recueil itself authors are translated — never passthrough
-browser/network error text.** A raw `fetch()` failure or an HTTP response body
-is the browser's or the network's own message, not something recueil wrote;
-there's no translatable string to look up for it, and attempting to wrap it
-would either lose information or require re-authoring content that isn't ours to
-begin with. `background/queue.js`'s `describeClaimFailure` is the concrete line:
-its own three authored messages (409/410/404) are translated; the generic
-`error.message` fallback for anything else is left exactly as the
-browser/network produced it. `auth.js`'s pairing-network-error templates and
-`capture.js`'s R2-upload-error templates are a related but not-yet-converted
-case — an authored template wrapping an untranslated interpolated value (a
-network error's own message, an HTTP response body) — deferred, not
-architecturally blocked: same `t()` pattern applies whenever it's worth doing.
-
-**`en` is `default_locale`, both the fallback for missing keys in any other
-locale and the source of truth for what keys exist.** `manifest.base.json`'s own
-`name`/`description` are localized too
-(`__MSG_extName__`/`__MSG_extDescription__`), the one place the browser
-substitutes `__MSG_*__` placeholders outside of code — general extension-page
-HTML has no equivalent automatic substitution, which is why `popup.html`'s own
-static `<title>`/loading-placeholder text stays an English fallback in the
-markup itself, overwritten by `popup.js` via `t()` as the first thing it does
-once it actually runs.
+- **Every lookup goes through one wrapper** (`src/common/i18n.js`'s `t()`),
+  never `browser.i18n.getMessage()` directly — the native API has no way to
+  select a locale other than the browser's own current UI language, so if the
+  popup ever grows a manual override, `t()` is the one place that needs to
+  change.
+- **Only strings recueil itself authors are translated** — never passthrough
+  browser/network error text. A raw `fetch()` failure or HTTP response body
+  isn't recueil's own writing, so there's nothing to look up a translation for.
+- **`en` is `default_locale`** — both the fallback for missing keys and the
+  source of truth for what keys exist. `manifest.base.json`'s own
+  `name`/`description` are localized too, the one place the browser substitutes
+  `__MSG_*__` outside of code; general extension-page HTML has no equivalent,
+  which is why `popup.html`'s static text stays an English fallback until
+  `popup.js`'s `t()` calls overwrite it at runtime.
 
 ---
 
@@ -1917,9 +1500,8 @@ first simply wins.
   it does not attempt to archive anything server-side. The intended workflow is:
   queue remotely, archive later from the desktop extension, where a real
   rendered/authenticated browser session exists.
-- The desktop extension polls the queue via the Worker/D1 (see §7 polling
-  cadence in the original numbering — now consolidated below) and can notify the
-  user that items are waiting.
+- The desktop extension polls the queue via the Worker/D1 (see "Polling cadence"
+  below) and can notify the user that items are waiting.
 - Claiming is done with a conditional update (`WHERE status = 'pending'`) to
   prevent two devices from grabbing the same item simultaneously; a claimed item
   records which device claimed it and when.
@@ -2231,7 +1813,7 @@ commits. Two things it lacked, both added together:
   ids it's given. All the actual logic — what changed, what to delete — lives on
   the backend.
 - The extension does **not** live-sync this list either. It refreshes on a
-  coarse schedule (see §7 polling cadence below) or on explicit user request —
+  coarse schedule (see "Polling cadence" below) or on explicit user request —
   but, unlike the backend's own Postgres → D1 sync above, with **no incremental
   checkpoint at all**: it pulls the whole current list every time and diffs it
   locally (§3j). That's a deliberate scale-appropriate simplification, not an
