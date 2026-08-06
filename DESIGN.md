@@ -579,95 +579,49 @@ wherever one exists.
 **Devices (extension, PWA, CLI) → opaque bearer tokens, backed by a per-user
 pairing token, D1-owned.**
 
-An earlier revision of this design had the backend mirror the account's **bcrypt
-password hash** into D1, verified by the Worker at pairing time against a
-submitted username/password. That approach turned out to be infeasible on its
-own terms, independent of the security question: bcrypt is designed to cost on
-the order of 100-300ms even in native code, and Cloudflare Workers on the free
-tier are capped at 10ms of CPU time per request. There is no cost factor that
-gets bcrypt (or an equivalent memory-hard hash) under that ceiling without
-weakening it past the point of doing its job — and there's no native bcrypt in
-the `workerd` runtime anyway, so a pure-JS implementation would only be slower
-still. A Worker-native fast primitive (PBKDF2 via `crypto.subtle.deriveBits`,
-which _would_ fit the CPU budget) was considered as a fix and rejected: it still
-means mirroring password-derived material into D1, just under a different
-algorithm, and doesn't address the underlying exposure.
-
-Instead, each account gets a separate, single-purpose credential — a **pairing
-token** — used only to authenticate a device once in exchange for a bearer
-token. It is never used to log into the dashboard, and the dashboard password is
-never used to pair a device:
+Device pairing doesn't mirror the account's login credential into D1 at all — a
+Cloudflare Worker's free-tier 10ms CPU cap makes any properly slow password hash
+(e.g., bcrypt) infeasible to verify there, and mirroring the credential under a
+weaker algorithm wouldn't fix the underlying exposure anyway. Instead, each
+account gets a separate, single-purpose credential — a **pairing token** — used
+only to authenticate a device once in exchange for a bearer token. It's never
+used to log into the dashboard, and the dashboard password is never used to pair
+a device.
 
 - Generated automatically at account creation: 32-byte CSPRNG value,
   base64url-encoded, `rcl_pair_...` prefix. One per user, valid indefinitely
-  until regenerated or revoked (not single-use, not scoped per-device).
-- **Postgres stores it reversibly** — `users.pairing_token_enc`, AES-256-GCM
-  (`crypto/aes`/`crypto/cipher`, stdlib) — a deliberate departure from how every
-  other credential in this system is stored. This is justified specifically
-  because a pairing token isn't a user-chosen secret carrying the same stakes as
-  a password; it's closer in kind to an API key, and the dashboard needs to
-  redisplay it on demand (see below) rather than forcing a regenerate-to-view
-  flow the way a show-once bearer/session token does. The AES key
-  (`PAIRING_TOKEN_KEY`, 32 random bytes, base64-encoded) is operator-generated
-  and lives in the backend's `.env` alongside the Worker service secret (§5a)
-  and D1 migration credential (§5b) — it isn't Cloudflare/Terraform-managed,
-  since it never needs to leave the backend's own trust boundary.
-- **D1 stores only `SHA-256(pairing_token)`** — the same shape and reasoning as
-  the existing device-token/session-token hashing: the token already carries
-  ~256 bits of entropy, so a leaked hash alone doesn't yield a usable
-  credential. Unlike the password-hash mirror it replaces, a full D1 compromise
-  now exposes nothing password-derived at all — only a credential whose sole
-  purpose is pairing new devices, independently revocable from the account's
-  actual login credential.
-- **Device pairing is single-credential.** A device submits only the pairing
-  token to the Worker — no username. The Worker hashes it, looks up the owning
-  `user_id` directly (a pairing token hashes to exactly one account), and issues
-  an opaque bearer token exactly as originally designed: 32-byte CSPRNG,
-  `rcl_live_...` prefix, hashed at rest (`SHA-256`) in D1's `tokens` table,
-  revoked by row deletion. Nothing about bearer-token issuance, storage, or
-  revocation changes from the original design — only what's submitted to obtain
-  one. A JWT was considered here too (for the same reasons as the original
-  design) and rejected for the same reason: a DB lookup already happens on every
-  request for revocation, so a JWT's main benefit doesn't apply, and it adds
-  signing/claims-schema surface for no payoff at this scale. Implemented as
-  `POST /pair` (request: `pairing_token`, `device_name`, `device_type`;
-  response: the raw bearer token, shown exactly once). `tokens.last_used_at` is
-  touched on every subsequent authenticated device request (`POST /queue`,
-  `GET /queue`, `POST /queue/:id/claim`) via a fire-and-forget write
+  until regenerated or revoked.
+- **Postgres stores it reversibly** — `users.pairing_token_enc`, AES-256-GCM — a
+  deliberate departure from how every other credential here is stored, justified
+  because a pairing token isn't a user-chosen secret carrying a password's
+  stakes; it's closer to an API key, and the dashboard needs to redisplay it on
+  demand rather than forcing a regenerate-to-view flow. The AES key
+  (`PAIRING_TOKEN_KEY`) is operator-generated and lives in the backend's `.env`
+  alongside the Worker service secret (§5a) and D1 migration credential (§5b) —
+  it never leaves the backend's trust boundary.
+- **D1 stores only `SHA-256(pairing_token)`** — the token already carries ~256
+  bits of entropy, so a leaked hash alone yields nothing usable. A full D1
+  compromise now exposes no password-derived material at all, only a credential
+  whose sole purpose is pairing new devices.
+- **Device pairing is single-credential** — a device submits only the pairing
+  token, no username; the Worker hashes it, looks up the owning `user_id`
+  directly, and issues an opaque bearer token (32-byte CSPRNG, `rcl_live_...`
+  prefix, hashed at rest in D1's `tokens` table, revoked by row deletion).
+  Implemented as `POST /pair` (request:
+  `pairing_token`/`device_name`/`device_type`; response: the raw bearer token,
+  shown exactly once). `tokens.last_used_at` is touched on every subsequent
+  authenticated device request via a fire-and-forget write
   (`ExecutionContext.waitUntil`), so it never adds latency to the request it's
   authenticating.
-- **Pairing-token management** — new session-gated backend endpoints
-  (dashboard-facing, not Worker-facing):
-  - `GET /api/pairing-token` — decrypts and returns the current token, so it's
-    always viewable on the dashboard. (Show-once-then-hash-only, the pattern
-    used for bearer/session tokens, was considered and rejected specifically for
-    this credential: losing it would otherwise force a regenerate, which is a
-    worse default for something a person may not immediately save to a password
-    manager, unlike a login password or session token.) Also returns
-    `worker_url` (`Server.WorkerURL`, set from `cfg.WorkerURL`) alongside the
-    token. Pairing a device needs both values together, and the URL isn't a
-    secret, so making someone ask whoever deployed the instance for it was
-    friction with no security purpose. Bundled into this response rather than a
-    new endpoint or `GetCaptureConfig` (which is purpose-built for that screen's
-    regenerate-button drift detection, not a general instance-config catch-all)
-    since pairing is the one place both values are actually needed together. One
-    consequence: a user who's never generated a pairing token yet won't see the
-    Worker URL until they do (this endpoint 404s with no token issued) -- a
-    first-run-only gap judged acceptable, since generating a token is the very
-    next thing they'd do anyway.
-  - `POST /api/pairing-token/regenerate` — issues a new token, overwrites both
-    the Postgres (encrypted) and D1 (hashed) copies. Returns `worker_url` too,
-    for the same reason GET does.
-  - `DELETE /api/pairing-token` — revokes without reissuing, blocking further
-    device pairing until a regenerate.
-  - All three are built alongside Phase 2's device-auth work even though the
-    dashboard UI to call them doesn't exist until much later — this avoids a
-    second pass through `internal/auth` solely for the dashboard's sake once
-    it's built.
-- **D1's `users` table (§10) is no longer a credential mirror in the login
-  sense.** It exists purely to hold `pairing_token_hash` and give
-  `queue_items`/`tokens`/etc. a `user_id` foreign key target — nothing else
-  about an account needs to live there.
+- **Pairing-token management** — session-gated backend endpoints:
+  `GET /api/pairing-token` (decrypts and returns the current token — kept
+  viewable rather than show-once-then-hashed, since losing it would otherwise
+  force an unwanted regenerate; also returns `worker_url`, since pairing a
+  device needs both together), `POST /api/pairing-token/regenerate` (issues a
+  new one, overwrites both copies), and `DELETE /api/pairing-token` (revokes
+  without reissuing, blocking further pairing).
+- D1's `users` table (§10) holds only `pairing_token_hash` and a `user_id`
+  foreign-key target — nothing else about an account lives there.
 
 ```sql
 -- D1
@@ -685,17 +639,13 @@ CREATE INDEX idx_tokens_user_id ON tokens(user_id);
 ```
 
 **Dashboard → direct session auth against Postgres, DB-backed sessions.** The
-dashboard is a normal web app: it authenticates by checking
-`username`/`password_hash` directly in Postgres, with no involvement of D1 or
-the Worker at all. Sessions are **DB-backed** (a `sessions` table in Postgres),
-using the same hashed-opaque-token shape as device tokens above — a 32-byte
-CSPRNG value with a recognizable prefix (`rcl_sess_...`), stored as its SHA-256
-hash, with the raw value held only in an `HttpOnly`, `SameSite=Lax` cookie. This
-was a deliberate choice over a stateless signed cookie: it keeps sessions
-revocable the same way device tokens are (delete the row), at the cost of a DB
-lookup per authenticated request — an acceptable cost at this project's request
-volume, consistent with the reasoning already applied to device-token revocation
-and D1 polling elsewhere in this document.
+dashboard authenticates by checking `username`/`password_hash` directly in
+Postgres, with no D1 or Worker involvement. Sessions are DB-backed (a `sessions`
+table), using the same hashed-opaque-token shape as device tokens — a 32-byte
+CSPRNG value (`rcl_sess_...`), stored as its SHA-256 hash, with the raw value
+held only in an `HttpOnly`, `SameSite=Lax` cookie. This keeps sessions revocable
+the same way device tokens are (delete the row), at the cost of a DB lookup per
+request.
 
 ```sql
 -- Postgres
@@ -715,150 +665,77 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 ```
 
 Sessions have a 30-day absolute TTL (`expires_at`) and no idle-timeout expiry —
-`last_seen_at` is updated on every authenticated request. Logout deletes the
-row. This is simpler than reusing the device-token mechanism and avoids needing
-a `tokens` table in Postgres — the earlier design's ambiguity about "does the
-backend keep its own copy of tokens" is resolved by not needing one; `sessions`
-and D1's `tokens` are two distinct, independently-revocable credential systems
-for two distinct kinds of client.
+`last_seen_at` updates on every authenticated request. Logout deletes the row.
+`sessions` and D1's `tokens` are two distinct, independently-revocable
+credential systems for two distinct kinds of client, so there's no Postgres
+`tokens` table at all.
 
-**`user_agent` (Active Sessions dashboard view) is exactly the "plausible
-future" this table's own original design already anticipated**: captured once at
-sign-in (the request's `User-Agent` header, verbatim, `startSession`), parsed
-fresh on every _read_ rather than split into columns at write time. No IP
-address column at all — a self-hosted tool's own IP-derived "location" would be
-meaningless at best, and there's no trusted-proxy configuration in this app to
-safely attribute an IP to the real client rather than a reverse proxy in front
-of it anyway.
+`user_agent` is captured once at sign-in (verbatim, unparsed) and parsed fresh
+on every read (Active Sessions screen) rather than split into columns at write
+time. No IP address column — a self-hosted tool's IP-derived "location" would be
+meaningless without a trusted-proxy configuration this app doesn't have.
 
 ### Manage Devices dashboard screen
 
-Because D1 is the sole owner of device tokens, this isn't purely a UI-only
-addition — the data (`tokens.device_name`, `device_type`, `created_at`,
-`last_used_at`) already exists in D1, but the dashboard/backend has no existing
-path to read or mutate it. Three pieces are needed:
+D1 is the sole owner of device tokens, so this needs real plumbing, not just a
+UI: `GET /internal/tokens?user_id=`/`DELETE /internal/tokens/:id?user_id=` (two
+Worker endpoints, gated by the service secret, §5a — the `user_id` on the delete
+call is checked against the token's actual owner, so a backend-side bug passing
+the wrong id pair deletes nothing rather than someone else's device); a backend
+passthrough (`internal/devices`, `GET /api/devices`/`DELETE /api/devices/{id}`)
+since the dashboard has no Worker credential of its own; and
+`recueil device list <username>`/ `recueil device revoke <username> <device-id>`
+as an operator-only CLI escape hatch for the rare lost-device case (`revoke`
+lists first rather than revoking blind, so a wrong device id fails clearly
+before ever reaching the Worker).
 
-1. **Two new Worker endpoints**, gated by the backend↔Worker service secret
-   (§5a): `GET /internal/tokens?user_id=` (list a user's device tokens) and
-   `DELETE /internal/tokens/:id?user_id=` (revoke one). Both simple,
-   single-operation endpoints, consistent with the "dumb Worker" principle.
-   **Built as part of Phase 2.** The revoke endpoint's `user_id` query parameter
-   is not just for listing — it's also required on the delete call and checked
-   against the token's actual owning user before the row is removed; a mismatch
-   deletes nothing rather than someone else's device. This is a deliberate
-   belt-and-suspenders addition beyond the original design: the Worker still
-   doesn't know about roles (see point 3 below, unchanged), but this catches a
-   backend-side bug that passes the wrong `user_id`/token `id` pair, at no real
-   cost.
-2. **A backend API passthrough**: the dashboard never talks to the Worker
-   directly (it has no bearer token or service secret of its own); it calls the
-   backend, which makes the outbound authenticated call to the Worker and
-   returns the result. This keeps the backend the single place that holds the
-   service secret. **Built in Phase 6** as `internal/devices`
-   (`GET /api/devices`, `DELETE /api/devices/{id}`) — a small package of its own
-   rather than folding into `internal/mirror` or `internal/deviceapi`: it
-   authenticates as the backend itself (the service secret), same credential
-   tier as `mirror` and `internal/ingest.WorkerClient`, which is a different
-   actor from `internal/deviceapi`'s paired-device bearer token, so it doesn't
-   belong there either.
-3. **Authorization scope: reconsidered from the original plan.** The original
-   design let an admin list/revoke _any_ user's devices from the dashboard
-   (useful, in principle, for responding to a compromised account without
-   waiting on that user). **Reversed in Phase 6** once actually built: managing
-   _another account's_ access is deliberately not a session-authenticated web
-   capability in this app, the same reasoning that already keeps user creation
-   itself CLI-only (`recueil user create`) rather than a dashboard feature —
-   reaching into another user's access shouldn't be one browser session away.
-   `GET /api/devices`/`DELETE /api/devices/{id}` are now strictly self-scoped
-   for every role, no exceptions; `resolveTargetUserID` and its `?user_id=`
-   handling were removed from `internal/httpapi` entirely. **One narrow
-   exception, later (Phase 16):** `GET /api/admin/stats` is the first real
-   caller of `RequireAdmin`, and it does cross a user boundary — but not the one
-   this reasoning is actually about. What's being protected against here is an
-   admin _acting on_ or _seeing into_ another account (its devices, its archived
-   pages, anything identifying) from a web session. Admin stats exposes none of
-   that: byte counts and capture counts, aggregated and per-username, with no
-   titles, URLs, or tags anywhere in the response — there's no "account access"
-   in it to reach into, read-only, nothing actionable.
+`GET /api/devices`/`DELETE /api/devices/{id}` are strictly self-scoped for every
+role — managing _another account's_ devices isn't a session-authenticated web
+capability at all, the same reasoning that keeps user creation itself CLI-only.
+Reaching into another user's access shouldn't be one browser session away. The
+one exception, `GET /api/admin/stats`, doesn't cross this boundary in the sense
+that matters — it exposes aggregated byte/capture counts per username, nothing
+identifying or actionable, so there's no real account access to protect.
 
-   **Built (Phase 9):** `recueil device list <username>` and
-   `recueil device revoke <username> <device-id>` (`cmd/device.go`) are the
-   operator-only CLI escape hatch this point originally just planned for — the
-   person who deployed the instance, not merely an admin account within it,
-   handling the rare lost-device case directly. Postgres is only ever consulted
-   to resolve a username into the user id `internal/devices.Client`'s calls need
-   (exactly the arbitrary `userID`-per-call shape this client already had,
-   unused until now); the actual list/revoke still goes through the same Worker
-   client the dashboard's own handlers use, not a separate path. `revoke` lists
-   first rather than revoking blind, so a wrong device id fails with a clear "no
-   such device" before ever reaching the Worker, and a successful run reports
-   which device it revoked by name. The Worker's own `?user_id=` parameter on
-   `DELETE /internal/tokens/:id` (point 1 above) stays exactly as it was — it's
-   still real defense-in-depth against a backend-side bug passing the wrong id
-   pair, independent of whether the caller is the dashboard or this CLI command.
-
-One behavior worth documenting rather than treating as a bug: revocation is
-**not** a live push to the device. A revoked extension/PWA/CLI will keep working
-until its next request to the Worker, at which point the token lookup fails and
-it gets a 401 — at that point it needs to be re-paired. There's no mechanism
-(and none is planned) to immediately invalidate an in-flight session on the
-device side.
+Revocation is **not** a live push to the device — a revoked extension/PWA/CLI
+keeps working until its next request to the Worker, which then 401s and requires
+re-pairing.
 
 ### Active Sessions dashboard screen
 
-The `sessions` table's `user_agent` column (see above) plus a small set of new
-self-scoped endpoints — no Worker/D1 involvement at all, unlike Manage Devices:
-sessions have always lived entirely in Postgres.
+Self-scoped endpoints backed entirely by the `sessions` table's `user_agent`
+column — no Worker/D1 involvement, since sessions have always lived entirely in
+Postgres.
 
-- **User-Agent parsing via `github.com/medama-io/go-useragent`, not
-  hand-rolled.** a browser/OS User-Agent parser needs to track an
-  actively-shifting landscape (new browser versions, Chrome's own User-Agent
-  Reduction effort, etc.) that a one-off regex would need ongoing maintenance to
-  keep up with in a way a maintained library already does.
-- **Parsed at read time, not write time** — `sessionResponseFromSession`
-  (`internal/httpapi`) calls the parser fresh on every `GET /api/sessions`,
-  rather than storing browser/OS/device-class as their own columns when the
-  session row is created.
-- **The current session is never revocable through this endpoint at all** —
-  `DeleteSession` checks the request's own session id (a new
-  `auth.SessionIDFromContext`, threaded through `RequireSession`'s middleware
-  alongside the existing user) against the one being deleted and refuses (400)
-  if they match. Signing out (the existing `POST /api/auth/logout` flow) is the
-  correct, already-understood way to end your own current session; letting this
-  endpoint delete it too would mean the DELETE request itself succeeds and then
-  the very next request — including whatever the dashboard tried to do next —
-  starts 401ing with no obvious explanation.
+- User-Agent parsing uses `github.com/medama-io/go-useragent`, not a hand-rolled
+  regex — browser/OS strings shift too often (new versions, Chrome's User-Agent
+  Reduction effort) for a one-off implementation to track.
+- Parsed at read time (`sessionResponseFromSession`, fresh on every
+  `GET /api/sessions`), not stored as separate columns at write time.
+- The current session is never revocable through this endpoint — `DeleteSession`
+  checks the request's session id (`auth.SessionIDFromContext`) against the one
+  being deleted and refuses (400) if they match, since deleting your own live
+  session would 401 your very next request with no obvious explanation. Signing
+  out (`POST /api/auth/logout`) is the correct way to end that one.
 
 ### API tokens (machine access, e.g. MCP)
 
-A third credential type, distinct from both device tokens and sessions —
-motivated by the planned MCP server (its own future section, not yet written —
-built in a later phase on top of this): a standing credential for a **program**
-acting on a user's behalf against the backend's own HTTP API directly, outside a
-browser, that isn't tied to a login session's TTL/idle-refresh semantics and
-isn't the pairing-token/D1 device-auth path either.
+A third credential type, distinct from both device tokens and sessions — for a
+**program** acting on a user's behalf against the backend's HTTP API directly
+(the MCP server, §15), outside a browser, needing a credential valid until
+explicitly revoked rather than tied to a session's TTL or the Worker/D1
+device-pairing path.
 
-**Why neither existing mechanism fits:**
+Neither existing mechanism fits: a session's 30-day TTL assumes a browser that
+can refresh it, which a long-running local MCP client has no way to do; and the
+pairing-token → device-token flow is specifically a Worker/D1 relay — the
+backend itself never inspects that credential, and MCP calls hit the backend's
+HTTP server directly, so routing through D1 would add a pointless round-trip for
+no benefit.
 
-- **Not a session.** Sessions exist for the dashboard's own browser-based login
-  and are DB-backed with a 30-day absolute TTL, refreshed via `last_seen_at` on
-  every request. A long-running local MCP client (e.g. a desktop app's config
-  pointing at a bearer token) has no browser and no login flow to refresh
-  anything through — it needs a credential that's simply valid until explicitly
-  revoked.
-- **Not a device token.** The pairing-token → device-token flow (above) is
-  specifically the Worker/D1 relay path: a device submits the pairing token to
-  the _Worker_, which issues a bearer token _stored and checked in D1_. That
-  path authenticates the extension/PWA/CLI/shortcut against the Worker's queue
-  endpoints — the backend itself never even inspects that credential. MCP tool
-  calls will hit the backend's own HTTP server directly; routing that through D1
-  for no reason would mean either teaching the backend to verify a D1-shaped
-  credential it currently has no relationship with, or adding a pointless Worker
-  round-trip.
-
-**Decision: a fourth token in the existing hashed-opaque-token family,**
-Postgres-only, same shape as `sessions`/D1 device tokens but with no
-`expires_at` at all — closer in kind to a personal access token:
+A fourth token in the existing hashed-opaque-token family, Postgres-only, same
+shape as `sessions`/D1 device tokens but with no `expires_at` — closer to a
+personal access token:
 
 ```sql
 CREATE TABLE api_tokens (
@@ -875,199 +752,108 @@ CREATE TABLE api_tokens (
 CREATE INDEX idx_api_tokens_user_id ON api_tokens(user_id);
 ```
 
-- **Generation and storage reuse existing primitives, not new crypto.**
-  `internal/auth.GenerateSessionToken` already generates a 32-byte CSPRNG value
-  and hashes it via `HashToken` (SHA-256); the new `GenerateAPIToken` is the
-  same call shape with a distinct prefix, `rcl_api_...`, added to the same
-  human-recognizable-prefix convention as
-  `rcl_sess_`/`rcl_pair_`/`rcl_live_`/`rcl_bootstrap_`. Shown once at creation,
-  exactly like a session token or the original device bearer token — never
-  redisplayed, unlike the pairing token (§5's redisplay behavior is specific to
-  the pairing token's role as a long-lived, occasionally-needed-again secret; an
-  API token is a per-client credential where losing it just means minting a new
-  one and revoking the old).
-- **`last_used_at` updated synchronously** on every authenticated MCP request,
-  not the fire-and-forget `waitUntil` pattern used for D1 device tokens (§5) —
-  that pattern exists specifically to stay under Cloudflare Workers' 10ms CPU
-  budget, which doesn't apply here; a plain synchronous `UPDATE` against
-  Postgres is negligible overhead and keeps the write ordered with the request
-  it's attributed to.
-- **Revocation is effectively immediate**, unlike the device-token note above
-  about revocation not being a live push: there's no cross-system propagation
-  here (no Worker, no D1) — Postgres is checked synchronously on every request,
-  so a `DELETE /api/tokens/{id}` takes effect on the very next request made with
-  that token.
+- Generation/storage reuse existing primitives (`GenerateSessionToken`'s same
+  shape, `HashToken`'s same SHA-256) under a new `rcl_api_...` prefix. Shown
+  once at creation, never redisplayed — unlike the pairing token, which is
+  redisplayed because losing it forces a regenerate; an API token just gets
+  replaced.
 
-**New self-scoped endpoints** (session-gated, dashboard-facing — same tier as
-the pairing-token management endpoints above):
+New self-scoped endpoints: `POST /api/tokens` (mint; response: the raw token,
+once), `GET /api/tokens` (list, never the token/hash), `DELETE /api/tokens/{id}`
+(revoke). `internal/auth.RequireAPIToken` is structurally parallel to
+`RequireSession` — extracts the bearer token, hashes, looks up `api_tokens`,
+loads the user via the same `auth.UserFromContext` every handler already reads
+from — and is mounted only on the MCP route group, not on `/api/*` generally.
 
-- `POST /api/tokens` — mint a new token; request: `{name}`; response: the raw
-  token, shown exactly once.
-- `GET /api/tokens` — list `{id, name, created_at, last_used_at}` for the
-  current user; never the token or its hash.
-- `DELETE /api/tokens/{id}` — revoke.
-
-**New middleware:** `internal/auth.RequireAPIToken(q *db.Queries)`, structurally
-parallel to the existing `RequireSession` — extracts
-`Authorization: Bearer rcl_api_...`, hashes, looks up `api_tokens`, and loads
-the user into context via the same `auth.UserFromContext` every other handler
-already reads from. Once the MCP server exists, this middleware will be mounted
-only on its route group, not on `/api/*` generally — session cookies remain the
-only credential accepted there.
-
-**Dashboard UI: folded into the existing Manage Devices screen**, as a second
-list alongside paired devices, rather than a new settings page. An API token
-isn't literally a device in the pairing-token/D1 sense, but both lists answer
-the same underlying question — "what has standing access to my archive right
-now" — and a user managing one naturally wants to see the other. The two lists
-stay backed by clearly separate data (`api_tokens` here vs. D1 `tokens` via
-`internal/devices`) and separate endpoints; only the screen groups them.
+Surfaced in the dashboard as a second list on the existing Manage Devices screen
+rather than a new page: an API token isn't literally a device, but both lists
+answer the same question — "what has standing access to my archive right now."
 
 ### 5a. Backend ↔ Worker service authentication
 
-The backend itself is a distinct, higher-privilege actor from any single user's
-device — it polls for pending captures and pushes mirror rows across _all_ users
-in a deployment, and (per above) needs to issue revoke calls. This needs its own
-credential, separate from the per-device token system.
+The backend is a distinct, higher-privilege actor from any single user's device
+— it polls for pending captures and pushes mirror rows across _all_ users in a
+deployment, and issues revoke calls. This needs its own credential, separate
+from the per-device token system.
 
-**Decision: a static shared secret.**
+**A static shared secret**, generated via Terraform's `random_password`
+resource, injected into the Worker as a binding, and copied by the operator into
+the backend's `.env`. Checked by the Worker as a header (`X-Service-Key`) on the
+small set of backend-only endpoints. Rotation is regenerate + redeploy —
+acceptable given a single backend per deployment and infrequent rotation.
 
-- Generated via Terraform's `random_password` resource at `terraform apply`
-  time, output with `sensitive = true` so it doesn't leak into plaintext
-  state/CI output.
-- Injected into the Worker as an environment binding/secret.
-- The operator copies it from `terraform output` into the backend's `.env` after
-  apply.
-- Checked by the Worker as a header (e.g. `X-Service-Key`) on the small set of
-  backend-only endpoints (poll `pending_captures`, push credential/ bookmark
-  mirror rows, revoke a device token).
-- Rotation = regenerate + redeploy, which is acceptable at this operational
-  scale (single backend per deployment, infrequent rotation).
-
-Alternatives considered and rejected:
-
-- Reusing the `tokens` table with a "service" row — doesn't fit, since
-  `tokens.user_id` is scoped to one user and the backend needs cross-user
-  access.
-- mTLS or Cloudflare Access service tokens — real options, but add meaningfully
-  more operational complexity (cert management, or an additional Cloudflare
-  product dependency) for no real benefit at this scale.
+Two alternatives were rejected: reusing the `tokens` table with a "service" row
+(`tokens.user_id` is scoped to one user; the backend needs cross-user access),
+and mTLS or Cloudflare Access service tokens (real options, but more operational
+complexity than this scale needs).
 
 ### 5b. Backend ↔ Cloudflare D1 migrations
 
-The backend applies D1 schema migrations itself, at startup, rather than
-requiring the operator to install and run `wrangler d1 migrations apply` —
-consistent with the same "no external tool needed to run the binary" goal that
-also keeps Postgres migrations self-applied (§13a). This means the backend needs
-to reach Cloudflare's D1 query API directly — the one place in the system where
-the backend talks to Cloudflare directly rather than exclusively through the
-Worker. This doesn't weaken the "backend stays fully non-public" property
-elsewhere in this document (§2, §11): that property is about _inbound_
-reachability, which is unaffected; this is a new _outbound_ path only, initiated
-by the backend, never received by it.
+The backend applies D1 schema migrations itself at startup, rather than
+requiring `wrangler d1 migrations apply` — consistent with the same "no external
+tool needed to run the binary" goal that also keeps Postgres migrations
+self-applied (§13a). This is the one place the backend talks to Cloudflare
+directly rather than exclusively through the Worker; it doesn't weaken the
+"backend stays fully non-public" property elsewhere (§2, §11), since that
+property is about _inbound_ reachability, and this is a new _outbound_ path
+only.
 
-- **Migrations live at `terraform/worker/migrations/*.sql`** — the same files
-  that define the D1 schema conceptually, embedded into the Go binary via
-  `go:embed` at build time (not fetched at runtime). Applied migrations are
-  tracked in a `schema_migrations` table (§10) that the backend creates and owns
-  itself.
-- Deliberately **not** wrangler's `d1_migrations` table/convention — wrangler is
-  not part of this project's toolchain anywhere, and reusing that name would
-  risk two independent, uncoordinated bookkeeping systems touching the same
-  table if an operator ever pointed `wrangler` at the database directly out of
-  habit.
-- **Credential: a Cloudflare API token scoped to `D1:Edit` on this one
-  database** — provisioned via Terraform's `cloudflare_api_token` resource,
-  output as `sensitive`, copied into the backend's `.env` alongside the Worker
-  service secret from §5a. This is a materially different kind of credential
-  from the service secret: an actual Cloudflare account-level token, not an
-  application-level shared secret, and narrower in scope than a full-account
-  token.
-- Runs once at startup, alongside the bootstrap-admin check below — a no-op once
-  nothing's pending. Safe to call on every restart.
+- Migrations live at `terraform/worker/migrations/*.sql`, embedded into the Go
+  binary via `go:embed`. Applied migrations are tracked in a `schema_migrations`
+  table (§10) the backend creates and owns — not wrangler's `d1_migrations`
+  convention, since wrangler isn't part of this project's toolchain anywhere.
+- Credential: a Cloudflare API token scoped to `D1:Edit` on this one database —
+  a real Cloudflare account-level token, narrower in scope than a full-account
+  one, and distinct from the Worker service secret.
+- Runs once at startup, alongside the bootstrap-admin check; a no-op once
+  nothing's pending.
 
-This was a deliberate tradeoff, not an oversight: the alternative (a Worker
-endpoint that runs migrations, gated by the existing service secret, keeping the
-Worker as the sole thing that ever touches D1) was considered and rejected,
-because it would mean a schema change requires a Worker redeploy (a
-`terraform apply`) even when nothing about the Worker's own code changed — worse
-operator friction than holding one additional narrowly-scoped credential.
+The alternative — a Worker endpoint that runs migrations, keeping the Worker as
+the sole thing that ever touches D1 — was considered and rejected: it would mean
+a schema change requires a Worker redeploy even when nothing about the Worker's
+code changed, worse operator friction than holding one additional
+narrowly-scoped credential.
 
 ### Account creation and roles
 
-- **Registration, gated by `ENABLE_OPEN_REGISTRATION` (default `false`).**
-  Anyone who can reach the dashboard while this is enabled can create a `member`
-  account via a signup form — no invite step. This was originally planned
-  open-by-default (reachability is already gated by whatever network the
-  operator chose — LAN/VPN/tunnel — so anyone who can reach the signup form is
-  presumed already trusted at the network level, the same way anyone on a home
-  LAN can usually reach a router's admin page), but landed closed-by-default
-  instead once actually built (Phase 9): a self-hosted personal archiving tool
-  has no business letting anyone who can reach it create their own account
-  without the operator opting in, and the bootstrap flow plus
-  `recueil user create` already cover account creation without it. An operator
-  running a small family/friends deployment who wants self-serve signup (or a
-  future hosted/SaaS mode, where open signup is the default expectation) can
-  still turn it on.
-- **Bootstrap token for the first admin, held in memory, not persisted.** On
-  startup, if `users` is empty, the backend generates a random bootstrap token
-  (32-byte CSPRNG, base64url-encoded, `rcl_bootstrap_...` prefix), prints it to
-  the backend's logs, and holds it — token value, a 1-hour expiry, and a
-  consumed flag — entirely in a process-local value, never written to Postgres.
-  A restart before the token is used simply generates a new one; the old one is
-  gone. This is a correction from an earlier revision of this design, which
-  specified a persisted `bootstrap_token` table: that approach had a real bug —
-  a restart before use would silently leave the _previous_ token valid until its
-  own expiry, alongside a newly generated one. The in-memory approach can't have
-  that failure mode, since there's nothing left to be stale after a restart.
-
-  The dashboard's "create first admin" screen requires this token as well as a
-  username/password. The token is only marked consumed after the admin account
-  is actually created **successfully** — not merely validated — so a request
-  that fails after validation (a username race, a transient DB error) can be
-  retried with the same token rather than requiring a full restart to get a
-  fresh one. This closes the narrow race where the dashboard is briefly
-  reachable on the network before the operator has locked it down — without the
-  token, reaching the setup screen isn't enough to claim admin.
-
-  This design assumes exactly one backend process. That assumption was already
-  implicit elsewhere (§5a's service-secret rotation reasoning assumes "single
-  backend per deployment"), but an in-memory, unshared bootstrap token makes it
-  a hard constraint for this one flow specifically: a second replica would hold
-  its own independent token, invisible to the first, until whichever one
-  processes the setup request wins.
-
-- **Roles:** `admin` and `member`. Add to the `users` schema:
-  ```sql
-  ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
-  -- values: 'admin' | 'member'
-  ```
-  Admins can create/manage other users; members manage only their own
-  bookmarks/tags/collections. Role is purely a backend/dashboard authorization
-  concern and is **not** included in the D1 mirror — D1 only needs enough to
-  authenticate a device and identify its owning `user_id`, never authorization
-  decisions.
-- **Operator account management via CLI, bypassing both the dashboard and the
-  bootstrap token.** `recueil user create <username> [--role admin|member]` and
-  `recueil user reset-password <username>` sit alongside the bootstrap-token
-  flow above, not in place of it — they're for an operator who already has shell
-  access to the box the backend runs on, useful anywhere the dashboard isn't
-  available yet (e.g. before Phase 4 ships) or where curling the HTTP API by
-  hand would be unpleasant. Both connect straight to Postgres using the same
-  config `recueil server` reads (`config.Load()`), apply migrations the same way
-  `server` does, and call the same `auth` package functions (`HashPassword`,
-  `GeneratePairingToken`, `EncryptPairingToken`) and `sqlc` queries the HTTP
-  handlers already use — there's no separate code path to keep in sync, just a
-  different transport (direct DB access instead of HTTP). `user create` also
-  pushes the new pairing token's hash to D1 via `internal/mirror`, exactly as
-  `POST /api/setup`/`POST /api/auth/register` do, since a token that only exists
-  in Postgres can't actually pair a device. `user reset-password` additionally
-  calls `DeleteSessionsForUser`, invalidating any existing dashboard sessions —
-  a pre-reset cookie staying valid would undercut the point of resetting a
-  password. Neither command touches the bootstrap token itself; they're a
-  straight-line administrative path that requires server-level access (the same
-  trust boundary `server`/`agent`'s config already assumes), not a second way to
-  satisfy the first-admin flow's own token requirement.
+- **Registration is gated by `ENABLE_OPEN_REGISTRATION` (default `false`).**
+  When enabled, anyone who can reach the dashboard can create a `member` account
+  via a signup form, no invite step — appropriate for a small family/friends
+  deployment, or a future hosted/SaaS mode where open signup is expected. Closed
+  by default: a self-hosted personal archiving tool has no business letting
+  anyone who can reach it create an account without the operator opting in, and
+  the bootstrap flow plus `recueil user create` already cover account creation
+  without it.
+- **The first admin is created via an in-memory bootstrap token.** On startup,
+  if `users` is empty, the backend generates a random token
+  (`rcl_bootstrap_...`, 1-hour expiry), prints it to the logs, and holds it
+  entirely in a process-local value — a restart before it's used simply
+  generates a new one, with nothing stale left behind. The dashboard's "create
+  first admin" screen requires this token alongside a username/password; it's
+  marked consumed only after the account is actually created successfully, so a
+  request that fails after validation (a username race, a transient DB error)
+  can retry with the same token rather than needing a fresh one. This closes the
+  narrow race where the dashboard is briefly reachable before the operator has
+  locked it down — without the token, reaching the setup screen isn't enough to
+  claim admin. (This assumes exactly one backend process, already implicit in
+  §5a's service-secret rotation reasoning — a second replica would hold its own
+  independent token, invisible to the first.)
+- **Roles: `admin` and `member`.** `users.role`
+  (`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`). Admins
+  can create/manage other users; members manage only their own
+  bookmarks/tags/collections. Purely a backend/dashboard authorization concern,
+  not included in the D1 mirror — D1 only needs enough to authenticate a device
+  and identify its owning `user_id`, never authorization decisions.
+- **Operator account management via CLI**
+  (`recueil user create <username> [--role admin|member]`,
+  `recueil user reset-password <username>`), for an operator with shell access
+  to the box — connects straight to Postgres using the same config
+  `recueil server` reads, and calls the same `auth`/`sqlc` functions the HTTP
+  handlers use, so there's no separate code path to keep in sync. `user create`
+  pushes the new pairing token's hash to D1 the same way
+  `POST /api/setup`/`POST /api/auth/register` do. `user reset-password`
+  additionally invalidates any existing dashboard sessions, so a pre-reset
+  cookie can't stay valid.
 
 ### Security note: D1 as a mirror target
 
@@ -1077,153 +863,96 @@ doesn't mean zero risk:
 - The Worker itself is public, so a bug in its auth-check logic is a path to the
   D1-mirrored credentials. The Worker is kept intentionally minimal to limit
   this surface, but it isn't literally zero.
-- Cloudflare, as the D1 host, has access to the data at rest — using any managed
-  cloud service extends the trust boundary to that provider, which is a standard
-  tradeoff of this architecture and not unique to Recueil.
-- The practical residual risk is low, and lower than the design's original
-  revision: every credential D1 now holds — bearer-token hashes, the
-  pairing-token hash — is `SHA-256` of a CSPRNG-generated, ~256-bit-entropy
-  value, not anything human-chosen. There is no longer a password-derived value
-  of any kind in D1's mirror, so the earlier "password hashes need a proper
-  slow/salted hash, not SHA-256" caveat no longer applies to anything D1 stores.
-  The corresponding new risk lives entirely on the Postgres side instead:
-  `users.pairing_token_enc` is reversible by design (see §5), so a compromise of
-  both a Postgres backup and the `PAIRING_TOKEN_KEY` would expose usable pairing
-  tokens — notably, still not the account password itself, and a pairing token
-  alone only grants the ability to pair a new device, not dashboard access.
+- Cloudflare, as the D1 host, has access to the data at rest — a standard
+  tradeoff of using any managed cloud service, not unique to this project.
+- Every credential D1 holds — bearer-token hashes, the pairing-token hash — is
+  `SHA-256` of a CSPRNG-generated, ~256-bit-entropy value, never anything
+  human-chosen or password-derived. The corresponding risk lives on the Postgres
+  side instead: `users.pairing_token_enc` is reversible by design (see above),
+  so a compromise of both a Postgres backup and `PAIRING_TOKEN_KEY` would expose
+  usable pairing tokens — still not the account password itself, and a pairing
+  token alone only grants the ability to pair a new device, not dashboard
+  access.
 - The backend's D1 migration credential (§5b) is a second, narrower extension of
-  this trust boundary — scoped to `D1:Edit` on one database, used only at
-  startup, and distinct from the Worker service secret. It doesn't change the
-  "Worker stays public, backend stays private" shape (it's outbound-only from
-  the backend, same as everything else in §2), but it is a second real
-  Cloudflare credential the backend now holds, worth naming plainly alongside
-  the rest of this section's tradeoffs.
+  this trust boundary — scoped to `D1:Edit`, used only at startup, outbound-only
+  from the backend, same as everything else in §2.
 
-This tradeoff is accepted as part of the design and should be stated plainly in
-the repo's security documentation rather than left implicit.
+This tradeoff is accepted explicitly as part of the design.
 
 ### 5c. Cloudflare Browser Integrity Check bypass
 
-recueil's own non-browser Go clients — the CLI (`internal/deviceapi`) and the
-backend's Worker-facing clients (`internal/mirror`,
-`internal/ingest.WorkerClient`) — send every request with a fixed
-`User-Agent: recueil/1.0`. This exists because Cloudflare's Browser Integrity
-Check (BIC), when enabled on the zone, tends to flag exactly this shape of
-traffic (no browser TLS/JA3 fingerprint, no normal navigation headers) and drop
-it before it ever reaches the Worker — first hit years ago against a different
-zone, by the Python glue script this project's own CLI eventually replaced.
+recueil's own non-browser Go clients — the CLI and the backend's Worker-facing
+clients — send every request with a fixed User-Agent (`recueil/1.0`).
+Cloudflare's Browser Integrity Check (BIC), when enabled on the zone, tends to
+flag exactly this shape of traffic (no browser TLS/JA3 fingerprint, no
+navigation headers) and drop it before it reaches the Worker.
 
-A Terraform-provisioned `cloudflare_ruleset` (`terraform/waf.tf`'s
-`browser_integrity_check_bypass`, toggled by
-`var.enable_browser_integrity_check_bypass`, default `true`) skips BIC for
-requests matching that User-Agent. One important caveat:
+A Terraform-provisioned `cloudflare_ruleset` (`browser_integrity_check_bypass`,
+default enabled) skips BIC for requests matching that User-Agent — keyed on
+User-Agent alone, not on a bearer token or service-key header, since
+`POST /pair` is unauthenticated by design and carries neither. BIC is a
+low-stakes anti-scraping heuristic, not a real security boundary, so identifying
+"one of our own clients" by User-Agent alone is sufficient; the Worker's
+per-route bearer-token/`X-Service-Key` checks (§5, §5a) do the actual
+authentication work entirely on their own.
 
-- **The bypass is keyed on User-Agent alone, not on the presence of a bearer
-  token or service-key header.** An earlier version of this rule required both —
-  but `POST /pair` (§5) is unauthenticated by design, carrying neither header,
-  so a bearer-token requirement would leave pairing exposed to the exact
-  BIC-flagging problem this rule exists to fix. BIC is a low-stakes
-  anti-scraping heuristic, not a real security boundary, so identifying "this is
-  one of our own clients" by User-Agent alone is sufficient here — this rule
-  makes no attempt to enforce real authentication; the Worker's own per-route
-  bearer-token/`X-Service-Key` checks (§5, §5a) still do that job entirely on
-  their own.
-
-**The browser extension is deliberately untouched by any of this.** Its requests
-carry a real browser's TLS fingerprint and User-Agent, so BIC isn't expected to
-flag them in the first place — and forcing a custom User-Agent onto a
-WebExtension's own `fetch()` calls isn't something the browser reliably allows
-anyway.
-
-**The User-Agent string is a fixed protocol constant, not a release version.**
-`recueil/1.0` doesn't track the CLI/backend's actual build version (§13a) and
-isn't threaded through from it. Coupling the two would mean every app release
-needs a coordinated `terraform apply` to keep the WAF rule's exact-match
-expression working — otherwise the bypass silently breaks the moment a binary
-ships ahead of (or behind) the infra change. This string only needs to answer
-"is this one of our own clients," never "which version," so it's bumped only if
-its own meaning ever changes, independent of ordinary releases.
+The browser extension is untouched by any of this — its requests already carry a
+real browser's TLS fingerprint and User-Agent. The User-Agent string itself is a
+fixed protocol constant (`recueil/1.0`), not the actual release version —
+coupling the two would mean every app release needs a coordinated
+`terraform apply` to keep the WAF rule's exact-match expression working.
 
 ### 5d. Dashboard settings (`user_settings`)
 
-**A dedicated table, not more columns on `users`.** `users` already holds
-account-identity concerns (credentials, role, the pairing token); dashboard
-preferences are a different kind of thing — user-editable, expected to grow over
-time (language today, plausibly a theme or other display preferences later), and
-with no reason to be tangled into the same row that authentication code paths
-read and write. `user_settings.user_id` is the table's own primary key, not a
-separate identity column — a genuine 1:1 extension of `users`, not a one-to-many
-relationship, so there's no reason for a settings row to have an identity
-distinct from the account it belongs to.
+A dedicated table, not more columns on `users` — dashboard preferences (language
+today, plausibly theme/display preferences later) are a different kind of thing
+from account-identity concerns, with no reason to share a row that
+authentication code paths read and write. `user_settings.user_id` is the table's
+primary key: a 1:1 extension of `users`, not a one-to-many relationship.
 
-**No row exists until a user's first `PATCH`.** There's no backfill migration
-creating a row for every existing account, and no row-creation hook on
-account-creation paths (`Setup`, `Register`, `recueil user create`) either —
-deliberately, to keep this addition fully decoupled from every one of those
-existing flows rather than touching all of them for a feature that's still
-inert. `GET /api/settings` treats "no row" and "a row with `language` explicitly
-`NULL`" as exactly the same thing: both render as `{"language": null}`, both
-mean "no override, fall back to auto-detection once the dashboard has one."
+No row exists until a user's first `PATCH` — no backfill migration, no
+row-creation hook on any account-creation path. `GET /api/settings` treats "no
+row" and "a row with `language` explicitly `NULL`" identically (both render
+`{"language": null}`, meaning "no override, fall back to auto-detection");
 `PATCH /api/settings` is accordingly an upsert
 (`ON CONFLICT (user_id) DO UPDATE`), not an update that assumes a row already
-exists — a user's first-ever settings change is exactly as valid an operation as
-their hundredth.
+exists.
 
 ### 5e. Dashboard i18n (Paraglide JS)
 
-**A compiler, not a runtime library — a different choice from the extension's
-own i18n (§3k), not an inconsistency.** The extension uses the native
-WebExtensions `browser.i18n` API because that's a real platform primitive
-already built into the browser; nothing equivalent exists for arbitrary UI
-strings in a Vite-built SPA, so a library is genuinely warranted here in a way
-it wasn't there. Paraglide JS was chosen specifically because it's SvelteKit's
-own officially-recommended i18n integration. Its compile-time model (message
-keys become typed, tree-shaken functions rather than runtime dictionary lookups)
-also happens to be the closest available equivalent, in a Vite/Svelte context,
-to the "lean on a compiler/ platform primitive over a runtime abstraction"
-instinct that shaped §3k's own extension choice.
+A compiler, not a runtime library — a different choice from the extension's i18n
+(§3k) because the two problems are different: the extension has a real platform
+primitive (`browser.i18n`) already built in; nothing equivalent exists for
+arbitrary UI strings in a Vite-built SPA. Paraglide JS was chosen as SvelteKit's
+officially-recommended i18n integration, and its compile-time model (typed,
+tree-shaken message functions rather than runtime dictionary lookups) is the
+closest available equivalent to §3k's "lean on a compiler over a runtime
+abstraction" instinct.
 
-**recueil is not SvelteKit, so only Paraglide's framework-agnostic Vite plugin
-applies — deliberately none of its SvelteKit-specific integration.** The
-dashboard is plain Svelte 5 + Vite + `svelte-spa-router`: a client-only SPA, no
-SSR, no file-based routing. Most of Paraglide's own SvelteKit documentation
-(URL-based locale routing, `hooks.server.ts` middleware, cookie strategies for
-first-paint SSR) solves problems this dashboard doesn't have. The plain
-`paraglideVitePlugin` (one plugin, JSON message files, typed `m.*` functions,
-`getLocale()`/`setLocale()`) is Paraglide's own documented path for exactly this
-shape of app.
+recueil isn't SvelteKit, so only Paraglide's framework-agnostic Vite plugin
+applies — its SvelteKit-specific integration (URL-based locale routing, server
+middleware, SSR cookie strategies) solves problems a client-only SPA with no SSR
+doesn't have.
 
-**Locale resolution is a custom strategy backed by `user_settings.language`, not
-any of Paraglide's built-in cookie/localStorage/URL strategies.**
-`src/lib/locale.ts` defines a `custom-userSettings` client strategy
-(`defineCustomClientStrategy`) whose `getLocale()` reads a plain in-memory cache
-— client-side custom strategies must be synchronous, so a live network call on
-every lookup was never an option — populated once by `session.svelte.ts`'s
-existing bootstrap sequence (a third parallel `GET /settings` alongside its
-`/auth/me`/`/setup-status` reads) before `App.svelte` ever mounts the Router.
-Strategy order is `["custom-userSettings", "preferredLanguage", "baseLocale"]`:
-an explicit user override wins outright; absent that, Paraglide's built-in
-`preferredLanguage` strategy reads the browser's own `navigator.languages`
-(matched against `en`/`fr`); `baseLocale` (`en`) is the final fallback. This is
-exactly the two-tier behavior sketched out when `user_settings` was first
-proposed (§5d) — explicit override, then browser-language detection.
+Locale resolution is a custom strategy backed by `user_settings.language`, not
+any of Paraglide's built-in cookie/localStorage/URL strategies:
+`src/lib/locale.ts` defines a `custom-userSettings` client strategy whose
+`getLocale()` reads a plain in-memory cache (client-side custom strategies must
+be synchronous), populated once by `session.svelte.ts`'s existing bootstrap
+sequence before the Router ever mounts. Strategy order is
+`["custom-userSettings", "preferredLanguage", "baseLocale"]` — an explicit
+override wins outright; absent that, Paraglide's `preferredLanguage` strategy
+reads `navigator.languages`, falling back to `baseLocale` (`en`).
 
-**No Svelte reactivity (runes or otherwise) around locale changes.** Paraglide's
-own `setLocale()` triggers a full page reload by default, and its own docs argue
-that's the right tradeoff for a "user picks a language once" flow rather than
-something to optimize away — this project leans into that rather than fighting
-it, since the alternative (wrapping every localized string in a `$derived` that
-reads a locale rune, just to make `m.*()` calls reactive) is real, ongoing
-boilerplate at every call site for a change that happens rarely. `locale.ts`
-actually exports its own `applyLanguageOverride()` rather than calling
-Paraglide's exported `setLocale()` directly, though, because `setLocale()`'s own
-type only accepts a concrete `Locale` — it has no way to express "clear the
-override, fall back to `preferredLanguage`/`baseLocale`," which is exactly what
-picking "Automatic" in `Settings.svelte`'s language selector needs to do.
-`Settings.svelte` itself still owns persisting the choice to the backend
-(unchanged from §5d); `applyLanguageOverride()` only updates `locale.ts`'s own
-cache and reloads — the one thing Paraglide's `setLocale()` would otherwise have
-delegated to this strategy anyway.
+No Svelte reactivity around locale changes — Paraglide's `setLocale()` triggers
+a full page reload by default, and this project leans into that rather than
+fighting it (wrapping every localized string in a `$derived` just to make
+`m.*()` reactive would be real, ongoing boilerplate for a change that happens
+rarely). `locale.ts` exports its own `applyLanguageOverride()` rather than
+calling `setLocale()` directly, though, since `setLocale()`'s type only accepts
+a concrete `Locale` — it has no way to express "clear the override, fall back to
+`preferredLanguage`/`baseLocale`," which is exactly what picking "Automatic" in
+the language selector needs to do.
 
 ---
 
@@ -1487,7 +1216,7 @@ three cases, decided during Phase 2 rather than left as a uniform `409`:
   404 (which conventionally means "wrong ID") for "this happened, but it's
   over."
 - `409` — the item is actively claimed by another device and the claim hasn't
-  gone stale yet: a genuine, temporary conflict worth retrying later.
+  gone stale yet: a temporary conflict worth retrying later.
 
 Distinguishing these costs one extra `SELECT`, but only on the failure path — a
 successful claim is still a single `UPDATE ... RETURNING` with no additional
@@ -1619,10 +1348,10 @@ commits. Two things it lacked, both added together:
 
 - **`GET /internal/pending-captures?user_id=`** — the dashboard's own read-only,
   user-scoped listing, on the same path the claim `POST`s to. Same path,
-  different verb, genuinely different operation: the `POST` is the backend
-  taking work across every user and it mutates `claimed_at`; the `GET` is one
-  person looking at their own rows and mutates nothing. Listing must never
-  claim, or a dashboard left open would starve the ingester.
+  different verb, different operation: the `POST` is the backend taking work
+  across every user and it mutates `claimed_at`; the `GET` is one person looking
+  at their own rows and mutates nothing. Listing must never claim, or a
+  dashboard left open would starve the ingester.
 
   This exists because the window between "a device finished uploading" and "the
   backend has ingested it" was otherwise completely invisible — and at the
