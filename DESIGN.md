@@ -305,30 +305,9 @@ shape `git`/`ssh` already train people on). Neither command touches Viper or
 `internal/config` — everything they need is read from their own dedicated
 credentials file instead.
 
-- **`internal/clicreds`: `$XDG_CONFIG_HOME/recueil/credentials.json`, mode
-  `0600`, written via temp-file-then-atomic-rename** (the same pattern
-  `internal/archive` uses, for the same reason: a crash partway through a write
-  must never leave a half-written file at the real path). Not a `config.toml`
-  field: rewriting part of a file the user might hand-edit risks clobbering
-  their formatting, and a bearer credential deserves its own tighter-scoped file
-  regardless.
 - **`worker_url` is stored alongside the pairing-derived token, not as an
   independent setting** — a token is only ever meaningful for the Worker that
   issued it, so the two are captured, stored, and read together.
-  `recueil auth --url <worker-url>` requires `--url` explicitly (there's no
-  default and nothing to read one from); `recueil enqueue` reads both back from
-  the stored file, with no override flag of its own.
-- **Pairing token input is a masked prompt on a TTY, or stdin otherwise — never
-  a `--token` flag.** A flag would sit in shell history and system-wide `ps`
-  output for the process's whole lifetime — a real exposure for a bearer
-  credential. `mattn/go-isatty` decides which path to take;
-  `golang.org/x/term.ReadPassword` does the no-echo read. This gets
-  scriptability for free (`echo "$TOKEN" | recueil auth --url ...`) without ever
-  needing the flag.
-- **`internal/deviceapi`'s `Pair` and `Client` are separate, not one unified
-  type.** `POST /pair` is unauthenticated by nature — it's how a device obtains
-  a bearer token in the first place — while `Client.Enqueue` requires one
-  already in hand.
 - `recueil enqueue <url> [<url>...]` loops one `POST /queue` call per URL
   (there's no batch endpoint) and continues past an individual failure rather
   than stopping the whole batch, reporting a summary and a non-zero exit if
@@ -348,8 +327,7 @@ all.
   `<link rel="icon">`/`<link rel="apple-touch-icon">` tags first (preferring
   SVG, then the largest declared raster size), then falls back to
   `/favicon.svg`, `/favicon.png`, `/favicon.ico` in that order. `favicon_path`
-  simply stays `NULL` if none resolve — not every site has one, and not finding
-  one is never an error.
+  simply stays `NULL` if none resolve — not every site has one.
 - **No image processing.** Whatever bytes come back — including a legacy
   multi-resolution `.ico` — are stored exactly as received; every modern browser
   already renders `.ico` directly.
@@ -370,11 +348,6 @@ all.
 - **Ingestion is best-effort and never fails the capture.** A favicon fetch or
   disk-write failure is logged and ignored — a cosmetic loss, never a reason to
   lose an otherwise-good HTML capture.
-- **The extension's bookmark-list menu (§8) live-fetches the current favicon at
-  render time rather than storing one** — the same way a browser's native
-  bookmarks UI would. This sidesteps a real semantic question a stored copy
-  wouldn't: should the menu show the favicon as archived, or as it is right now?
-  For a live bookmark list, current is the more correct answer.
 
 ### 3h. Browser extension architecture
 
@@ -441,10 +414,6 @@ always.
   direct ones — a direct capture's tab is one the user already had open for
   their own reasons, and closing it out from under them would be disruptive.
   Left open on failure so the user can see what went wrong.
-- A missed periodic alarm doesn't accumulate: Chrome/Firefox both fire a
-  repeating alarm at most once on wake, never once per missed tick, so a laptop
-  suspended through several 6-hour periods triggers exactly one refresh on
-  resume.
 
 ### 3j. Bookmark sync (native browser bookmarks, not a custom list)
 
@@ -454,7 +423,7 @@ in-popup list — native bookmarks already have a full-featured, familiar UI
 match, and favicon display comes for free from the browser itself.
 
 - **Recueil only ever touches bookmarks inside one dedicated folder it creates
-  and manages.** It never searches the user's wider bookmark tree. Anything a
+  and manages** — it never searches the wider bookmark tree. Anything a
   person does inside that folder by hand — adding, renaming, moving — is
   unsupported: it gets overwritten or removed on the next ordinary sync, not
   just at teardown.
