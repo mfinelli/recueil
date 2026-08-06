@@ -173,7 +173,7 @@ specific networking solution.
 SingleFile isn't invoked as a separately installed extension via cross-extension
 messaging — there's no API for a third-party extension to do that and get a
 result back programmatically. Instead, the extension depends directly on
-SingleFile's own capture library (`single-file-core`) and calls it from its own
+SingleFile's capture library (`single-file-core`) and calls it from its own
 capture bundle (§3h covers the injection mechanism) — avoiding any dependency on
 a stable extension id, or requiring the user to install SingleFile separately.
 
@@ -406,7 +406,7 @@ always.
   `tabId -> queueItemId` map), and call `POST /queue/:id/complete` instead of
   `POST /captures/complete` when it's set. Everything upstream (inject, hash,
   presign, upload) is identical either way.
-- An abandoned claim needs no explicit handling — the Worker's own claim already
+- An abandoned claim needs no explicit handling — the Worker's claim already
   goes stale and becomes reclaimable after 15 minutes, the same mechanism the
   queue already has (§2). A tab-close listener tidies up the tracking map purely
   for storage hygiene.
@@ -417,40 +417,40 @@ always.
 
 ### 3j. Bookmark sync (native browser bookmarks, not a custom list)
 
-Syncs archived pages into the browser's own native bookmarks, not a custom
-in-popup list — native bookmarks already have a full-featured, familiar UI
-(search, folders, the browser's own manager) a cramped popup view would never
-match, and favicon display comes for free from the browser itself.
+Syncs archived pages into the browser's native bookmarks, not a custom in-popup
+list — native bookmarks already have a full-featured, familiar UI (search,
+folders, the browser's manager) a cramped popup view would never match, and
+favicon display comes for free from the browser itself.
 
 - **Recueil only ever touches bookmarks inside one dedicated folder it creates
-  and manages** — it never searches the wider bookmark tree. Anything a
-  person does inside that folder by hand — adding, renaming, moving — is
-  unsupported: it gets overwritten or removed on the next ordinary sync, not
-  just at teardown.
+  and manages** — it never searches the wider bookmark tree. Anything a person
+  does inside that folder by hand — adding, renaming, moving — is unsupported:
+  it gets overwritten or removed on the next ordinary sync, not just at
+  teardown.
 - **Reconciled by URL, not by tracking bookmark ids.** `GET /archived-pages`'s
   `raw_url` is sourced from `pages.normalized_url` — the exact column `pages`'
-  own `UNIQUE (user_id, normalized_url)` constraint is built on — so it's
-  already a stable, unique identity key. Diffing the fetched list directly
-  against `browser.bookmarks.getChildren(folderId)` by URL is simpler than a
-  tracked-id map and avoids a second copy of the tree that could drift from the
-  truth. It also means a bookmark that arrived via the browser's own sync from
-  another device needs no special "adopt" handling — it just looks like a URL
-  that's already there.
+  `UNIQUE (user_id, normalized_url)` constraint is built on — so it's already a
+  stable, unique identity key. Diffing the fetched list directly against
+  `browser.bookmarks.getChildren(folderId)` by URL is simpler than a tracked-id
+  map and avoids a second copy of the tree that could drift from the truth. It
+  also means a bookmark that arrived via the browser's sync from another device
+  needs no special "adopt" handling — it just looks like a URL that's already
+  there.
 - **The dedicated folder gets the same create-or-adopt treatment.** Chrome and
   Firefox use different, non-portable ids for "Other Bookmarks"/ "Unfiled
   Bookmarks" (and the title itself can be locale-translated), so neither a
   hardcoded id nor a title match is reliable. A throwaway probe bookmark
   (created the same way the real folder would be) discovers the real default
   container's id empirically, then removes itself. Neither browser allows
-  creating anything as a genuine sibling of "Bookmarks Bar" — landing inside the
-  default container is the closest to top-level actually achievable.
+  creating anything as a sibling of "Bookmarks Bar" — landing inside the default
+  container is the closest to top-level actually achievable.
 - **Opt-in, not bundled into pairing.** `bookmarks` is a distinct, user-visible
-  optional permission, requested only when the popup's own toggle is turned on.
+  optional permission, requested only when the popup's toggle is turned on.
   Turning sync off relinquishes the permission too, not just stops syncing while
   holding it.
 - No incremental sync on the extension side — a full-list pull, diffed locally,
   is the right level of complexity at a personal archive's scale (§8 covers the
-  same reasoning from the backend's own sync job).
+  same reasoning from the backend's sync job).
 
 ### 3k. Internationalization (i18n)
 
@@ -462,14 +462,13 @@ wherever one exists.
 
 - **Every lookup goes through one wrapper** (`src/common/i18n.js`'s `t()`),
   never `browser.i18n.getMessage()` directly — the native API has no way to
-  select a locale other than the browser's own current UI language, so if the
-  popup ever grows a manual override, `t()` is the one place that needs to
-  change.
+  select a locale other than the browser's current UI language, so if the popup
+  ever grows a manual override, `t()` is the one place that needs to change.
 - **Only strings recueil itself authors are translated** — never passthrough
   browser/network error text. A raw `fetch()` failure or HTTP response body
   isn't recueil's own writing, so there's nothing to look up a translation for.
 - **`en` is `default_locale`** — both the fallback for missing keys and the
-  source of truth for what keys exist. `manifest.base.json`'s own
+  source of truth for what keys exist. `manifest.base.json`'s
   `name`/`description` are localized too, the one place the browser substitutes
   `__MSG_*__` outside of code; general extension-page HTML has no equivalent,
   which is why `popup.html`'s static text stays an English fallback until
@@ -483,104 +482,80 @@ wherever one exists.
   extension (which may not have a stable public endpoint to push to) to the
   backend (which may not be reachable to receive a push). Once the backend has
   pulled and locally stored a capture's blobs, they are deleted from R2.
-- **Local disk is canonical.** The backend stores the zstd-compressed HTML (HTML
-  compresses extremely well with zstd, commonly 80-90% size reduction) on local
-  disk, referenced by path from the `captures` table. Thumbnails (see §6a) and
-  favicons (§3g) are also stored on local disk, never in R2 — every asset for
-  one capture lives together under a single directory.
-- **One capture, one directory — never shared, even for identical content.**
-  Each capture's directory is minted by `internal/archive`'s `Store.NewCapture`
-  as a backend-generated UUIDv7, sharded three levels deep
-  (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's own object-store shape, for the same
-  reason: a flat directory with hundreds of thousands of entries degrades badly
-  for `ls`, backup tools, and anything else that walks it). The shard comes from
-  the id's _trailing_ characters, not its leading ones, because UUIDv7's leading
-  bits are a millisecond timestamp — sharding on those would drop everything
-  captured in the same period into one bucket and defeat the point.
+- **Local disk is canonical.** The backend stores the zstd-compressed HTML on
+  local disk, referenced by path from the `captures` table. Thumbnails (§6a) and
+  favicons (§3g) are also stored on local disk — every asset for one capture
+  lives together under a single directory.
+- **One capture, one directory.** Each capture's directory is minted by
+  `internal/archive`'s `Store.NewCapture` as a backend-generated UUIDv7, sharded
+  three levels deep (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's object-store shape — a
+  flat directory with hundreds of thousands of entries degrades badly for `ls`,
+  backup tools, and anything else that walks it). The shard comes from the id's
+  _trailing_ characters, not its leading ones, since UUIDv7's leading bits are a
+  millisecond timestamp — sharding on those would drop everything captured in
+  the same period into one bucket.
 
-  **This reverses an earlier design that keyed the directory by the capture's
-  HTML `content_hash`**, under which two captures with byte-identical HTML
-  aliased onto one directory. Content-addressing was never load-bearing here:
-  `html_path`/`favicon_path`/`thumbnail_path` are stored columns, so every read
-  resolves row → path → disk and nothing ever derives a path from a hash. Its
-  only real benefit was deduplication, which isn't a goal for this project, and
-  which barely fired in practice anyway — §3b already notes that most real pages
-  embed per-load-unique content, so two captures rarely produce identical bytes.
-  What aliasing cost was ongoing rather than one-off: "is this file still
-  referenced?" became a set-membership question rather than a local one,
-  per-user deletion became unprovable (a tenant's bytes physically persist
-  whenever another tenant happens to share them, which matters for the
-  multi-tenant door this section deliberately leaves open below), and
-  `CaptureDir` was a misnomer for a directory that wasn't any one capture's.
+  Directories aren't keyed by content hash: two captures with byte-identical
+  HTML don't get aliased onto one directory. `html_path`/`favicon_path`/
+  `thumbnail_path` are stored columns, so every read resolves row → path → disk
+  regardless — content-addressing's only real benefit would have been
+  deduplication, which isn't a goal here and rarely fires anyway (§3b:
+  per-load-unique content means two captures rarely produce identical bytes). It
+  would also have made per-user deletion unprovable, since one tenant's bytes
+  could physically persist as long as another tenant happened to share them —
+  relevant given the multi-tenant hosted deployment mentioned below.
+  `content_hash`/`favicon_hash`/`thumbnail_hash` remain columns for exact-dedup
+  detection, §3c's retry-vs-collision disambiguation, and integrity checking —
+  they just don't name anything on disk.
 
-  `content_hash`, `favicon_hash` and `thumbnail_hash` all remain columns on
-  `captures` — exact-dedup _detection_, §3c's retry-vs-collision disambiguation,
-  and integrity checking all work exactly as before. The hashes simply no longer
-  name anything on disk.
-
-  **Uniqueness is enforced, not assumed.** `NewCapture` creates the leaf
-  directory with a plain `os.Mkdir`, not `MkdirAll`, so an already-existing
-  directory surfaces as `EEXIST` and the id is regenerated rather than adopted
-  and written into. That check has to happen at mkdir time rather than in
-  Postgres, because the disk write precedes the commit (§3c) — a database
-  constraint alone would only reject the row _after_ the other capture's bytes
-  had already been overwritten. `captures.html_path` additionally carries a
-  `UNIQUE` constraint (migration `00004`), which is the same invariant restated
-  where the database can enforce it: belt-and-suspenders, not the primary
-  mechanism. Note that constraint would have been actively wrong under the
-  previous layout, where identical HTML deliberately shared a path. The
-  collision being guarded against cannot realistically occur — UUIDv7 carries 74
-  random bits, and two ids would have to collide across all of them within the
-  same millisecond — but the guard is nearly free.
+  The `os.Mkdir`/`EEXIST` collision-avoidance mechanism itself is covered in
+  §3c; `captures.html_path` additionally carries a `UNIQUE` constraint
+  (migration `00004`) as database-level belt-and-suspenders on top of it — a
+  collision that's already astronomically unlikely, given UUIDv7's 74 random
+  bits.
 
 - **Deleting a page or capture doesn't reclaim its on-disk files
   synchronously.** `DELETE /api/pages/{id}`/`DELETE /api/captures/{id}` remove
-  the Postgres rows (cascading to jobs/tags/collection-memberships) but
-  deliberately leave the HTML/favicon/thumbnail files in place — per-capture
-  directories mean there's no sharing to reason about, but reclaiming correctly
-  still means comparing every on-disk path against everything Postgres currently
-  references, which isn't safe to do inline on a single delete request.
+  the Postgres rows (cascading to jobs/tags/collection memberships) but leave
+  the HTML/favicon/thumbnail files in place.
 - **`recueil gc` (`internal/gc`) is the operator-run sweep that reclaims them.**
   It reads the live set of paths Postgres still references
   (`ListReferencedArchivePaths`), walks every file `archive.Store`'s root
   actually contains, and removes whatever isn't in that live set — `--dry-run`
   reports the same scan/removal counts and reclaimable bytes without deleting
-  anything. Two safety rails, both because the failure mode they guard against
-  would otherwise be silent and total:
-  - **A 15-minute recency floor.** Ingestion writes to disk _before_ committing
-    to Postgres (§3c), so a capture genuinely in flight — including
-    `archive.Store`'s own `.tmp-*` files mid-write — is legitimately absent from
-    the live set. Anything modified more recently than that is left alone
-    regardless. Reused from the D1 queue's claim-visibility timeout and the
-    screenshot/readability jobs' own stale-claim window, rather than inventing a
-    third number for the same "stuck, or merely in progress?" question.
-  - **An orphan-fraction refusal.** If more than half of at least 100 scanned
+  anything. Two safety rails guard against an otherwise silent, total failure
+  mode:
+  - **A 15-minute recency floor** — the same window used elsewhere for claim
+    staleness. Ingestion writes to disk _before_ committing to Postgres (§3c),
+    so an in-flight capture — including `archive.Store`'s `.tmp-*` files
+    mid-write — is legitimately absent from the live set; anything modified more
+    recently is left alone regardless.
+  - **An orphan-fraction refusal** — if more than half of at least 100 scanned
     files come back unreferenced, the run removes nothing and reports an error
     instead (`--force` overrides). The live set is built by comparing stored
     path strings against walked path strings, so any future normalization
-    mismatch between the two — a leading `./`, a separator difference — would
-    silently produce an empty intersection and mark the entire archive as
-    garbage; this refusal is what stops that from being a silent, one-shot way
-    to delete every capture on the instance.
+    mismatch between the two would otherwise silently mark the entire archive as
+    garbage; this refusal is what stops that from being a one-shot way to delete
+    every capture on the instance.
 
   A companion pass (`Store.WalkEmptyDirs`) prunes now-empty shard directories
   left behind once their last file is removed, since a capture's directory is
   created before anything is written into it and would otherwise accumulate
-  indefinitely as captures get collected over an instance's lifetime.
+  indefinitely.
 
 - **Backup is entirely the operator's responsibility** — see §14. The
   application itself performs no automated backup.
 - **Database choice: Postgres, not SQLite**, despite this being a personal
-  archive. Real user accounts (family members using one deployment, and a
-  potential future multi-tenant hosted version) tip this in Postgres's favor:
-  SQLite's single-writer lock becomes a real constraint with concurrent family
-  members archiving/querying at once, and multi-tenant isolation / hosted-DB
-  migration paths are native to Postgres. Docker Compose makes the extra
-  container a non-issue operationally.
+  archive. Real user accounts (family members on one deployment, and a potential
+  future multi-tenant hosted version) tip this toward Postgres: SQLite's
+  single-writer lock becomes a real constraint with concurrent family members
+  archiving/querying at once, and multi-tenant isolation / hosted-DB migration
+  paths are native to Postgres. Docker Compose makes the extra container a
+  non-issue operationally.
 - **Bind mounts, not named Docker volumes**, for both the Postgres data
-  directory and the local archive directory (see §14) — this makes it
-  straightforward for whatever external backup tool the operator chooses to
-  snapshot the directories directly from the host filesystem.
+  directory and the local archive directory (§14) — straightforward for whatever
+  external backup tool the operator chooses to snapshot the directories directly
+  from the host filesystem.
 
 ---
 
