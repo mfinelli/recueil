@@ -1105,36 +1105,29 @@ it, which is correct: there's no text to summarize.
     `INSERT ... ON CONFLICT(id) DO NOTHING` — see §3c's identical reasoning for
     `pending_captures`).
   - `GET /queue` — lists this user's pending items, plus any claimed item whose
-    claim has gone stale (see visibility timeout below). Listing never claims.
-  - `POST /queue/:id/claim` — the actual atomic claim, via a conditional
+    claim has gone stale (see visibility timeout below). Listing doesn't claims.
+  - `POST /queue/:id/claim` — the atomic claim, via a conditional
     `UPDATE ... WHERE ... RETURNING`. This, not the listing endpoint, is where
-    the two-devices-race-for-the-same-item risk actually lives, and where the
-    phase-2 brief's instruction to "build the idempotency and visibility-timeout
-    logic in at this point, not later" was aimed.
+    the two-devices-race-for-the-same-item risk lives.
 
-**One exception (Phase 13): the dashboard's "recapture" action.** PageDetail's
-recapture button asks the backend to re-enqueue a page's most recent capture's
-URL — the backend has no rendered/authenticated browser session of its own to
-capture with (see §2's own reasoning for why capture only ever happens from a
-real tab), so this still only ever enqueues, same as a device would. It's a
-fourth, service-secret-gated Worker endpoint (`POST /internal/queue-items`,
-alongside the failed-queue-item review endpoints from Phase 9), not a
+**One exception: the dashboard's "recapture" action.** PageDetail's recapture
+button asks the backend to re-enqueue a page's most recent capture's URL — the
+backend has no rendered/authenticated browser session of its own to capture
+with, so this still only ever enqueues, same as a device would. It's a fourth,
+service-secret-gated Worker endpoint (`POST /internal/queue-items`), not a
 bearer-token one: the backend generates the `id` itself (there's no device on
-the other end to have generated one) and leaves `added_by_token_id` `NULL` (the
-schema already allows this). Once the row exists it's indistinguishable from any
-other queued item — picked up by whichever device next polls `GET /queue`, same
-claim/visibility-timeout/cleanup handling as the rest of this section.
+the other end to have generated one) and leaves `added_by_token_id` `NULL`. Once
+the row exists it's indistinguishable from any other queued item.
 
-**Claim failure is not a single status code.** A failed claim distinguishes
-three cases, decided during Phase 2 rather than left as a uniform `409`:
+**Claim failure is not a single status code** — a failed claim distinguishes
+three cases rather than a uniform `409`:
 
 - `404` — the item doesn't exist, or belongs to a different user. These two
   cases are collapsed together rather than distinguished, so a claim attempt
   never leaks cross-user existence.
 - `410` — the item is in a terminal state (`captured` or `failed`): it used to
-  be claimable and permanently isn't anymore. This is more precise than a bare
-  404 (which conventionally means "wrong ID") for "this happened, but it's
-  over."
+  be claimable and permanently isn't anymore. More precise than a bare 404 for
+  "this happened, but it's over."
 - `409` — the item is actively claimed by another device and the claim hasn't
   gone stale yet: a temporary conflict worth retrying later.
 
@@ -1145,8 +1138,8 @@ round trip.
 ### Queue visibility timeout
 
 A claimed item can get stuck if the claiming device dies mid-capture or the tab
-is closed. Rather than a separate scheduled sweep job, this is handled as **lazy
-reclaim folded into the existing claim query**:
+is closed. Rather than a separate scheduled sweep job, this is handled as lazy
+reclaim folded into the existing claim query:
 
 ```sql
 WHERE status = 'pending'
@@ -1161,260 +1154,150 @@ scheduled infrastructure, consistent with the "dumb Worker" philosophy.
 
 Nothing above ever removes a terminal-state `queue_items` row on its own — a
 `captured` or `failed` item exists purely to support the 410 semantics above,
-and would otherwise accumulate forever. Surfaced during Phase 2 implementation,
-not anticipated in the original design:
+and would otherwise accumulate forever.
 
 - **`POST /internal/queue-items/cleanup`**, service-secret gated, called on the
-  backend's own schedule (once or twice a day is plenty) — **not** a Cloudflare
-  Cron Trigger, for exactly the same "keep the Worker dumb, let the backend own
-  scheduling" reasoning already applied to the visibility-timeout reclaim above.
-  Not scoped to a single user — this is a maintenance sweep across the whole
-  deployment, not a per-device operation, so it takes no `user_id` parameter the
-  way the device-facing endpoints do.
+  backend's schedule — this is a maintenance sweep across the whole deployment.
 - **Deletes only `captured` items**, and only once older than a 72-hour
   retention window (long enough to be useful for auditability/debugging shortly
   after the fact, short enough not to accumulate indefinitely). `failed` items
-  are **not** touched — they're kept indefinitely, a deliberate decision as of
-  Phase 9 (see below), not a deferred one.
-- **`failed` items are surfaced to the user with a manual-retry action (Phase
-  9), not left as a dead end.** A `queue_items.manual_retry` flag (D1, default
-  `0`) lets the dashboard's Queue screen ask for another attempt without losing
-  the `failed` status itself — `failed` stays the durable, queryable "needs
-  attention" state the screen lists against; the flag layers "and it should be
-  claimable again" on top, cleared automatically the moment some device's
-  `POST /queue/:id/claim` picks the item up (both the claim query's `WHERE` and
-  `GET /queue`'s own listing query were extended with
-  `OR (status = 'failed' AND manual_retry = 1)` to make this possible — see the
-  migration and `handleClaimQueueItem`/`handleListQueue` in `terraform/index.js`
-  for the exact shape). Two new service-secret-gated Worker endpoints back this:
-  `GET /internal/queue-items` (see below for what it returns as of the
-  dashboard's own Queue-screen recency-window work) and
-  `POST /internal/queue-items/:id/retry`, called by the backend's own
-  `internal/queueitems` client (structured like `internal/devices`) via
-  session-protected, self-scoped `GET`/`POST /api/queue-items...`. No automatic
-  retry mechanism and no separate/longer expiry were built — expected volume is
-  low at this project's personal/family scale, and an operator can always
-  intervene by hand if that stops holding.
-- **`GET /internal/queue-items` originally only returned `status=failed` (a
-  required query parameter), matching the Queue screen it existed for at the
-  time.** Broadened once the screen's own scope grew to "what's currently
-  happening," not just "what needs manual attention": it now returns every
-  `pending`/`claimed`/`failed` item unconditionally, plus `captured` items from
-  the last 15 minutes — the same window `handleListQueue`/
-  `handleClaimQueueItem`'s own claim visibility-timeout already uses elsewhere
-  in this file, reused rather than picking a second, different number for what's
-  conceptually the same "still worth a glance" idea. The `?status=` parameter is
-  gone entirely; there's nothing left to select between. `claimed_at` is now in
-  the response too — it already existed on the table (used internally for the
-  retention clock, see above), just wasn't surfaced.
-  `internal/httpapi.ListQueueItems` (renamed from `ListFailedQueueItems`) is the
-  passthrough on the dashboard side; the recency window itself is computed
-  entirely on the Worker side (`datetime('now', '-15 minutes')`), never in Go or
-  in the dashboard's own JS.
+  are **not** touched — they're kept indefinitely.
+- **`failed` items get a manual-retry action**, not left as a dead end. A
+  `queue_items.manual_retry` flag (D1, default `0`) lets the Queue screen
+  request another attempt without losing the `failed` status the screen lists
+  against — cleared automatically once a device's `POST /queue/:id/claim` picks
+  the item up (both the claim query's `WHERE` and `GET /queue`'s listing query
+  add `OR (status = 'failed' AND manual_retry = 1)`). Backed by two
+  service-secret-gated Worker endpoints (`GET /internal/queue-items`, see below,
+  and `POST /internal/queue-items/:id/retry`), proxied through
+  session-protected, self-scoped `GET`/`POST /api/queue-items...` on the
+  dashboard side. No automatic retry and no separate/longer expiry — expected
+  volume is low at this project's personal/family scale.
+- **`GET /internal/queue-items` returns every `pending`/`claimed`/`failed` item
+  unconditionally, plus `captured` items from the last 15 minutes** — the same
+  window the claim visibility-timeout uses elsewhere, reused rather than picking
+  a second number for what's conceptually the same "still worth a glance" idea.
+  `claimed_at` is in the response too.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
-  `pending` for a long time before being claimed; it's time since actual
-  completion that should drive retention, not time since the original enqueue.
-  There is no dedicated "when did this finish" timestamp on `queue_items` today
-  — `claimed_at` is used as a pragmatic proxy, reasonable at this project's
-  scale since the gap between a successful claim and the capture actually
-  completing is seconds to minutes, not enough to matter for a 72-hour window.
-  If a future phase's `complete`/`fail` endpoint adds a dedicated completion
-  timestamp, this is a one-line filter change, not a design change.
+  `pending` for a long time before being claimed; it's time since completion
+  that should drive retention, not time since the original enqueue. There is no
+  dedicated "when did this finish" timestamp on `queue_items` — `claimed_at` is
+  used as a pragmatic proxy, reasonable at this project's scale since the gap
+  between a successful claim and the capture completing is seconds to minutes,
+  not enough to matter for a 72-hour window.
 
 ### Pending-capture claiming and cleanup
 
 `pending_captures` is the queue's downstream sibling — a device has finished
 capturing, and the row exists until the backend pulls the blobs from R2 and
-commits. Two things it lacked, both added together:
+commits.
 
 - **Backend pickup is an atomic claim, not a plain read.**
-  `POST /internal/pending-captures` (a `POST`, not the original `GET`, because
-  it now mutates) claims a batch and returns it in one `UPDATE ... RETURNING`,
-  the same shape `POST /queue/:id/claim` already uses. SQLite has no
-  `FOR UPDATE SKIP LOCKED`, but D1 serializes writes, so the single statement is
-  atomic on its own.
+  `POST /internal/pending-captures` claims a batch and returns it in one
+  `UPDATE ... RETURNING`, the same shape `POST /queue/:id/claim` already uses.
+  SQLite has no `FOR UPDATE SKIP LOCKED`, but D1 serializes writes, so the
+  single statement is atomic on its own.
 
   **The bug this fixes is a silent duplicate capture, not merely wasted work.**
   Two agent processes polling at roughly the same time both ingest the same row;
   the second one's insert should be caught by `captures`'
   `ON CONFLICT (source_capture_id)` guard, but isn't — because the last thing
   ingestion does is clear `source_capture_id` back to `NULL` (§3c), and Postgres
-  treats `NULL`s as distinct in a unique index. So once the first agent
-  finishes, there is nothing left for the second to conflict with, and it
-  inserts a duplicate capture row. Nothing downstream catches it either: the two
-  agents mint their own separate archive directories, so `captures.html_path`'s
+  treats `NULL`s as distinct in a unique index. Once the first agent finishes,
+  there's nothing left for the second to conflict with, so it inserts a
+  duplicate capture row. Nothing downstream catches it either: the two agents
+  mint their own separate archive directories, so `captures.html_path`'s
   `UNIQUE` constraint doesn't fire, and the `pages` upsert simply attaches both
   to the same page.
 
-  Deliberately **not** fixed by keeping `source_capture_id` populated forever,
-  which would also have worked: that value is client-generated, and making a
-  permanent dedup guarantee depend on it is precisely what §3c's collision retry
-  loop exists because we can't do. One worker per job is the fix; a stronger
-  idempotency key downstream is not.
+  Keeping `source_capture_id` populated forever does **not** fix it: that value
+  is client-generated, and making a permanent dedup guarantee depend on it is
+  precisely what §3c's collision retry loop exists because we can't do. One
+  worker per job is the fix; a stronger idempotency key downstream is not.
 
   **A one-hour stale-claim window, not the 15 minutes used everywhere else** — a
-  deliberate departure, for a real asymmetry. A stuck `queue_item` has a human
-  waiting to capture something, so reclaiming quickly is worth the risk of two
-  devices racing. Nothing at all waits on a pending capture; the backend polls
-  on its own schedule regardless. The only cost of a long window is that a
-  genuinely dead agent's work waits longer to be retried, while the cost of a
-  short one is real — an ingestion still running when its claim expires lets a
-  second agent in, which is the exact duplicate this exists to prevent.
+  stuck `queue_item` has a human waiting to capture something, so reclaiming
+  quickly is worth the risk of two devices racing. Nothing waits on a pending
+  capture; the backend polls on its own schedule regardless. The cost of a short
+  window is real: an ingestion still running when its claim expires lets a
+  second agent in, the exact duplicate this exists to prevent.
 
-  **No claimant column**, unlike `queue_items.claimed_by_token_id`: devices race
-  each other and it's worth knowing which won, but every agent presents the same
-  service secret and has no per-instance identity. `claimed_at` alone is all the
-  stale-reclaim needs.
+  **No claimant column**, unlike `queue_items.claimed_by_token_id`: every agent
+  presents the same service secret and has no per-instance identity, so
+  `claimed_at` alone is all the stale-reclaim needs.
 
-- **`GET /internal/pending-captures?user_id=`** — the dashboard's own read-only,
-  user-scoped listing, on the same path the claim `POST`s to. Same path,
-  different verb, different operation: the `POST` is the backend taking work
-  across every user and it mutates `claimed_at`; the `GET` is one person looking
-  at their own rows and mutates nothing. Listing must never claim, or a
-  dashboard left open would starve the ingester.
-
-  This exists because the window between "a device finished uploading" and "the
-  backend has ingested it" was otherwise completely invisible — and at the
-  agent's default 1800s Worker poll interval, that's up to half an hour in which
-  a capture looks like nothing happened at all. It's surfaced as the Queue
-  screen's third section, between the capture queue and the enrichment jobs,
-  matching the actual lifecycle order.
-
-  Rows already ingested within the last 15 minutes are included, the same
-  recency window `GET /internal/queue-items` and `GET /api/jobs` already use, so
-  a capture doesn't vanish from the screen the instant it moves on. Unlike those
-  two there's no status column to filter on: `(fetched_by_backend, claimed_at)`
-  is the entire state, and its three reachable combinations map to
-  waiting/ingesting/ingested. **There is deliberately no failed state among
-  them** — a row whose ingestion keeps failing is indistinguishable from one
-  merely waiting its turn (the same fact that makes the cleanup sweep keep
-  both), so the section states its expected window in the hint text and lets an
-  obviously-stale row speak for itself, rather than inventing a distinction the
-  data can't support. Doing that properly needs the `attempts`/`error` column
-  this table doesn't have yet.
-
-- **`GET /internal/queue-items` also gained a device name**, via a `LEFT JOIN`
-  against `tokens` on `claimed_by_token_id`. For a `claimed` item this is the
-  actionable part — it says which browser to go and finish the capture in — and
-  for a `failed` one it says where it went wrong. The join is deliberately
-  `LEFT`: `claimed_by_token_id` is `NULL` for an item nobody has picked up, and
-  device revocation is a row delete rather than a soft-delete, so a revoked
-  device leaves nothing to name. Either way the item itself must still list.
+- **`GET /internal/pending-captures?user_id=`** — a read-only, user-scoped
+  listing on the same path the claim `POST` uses. Different verb, different
+  operation: the `POST` claims across every user and mutates `claimed_at`; the
+  `GET` never claims, or a dashboard left open would starve the ingester. It
+  exists because the window between "a device finished uploading" and "the
+  backend has ingested it" was otherwise invisible — up to 30 minutes at the
+  agent's default Worker poll interval, during which a capture looks like
+  nothing happened at all. Surfaced as the Queue screen's third section. There's
+  no status column to filter on: `(fetched_by_backend, claimed_at)` maps to
+  waiting/ingesting/ingested, with no failed state — a row whose ingestion keeps
+  failing is indistinguishable from one merely waiting its turn.
 
 - **`POST /internal/pending-captures/cleanup`**, mirroring the queue-item sweep
-  above, including its 72-hour retention window. Nothing had ever deleted a
-  `pending_captures` row, so the table grew forever. **Only successfully
-  ingested rows (`fetched_by_backend = 1`) are swept**; a row still at `0` is
-  either waiting for pickup or failing ingestion repeatedly, and this table has
-  no status column that could tell those apart, so both are kept indefinitely
+  above, including its 72-hour retention window. **Only successfully ingested
+  rows (`fetched_by_backend = 1`) are swept**; a row still at `0` is either
+  waiting for pickup or failing ingestion repeatedly, and this table has no
+  status column that could tell those apart, so both are kept indefinitely
   rather than risk discarding the only record of a capture that never landed.
   Surfacing and retrying persistently-failing rows needs an `attempts`/`error`
-  column and something equivalent to `POST /queue/:id/fail` — deferred, not
-  forgotten. The retention clock is `claimed_at`, for the same reasoning the
-  queue-item sweep documents; unlike there, though, it isn't merely a reasonable
-  proxy — `fetched_by_backend = 1` is only reachable by an agent that claimed
-  the row first, so it's guaranteed non-`NULL` on exactly the rows this deletes.
+  column and something equivalent to `POST /queue/:id/fail` — not built yet.
 
-### Bookmark-list mirror (backend → D1 → the browser's own native bookmarks)
+### Bookmark-list mirror (backend → D1 → the browser's native bookmarks)
 
 - Separately from the queue, the extension syncs everything already archived
-  into the browser's own native bookmarks — not a custom in-popup list. See §3j
-  for why that changed from the original custom-UI plan and how the extension
-  side actually works; this section covers the backend → D1 half only, which
-  didn't change.
+  into the browser's native bookmarks, not a custom in-popup list (§3j covers
+  the extension side). This section covers the backend → D1 half.
 - This is a **one-way, backend → D1 push** — the mirror-image of the credential
-  mirror (backend → D1, rather than D1 → backend), keeping the same principle:
-  the extension only ever needs to talk to the Worker/D1, never the backend.
-- **Schedule-based, not triggered on individual mutations** — reconsidered from
-  an earlier revision of this document, which had the backend push a row
-  immediately after processing each capture. That doesn't handle deletion (a
-  deleted page was never "updated," it's just gone — an event-triggered push on
-  capture-processing would never notice), and more importantly it requires every
-  future code path that ever touches `pages` (a deletion endpoint, a re-tagging
-  endpoint, whatever else) to remember to also push a D1 update — exactly the
-  same fragility already avoided elsewhere in this project (why `updated_at`
-  itself isn't left to individual queries to set by hand). A schedule doesn't
-  care how or where Postgres changed; it just asks "what's different now" on its
-  own cadence. What actually triggers the sync job to run is `recueil agent`
-  (§3e) — the same shared trigger as backend ingestion (§3c): both are callable
-  units (`internal/ingest.Ingester.RunOnce`, `internal/mirror.Syncer.SyncOnce`)
-  invoked from one ticker loop.
-- **The sync checkpoint is read directly from D1's own data — `MAX(updated_at)`
-  across `archived_pages` — not a separately-tracked watermark value stored
-  anywhere on the backend.** Considered and rejected: a Postgres-side "last
-  synced at" row, which has to be kept correct by hand and can drift from what
-  D1 actually contains if a push silently fails partway. Deriving the checkpoint
-  from D1's own state makes that whole class of drift structurally impossible —
-  the checkpoint and the data are the same read, by construction. The one real
-  cost is a small Worker read endpoint whose only job is exposing that value;
-  judged worth it and in keeping with what this Worker already does elsewhere
-  (`GET /internal/pending-captures` already answers a factual question about
-  D1's own data the same way).
+  mirror, keeping the same principle: the extension only ever needs to talk to
+  the Worker/D1, never the backend.
+- **Schedule-based, not triggered on individual mutations.** An event-triggered
+  push wouldn't handle deletion (a deleted page was never "updated," it's just
+  gone), and would require every future code path that touches `pages` to
+  remember to also push a D1 update. A schedule doesn't care how or where
+  Postgres changed; it just asks "what's different now" on its own cadence,
+  triggered by `recueil agent` (§3e) the same way backend ingestion is.
+- **The sync checkpoint is read directly from D1's data — `MAX(updated_at)`
+  across `archived_pages`** — not a separately-tracked watermark on the backend,
+  which would have to be kept correct by hand and could drift from what D1
+  actually contains if a push silently fails partway. Deriving the checkpoint
+  from D1's state makes that whole class of drift structurally impossible: the
+  checkpoint and the data are the same read, by construction.
 - **Two passes each sync cycle:**
   1. **Incremental upsert** — `pages WHERE updated_at > $checkpoint` (all of it,
-     unpaginated — no `LIMIT`/cursor: at this project's scale a full delta in
-     one call is fine, and pagination would reintroduce a subtler version of the
-     same equal-timestamp boundary problem the checkpoint design otherwise
-     avoids), pushed to D1 in one request.
+     unpaginated: at this project's scale a full delta in one call is fine),
+     pushed to D1 in one request.
   2. **Deletion reconciliation** — the only way a schedule-based sync can ever
-     notice a deletion at all, since a deleted row was never "updated." The
-     backend fetches D1's full current `page_id` set (a raw list, no comparison
-     logic in the Worker — see below) and its own current Postgres `page_id`
+     notice a deletion, since a deleted row was never "updated." The backend
+     fetches D1's full current `page_id` set and its current Postgres `page_id`
      set, diffs them locally, and deletes from D1 whatever's no longer in
-     Postgres. Deletion itself isn't built yet; this pass runs correctly
-     regardless, simply finding nothing to remove until it exists.
+     Postgres.
 - **Per-page mirror exclusion** —
-  `pages.excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE` (§10). No D1
-  schema change needed at all: exclusion is purely a Postgres-side filter on
-  what the backend chooses to push, not a concept D1 needs to know about. Both
-  passes above already have everything needed for this to fall out for free,
-  without any special-casing:
-  - **Incremental upsert** simply never selects excluded pages
-    (`GetPagesUpdatedSince` adds `AND NOT excluded_from_mirror`), so a newly-
-    excluded page is never (re-)pushed.
-  - **Deletion reconciliation**'s Postgres-side set is redefined from "every
-    page_id that exists" to "every page_id that belongs in the mirror"
-    (`GetMirrorEligiblePageIDs`, same `WHERE NOT excluded_from_mirror`). A page
-    that gets excluded _after_ already being synced looks identical to this pass
-    as a page that was deleted outright — both are simply "in D1 but no longer
-    in the desired set" — so the exact same diff-and-delete logic removes it,
-    with zero new code in `internal/mirror` itself.
-  - Un-excluding a page works the same way any other edit does: the toggle bumps
-    `updated_at` like any `pages` mutation must (§8's own checkpoint design
-    already depends on this), so the page simply reappears in the next cycle's
-    incremental upsert once the flag flips back.
-  - No dashboard toggle for this yet — the column and query-level filtering
-    exist now, but the actual UI to set it is built alongside the dashboard
-    itself (Phase 5), same as every other dashboard-only feature.
+  `pages.excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE` (§10,
+  dashboard-toggleable on PageDetail), a pure Postgres-side push filter with no
+  D1 schema change. Both passes above handle it without special-casing:
+  incremental upsert simply excludes it from the query, and deletion
+  reconciliation's "desired set" excludes it too — an excluded page looks
+  identical to a deleted one from that pass's point of view, so the same
+  diff-and-delete logic removes it either way. Un-excluding just bumps
+  `updated_at` like any other edit, so the page reappears on the next cycle.
 - **The incremental push's atomicity is what makes the checkpoint safe without
   any extra ordering logic on the backend.** The push endpoint applies its whole
-  batch via the Worker's own `env.DB.batch()`, which is transactional: either
-  every row in the batch lands, or none do. So there's no scenario where a
-  partial failure leaves D1's `MAX(updated_at)` ahead of some unpushed row —
-  either the full delta lands and the new max correctly reflects all of it, or
-  nothing lands and the next cycle's `WHERE updated_at > $checkpoint` naturally
-  retries the identical, unchanged set. (An earlier line of reasoning about this
-  design assumed a separately-tracked, non-atomic push would need the backend to
-  push rows in strict ascending `updated_at` order and stop at the first
-  failure, to avoid exactly this gap — that concern doesn't apply once the
-  checkpoint comes from D1's own atomically-updated state instead.)
-- **Every Worker endpoint involved stays deliberately dumb**, consistent with
-  this Worker's stated design: it reads or writes exactly what it's told, and
-  never computes a diff or a decision itself. `GET .../last-sync` answers a
-  factual question; `POST .../mirror` upserts whatever batch it's given;
-  `GET .../page-ids` returns a raw list; `POST .../delete` deletes exactly the
-  ids it's given. All the actual logic — what changed, what to delete — lives on
-  the backend.
-- The extension does **not** live-sync this list either. It refreshes on a
-  coarse schedule (see "Polling cadence" below) or on explicit user request —
-  but, unlike the backend's own Postgres → D1 sync above, with **no incremental
-  checkpoint at all**: it pulls the whole current list every time and diffs it
-  locally (§3j). That's a deliberate scale-appropriate simplification, not an
-  oversight — a personal archive is realistically hundreds to low-thousands of
-  pages, nowhere near where an incremental `since` parameter would start to
-  matter the way it does for the backend's own sync job above.
-- Because this list is just title + URL, no thumbnail storage is needed in R2 or
-  D1 for this feature.
+  batch via the Worker's `env.DB.batch()`, which is transactional: either every
+  row lands, or none do. So there's no scenario where a partial failure leaves
+  D1's `MAX(updated_at)` ahead of some unpushed row — either the full delta
+  lands and the new max correctly reflects it, or nothing lands and the next
+  cycle's `WHERE updated_at > $checkpoint` naturally retries the identical set.
+- The extension does **not** live-sync this list either — it refreshes on a
+  coarse schedule (see "Polling cadence" below) or on explicit user request,
+  with **no incremental checkpoint at all**: it pulls the whole current list
+  every time and diffs it locally (§3j). A scale-appropriate simplification: a
+  personal archive is realistically hundreds to low-thousands of pages, nowhere
+  near where an incremental `since` parameter would start to matter.
 
 ```sql
 -- D1
@@ -1445,7 +1328,7 @@ Settled as **infrequent background polling with on-demand override**, rather
 than tight polling or any push mechanism:
 
 - Extension → queue (D1 via Worker): every 5-15 minutes in the background, plus
-  a manual "check now" button in the extension popup for on-demand polling.
+  a manual "check now" button in the extension popup.
 - Extension → bookmark-list mirror refresh: coarse (e.g. once per day) or on
   explicit user request.
 - Backend → `pending_captures` (D1 via Worker): every few minutes. No on-demand
@@ -1453,8 +1336,7 @@ than tight polling or any push mechanism:
 
 No WebSocket/push infrastructure (e.g. a Durable Object) is used — that would be
 real added infrastructure for a problem infrequent polling plus a manual refresh
-button already solves adequately at this scale. (The "once a minute" figure used
-in the original §13 cost analysis was illustrative headroom math, not a spec.)
+button already solves adequately at this scale.
 
 ---
 
