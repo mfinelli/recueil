@@ -1342,131 +1342,90 @@ button already solves adequately at this scale.
 
 ## 9. URL Normalization
 
-Two URL fields are stored for every capture, never conflated:
+Two URL fields are stored for every capture:
 
-- **`raw_url`** — exactly what was captured, byte-for-byte, never rewritten.
+- **`raw_url`** — exactly what was captured, byte-for-byte.
 - **`normalized_url`** — a computed, canonical form used purely as the
   dedup/grouping key that determines which `pages` row a capture belongs to.
 
-### Runs in the backend, not the Worker
+### Runs in the backend
 
 Normalization happens entirely backend-side (Go), at ingestion time — not in the
-Cloudflare Worker. Two independent reasons converge on the same answer:
+Cloudflare Worker, for two reasons:
 
 - **Manual upload (§3d) has no Worker involved at all** — it's a direct
-  dashboard→backend upload, bypassing R2/D1/the Worker entirely. A Worker-side
-  normalization step would simply never run for that capture path, and a user
-  manually uploading a file has no reason to have already normalized the URL
-  themselves.
+  dashboard→backend upload, bypassing R2/D1/the Worker entirely, so a
+  Worker-side normalization step would simply never run for that path.
 - **The Worker's "plain JS, no build step, no dependencies" constraint (§11,
-  §13a) rules it out anyway.** ClearURLs' ruleset (below) has no existing Go
-  _or_ dependency-free-JS implementation to embed; whichever side implements it
-  needs a real regex/JSON-parsing dependency, and only the backend is free to
-  take on dependencies at all.
+  §13a) rules it out anyway.** ClearURLs' ruleset (below) has no dependency-free
+  JS implementation to embed; whichever side implements it needs a real
+  regex/JSON-parsing dependency, and only the backend is free to take one on.
 
 ### Pipeline architecture
 
 Normalization is a **pipeline of independent steps**, not a single hardcoded
-function — , since ClearURLs is expected to be the first entry, not the only
-one. A future step might be a different third-party library, or a hand-rolled
-Recueil-specific ruleset; the pipeline shape means adding one never requires
-touching an existing step, and steps can be freely reordered. Implemented as
-`internal/urlnorm`: a `Step` interface
-(`Normalize(ctx, rawURL string) (string, error)`, string in/string out —
-intentionally not a shared parsed-URL representation, so an external library
-with its own string-based API is trivial to slot in as a step) and a `Pipeline`
-that runs a sequence of `Step`s, each fed the previous one's output. Today's
-pipeline is exactly two steps, run in this order:
+function, since ClearURLs is expected to be the first entry, not the only one —
+a future step (a different library, a hand-rolled ruleset) can be added without
+touching existing ones. Implemented as `internal/urlnorm`: a `Step` interface
+(`Normalize(ctx, rawURL string) (string, error)`, string in/string out rather
+than a shared parsed-URL representation, so an external library's string-based
+API slots in trivially) and a `Pipeline` that runs a sequence of `Step`s.
+Today's pipeline is two steps:
 
 1. **ClearURLs** — strips known tracking parameters and unwraps redirect-wrapper
-   URLs (below).
+   URLs.
 2. **Recueil's own additional canonicalization** — host/scheme casing, default
-   ports, fragment, query-param ordering, trailing slash (below) — also just a
-   `Step`, not a hardcoded tail bolted onto step 1.
+   ports, fragment, query-param ordering, trailing slash (below).
 
 ### ClearURLs: a Go port, vendored as a git submodule
 
-Adopt the **ClearURLs** community-maintained ruleset (regex-based rules per
-site/provider, actively maintained, LGPL-3.0 licensed — corrected from an
-earlier revision of this document, which stated MIT) to strip known tracking
-parameters (`utm_*`, `fbclid`, `gclid`, etc.) and unwrap tracking-redirect
-wrapper URLs, without touching functionally meaningful query parameters. Do not
-hand-roll a tracking-parameter list.
+Adopts the **ClearURLs** community-maintained ruleset (regex-based rules per
+site/provider, actively maintained, LGPL-3.0) to strip known tracking parameters
+(`utm_*`, `fbclid`, `gclid`, etc.) and unwrap tracking-redirect wrapper URLs,
+without touching functionally meaningful query parameters.
 
 - **The ruleset (`data.min.json`) is vendored as a git submodule** at
-  `internal/urlnorm/clearurls-rules` — inside the package that actually uses it,
-  not at the repo root — pinned to a specific commit and embedded directly as
-  `[]byte` via `go:embed` (`//go:embed clearurls-rules/data.min.json`, entirely
-  local to `internal/urlnorm`). This is a deliberate departure from how the
-  Postgres/D1 migration directories are embedded (those live at the repo root
-  and get embedded in `main.go`, then threaded down through `cmd` — see §13a):
-  that indirection exists there because `cmd/server.go` itself needs to read
-  those directories directly. Nothing outside `internal/urlnorm` ever needs the
-  ClearURLs ruleset, so embedding it locally, as a single file rather than a
-  directory `embed.FS` needing an `fs.Sub`/`fs.ReadFile` step to extract the one
-  file back out of it, avoids indirection this package has no use for. The
-  vendoring-as-a-submodule reasoning itself is unrelated to where the embed
-  directive lives: it's a deliberate consequence of the upstream project not
-  publishing to any package registry (npm, a Go module proxy, or otherwise) that
-  could be depended on directly with a version constraint the normal way; a
-  submodule pinned to a commit is the closest equivalent, giving reproducible
-  builds the same way a registry version pin would. Updating to a newer ruleset
-  snapshot is a deliberate, manual operation — advance the submodule's pinned
-  commit, commit that pointer change on its own, and cut a new Recueil release —
-  never automatic.
+  `internal/urlnorm/clearurls-rules`, pinned to a specific commit and embedded
+  directly via `go:embed` — the upstream project doesn't publish to any package
+  registry, so a pinned submodule is the closest equivalent to a normal
+  version-constrained dependency. Updating to a newer snapshot is a manual
+  operation (advance the pin, commit that pointer change on its own).
 - **`internal/urlnorm`'s `ClearURLs` type is a Go port of the real extension's
-  own algorithm** (`pureCleaning`/`_cleaning`/ `removeFieldsFormURL` in
-  ClearURLs/Addon's `core_js`), not an inference from the ruleset format's own
-  documentation — the documentation describes the data shape but not every
-  matching/precedence detail (anchoring, case-sensitivity, iteration order, the
-  redirection short-circuit). Every behavior was checked against the actual
-  upstream JS source directly. Notably: providers are matched in the ruleset's
-  own file order (not alphabetical, not a Go map's randomized order — order
-  matters because a matched redirection immediately short-circuits the rest of
-  that pass); a full cleaning pass repeats until it produces no further change
-  (handles a redirect-wrapper unwrapping to reveal a URL a _different_ provider
-  now matches); and each `rules`/`referralMarketing` entry is matched as a full,
-  case-insensitive, anchored match against the parameter name (`^rule$`), not a
-  substring/prefix match.
-- **Uses `github.com/dlclark/regexp2`, not stdlib `regexp`.** Go's stdlib
-  `regexp` (RE2) can't compile some patterns the real ruleset relies on
-  (lookaround and similar PCRE-ish constructs); `regexp2` is a real, PCRE-like
-  engine that can. This is a real dependency addition, acceptable because it's
-  backend-only — the Worker's dependency-free constraint doesn't apply here.
-- **Two upstream behaviors are not ported at all** — not bugs, not future work,
-  structurally excluded from `internal/urlnorm`'s own data model:
-  - `completeProvider` ("block this request outright") is a live-browsing
-    concept — dropping a tracking-pixel request before it's ever made. It
-    doesn't apply to a URL a user already chose to archive: a bookmark is
-    definitionally not a stray tracking request, so this essentially never
-    legitimately fires against real Recueil input regardless.
-  - `forceRedirection` is a live-tab browser-navigation technique (directly
-    rewriting a browser's own `main_frame` object when a site defeats normal
-    redirect interception). It has no meaning once you're transforming an
-    already-known URL string rather than intercepting a real navigation event —
-    which Recueil never does. `redirections` itself (the actual URL-string
-    transformation: unwrap a tracking-gateway URL to its real destination) _is_
-    ported; `forceRedirection` is a separate, unrelated flag about _how_ a live
-    browser would perform that same unwrap during real navigation.
+  algorithm**, not an inference from the ruleset's documentation, which
+  describes the data shape but not every matching/precedence detail — every
+  behavior was checked against the actual upstream JS source. Notably: providers
+  are matched in the ruleset's file order, since a matched redirection
+  short-circuits the rest of that pass; a full cleaning pass repeats until it
+  produces no further change (a redirect unwrapping can reveal a URL a
+  _different_ provider now matches); and rule/`referralMarketing` entries are
+  matched as a full, case-insensitive, anchored match against the parameter
+  name, not a substring.
+- **Uses `github.com/dlclark/regexp2`, not stdlib `regexp`** — Go's stdlib RE2
+  engine can't compile some patterns the real ruleset relies on (lookaround and
+  similar PCRE-ish constructs).
+- **Two upstream behaviors aren't ported**: `completeProvider` ("block this
+  request outright") is a live-browsing concept with no meaning for a URL
+  someone already chose to archive; `forceRedirection` is a live-tab
+  navigation-interception technique with no meaning once you're transforming an
+  already-known URL string rather than intercepting a real navigation.
+  `redirections` itself (the URL-unwrapping transformation) _is_ ported —
+  `forceRedirection` is a separate flag about _how_ a live browser performs that
+  same unwrap during navigation.
 
-### Recueil's own additional canonicalization
+### Recueil's additional canonicalization
 
-Runs as the pipeline's second `Step` (`urlnorm.Canonicalize`), after ClearURLs
-has already had a chance to strip tracking parameters and unwrap redirects:
+Runs as the pipeline's second step, after ClearURLs has already stripped
+tracking parameters and unwrapped redirects:
 
-- Lowercase the host, and the scheme (the latter not originally listed here,
-  added because Go's own `net/url.Parse` doesn't lowercase the scheme itself,
-  which is both a correctness requirement for the default-port comparison below
-  and a reasonable canonicalization in its own right per RFC 3986).
+- Lowercase the host and scheme (Go's `net/url.Parse` doesn't lowercase the
+  scheme itself, which matters for the default-port comparison below).
 - Strip default ports (`:443` for `https`, `:80` for `http`).
-- Drop the URL fragment, unless the site is a known SPA that encodes meaningful
-  route state in the fragment. **Not implemented yet** — no such site list
-  exists, so the fragment is dropped unconditionally for now; this is a known,
-  stated gap, not a silent one.
+- Drop the URL fragment unconditionally — the intended exception (preserving a
+  fragment for a known SPA that encodes route state there) has no implementation
+  yet (§16).
 - Sort remaining query parameters alphabetically for a stable key.
-- Strip trailing slash (including a bare root `/`, so `example.com` and
-  `example.com/` normalize identically — a deliberate consequence of applying
-  this unconditionally, not an overlooked edge case).
+- Strip trailing slash, including a bare root `/` — `example.com` and
+  `example.com/` normalize identically.
 
 ---
 
