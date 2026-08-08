@@ -264,8 +264,8 @@ same way as any other dashboard endpoint.
   covers the idempotency scheme in full; manual upload just supplies the id
   itself, since there's no client to generate one).
 - Needs its own, larger `RequestSize` limit scoped to this one route — the
-  global 1MB cap (§13a) would reject a real SingleFile archive immediately,
-  since inlined images/fonts routinely push these into the tens of megabytes.
+  global 1MB cap would reject a real SingleFile archive immediately, since
+  inlined images/fonts routinely push these into the tens of megabytes.
 - `captures.source` (`'extension'` | `'manual_upload'`, §10) records which path
   a capture came through, for the dashboard to show directly.
 
@@ -297,13 +297,12 @@ Cloudflare's free tier while local work still picks up quickly.
 ### 3f. The CLI (`recueil auth` / `recueil enqueue`)
 
 Two different config postures for two different audiences. `server`/`agent`
-require an explicit `--config` file or environment variables (§13a) — no
-automatic discovery, since a production process silently picking up an
-unintended file is a real risk. `auth`/`enqueue` are the opposite: a personal
-tool, where automatic `$XDG_CONFIG_HOME` discovery is the expected UX (the same
-shape `git`/`ssh` already train people on). Neither command touches Viper or
-`internal/config` — everything they need is read from their own dedicated
-credentials file instead.
+require an explicit `--config` file or environment variables — no automatic
+discovery, since a production process silently picking up an unintended file is
+a real risk. `auth`/`enqueue` are the opposite: a personal tool, where automatic
+`$XDG_CONFIG_HOME` discovery is the expected UX (the same shape `git`/`ssh`
+already train people on). Neither command touches Viper or `internal/config` —
+everything they need is read from their own dedicated credentials file instead.
 
 - **`worker_url` is stored alongside the pairing-derived token, not as an
   independent setting** — a token is only ever meaningful for the Worker that
@@ -1356,9 +1355,9 @@ Cloudflare Worker, for two reasons:
 - **Manual upload (§3d) has no Worker involved at all** — it's a direct
   dashboard→backend upload, bypassing R2/D1/the Worker entirely, so a
   Worker-side normalization step would simply never run for that path.
-- **The Worker's "plain JS, no build step, no dependencies" constraint (§11,
-  §13a) rules it out anyway.** ClearURLs' ruleset (below) has no dependency-free
-  JS implementation to embed; whichever side implements it needs a real
+- **The Worker's "plain JS, no build step, no dependencies" constraint (§11)
+  rules it out anyway.** ClearURLs' ruleset (below) has no dependency-free JS
+  implementation to embed; whichever side implements it needs a real
   regex/JSON-parsing dependency, and only the backend is free to take one on.
 
 ### Pipeline architecture
@@ -2004,625 +2003,57 @@ writes to `schema_migrations`.
 
 ## 13. Repository Layout
 
-Monorepo, structured flat by "what a thing is" rather than by architectural
-layer. Components only get their own directory when they genuinely need
-isolation (their own build tooling, dependency manifest, or — in the
-Worker/PWA's case — a hard requirement of having **no** build step at all). The
-screenshot service does not add a new top-level directory: it's driven by Go
-code in the existing backend module (via `chromedp`, connecting to the sidecar
-container over the network) plus a new service definition in
-`docker-compose.yml`.
-
-```
-recueil/
-├── main.go                  # embeds Postgres migrations/ and D1's
-│                               # terraform/worker/migrations/ (embed
-│                               # directives can't reach either from cmd/,
-│                               # one directory below both — see cmd/server.go),
-│                               # assigns them to exported cmd package vars,
-│                               # then os.Exit(cmd.Execute())
-├── cmd/
-│   ├── root.go              # cobra root command; owns the one signal-aware
-│   │                           # context (SIGINT/SIGTERM), threaded to
-│   │                           # subcommands via cmd.Context() rather than
-│   │                           # each subcommand creating its own (§13a)
-│   ├── server.go             # `recueil server` — the actual backend startup:
-│   │                            # config, both migration runs (via fs.Sub on
-│   │                            # the embedded FS's from main.go), the
-│   │                            # bootstrap holder, httpapi wiring, graceful
-│   │                            # shutdown on cmd.Context().Done()
-│   ├── agent.go              # `recueil agent` — the background job runner
-│   │                            # (ticker-driven Ingester.RunOnce +
-│   │                            # Syncer.SyncOnce; see §3e)
-│   ├── auth.go               # `recueil auth` — pairs this device, stores
-│   │                            # the result via internal/clicreds
-│   └── enqueue.go            # `recueil enqueue` — submits URLs to the
-│                                 # Worker's queue, via internal/deviceapi
-├── internal/
-│   ├── config/               # viper-based config: --config TOML file, env
-│   │                            # vars, defaults set in this package's own
-│   │                            # init() (§13a)
-│   ├── clicreds/              # where `recueil auth`/`enqueue` store/read
-│   │                             # this device's pairing result (§3f) --
-│   │                             # intentionally separate from
-│   │                             # internal/config, not one more thing
-│   │                             # that package's server-oriented Load()
-│   │                             # has to stay agnostic about
-│   ├── deviceapi/              # the CLI's own client for the Worker's
-│   │                             # public, device-facing endpoints
-│   │                             # (POST /pair, POST /queue) -- distinct
-│   │                             # from internal/mirror and
-│   │                             # internal/ingest.WorkerClient, both of
-│   │                             # which authenticate as the backend
-│   │                             # itself, never as a device (§3f)
-│   ├── auth/                  # password hashing, session tokens, bootstrap flow
-│   ├── db/                     # sqlc-generated query code (renamed from
-│   │                             # an earlier `dbgen` during Phase 1)
-│   ├── pgmigrate/              # applies migrations/*.sql via goose's Provider
-│   │                             # API against an already-open pool (§13a)
-│   ├── dbtest/                 # Postgres integration-test harness: connects
-│   │                             # to docker-compose.test.yml, applies
-│   │                             # migrations via internal/pgmigrate, t.Cleanup
-│   │                             # fixture factories (§13a)
-│   ├── d1migrate/              # applies D1 migrations via the Cloudflare
-│   │                             # API (§5b) against an fs.FS the caller
-│   │                             # supplies — main.go embeds
-│   │                             # terraform/worker/migrations/*.sql and
-│   │                             # passes it in, same pattern as pgmigrate
-│   ├── mirror/                 # pushes the credential mirror to the Worker
-│   ├── devices/                 # backend's service-secret-authenticated
-│   │                              # client for the Manage Devices Worker
-│   │                              # endpoints (GET/DELETE /internal/tokens)
-│   │                              # -- added Phase 6; same credential tier
-│   │                              # as mirror/ and ingest.WorkerClient, a
-│   │                              # different actor from deviceapi/'s
-│   │                              # paired-device bearer token
-│   └── httpapi/                # dashboard-facing HTTP handlers + chi router;
-│                                  # also mounts /info, /ping, /health
-│                                  # (unauthenticated — §13a) on the same router
-├── migrations/                 # Postgres migrations — plain .sql files, no
-│                                  # embed.go: main.go embeds these directly
-│                                  # (a sibling directory, no `..` needed) and
-│                                  # passes the fs.FS into pgmigrate.Run; the
-│                                  # test harness instead reads this same
-│                                  # directory straight off disk (os.DirFS),
-│                                  # since tests always run with the full repo
-│                                  # present and don't need go:embed's
-│                                  # binary-self-containment property (§13a)
-├── queries/                    # sqlc source .sql query files
-├── sqlc.yaml
-├── src/                     # Svelte dashboard source
-├── index.html                # Vite entry point
-├── Dockerfile
-├── go.mod
-├── package.json             # root: the Svelte dashboard's own package
-│                               # (Svelte/Vite/sass/svelte-check/
-│                               # svelte-spa-router deps) plus repo-wide
-│                               # shared tooling (eslint, prettier, vitest,
-│                               # typescript) — NOT the Worker's own deps;
-│                               # see §13a
-├── vite.config.ts
-├── svelte.config.js          # exports vitePreprocess() so svelte-check
-│                               # understands SCSS the same way Vite does
-├── tsconfig.json              # dashboard's own TS config (src/**, plus
-│                               # vite.config.ts/svelte.config.js)
-├── vitest.config.js          # root-level; covers Worker tests now, expected
-│                               # to grow a Svelte-scoped project (§13a)
-├── eslint.config.js           # root-level; per-directory-scoping (§13a) —
-│                               # now covers the dashboard's src/**/*.svelte
-│                               # and src/**/*.ts too, not just the Worker
-├── Makefile                   # test-db-up/test-db-down/test — the same
-│                                 # commands drive docker-compose.test.yml
-│                                 # locally and in CI (§13a)
-├── docker-compose.test.yml    # dedicated ephemeral test Postgres (§13a) —
-│                                 # distinct port + tmpfs, separate from the
-│                                 # dev database below
-│
-├── terraform/                  # OpenTofu module, the Worker's own source, AND
-│   │                              # the share-sheet PWA's static files --
-│   │                              # reversed from an earlier revision of this
-│   │                              # tree, which kept the Worker's source flat
-│   │                              # alongside the OpenTofu config and put pwa/
-│   │                              # at the repo root: once the PWA started
-│   │                              # deploying as static assets bound to this
-│   │                              # same cloudflare_workers_script resource
-│   │                              # (Phase 9) rather than a separate
-│   │                              # Cloudflare Pages project, both needed to
-│   │                              # live somewhere `path.module`-relative, so
-│   │                              # the Worker's own source moved into its own
-│   │                              # worker/ subdirectory and pwa/ became its
-│   │                              # sibling
-│   ├── main.tf                   # includes random_password for the
-│   │                                # backend↔Worker service secret (§5a) and
-│   │                                # a cloudflare_api_token scoped to D1:Edit
-│   │                                # for the backend's migration runner (§5b)
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── versions.tf
-│   ├── waf.tf                    # Browser Integrity Check bypass ruleset
-│   │                                # for backend→Worker service-secret
-│   │                                # traffic (§5c)
-│   ├── README.md
-│   ├── worker/                   # plain JS, no build step for deployment —
-│   │   │                            # local test/lint tooling doesn't change
-│   │   │                            # that
-│   │   ├── index.js
-│   │   ├── package.json          # Worker's own devDependencies (wrangler,
-│   │   │                            # @cloudflare/*, @aws-crypto/*,
-│   │   │                            # @smithy/*) — added Phase 6, makes
-│   │   │                            # terraform/worker/ a pnpm workspace
-│   │   │                            # member; see §13a for why ESLint/Vitest
-│   │   │                            # themselves stay root-level regardless
-│   │   ├── tsconfig.json          # @ts-check/JSDoc type-checking, index.js only
-│   │   ├── migrations/            # D1 schema — applied by the backend (§5b),
-│   │   │   │                        # not by wrangler
-│   │   │   ├── 0000_schema_migrations.sql
-│   │   │   └── 0001_users.sql
-│   │   └── tests/                 # @cloudflare/vitest-pool-workers — real
-│   │       │                        # simulated D1 via Miniflare, not mocks
-│   │       ├── apply-migrations.js
-│   │       ├── fetch.test.js
-│   │       └── handleUserMirror.test.js
-│   └── pwa/                       # static share-target PWA (Phase 9), no
-│       │                            # build step, no dependencies — same
-│       │                            # "no build step" constraint as worker/,
-│       │                            # for the same reason (deploys as plain
-│       │                            # static files, not a build artifact).
-│       │                            # Served by main.tf's
-│       │                            # cloudflare_workers_script `assets`
-│       │                            # block, alongside worker/'s own
-│       │                            # content_file — one terraform apply for
-│       │                            # the whole Cloudflare side, not a
-│       │                            # separate Pages project + separate
-│       │                            # `wrangler pages deploy` step
-│       ├── index.html
-│       ├── style.css               # reuses src/app.scss's exact token
-│       │                              # values (extension/dashboard/PWA all
-│       │                              # share them today) rather than a new
-│       │                              # palette -- full reconciliation
-│       │                              # against the marketing site's own
-│       │                              # ledger/brass/stamp palette was its
-│       │                              # own separate "dashboard visual
-│       │                              # design system" pass -- see
-│       │                              # DESIGN_SYSTEM.md
-│       ├── app.js                  # pairs and enqueues same-origin (no
-│       │                              # Worker URL field anywhere in this
-│       │                              # app -- it's served by the Worker it
-│       │                              # talks to)
-│       ├── sw.js                   # minimal: satisfies installability,
-│       │                              # cache-first for the app shell only
-│       ├── manifest.json           # Web Share Target (GET, url/text/title)
-│       ├── icon.svg
-│       ├── token.html               # standalone (own token.js, no service
-│       │                              # worker) -- exchanges a pairing token
-│       │                              # for a bearer token and displays it
-│       │                              # once, for pasting into a client that
-│       │                              # can't run POST /pair itself (the
-│       │                              # iOS Shortcut recipe below); not
-│       │                              # part of app.js's own pair/enqueue
-│       │                              # flow, and saves nothing itself
-│       └── token.js
-
-├── extension/                # WebExtension, own package.json (needs bundling
-│   ├── src/                    # to pull in vendored SingleFile capture code
-│   ├── manifest.json            # and a WebExtension polyfill — no longer
-│   └── package.json             # Readability.js; see §3a/§6b)
-│
-├── www/                          # Zola site — self-contained, own layout
-│   │                                # (named www/, not website/ as an
-│   │                                # earlier revision of this tree had it)
-│   ├── zola.toml
-│   ├── content/
-│   ├── templates/
-│   └── sass/
-│
-├── pnpm-workspace.yaml
-├── docker-compose.yml            # backend + postgres + screenshot sidecar
-│                                    # (dev database — see docker-compose.test.yml
-│                                    # above for the separate test one)
-├── README.md                      # includes backup guidance, see §14
-└── LICENSE
-```
-
-Note: this tree reflects the Go package layout, Worker tooling, and the Postgres
-testing/migration setup as actually implemented, plus the root-level
-`vitest.config.js`/`eslint.config.js` placement agreed on during that work
-(§13a). The CLI's own commands (`auth.go`, `enqueue.go`) landed as flat files
-directly in `cmd/`, confirming they share `go.mod`/the single binary cleanly —
-not a separate `cmd/cli/` subdirectory as an earlier revision of this tree
-assumed, before the `main.go`/`cobra` restructure had actually produced
-`server.go`/`agent.go` as the pattern to follow. Phase 6 additionally corrected
-several other places where this tree had drifted from reality (some from before
-this project's own working sessions had reality to check it against): the
-Worker's source living flat in `terraform/`, not nested under a `worker/`
-subdirectory; the marketing site's actual directory name (`www/`, not
-`website/`); and `terraform/package.json`'s existence, per §13a.
-
-### Notes on specific decisions
-
-(Unchanged from v1 — see original rationale for Go-at-root, CLI sharing the
-server's Go module, the dashboard's build output being embedded via `go:embed`,
-the Worker/PWA's no-build-step requirement, the extension's own
-directory/bundler, and `www/`'s self-containment.)
+A monorepo, structured flat by "what a thing is" rather than by architectural
+layer — a component only gets its own directory when it needs isolation (its own
+build tooling, dependency manifest, or, for the Worker/PWA, the hard requirement
+of having no build step at all). See the root README for the current layout and
+package map.
 
 ### 13a. Implementation Stack & Tooling
 
-Concrete tooling choices made during implementation, kept here rather than split
-into a separate document — per this section's own placement, this is meant to be
-read before implementing the next piece, not discovered after the fact in a
-README that can drift out of sync with the architecture decisions around it.
+Build, test, and lint tooling is documented in the root/extension/terraform
+READMEs, not here — this section covers only tooling choices that reflect a real
+architectural constraint, not a build-process detail.
 
-**Backend (Go):**
-
-- **Postgres access:** `pgx/v5` as the driver; `sqlc` for codegen from
-  `queries/*.sql` against the `migrations/` schema (`sql_package: pgx/v5`) — the
-  hand-written query files are the source of truth, the generated code under
-  `internal/db/` is regenerable, not hand-maintained.
-- **Postgres migrations:** `goose`, as a library — not the external CLI. Uses
-  goose's `Provider` API (`goose.NewProvider`/`WithStore`/ `WithSessionLocker`)
-  rather than its older package-level `SetBaseFS`/ `SetDialect` functions: those
-  mutate shared package-global state, which is a genuine data race if ever
-  called concurrently within one process (confirmed with `-race` — two
-  goroutines calling them simultaneously race immediately, even setting
-  identical values); `Provider` scopes all config to the call and is documented
-  safe for concurrent use (confirmed: 8 concurrent calls against the same pool,
-  zero race warnings). Bookkeeping lives in a table named `schema_migrations`
-  (via `WithStore`), matching D1's migration bookkeeping table name, not goose's
-  default `goose_db_version`. Also takes a Postgres session (advisory) lock for
-  the duration of a migration run (`WithSessionLocker`), so two processes racing
-  to migrate the same database — a rolling deploy briefly overlapping two
-  backend instances, a stray manual invocation — serialize rather than
-  interleave. Takes an already-open `*pgxpool.Pool` rather than a database URL,
-  so a caller that already has a pool (production startup, the test harness
-  below) doesn't open a second connection just to migrate. This goes a step
-  further than D1's migration runner by adding the session lock, which D1's
-  Cloudflare-API-based approach has no equivalent for.
-- **Postgres test harness:** `internal/dbtest` — connects to a dedicated,
-  ephemeral test Postgres container (`docker-compose.test.yml`; a distinct port
-  from the dev database so both can run at once; `tmpfs` data directory so every
-  start is genuinely clean, unlike dev's bind-mounted durability), applies
-  migrations via the same `internal/pgmigrate` code path production startup uses
-  — not a separate test-only migration runner — and provides
-  `t.Cleanup`-registering fixture factories (`CreateUser`, `CreateSession`).
-  Fails the test hard (`t.Fatalf`) if the database isn't reachable, never skips:
-  a missing test database should be loud everywhere it happens, not quietly
-  hidden behind a passing (skipped) run. `Reset` (for tests needing a
-  guaranteed-clean starting state) truncates every table in the schema
-  discovered dynamically via `pg_tables`, not a hardcoded list — so it doesn't
-  need updating every time a migration adds a table, and correctly clears tables
-  with no foreign-key path back to `users` at all, which a hardcoded
-  `TRUNCATE users CASCADE` would silently miss. `testcontainers-go` was
-  considered for container provisioning and rejected: its dependency tree (a
-  full Docker API client, containerd, OpenTelemetry, `gopsutil`) is heavier than
-  anything else in this project, including Viper.
-  `make test-db-up`/`test-db-down`/`test` drive the same
-  `docker-compose.test.yml` locally and in CI, rather than a separately
-  maintained GitHub Actions `services:` block.
-- **D1 migrations:** run by the backend itself at startup — embedded
-  (`go:embed`) SQL files applied via a direct call to Cloudflare's D1 query API
-  using the official `cloudflare-go` SDK. See §5b for the credential and
-  rationale; tracked in D1's `schema_migrations` table (§10), not wrangler's.
-- **CLI / config:** `cobra` for command structure — `main.go` embeds both
-  migration directories and hands them to the `cmd` package (see the repo tree
-  above), then `os.Exit(cmd.Execute())`; the actual backend startup lives in
-  `cmd/server.go` as a `recueil server` subcommand, not in `main.go` itself.
-  `Execute()` owns a single signal-aware context (`signal.NotifyContext` on
-  `SIGINT`/`SIGTERM`) passed to `rootCmd` via `ExecuteContext`; subcommands read
-  it back via `cmd.Context()` rather than each creating its own — confirmed for
-  real that this context reaches a subcommand's `RunE` correctly and that its
-  cancellation is what `cmd/server.go` waits on to shut the HTTP server down
-  gracefully (a real behavior this gained over the phase-1 `main.go`, which
-  built a cancellable context but never actually used it). `viper` for
-  configuration — an explicit `--config` TOML file (shell completion restricted
-  to `.toml` via `MarkPersistentFlagFilename`, no automatic search of `$HOME` or
-  the working directory the way cobra-cli's default scaffold does), environment
-  variables, and in-package defaults. Defaults are set in `internal/config`'s
-  own `init()`, not in `cmd/root.go` — they need to apply regardless of which
-  binary or test calls `config.Load()`, not only when `cmd`'s `init()` has
-  already run. Viper pulls in a notably heavier dependency tree than most
-  choices in this project — parsers for formats never used (YAML, HCL, Java
-  properties, INI, dotenv) alongside the one actually used (TOML) — accepted for
-  the CLI-ecosystem integration cobra and viper provide together, on the
-  reasoning that Go's own dead-code elimination strips the unused format parsers
-  from the final binary regardless of how large the source dependency is.
-- **Health checks:** `go.finelli.dev/healthchecks` (module
-  `github.com/mfinelli/go-healthchecks`), mounted directly on the same chi
-  router as the dashboard API (`internal/httpapi`) rather than a second port —
-  `/info` (build metadata), `/ping` (machine-consumable status code, for a
-  Docker `HEALTHCHECK` or uptime monitor), `/health` (always `200`,
-  human-readable JSON detail on failure). Unauthenticated and registered outside
-  the `RequireSession` group. Two things confirmed against the real library
-  rather than assumed from its docs: it declares `package healthcheck`
-  (singular) despite the plural import path, and its handlers are returned as
-  the library's own unexported function type, not `http.HandlerFunc` — chi's
-  `Get` requires the latter specifically, so mounting them needs an explicit
-  `http.HandlerFunc(hc.Health())` conversion, not a direct pass. The `Check`
-  function itself calls a small `Ping` method added to `internal/db.Queries`
-  (`SELECT 1` through the existing `DBTX` interface) rather than threading the
-  raw `*pgxpool.Pool` into `httpapi`.
-- **Metrics:** `/metrics`, Prometheus exposition format, mounted on the same chi
-  router (`internal/metrics`). Standard Go runtime and process collectors
-  (`collectors.NewGoCollector`/`NewProcessCollector`) plus custom gauges — a
-  `recueil_users_total` count, and, once the screenshot/readability/AI jobs
-  existed to have something worth watching, `recueil_jobs_total{job,status}`
-  (every (job, status) combination emitted explicitly every scrape, including
-  zeros, rather than only whatever a given scrape's query happens to return —
-  PromQL's `rate()`/`sum()` behave far more predictably against a
+- **`recueil server` owns a single signal-aware context**
+  (`signal.NotifyContext` on `SIGINT`/`SIGTERM`), passed down via
+  `cmd.Context()` rather than each subcommand creating its own — this is what
+  its graceful shutdown waits on to stop accepting requests cleanly.
+- **The archived-HTML endpoint sends a defensive
+  `Content-Security-Policy: script-src 'none'`**, even though SingleFile's
+  capture already strips scripts — belt-and-suspenders, since that response is
+  served same-origin with the authenticated dashboard, and anything that slipped
+  through would otherwise run with access to the session cookie.
+- **`internal/metrics` is Postgres-only, even where D1 has the more complete
+  picture** — real queue depth (`queue_items`/`pending_captures` counts) lives
+  only in D1, and a typical Prometheus scrape interval hitting the Worker on
+  every tick risks the Cloudflare free tier for no operational benefit worth
+  that cost. Every `(job, status)` combination is emitted explicitly on every
+  scrape, including zeros, rather than only whatever a scrape's query happens to
+  return — PromQL's `rate()`/`sum()` behave far more predictably against a
   continuously-present-at-0 series than one that silently appears and
-  disappears) and `recueil_job_oldest_pending_age_seconds{job}` (absent, not
-  zero, for a job type with nothing currently pending — a real backlog signal a
-  raw pending count alone wouldn't surface as clearly). Every metric here is a
-  `prometheus.Collector` that queries fresh on every scrape rather than
-  maintaining cached state. Deliberately built on its own
-  `prometheus.NewRegistry()`, not the global `prometheus.DefaultRegisterer` —
-  same reasoning as choosing goose's `Provider` API over its package-level
-  `SetBaseFS`/`SetDialect`: avoids hidden shared mutable state that could
-  collide across multiple instantiations (confirmed via test: two
-  independently-built registries never collide, which they would under the
-  global default). A failed collection (e.g. the DB unreachable) is logged and
-  simply omits that one metric rather than failing the whole scrape — confirmed
-  for real, both the success and failure paths, independently for each custom
-  gauge.
+  disappears. `recueil_agent_last_success_seconds{cycle}` is gated on every step
+  of that cycle succeeding, not just the cycle running, since recording a
+  heartbeat regardless of outcome would hide exactly the failure it exists to
+  catch.
+- **Testing convention: no mocks for anything that talks to a real dependency.**
+  DB-touching code runs against a real Postgres (`internal/dbtest`); code that
+  calls an external HTTP API runs against a real `httptest.Server`; the
+  sidecar-driving jobs (§6) run against a real `chromedp` instance.
+  `internal/httpapi` handler tests are external `_test` packages, exercising
+  only exported constructors the way a real caller would.
+- **The dashboard is plain Svelte 5 + Vite (no SvelteKit)** — the session model
+  is already a same-origin `httpOnly`/`SameSite=Lax` cookie (§5) checked via
+  ordinary chi middleware, so there's no SSR or server-side data-loading need
+  SvelteKit's extra layer would earn its keep for.
+- **Frontend tests of Svelte 5 runes need `resolve.conditions: ['browser']`
+  alongside `environment: 'jsdom'`** in the Vitest config — without it, `$state`
+  silently resolves to Svelte's inert SSR runtime rather than a live reactive
+  signal, testing the wrong thing without ever failing loudly.
 
-  **Everything here is Postgres-only by design, even where D1 has the more
-  complete picture.** True queue depth (`queue_items`/`pending_captures` counts)
-  lives only in D1, and a Prometheus scrape interval (15-60s typical) hitting
-  the Worker on every tick risks the Cloudflare free tier for no operational
-  benefit worth that cost.
-
-  - `recueil_pages_total`, `recueil_captures_total`, and
-    `recueil_storage_bytes{kind}` (`html_compressed` | `html_uncompressed` |
-    `favicon` | `screenshot`) reuse `GetSystemStats` — the same query the
-    dashboard's admin stats screen already runs — rather than adding a
-    metrics-specific one. Doubles as free ingestion-throughput visibility
-    (`rate()`/`increase()` over either total) without ever asking the Worker,
-    which is the more useful "is the queue actually draining" signal anyway
-    compared to a raw depth count.
-  - `recueil_agent_last_success_seconds{cycle}` (`worker` | `local`, matching
-    `AgentWorkerPollIntervalSeconds`/`AgentLocalPollIntervalSeconds` — see
-    cmd/agent.go) answers a real gap: `recueil agent` is a separate deployed
-    process from `recueil server` (§2), and `/metrics` is only mounted on
-    `server`'s router, so nothing today surfaces whether the agent is still
-    alive and succeeding versus silently stuck. Backed by a new
-    `agent_heartbeats(cycle, last_success_at)` table the agent upserts into
-    itself after a cycle completes — but only when every step in that cycle
-    succeeded, not merely because the cycle ran: `workerCycle.run`'s heartbeat
-    is gated on ingestion _and_ mirror sync both succeeding (explicitly
-    excluding the once-per-`cleanupInterval` D1 sweep, which is best-effort
-    maintenance, not part of every cycle), and `runLocalCycle`'s on screenshot,
-    readability, and AI enrichment (when enabled) all succeeding. Recording a
-    heartbeat regardless of outcome would hide exactly the failure this metric
-    exists to catch. Same absent-not-zero shape as the job-age gauge: a cycle
-    that's never recorded a success has no row at all, not a stale zero.
-
-- **OpenTelemetry (distributed tracing) was considered and intentionally
-  deferred, not rejected outright.** The core API/SDK
-  (`go.opentelemetry.io/otel`) is actually light on its own (just `go-logr`),
-  but any real exporter — confirmed even the OTLP-over-HTTP variant, not just
-  gRPC — pulls in `google.golang.org/grpc`'s full tree, comparable in weight to
-  `testcontainers-go` (§13a, rejected earlier for the same reason). More
-  fundamentally, tracing's value scales with a request's hop count across
-  services, and this project's current call graph is shallow (one backend
-  process, Postgres, occasional Worker calls) — the architectural case isn't
-  there yet, and self-hosted personal-scale operators are unlikely to be running
-  a trace backend to send spans to regardless. Worth revisiting once the
-  screenshot service (§6a) and AI enrichment (§7) exist as a genuine async
-  multi-stage pipeline — that's the shape (multiple hops, independent failure
-  points, a second real process boundary in the chromedp sidecar) where
-  tracing's value proposition actually applies here.
-- **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
-- **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
-  transitive dependencies, and its middleware signature
-  (`func(http.Handler) http.Handler`) is identical to stdlib's own convention,
-  so `internal/auth`'s `RequireSession`/`RequireAdmin` needed no changes to work
-  as ordinary chi middleware. This supersedes the earlier phase-1 choice of
-  stdlib `net/http`'s own pattern routing with no router library at all —
-  reasonable for three routes, less so once route grouping (stating an auth
-  requirement once for a whole group, e.g. future admin-scoped routes under §5's
-  Manage Devices screen) and middleware composition became the actual friction,
-  rather than routing itself.
-- **HTTP middleware:** `github.com/go-chi/httplog/v2` for structured request
-  logging, plus a handful of chi's own middlewares — chosen and ordered based on
-  what actually held up under testing, not just chi's defaults.
-  `httplog.RequestLogger` already wraps chi's own `RequestID` and `Recoverer`
-  internally (confirmed via source and by intentionally panicking a handler:
-  clean `500`, full stacktrace logged, server kept running) — neither needed
-  adding separately. `CleanPath` is kept; `RedirectSlashes` is not, because
-  `CleanPath`'s `path.Clean()` silently strips a trailing slash into chi's
-  internal `RoutePath` before any redirect-based slash-handling middleware would
-  ever see one — confirmed for real that a `POST` to a trailing-slash route
-  variant hits the handler directly with no visible redirect, same method,
-  making `RedirectSlashes` inert given this ordering (and a silent internal
-  normalization is the safer behavior for a JSON API regardless — no HTTP
-  redirect method-preservation question ever arises). `RequestSize` (1MB cap)
-  and `Timeout` (30s, returning `504`) are route-agnostic hardening applied
-  globally; `AllowContentType("application/json")` is scoped to the `/api`
-  sub-router specifically, since it's enforcing the JSON API's data contract,
-  not a general protection every current or future route should inherit
-  (confirmed harmless on bodyless requests either way — it skips the check when
-  `r.ContentLength == 0` — but scoped for what it communicates, not because
-  scoping changes behavior today). `RealIP` was considered and not added:
-  genuinely useful behind a trusted reverse proxy, but this project treats
-  network exposure (LAN-only, VPN, tunnel, reverse proxy) as entirely the
-  operator's choice (§2, §12) — blindly trusting a client-supplied header
-  without knowing a proxy is actually in front would let anyone reachable spoof
-  their IP in logs. `pprof` (`middleware.Profiler`) was also considered and not
-  added: useful for an operator diagnosing their own instance, but exposes
-  sensitive runtime info and its own CPU-cost surface, not something to mount on
-  the same unauthenticated router as health checks without a separate,
-  deliberate decision about how it's gated.
-- **Testing:** `testify`, with table-driven cases (`t.Run` subtests, or
-  `[]struct{...}` tables) where that reduces duplication rather than as a
-  blanket rule. For code that calls an external HTTP API, tests run against a
-  real `httptest.Server` plus that library's own base-URL override where one
-  exists (e.g. `option.WithBaseURL` for `cloudflare-go`), rather than a
-  hand-rolled interface mock — closer to the real request/response shape for the
-  same effort. Handler-level tests (`internal/httpapi`) are written as external
-  `_test` packages exclusively — exercising only the package's exported
-  constructors, the same way a real caller would, rather than reaching into
-  unexported internals.
-
-**Cloudflare Worker:**
-
-- **No build step, ever.** Plain JS (ES modules), not TypeScript; deployed via
-  Terraform's Cloudflare provider directly, never `wrangler deploy`.
-- **Static type-checking without a build step:** `@ts-check` + JSDoc annotations
-  in `index.js`, checked via `tsc --noEmit` against a `tsconfig.json` scoped to
-  the deployed script only. Test files are deliberately out of that scope — they
-  import the `cloudflare:test` virtual module, which only exists inside the
-  Vitest pool's runtime and which plain `tsc` has no way to resolve.
-- **Linting:** ESLint (flat config), root-level (`eslint.config.js`), scoped
-  per-directory via each config object's `files` glob rather than a separate
-  config file per component. The Worker's own `index.js` needs
-  `globals.serviceworker` (for `Request`/`Response`/`URL`/`fetch`/`crypto`, none
-  of which are standard Node or browser globals as far as ESLint's built-in
-  knowledge goes); its test files additionally need `globals.vitest`. Phase 6
-  added the expected Svelte-dashboard-scoped block to this same file (`.svelte`/
-  dashboard `.ts` globs, `typescript-eslint` + `eslint-plugin-svelte`) rather
-  than a separate config file, as planned here.
-- **Testing:** `@cloudflare/vitest-pool-workers` — runs test files inside the
-  real `workerd` runtime (not a Node-side approximation of it), with Miniflare
-  providing a real local D1 database. The same `migrations/*.sql` files that
-  back §5b's runtime migrations are applied to that local database via
-  `readD1Migrations`/`applyD1Migrations`, so there's one schema source of truth
-  rather than a separate test fixture schema to keep in sync. Root-level
-  `vitest.config.js`, using Vitest's `projects` array (not the older, now
-  superseded `vitest.workspace.ts` mechanism) so the same file and the same
-  `vitest run` invocation will also cover Svelte dashboard tests once those
-  exist — each project scoped to its own runtime/environment (`workerd` for the
-  Worker, presumably `jsdom` or similar for Svelte component tests), never mixed
-  within one project.
-- **Dependency ownership vs. tooling orchestration are separate concerns.**
-  `terraform/package.json` (added in Phase 6) holds the Worker's own
-  dependencies (`wrangler`, `@cloudflare/*`, `@aws-crypto/*`, `@smithy/*`) and
-  makes `terraform/` a pnpm workspace member, mirroring `extension/`'s existing
-  pattern (its own `package.json` for `esbuild`/`web-ext`/`crx3`, but no
-  `eslint.config.js`/`vitest.config.js` of its own). ESLint and Vitest
-  themselves, though, stay root-level and package-agnostic — they orchestrate
-  across every workspace member (Worker, extension, and now the dashboard's own
-  `src/`) via per-directory `files` globs / per-project scoping rather than each
-  package running its own separate lint/test invocation. Root `package.json` is,
-  correspondingly, the Svelte dashboard's own package (its `dependencies`/
-  `devDependencies` are Svelte/Vite/dashboard-specific), not a shared dumping
-  ground for every package's deps — an earlier revision of this section had that
-  backwards. The "no build step" constraint is about what ships to Cloudflare on
-  deploy; it was never a constraint on what local tooling (including a
-  `package.json` purely for devDependencies) is allowed to exist for development
-  and CI.
-
-**Svelte Dashboard:**
-
-- **Svelte 5 (runes), Vite, TypeScript, SCSS** — a real build step, unlike the
-  Worker/PWA: `go:embed`-ing the built `dist/` output into the Go binary means
-  nothing about the "no build step" constraint applies here (that constraint is
-  specifically about what ships to Cloudflare on deploy). SCSS support comes
-  from `@sveltejs/vite-plugin-svelte`'s own `vitePreprocess()` (exported via
-  `svelte.config.js`, so `svelte-check` sees the same preprocessing Vite itself
-  uses) — not the separate `svelte-preprocess` package, which the modern
-  Vite-plugin-Svelte toolchain has made redundant for the common TS/SCSS case.
-- **Routing:** `svelte-spa-router` — a small client-side router, not SvelteKit.
-  SvelteKit's file-based routing/server-route/loader machinery would mostly go
-  unused here: the session model is already a same-origin
-  `httpOnly`/`SameSite=Lax` cookie (§5) checked via ordinary chi middleware, so
-  there's no SSR or server-side data-loading need SvelteKit's extra layer would
-  actually earn its keep for.
-- **Dev workflow:** `pnpm dev` runs Vite's own dev server, whose config proxies
-  `/api` to the Go backend (default `http://localhost:8080`, matching
-  `listen_addr`'s own default) so the dashboard doesn't need a full Go rebuild
-  on every frontend change. `dist/` is gitignored, not committed — built via
-  CI/the Makefile like any other generated output, same convention as
-  `internal/db/`.
-- **Capture HTML delivery** (`GET /api/captures/{id}/html`) prefers passing
-  through the archive's own on-disk zstd compression untouched
-  (`Content-Encoding: zstd`) when the client's `Accept-Encoding` says it can
-  handle it, rather than decompressing server-side just to maybe recompress.
-  Otherwise it decompresses and leans on `middleware.Compress`'s existing
-  gzip/deflate negotiation (its allowed-types list includes `text/html`
-  specifically for this) rather than hand-rolling a second compression path —
-  verified against chi's own `compress.go` source that it steps aside correctly
-  once `Content-Encoding` is already set, so the two paths can't double-compress
-  each other.
-
-- **API client:** hand-rolled (`src/lib/api.ts`), not generated — there's no
-  OpenAPI spec on the Go side to generate from, so response types
-  (`src/lib/types.ts`) are manually kept in sync with `internal/httpapi`'s own
-  response DTOs. A real, disclosed sync point (unlike `sqlc`'s automated
-  Postgres↔Go one), judged acceptable while the API surface stays the size it
-  currently is.
-- **Session/auth:** Svelte 5 runes-based state (`src/lib/session.svelte.ts`),
-  bootstrapped once via a module-level `sessionReady` promise that `App.svelte`
-  awaits before ever mounting the router — route guards (`svelte-spa-router`'s
-  `wrap({conditions})`) don't need their own "have we checked session state yet"
-  handling as a result. `GET /auth/me` and the new `GET /api/setup-status`
-  (unauthenticated, closing a real gap: there was no way to distinguish "show
-  Setup" from "show Login" on first load) run via `Promise.allSettled`, not
-  `Promise.all` — one failing shouldn't strand the app on the loading screen
-  forever.
-- **Favicon/thumbnail delivery** (`GET /api/pages/{id}/favicon`,
-  `GET /api/pages/{id}/thumbnail`): unlike capture HTML, no content-negotiation
-  dance — small already-binary images, not worth it. Deliberately no
-  `Cache-Control` either: both URLs are page-identity- addressed, not
-  content-addressed, so a later re-capture changing the favicon/thumbnail
-  shouldn't risk being masked by a stale browser cache. Thumbnails aren't a
-  denormalized `pages` column the way `favicon_path` is (they're written async
-  by the screenshot job well after ingestion, not at `UpsertPage` time), so the
-  thumbnail endpoint resolves the latest capture fresh per request instead.
-
-- **Frontend logic testing**: a `"dashboard"` Vitest project alongside the
-  existing Worker/extension ones, deliberately scoped to logic
-  (`src/lib/*.test.ts`) rather than component rendering for now — a separate,
-  later decision with its own setup cost (`@testing-library/svelte`). Testing
-  Svelte 5 runes under Vitest needs `resolve.conditions: ['browser']` alongside
-  `environment: 'jsdom'`; without it `$state` resolves to Svelte's inert SSR
-  runtime rather than a live reactive signal, silently testing the wrong thing
-  rather than failing loudly. Verified against Svelte's own official testing
-  docs, not assumed.
-- **`src/components/`** (new, alongside `src/lib/` and `src/routes/`): shared UI
-  that's neither pure logic nor a routed page. `AppHeader.svelte` is the first
-  resident — extracted once three real screens would otherwise be repeating the
-  same title/nav/account bar, not decided in advance of needing it.
-- **Optimistic writes, not refetch-after-write**: `PageDetail`'s tag/
-  collection/mirror-toggle/language-correction actions all update local state
-  directly from each write's own response. Reasonable for a single-user personal
-  tool; not defended against concurrent-editor conflicts, and would need
-  reconsidering if multi-user concurrent editing of the same page ever became a
-  real scenario.
-- **Collections management** (`Collections.svelte`): the tree is built
-  client-side from the flat `(id, parent_id)` list `GET /api/collections`
-  already returns, not requested pre-nested — consistent with
-  `ListCollectionsByUser`'s own documented reasoning that a full-user listing
-  doesn't need a recursive CTE. Cascading delete (removing a collection removes
-  its whole subtree, per §10) surfaces a `confirm()` naming the actual
-  descendant count before proceeding, rather than a silent or generic warning.
-
-- **In-app reader view, not an iframed archived-HTML view.** Settled during
-  planning: the archived HTML is a full, self-contained snapshot of the original
-  page's own layout/CSS/images, and an iframe would mean fighting
-  sizing/scrolling for the whole viewing session for little benefit over a plain
-  new tab, which gets native zoom/find-in-page/the full viewport for free.
-  `reader_text` gets the in-app treatment instead — nothing to sanitize, safe to
-  render directly. The archived-HTML endpoint itself also picked up a defensive
-  `Content-Security-Policy: script-src 'none'` regardless (belt-and-suspenders
-  on top of the extension's own `blockScripts: true` capture setting, since the
-  response is served same-origin with the dashboard).
-
-- **Fonts and icons** (visual-pass tooling, Phase 12): `@fontsource/fraunces`
-  and `@fontsource/ibm-plex-mono` self-host the dashboard's two non-body font
-  families rather than pulling from a CDN — the dashboard is the authenticated
-  half of a self-hosted tool, unlike the marketing site's public page.
-  `@lucide/svelte` (the current official package; not the deprecated
-  `lucide-svelte` v0 name) provides icons via per-icon subpath imports, with
-  app-wide size/stroke-width defaults set once through its own `setLucideProps`
-  context API rather than a local wrapper component. Same category as
-  `chi`/`cobra`/`viper` above — a concrete tooling choice, not an architectural
-  one. The actual design tokens/patterns these support (color palette,
-  typography roles, breakpoints, icon usage conventions) live in the new
-  `DESIGN_SYSTEM.md`, not here — that content is a living reference meant to be
-  read while building a screen, a different shape than this section's own
-  tooling-choice log.
-
-This section is expected to keep growing as the extension, dashboard, and CLI
-are built out.
+This isn't comprehensive — it's the subset of tooling decisions that would
+otherwise cost real debugging time to rediscover. Visual/UX design tokens and
+patterns live in `DESIGN_SYSTEM.md`, not here.
 
 ---
 
