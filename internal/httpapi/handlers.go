@@ -26,7 +26,6 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -840,10 +839,6 @@ func (s *Server) GetAdminStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// A shape check, not a fixed enum -- this only rejects values that couldn't
-// possibly be a real language tag, not values that aren't (yet) translated.
-var languageTagPattern = regexp.MustCompile(`^[a-z]{2,3}(-[A-Z]{2})?$`)
-
 type patchSettingsRequest struct {
 	// Neither field is a pointer, unlike patchPageRequest's per-field
 	// pointers -- both are always sent together, full-replace, on every
@@ -851,7 +846,9 @@ type patchSettingsRequest struct {
 	// loaded into the same form, so there's never a real "update just
 	// one without knowing the other" case to support). An empty string
 	// clears either field back to NULL/automatic; anything else must be
-	// a real language tag (Language) or exactly "light"/"dark" (Theme).
+	// exactly "en"/"fr" (Language) or "light"/"dark" (Theme) -- both are
+	// closed sets matching the user_settings CHECK constraints, not
+	// open-ended shape checks.
 	Language string `json:"language"`
 	Theme    string `json:"theme"`
 }
@@ -872,8 +869,8 @@ func (s *Server) PatchSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Language != "" && !languageTagPattern.MatchString(req.Language) {
-		writeError(w, http.StatusBadRequest, "invalid language tag")
+	if req.Language != "" && req.Language != "en" && req.Language != "fr" {
+		writeError(w, http.StatusBadRequest, "invalid language")
 		return
 	}
 	if req.Theme != "" && req.Theme != "light" && req.Theme != "dark" {

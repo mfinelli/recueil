@@ -2191,6 +2191,24 @@ func TestPatchSettings(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
+	t.Run("a well-formed but unsupported language tag is rejected", func(t *testing.T) {
+		// "de" is a real, valid-shaped BCP 47 language tag -- but the
+		// user_settings_language_check CHECK constraint (and the app
+		// validator mirroring it) only allow "en"/"fr".
+		user := dbtest.CreateUser(t, pool, "member")
+		server, _ := newTestServer(t, pool, unreachable)
+		cookie := sessionCookieFor(t, pool, &user)
+
+		req, err := http.NewRequest(http.MethodPatch, server.URL+"/api/settings",
+			strings.NewReader(`{"language":"de"}`))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(cookie)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
 	t.Run("one user's settings never affect another's", func(t *testing.T) {
 		userA := dbtest.CreateUser(t, pool, "member")
 		userB := dbtest.CreateUser(t, pool, "member")
