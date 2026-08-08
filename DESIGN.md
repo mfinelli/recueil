@@ -1433,98 +1433,86 @@ tracking parameters and unwrapped redirects:
 
 ### Postgres (backend-owned — canonical archive)
 
-`BIGINT GENERATED ALWAYS AS IDENTITY` primary keys are used throughout (rather
-than UUIDs) for smaller indexes and better insert/join performance at this
-project's scale.
-
-All constraints (primary keys, unique constraints, checks, and foreign keys) are
-explicitly named (`<table>_pkey`, `<table>_<column>_key`,
+`BIGINT GENERATED ALWAYS AS IDENTITY` primary keys are used throughout. Every
+constraint (primary keys, unique constraints, checks, and foreign keys) is
+explicitly named in the real migrations (`<table>_pkey`, `<table>_<column>_key`,
 `<table>_<column>_check`, `<table>_<column>_fkey`) rather than left to
-Postgres's auto-generated names — this makes later
-`ALTER TABLE ... DROP CONSTRAINT` migrations (e.g. changing the set of allowed
-`role` values) referenceable by a name stated in the migration file, rather than
-needing to look up whatever Postgres happened to call them. Applied below to
-`users` and `sessions`, the two tables actually implemented so far; the rest of
-this section's tables will pick up the same convention as they're implemented.
+Postgres's auto-generated names — this makes a later
+`ALTER TABLE ... DROP CONSTRAINT` referenceable by a name stated in the
+migration file, rather than needing to look up whatever Postgres happened to
+call it. The blocks below simplify constraint syntax for readability; the
+migrations themselves are the source of truth for exact names.
 
 ```sql
 CREATE TABLE users (
-  id BIGINT GENERATED ALWAYS AS IDENTITY,
-  username TEXT NOT NULL,
-  password_hash TEXT NOT NULL,       -- bcrypt; verified backend-side only,
-                                      -- never mirrored anywhere (see §5)
-  pairing_token_enc TEXT NOT NULL,   -- AES-256-GCM, reversible; source for
-                                      -- the D1 pairing_token_hash mirror and
-                                      -- for dashboard redisplay (§5)
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,       -- bcrypt
+  pairing_token_enc TEXT,            -- AES-256-GCM, reversible; nullable --
+                                      -- cleared on revoke, until regenerated
+                                      -- (§5). Source for the D1
+                                      -- pairing_token_hash mirror and for
+                                      -- dashboard redisplay.
   role TEXT NOT NULL DEFAULT 'member',   -- 'admin' | 'member'
   display_name TEXT,                 -- nullable; UI falls back to username
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT users_pkey PRIMARY KEY (id),
-  CONSTRAINT users_username_key UNIQUE (username),
-  CONSTRAINT users_role_check CHECK (role IN ('admin', 'member'))
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Dashboard sessions (§5) — DB-backed, hashed opaque tokens, same shape as
 -- D1 device tokens. Revocation is a row delete (logout); no idle timeout,
--- only the absolute expires_at.
+-- only the absolute expires_at. user_agent is captured once at sign-in,
+-- verbatim, and parsed at read time by the Active Sessions screen (§5).
 CREATE TABLE sessions (
-  id BIGINT GENERATED ALWAYS AS IDENTITY,
-  session_hash TEXT NOT NULL,
-  user_id BIGINT NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  session_hash TEXT NOT NULL UNIQUE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at TIMESTAMPTZ NOT NULL,
-  CONSTRAINT sessions_pkey PRIMARY KEY (id),
-  CONSTRAINT sessions_session_hash_key UNIQUE (session_hash),
-  CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 
 -- One row per distinct URL ever archived, grouped by normalized_url
 CREATE TABLE pages (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   normalized_url TEXT NOT NULL,
   title TEXT,                        -- denormalized from latest capture,
-                                      -- but also directly PATCH-able as a
-                                      -- manual override (Phase 13,
-                                      -- PATCH /api/pages/{id}) -- a later
+                                      -- also directly PATCH-able as a
+                                      -- manual override
+                                      -- (PATCH /api/pages/{id}) -- a later
                                       -- recapture overwrites an override
                                       -- the same way it always overwrites
-                                      -- this column, deliberately: no
-                                      -- separate title_override column, no
-                                      -- display-time fallback
+                                      -- this column; no separate
+                                      -- title_override column
   latest_capture_at TIMESTAMPTZ NOT NULL,  -- also denormalized from latest
                                       -- capture (via GREATEST, tolerating
                                       -- out-of-order ingestion) -- feeds
-                                      -- the D1 bookmark-list mirror's own
+                                      -- the D1 bookmark-list mirror's
                                       -- latest_capture_at column directly
   excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE,  -- opt a page out of
                                       -- the D1 bookmark-list mirror (§8);
                                       -- purely a Postgres-side push filter,
                                       -- no corresponding D1 column exists
   favicon_path TEXT,                 -- denormalized from the latest
-                                      -- capture's own favicon_path (§3g),
+                                      -- capture's favicon_path (§3g),
                                       -- the same way title is -- including
                                       -- back to NULL if the latest capture
-                                      -- genuinely didn't find one
-  notes TEXT,                        -- free-text, user-authored (Phase 14,
-                                      -- PATCH /api/pages/{id}) -- a light
+                                      -- didn't find one
+  notes TEXT,                        -- free-text, user-authored
+                                      -- (PATCH /api/pages/{id}) -- a light
                                       -- markdown subset (bold/italic/lists;
                                       -- src/lib/markdown.ts), stored as
-                                      -- source and rendered client-side,
-                                      -- same as reader_text/ai_summary's
-                                      -- own "store source, render on read"
-                                      -- choice. Page-level like tags/
+                                      -- source and rendered client-side.
+                                      -- Page-level like tags/
                                       -- collections, not per-capture.
-                                      -- Deliberately not mirrored to D1:
-                                      -- personal annotations, not bookmark
-                                      -- structure
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
 );
+CREATE INDEX idx_pages_user_id ON pages(user_id);
 
 -- One row per capture event: the version history
 CREATE TABLE captures (
@@ -1535,23 +1523,28 @@ CREATE TABLE captures (
                                       -- extension/queue flow, backend-
                                       -- generated for manual uploads (§3d);
                                       -- cleared back to NULL once ingestion
-                                      -- of this capture is fully done --
-                                      -- nothing reads it after that
-  source TEXT NOT NULL DEFAULT 'extension',  -- 'extension' | 'manual_upload'
-                                      -- (§3d) — mirrors page_tags.source
+                                      -- of this capture is fully done
+  source TEXT NOT NULL DEFAULT 'extension'  -- 'extension' | 'manual_upload'
+    CHECK (source IN ('extension', 'manual_upload')),
   raw_url TEXT NOT NULL,
   title TEXT,
-  html_path TEXT NOT NULL,           -- path relative to the backend's
+  html_path TEXT NOT NULL UNIQUE,    -- path relative to the backend's
                                       -- configured archive-directory root,
-                                      -- zstd-compressed (see §14 for why
-                                      -- relative rather than absolute)
+                                      -- zstd-compressed. UNIQUE is
+                                      -- belt-and-suspenders, not primary
+                                      -- defense (§4's os.Mkdir/EEXIST check
+                                      -- runs first, before this constraint
+                                      -- could ever fire)
   html_compressed_size_bytes INTEGER NOT NULL,
   html_uncompressed_size_bytes INTEGER NOT NULL,  -- both stored, not just
-                                      -- the compressed size actually on
+                                      -- the compressed size on
                                       -- disk, so the dashboard can surface
                                       -- real compression-ratio numbers
   thumbnail_path TEXT,               -- populated async by the screenshot
-                                      -- service (§6a); null until then
+                                      -- job (§6a); NULL until then
+  thumbnail_size_bytes INTEGER,
+  thumbnail_hash TEXT,               -- sha256 of the thumbnail bytes --
+                                      -- an integrity check;
   favicon_path TEXT,                 -- captured client-side alongside the
                                       -- HTML itself (§3g), so -- unlike
                                       -- thumbnail_path -- populated
@@ -1559,6 +1552,8 @@ CREATE TABLE captures (
                                       -- a later async job; NULL whenever no
                                       -- favicon was found, which is a
                                       -- normal, non-error outcome
+  favicon_size_bytes INTEGER,
+  favicon_hash TEXT,
   reader_text TEXT,                  -- Readability plain-text extraction;
                                       -- populated asynchronously by the
                                       -- readability job (§6b) -- NULL until
@@ -1568,10 +1563,17 @@ CREATE TABLE captures (
                                       -- produced reader_text; overwritten in
                                       -- place on re-extraction, no history
                                       -- kept (§6b)
-  content_hash TEXT NOT NULL,        -- full-HTML hash (exact dedup)
+  content_hash TEXT NOT NULL,        -- full-HTML hash
   reader_text_hash TEXT,             -- powers "unchanged since last capture";
                                       -- nullable for the same reason as
                                       -- reader_text above (§3b, §6b)
+  ai_summary TEXT,                   -- populated asynchronously by the AI
+                                      -- job (§7), once readability
+                                      -- extraction has produced reader_text
+  ai_model TEXT,                     -- which model produced ai_summary --
+                                      -- kept alongside it so a summary can
+                                      -- be regenerated later against a
+                                      -- different model
   language REGCONFIG NOT NULL DEFAULT 'simple',  -- see below for why
                                       -- REGCONFIG, not TEXT, and why
                                       -- 'simple' as the fallback
@@ -1586,12 +1588,9 @@ ALTER TABLE captures ADD COLUMN reader_text_tsv tsvector
 CREATE INDEX idx_captures_fts ON captures USING GIN (reader_text_tsv);
 ```
 
-**Full-text search is per-capture-language, not hardcoded to English** —
-corrected from an earlier revision of this document, which assumed all captured
-content would be English. That assumption actively makes search _worse_, not
-just unhelpful, for any other language: applying English stemming rules to
-French or German text produces garbage tokens, since stemming is
-language-specific by nature.
+**Full-text search is per-capture-language, not hardcoded to English.** Applying
+English stemming rules to French or German text produces garbage tokens, since
+stemming is language-specific by nature.
 
 - **`language` is typed `REGCONFIG`, not `TEXT`.** Casting a language name to
   `regconfig` (`'french'::regconfig`) is a catalog lookup, which Postgres
@@ -1602,44 +1601,36 @@ language-specific by nature.
   anywhere in it, satisfying the immutability requirement. The cast from a
   language name to `regconfig` still happens, just once, at INSERT/UPDATE time —
   an ordinary, unrestricted operation, not inside a generated expression.
-- **Detection happens at ingestion**, parsing the captured HTML's own
+- **Detection happens at ingestion**, parsing the captured HTML's
   `<html lang="...">` attribute (the standard HTML5 way a page declares its
-  content language) — not a Readability output, and not guaranteed to be present
-  or accurate, but a reasonable, zero-cost signal already sitting in every
-  capture.
+  content language) — not guaranteed to be present or accurate, but a
+  reasonable, zero-cost signal already sitting in every capture.
 - **The detected tag is validated against this specific Postgres instance's live
   `pg_ts_config` catalog, not a hardcoded Go-side list of "languages Postgres
-  supports."** Which configs are actually available genuinely depends on the
-  running Postgres version; asking the live catalog is the only source that's
-  authoritative for that.
+  supports."** Which configs are available depends on the running Postgres
+  version; asking the live catalog is the only source that's authoritative for
+  that.
 - **Falls back to `'simple'`** — no language-specific stemming, but never
-  actively wrong for any language, unlike guessing — whenever there's no `lang`
-  attribute, the detected tag has no known mapping (e.g. Chinese, Japanese,
-  Korean: languages Postgres has no snowball stemmer for at all, since they need
-  segmentation rather than stemming), or the mapped candidate doesn't actually
-  exist on this Postgres instance.
+  actively wrong for any language — whenever there's no `lang` attribute, the
+  detected tag has no known mapping (e.g. Chinese, Japanese, Korean: languages
+  Postgres has no snowball stemmer for at all, since they need segmentation
+  rather than stemming), or the mapped candidate doesn't actually exist on this
+  Postgres instance.
 - **The dashboard lets a user correct a capture's detected language after the
-  fact** (`PatchCaptureLanguage`, Phase 6), choosing from whatever configs this
-  Postgres instance actually has, or "Other" (mapping to `simple`; relabeled
-  from the raw config name in Phase 14 — "simple" isn't a real language, and
-  showing Postgres's own internal name for "no stemming" as if it were one just
-  reads as a stray option nobody explained) — a plain
+  fact** (`PatchCaptureLanguage`), choosing from whatever configs this Postgres
+  instance has, or "Other" (mapping to `simple` — "simple" isn't a real
+  language, and showing Postgres's internal name for "no stemming" as if it were
+  one just reads as a stray option nobody explained) — a plain
   `UPDATE captures SET language = ...`, which Postgres automatically recomputes
   `reader_text_tsv` (and its GIN index) for as part of that same statement, the
   same way it already does whenever `reader_text` itself changes (e.g.
-  re-extraction, §6b). No manual reindex, no extra synchronization code needed.
-  Every other option's own label is translated into the dashboard's current
-  locale (Phase 14, `lib/languageNames.ts`) rather than shown as Postgres's raw
-  config name — the opposite direction from Settings' language picker (which
-  shows each option self-named, since there you're choosing your own language
-  and need to recognize it among others; here you're already reading the
-  dashboard in your language and labeling someone else's content, so the labels
-  themselves should match).
+  re-extraction, §6b). No manual reindex, or extra synchronization code is
+  needed.
 
 ```sql
 CREATE TABLE tags (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -1654,37 +1645,30 @@ CREATE TABLE tags (
 CREATE TABLE page_tags (
   page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  source TEXT NOT NULL DEFAULT 'manual',  -- 'manual' | 'ai'
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
   PRIMARY KEY (page_id, tag_id)
 );
+CREATE INDEX idx_page_tags_tag_id ON page_tags(tag_id);
 
 -- Nested collections. Adjacency list (parent_id self-reference) rather
 -- than a closure table: simpler writes, and at this project's scale a
 -- recursive CTE for "this collection and all descendants" is fast enough
--- that a closure table's extra write-complexity isn't justified. (That
--- recursive-descendant capability has never actually been needed:
--- CollectionDetail deliberately shows only a collection's own direct
--- pages plus its sub-collections as links, not a subtree rollup -- see
--- §13a. If that changes, this adjacency-list choice is exactly why it'd
--- still be cheap to add.)
+-- that a closure table's extra write-complexity isn't justified.
 --
 -- Uniqueness is per (user_id, parent_id, name), but that can't be a
 -- single UNIQUE table constraint: parent_id is nullable for top-level
 -- collections, and Postgres treats NULL as distinct from itself in a
 -- unique constraint, so a plain UNIQUE(user_id, parent_id, name) would
 -- silently allow two top-level collections named the same thing. Two
--- partial unique indexes instead (implemented in Phase 6, replacing an
--- earlier revision of this section that had the single-constraint bug
--- above) -- one per case, since each is a normal (non-NULL) unique check
--- within its own partition. slug (added alongside description/timestamps
--- in the tags/collections slug work) gets the identical treatment, for
--- the identical reason: two more partial indexes, not folded into the
--- existing two as a compound (name, slug) pair -- a name collision and a
--- slug collision should each surface as their own distinct conflict, not
--- an ambiguous "the pair wasn't unique" error.
+-- partial unique indexes instead — one per case, since each is a normal
+-- (non-NULL) unique check within its own partition. slug gets the
+-- identical treatment, for the identical reason — four partial indexes
+-- total, not folded into a compound (name, slug) pair, so a name
+-- collision and a slug collision each surface as their own distinct
+-- conflict rather than an ambiguous "the pair wasn't unique" error.
 CREATE TABLE collections (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   parent_id BIGINT REFERENCES collections(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
@@ -1700,6 +1684,7 @@ CREATE UNIQUE INDEX collections_user_id_parent_id_name_key
   ON collections(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
 CREATE UNIQUE INDEX collections_user_id_parent_id_slug_key
   ON collections(user_id, parent_id, slug) WHERE parent_id IS NOT NULL;
+CREATE INDEX idx_collections_user_id ON collections(user_id);
 CREATE INDEX idx_collections_parent ON collections(parent_id);
 
 -- A page may be in zero, one, or many collections. Deleting a collection
@@ -1712,13 +1697,14 @@ CREATE TABLE page_collections (
   added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (page_id, collection_id)
 );
+CREATE INDEX idx_page_collections_collection_id ON page_collections(collection_id);
 
--- Explicit, bidirectional page-to-page links (Phase 15) -- pairwise edges,
--- not a shared link-group/cluster concept: linking B and C to each other
--- later doesn't imply any relationship between A and C just because both
--- are linked to B. Each relationship stored once, as a canonically-ordered
+-- Explicit, bidirectional page-to-page links — pairwise edges, not a
+-- shared link-group/cluster concept: linking B and C to each other later
+-- doesn't imply any relationship between A and C just because both are
+-- linked to B. Each relationship stored once, as a canonically-ordered
 -- pair (the CHECK enforces page_id_a < page_id_b), rather than twice as
--- both A-B and B-A rows -- "everything linked to page X" is simply
+-- both A-B and B-A rows — "everything linked to page X" is simply
 -- WHERE page_id_a = X OR page_id_b = X, so there's no direction to get
 -- backwards and no risk of a duplicate reverse-direction insert. The
 -- ordering check also rules out a page linking to itself as a side effect
@@ -1738,79 +1724,109 @@ CREATE INDEX idx_page_links_page_id_b ON page_links(page_id_b);  -- the
                                       -- half of the bidirectional OR query
 
 -- Decoupled from captures so a capture remains fully valid/browsable
--- with zero AI enrichment ever having run.
+-- with zero AI enrichment ever having run. ai_summary/ai_model live on
+-- captures directly (above), not here — a nullable column already gives
+-- "fully valid with nothing populated" regardless of which table it's on,
+-- and captures is where the dashboard already reads from.
 CREATE TABLE ai_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
-  summary TEXT,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
 );
+CREATE INDEX idx_ai_jobs_capture_id ON ai_jobs(capture_id);
 
 -- Retry/backoff bookkeeping for the async Readability extraction job (§6b),
--- one row per capture -- same shape as ai_jobs above, EXCEPT it holds no
--- copy of the extracted text itself. reader_text/reader_text_hash/
--- readability_version live on captures directly (see that table above),
--- not here, because captures.reader_text_tsv is a Postgres
--- GENERATED ALWAYS AS column and generated columns can only reference
--- other columns in the same row -- unlike ai_jobs.summary, which has no
--- such constraint and can stay fully decoupled. Reading a capture's full
--- readability state means joining captures and readability_jobs, not
--- reading either table alone.
+-- one row per capture — same shape as ai_jobs above.
 CREATE TABLE readability_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
 );
+CREATE INDEX idx_readability_jobs_capture_id ON readability_jobs(capture_id);
 
 -- Retry/backoff bookkeeping for the async screenshot job (§6a), one row per
--- capture -- same shape as readability_jobs above, and intentionally its own
--- table rather than merged with it, even though both run through the same
--- headless-Chrome sidecar and often the same page load (see §6: independent
--- failure modes, and re-extraction after a Readability.js upgrade has no
--- reason to redo a perfectly good screenshot).
+-- capture — same shape as readability_jobs above, and intentionally its
+-- own table rather than merged with it, even though both run through the
+-- same headless-Chrome sidecar and often the same page load (§6:
+-- independent failure modes, and re-extraction after a Readability.js
+-- upgrade has no reason to redo a perfectly good screenshot).
 CREATE TABLE screenshot_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_screenshot_jobs_capture_id ON screenshot_jobs(capture_id);
+
+-- One row per user, user_id itself as the primary key rather than its own
+-- identity column — a 1:1 extension of users (§5d), not a
+-- one-to-many table, so there's no reason for a row to have an identity
+-- distinct from the user it belongs to. No row exists until a user's
+-- first PATCH /api/settings — there is no backfill migration and no
+-- row-creation hook on any account-creation path.
+CREATE TABLE user_settings (
+  user_id BIGINT NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  language TEXT CHECK (language IN ('en', 'fr')),  -- NULL means no explicit
+                                      -- override -- falls back to
+                                      -- auto-detecting from the browser
+                                      -- (§5d). A closed set, the
+                                      -- same as `theme` below: adding a
+                                      -- language is a migration.
+  theme TEXT CHECK (theme IN ('light', 'dark')),  -- NULL means "automatic"
+                                      -- (follow prefers-color-scheme). Same
+                                      -- CHECK treatment as role/source/status
+                                      -- elsewhere in this schema
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per agent cycle ("worker" or "local", matching
+-- agent_worker_poll_interval_seconds/agent_local_poll_interval_seconds,
+-- §3e), updated whenever that cycle completes with no step failing —
+-- backs the recueil_agent_last_success_seconds metric (§13a).
+CREATE TABLE agent_heartbeats (
+  cycle TEXT PRIMARY KEY CHECK (cycle IN ('worker', 'local')),
+  last_success_at TIMESTAMPTZ NOT NULL
 );
 ```
 
 There is **no `tokens` table in Postgres** — device tokens are owned entirely by
-D1 (see §5), and the dashboard uses its own DB-backed `sessions` table above, so
-no bearer-token table is needed on the backend side at all.
+D1 (§5), and the dashboard uses its own DB-backed `sessions` table above, so no
+bearer-token table is needed on the backend side at all.
 
 ### D1 (Worker-owned — auth, queue, bookmark mirror only)
 
 D1 tables use `STRICT` (enforcing declared column types, since SQLite is
 dynamically typed by default) and, where a table's primary key is non-integer
 and only ever looked up by that key, `WITHOUT ROWID` (avoiding an unnecessary
-hidden-rowid indirection) — applied below to the tables actually implemented so
-far; the rest of this section's tables will pick up the same convention as
-they're implemented.
+hidden-rowid indirection).
 
 `queue_items` and `pending_captures` use client-generated UUIDs rather than
 server-generated identity columns, for idempotency on retry (see §3c) and
 because the extension generates the ID before the row exists server-side.
 
 ```sql
--- Bookkeeping for the backend's own D1 migration runner (§5b) — not
--- wrangler's `d1_migrations` table; wrangler is not used anywhere in this
--- project's toolchain.
+-- Bookkeeping for the backend's D1 migration runner (§5b)
 CREATE TABLE schema_migrations (
   id TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -1818,18 +1834,17 @@ CREATE TABLE schema_migrations (
 
 -- Mirrors Postgres users.id for device pairing without ever exposing the
 -- backend. Holds only pairing_token_hash — no password-derived value of
--- any kind (see §5's redesign away from a password-hash mirror). Does NOT
--- include `role` — authorization is a backend/dashboard concern only. id
--- is never D1-generated: it's always supplied explicitly from the
--- Postgres-side value on every mirror-push INSERT, so plain
--- `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT) is correct here —
--- D1 only assigns its own value if a row is inserted with id omitted or
--- NULL, which never happens on this path. `username` is dropped entirely:
--- pairing is single-credential (submit the pairing token, no username), so
--- the Worker never needs to look a user up by name.
+-- any kind (§5). id is never D1-generated: it's always supplied explicitly
+-- from the Postgres-side value on every mirror-push INSERT, so plain
+-- `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT) is correct here.
+-- `username` is dropped entirely: pairing is single-credential (submit the
+-- pairing token, no username), so the Worker never needs to look a user up
+-- by name. `pairing_token_hash` is nullable — a revoked user
+-- (`DELETE /api/pairing-token`, no reissue) has this cleared to `NULL` until
+-- they regenerate.
 CREATE TABLE users (
   id INTEGER PRIMARY KEY,
-  pairing_token_hash TEXT NOT NULL UNIQUE,
+  pairing_token_hash TEXT UNIQUE,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT;
 
@@ -1855,10 +1870,12 @@ CREATE INDEX idx_tokens_user_id ON tokens(user_id);
 -- added_by_token_id/claimed_by_token_id are ON DELETE SET NULL: device
 -- revocation (§8) is DELETE FROM tokens, and without SET NULL that DELETE
 -- throws a foreign key violation the moment the revoked device has ever
--- added or claimed a queue item -- discovered as a real 500 in testing,
--- not by design review. SET NULL is what actually makes the "revoked
--- device leaves nothing to name" LEFT JOIN behavior described below true,
--- rather than merely intended.
+-- added or claimed a queue item. SET NULL is what makes the "revoked
+-- device leaves nothing to name" LEFT JOIN behavior described below true.
+--
+-- manual_retry (§8) lets a failed item become claimable again without
+-- losing its `failed` status for the Queue screen's display purposes --
+-- cleared automatically the moment a device claims it.
 CREATE TABLE queue_items (
   id TEXT PRIMARY KEY,              -- client-generated UUID
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -1866,6 +1883,7 @@ CREATE TABLE queue_items (
   added_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
   claimed_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
+  manual_retry INTEGER NOT NULL DEFAULT 0,
   claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;
@@ -1878,15 +1896,10 @@ CREATE INDEX idx_queue_items_user_status ON queue_items(user_id, status);
 CREATE INDEX idx_queue_items_added_by_token_id ON queue_items(added_by_token_id);
 CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token_id);
 
--- Completed captures awaiting backend pickup from R2.
--- Note: r2_key_thumbnail has been removed — screenshots are generated
--- backend-side from the already-pulled HTML (see §6a), never uploaded by
--- the extension. r2_key_readable has been removed for the same reason —
--- Readability extraction also moved backend-side (see §6b), so no client
--- ever uploads reader text anymore. r2_key_favicon (§3g) is the one
--- exception to "the extension only ever uploads HTML": a favicon is a
--- genuinely separate resource that has to be fetched, not derived from the
--- already-captured HTML, so it stays a client-upload concern -- nullable,
+-- Completed captures awaiting backend pickup from R2. r2_key_favicon (§3g)
+-- is the one exception to "the extension only ever uploads HTML": a favicon
+-- is a separate resource that has to be fetched, not derived from
+-- the already-captured HTML, so it stays a client-upload concern -- nullable,
 -- since not every capture has one.
 CREATE TABLE pending_captures (
   id TEXT PRIMARY KEY,              -- client-generated UUID
@@ -1897,9 +1910,9 @@ CREATE TABLE pending_captures (
   r2_key_favicon TEXT,               -- e.g. ".../favicon.svg" -- the real
                                       -- extension lives in the key itself
                                       -- (§3g), not a separate mime column
-  captured_at TIMESTAMP NOT NULL,
-  fetched_by_backend BOOLEAN NOT NULL DEFAULT FALSE,
-  claimed_at TIMESTAMP,              -- backend pickup is an atomic claim,
+  captured_at TEXT NOT NULL,
+  fetched_by_backend INTEGER NOT NULL DEFAULT 0,
+  claimed_at TEXT,                   -- backend pickup is an atomic claim,
                                       -- not a plain read (§8) -- without it
                                       -- two agent processes both ingest the
                                       -- same row and the second silently
@@ -1909,10 +1922,14 @@ CREATE TABLE pending_captures (
                                       -- every agent presents the same
                                       -- service secret and has no
                                       -- per-instance identity
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT;
 
--- Bookmark-list mirror, kept in sync by the backend's own scheduled sync
+CREATE INDEX idx_pending_captures_user_id ON pending_captures(user_id);
+CREATE INDEX idx_pending_captures_queue_item_id ON pending_captures(queue_item_id);
+CREATE INDEX idx_pending_captures_fetched_by_backend ON pending_captures(fetched_by_backend);
+
+-- Bookmark-list mirror, kept in sync by the backend's scheduled sync
 -- job (internal/mirror.Syncer -- see §8 for the full design), not pushed
 -- on individual mutations. Pulled by the extension on its own coarse/
 -- on-demand schedule.
@@ -1925,8 +1942,8 @@ CREATE TABLE archived_pages (
   latest_capture_at TEXT NOT NULL,
   updated_at TEXT NOT NULL          -- mirrors Postgres pages.updated_at
                                      -- verbatim -- the sync checkpoint
-                                     -- itself (§8), not D1's own clock
-);
+                                     -- itself (§8), not D1's clock
+) STRICT;
 CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
 CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
 ```
@@ -2314,16 +2331,16 @@ README that can drift out of sync with the architecture decisions around it.
   router as the dashboard API (`internal/httpapi`) rather than a second port —
   `/info` (build metadata), `/ping` (machine-consumable status code, for a
   Docker `HEALTHCHECK` or uptime monitor), `/health` (always `200`,
-  human-readable JSON detail on failure). Deliberately unauthenticated and
-  registered outside the `RequireSession` group. Two things confirmed against
-  the real library rather than assumed from its docs: it declares
-  `package healthcheck` (singular) despite the plural import path, and its
-  handlers are returned as the library's own unexported function type, not
-  `http.HandlerFunc` — chi's `Get` requires the latter specifically, so mounting
-  them needs an explicit `http.HandlerFunc(hc.Health())` conversion, not a
-  direct pass. The `Check` function itself calls a small `Ping` method added to
-  `internal/db.Queries` (`SELECT 1` through the existing `DBTX` interface)
-  rather than threading the raw `*pgxpool.Pool` into `httpapi`.
+  human-readable JSON detail on failure). Unauthenticated and registered outside
+  the `RequireSession` group. Two things confirmed against the real library
+  rather than assumed from its docs: it declares `package healthcheck`
+  (singular) despite the plural import path, and its handlers are returned as
+  the library's own unexported function type, not `http.HandlerFunc` — chi's
+  `Get` requires the latter specifically, so mounting them needs an explicit
+  `http.HandlerFunc(hc.Health())` conversion, not a direct pass. The `Check`
+  function itself calls a small `Ping` method added to `internal/db.Queries`
+  (`SELECT 1` through the existing `DBTX` interface) rather than threading the
+  raw `*pgxpool.Pool` into `httpapi`.
 - **Metrics:** `/metrics`, Prometheus exposition format, mounted on the same chi
   router (`internal/metrics`). Standard Go runtime and process collectors
   (`collectors.NewGoCollector`/`NewProcessCollector`) plus custom gauges — a
