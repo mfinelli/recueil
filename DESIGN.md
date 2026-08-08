@@ -2059,22 +2059,20 @@ patterns live in `DESIGN_SYSTEM.md`, not here.
 
 ## 14. Backup & Restore
 
-**The application performs no automated backup.** This is a deliberate choice:
-baking `pg_dump` (or equivalent) into the backend's own image or shelling out to
-it from the Go binary is an awkward dependency for an application binary to
-carry, and commits the project to tracking Postgres version compatibility
-indefinitely. Instead, backup is documented as the operator's responsibility.
+**The application performs no automated backup.** This is an intentional choice:
+baking `pg_dump` (or equivalent) into the backend's image or shelling out to it
+from the Go binary is an awkward dependency for an application binary to carry,
+and commits the project to tracking Postgres version compatibility indefinitely.
+Instead, backup is documented as the operator's responsibility.
 
 ### What must be backed up
 
 Two things, together, on the same schedule:
 
-1. **The Postgres database** — via `pg_dump` or equivalent. This is the
-   irreplaceable half: page groupings, tags, collections, version history,
-   accounts. Note that copying Postgres's raw data directory while the container
-   is running is **not** safe without WAL-aware tooling — a proper dump (or a
-   backup tool that understands Postgres's on-disk format) is required, not a
-   raw file copy.
+1. **The Postgres database** — via `pg_dump` or equivalent. Note that copying
+   Postgres's raw data directory while the container is running is **not** safe
+   without WAL-aware tooling — a proper dump (or a backup tool that understands
+   Postgres's on-disk format) is required, not a raw file copy.
 2. **The local archive directory** (zstd-compressed HTML + thumbnails) — a plain
    directory copy/sync is fine here, since these are static files once written.
 
@@ -2091,31 +2089,25 @@ should be backed up in the same job/window.
 ### Restore
 
 - **`captures.html_path` is stored relative to the backend's configured
-  archive-directory root**, not as an absolute path — a reversal from an earlier
-  revision of this document, which specified absolute paths on the reasoning
-  that a restore then had to land at the exact same mount path or lookups would
-  break. That's backwards: a relative path is strictly more flexible with no
-  real cost — the operator can restore to any location and simply point the
-  (already-required) archive-directory config value at it, move the archive
-  directory later without a database migration, and the database itself doesn't
-  bake in one host's specific filesystem layout. The one real constraint this
-  leaves is unchanged in spirit, just relocated: whatever archive-directory path
-  the backend is configured with at restore time must actually contain the
-  restored files at the expected relative layout (see §4 for the actual on-disk
-  layout: three levels of hex sharding on a per-capture UUIDv7) — the config
-  value can point anywhere, but it does have to point somewhere real.
+  archive-directory root**, not as an absolute path — the operator can restore
+  to any location and simply point the (already-required) archive-directory
+  config value at it, move the archive directory later without a database
+  migration, and the database itself doesn't bake in one host's specific
+  filesystem layout. One real constraint: whatever archive-directory path the
+  backend is configured with at restore time must actually contain the restored
+  files at the expected relative layout (§4 covers the on-disk sharding) — the
+  config value can point anywhere, but it does have to point somewhere real.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/
   changed accounts may still have valid mirrored credentials).
-  **`recueil user resync`** (Phase 9, `cmd/user.go`) is the manual resync
-  command this section called for — CLI-only, not an admin dashboard action,
-  matching the operator-only precedent already set for device management. It
-  re-runs the same idempotent `mirror.PushUser` push already used at
-  create/regenerate/revoke time across every account: decrypts each account's
-  `pairing_token_enc` where present, re-hashes it, and re-pushes it (or pushes
-  `nil` for an account with a revoked/NULL token, clearing any stale D1 hash
-  left over from before the restore). Should be run after any Postgres restore.
+  **`recueil user resync`** re-runs the same idempotent `mirror.PushUser` push
+  already used at create/regenerate/revoke time across every account: decrypts
+  each account's `pairing_token_enc` where present, re-hashes it, and re-pushes
+  it (or pushes `nil` for an account with a revoked/NULL token, clearing any
+  stale D1 hash left over from before the restore). CLI-only, not an admin
+  dashboard action, matching the operator-only precedent already set for device
+  management. Should be run after any Postgres restore.
 
 ---
 
