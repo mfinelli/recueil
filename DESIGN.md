@@ -2,31 +2,29 @@
 
 ## 1. Overview
 
-Recueil is a self-hosted personal web archiving tool. It replaces a Frankenstein
-setup of ArchiveBox + Linkwarden + Karakeep (plus custom sync scripts) with a
-single purpose-built system.
+Recueil is a self-hosted personal web archiving tool, built to replace a
+patchwork of several existing self-hosted archivers — each storing content
+differently, none of them syncing with one another — held together with custom
+glue scripts.
 
-### Motivating problems with the current setup
+### Motivating problems with the previous setup
 
-- Headless-browser archivers (ArchiveBox-style) fail on sites with CAPTCHAs,
-  paywalls, or content behind interaction (click-to-expand, infinite scroll,
-  login walls).
+- Headless-browser archivers fail on sites with CAPTCHAs, paywalls, or content
+  behind interaction (click-to-expand, infinite scroll, etc).
 - Multiple tools store multiple redundant formats (WARC, PDF, screenshots,
   MHTML, etc.), most of which are never used.
-- Keeping three self-hosted tools in sync requires custom glue scripts.
+- Keeping several self-hosted tools in sync requires custom glue scripts.
 
 ### Core design principle
 
 **Capture happens in a real, already-authenticated, already-rendered browser tab
-— not a headless fetch.** This is the actual fix for the CAPTCHA/paywall
-problem, not a workaround. Because of this, the system deliberately does **not**
-add any server-side "fetch and archive a URL" fallback — doing so would
-reintroduce the exact failure mode being solved.
+— not a headless fetch.** This is the fix for the CAPTCHA/paywall problem. The
+system deliberately does **not** add any server-side "fetch and archive a URL"
+fallback — doing so would reintroduce the exact failure mode being solved.
 
-Note that this principle applies to the _initial capture_ only. Once a page has
-been captured as a fully inlined HTML file, deriving further artifacts from that
-already-captured file (e.g. a thumbnail — see §6) is a different, safe
-operation: it's rendering static, already-authenticated content offline, not
+This principle applies to the _initial capture_ only. Deriving further artifacts
+from an already-captured file (e.g. a thumbnail — see §6a) is a different, safe
+operation: rendering static, already-authenticated content offline, not
 re-fetching a live page.
 
 ### Format decision
@@ -36,7 +34,7 @@ Store exactly one artifact format per capture: a fully inlined single HTML file
 Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML. The
 HTML is the only artifact ever uploaded by a capturing client; the Readability
 extraction and the thumbnail are both produced later, offline, by the backend
-(see §6/§6a) — not synchronously at capture time.
+(§6a/§6b) — not synchronously at capture time.
 
 ---
 
@@ -78,11 +76,8 @@ extraction and the thumbnail are both produced later, offline, by the backend
         │         Desktop Browser Extension            │
         │  - reads queue from D1 (via Worker)          │
         │  - user selects item → loads URL             │
-        │  - captures HTML only (via vendored          │
-        │    SingleFile library — no Readability       │
-        │    vendored here; see §3a/§6a)               │
+        │  - captures HTML only (via SingleFile)       │
         │  - uploads to R2 via presigned URL           │
-        │  (no longer captures a screenshot — see §6)  │
         └──────────────────────────────────────────────┘
                     │
                     │ (async, outbound-only polling)
@@ -92,8 +87,8 @@ extraction and the thumbnail are both produced later, offline, by the backend
         │  - polls Worker/D1 for pending captures                       │
         │  - pulls blobs from R2, then deletes from R2                  │
         │  - zstd-compresses HTML, stores locally                       │
-        │  - enqueues async screenshot job (§6)                         │
-        │  - enqueues async readability extraction job (§6a)            │
+        │  - enqueues async screenshot job (§6a)                        │
+        │  - enqueues async readability extraction job (§6b)            │
         │  - runs optional AI enrichment (summary/tags),                │
         │    once reader_text exists (§7)                               │
         │  - pushes bookmark-list mirror row to D1                      │
@@ -115,9 +110,9 @@ extraction and the thumbnail are both produced later, offline, by the backend
         │  container, driven           │   │  - tags (manual + AI),       │
         │  by the backend) —           │   │    nested collections        │
         │  produces both               │   │                              │
-        │  thumbnails (§6) and         │   │                              │
+        │  thumbnails (§6a) and        │   │                              │
         │  Readability extractions     │   │                              │
-        │  (§6a) from already-captured │   │                              │
+        │  (§6b) from already-captured │   │                              │
         │  offline HTML                │   │                              │
         └──────────────────────────────┘   └──────────────────────────────┘
 ```
@@ -147,999 +142,336 @@ specific networking solution.
 
 1. User adds a URL to the queue, either:
    - Directly in the desktop extension while browsing, or
-   - Remotely via the share-sheet PWA (Android) or iOS Shortcut (phone) or CLI —
-     these only enqueue, they never capture.
+   - Remotely via the share-sheet PWA (Android), iOS Shortcut, or CLI — these
+     only enqueue, they never capture.
 2. Enqueueing hits the Worker, which writes a row to `queue_items` in D1.
-3. The desktop extension polls D1 (via the Worker) for pending queue items, on
-   an infrequent schedule (see §7), and can notify the user something needs
-   archiving. The extension also exposes a manual "check now" action in its
-   popup for on-demand polling.
+3. The desktop extension polls D1 (via the Worker) for pending queue items on an
+   infrequent schedule (§8) and can notify the user something needs archiving,
+   plus a manual "check now" action in its popup.
 4. User selects a queued item (or a page they're currently on, for direct/
    unqueued capture) and triggers capture.
-5. Extension captures full inlined single-page HTML, via SingleFile's own
-   capture code **vendored directly into the extension as a library** (see §3a)
-   — not by messaging a separately installed SingleFile extension. The extension
-   does **not** run Readability extraction itself — see §3a and §6a for why that
-   moved to an async backend job.
-6. Extension requests a presigned R2 upload URL from the Worker, uploads the
-   HTML directly to R2 (bypassing Worker body-size limits; presigned R2 PUT
-   supports objects far larger than any archived page will ever be).
+5. Extension captures full inlined single-page HTML via SingleFile's capture
+   code (§3a).
+6. Extension requests a presigned R2 upload URL from the Worker and uploads the
+   HTML directly to R2 (bypassing Worker body-size limits).
 7. Extension notifies the Worker that the upload is complete → Worker writes a
-   `pending_captures` row to D1, using a **client-generated UUID** as the row's
-   id (and marks the `queue_items` row, if any, as `captured`).
+   `pending_captures` row to D1, using a client-generated UUID as the row's id
+   (and marks the `queue_items` row, if any, as `captured`).
 8. Backend, on its own polling schedule, discovers the new `pending_captures`
    row, pulls the HTML blob from R2, zstd-compresses it, stores it on local
-   disk, computes the content hash (see §3b), deletes the R2 object, writes rows
-   to Postgres (idempotently — see §3c), and finally pushes a lightweight mirror
-   row back to D1 for the bookmark-list feature (see §8).
-9. Backend enqueues a **screenshot job** (async, decoupled — see §6) and a
-   **Readability extraction job** (async, decoupled — see §6a) against the same
-   locally-stored HTML.
-10. (Optional, async) Once the Readability job has populated `reader_text` for
-    the capture, backend enqueues an AI job to summarize/tag it (see §7) — AI
-    enrichment has a real dependency on readability extraction having already
-    completed, unlike the screenshot job, which has no such dependency.
-11. Backup of the resulting Postgres data and local archive directory is the
-    operator's own responsibility (see §14) — not part of this pipeline.
+   disk, computes the content hash (§3b), deletes the R2 object, writes rows to
+   Postgres (idempotently — §3c), and pushes a lightweight mirror row back to D1
+   for the bookmark-list feature (§8).
+9. Backend enqueues a screenshot job (§6a) and a Readability extraction job
+   (§6b) against the same locally-stored HTML.
+10. Once the Readability job has populated `reader_text`, backend enqueues an AI
+    job to summarize/tag it (§7) — AI enrichment has a real dependency on
+    readability extraction, unlike the screenshot job.
 
 ### 3a. SingleFile integration
 
-SingleFile is not invoked as a separate, independently installed browser
-extension via cross-extension messaging — that path isn't well-supported
-(SingleFile is designed to be user-triggered via its own toolbar button, and
-there's no first-class API for a third-party extension to invoke it and get the
-result back programmatically).
-
-Instead, SingleFile publishes its own capture logic as embeddable script files
-intended for exactly this kind of reuse. The Recueil extension vendors these
-files directly (e.g. `single-file-background.js`, plus a WebExtension polyfill)
-and calls `extension.getPageData(...)` from its own content script to get back
-`{ content, title, filename }`. This is "use SingleFile as a library within our
-own extension," not "talk to a second installed extension" — it avoids any
-dependency on a stable cross-browser extension ID, `externally_connectable`
-support, or requiring the user to separately install SingleFile at all.
-
-The extension **does not vendor Readability.js**. An earlier revision of this
-design had the extension run Readability against the live, rendered DOM
-immediately at capture time, on the reasoning that this happens "before any
-re-archival loses render-time state." That reasoning no longer drives the
-architecture: §3d's manual-upload pathway forced the question of how to extract
-reader text from an already-captured HTML file with no live DOM available at
-all, and the answer — run Readability against the file offline, in a real
-(headless) browser — turned out to work just as well for every other capture
-path too, not just manual upload. Extraction was therefore deferred uniformly to
-a single async backend job (§6a), and the extension was simplified to produce
-and upload HTML only. The one honest tradeoff, stated plainly rather than
-glossed over: this bets on SingleFile's serialization being a faithful enough
-snapshot of the live page that nothing Readability actually needs gets lost
-between "live DOM" and "SingleFile's static output" — a reasonable bet given
-SingleFile's whole purpose is producing a faithful static snapshot, but a real
-relaxation of the original guarantee, not a free lunch.
-
-The extension's own `package.json`/bundler setup exists to vendor SingleFile's
-capture code and a WebExtension polyfill — no longer Readability.js, which was
-the original reason this setup existed at all. Whether the extension still needs
-a real bundler for just those two things, or whether that setup can be
-simplified now that Readability.js is out of the picture entirely, is worth
-revisiting once the extension is actually built.
+SingleFile isn't invoked as a separately installed extension via cross-extension
+messaging — there's no API for a third-party extension to do that and get a
+result back programmatically. Instead, the extension depends directly on
+SingleFile's capture library (`single-file-core`) and calls it from its own
+capture bundle (§3h covers the injection mechanism) — avoiding any dependency on
+a stable extension id, or requiring the user to install SingleFile separately.
 
 ### 3b. Content hashing
 
-Each capture stores **two** hashes:
+Each capture stores two hashes:
 
-- `content_hash` — over the full inlined HTML. Useful for exact byte-for-byte
-  dedup detection. Computed synchronously at ingestion (§3), since the HTML is
-  the one artifact available immediately.
-- `reader_text_hash` — over the Readability-extracted plain text. This is the
-  hash that drives the dashboard's "unchanged since last capture" flag. Unlike
-  `content_hash`, this is populated asynchronously, once the Readability
-  extraction job (§6a) completes — `reader_text`/`reader_text_hash` are both
-  nullable on `captures` and simply absent (not zero, not empty-string) until
-  then. The "unchanged since last capture" feature has nothing to compare
-  against for a capture whose extraction hasn't run yet, or has failed.
+- `content_hash` — over the full inlined HTML, for exact dedup detection.
+  Computed synchronously at ingestion (§3).
+- `reader_text_hash` — over the Readability-extracted text, driving the
+  dashboard's "unchanged since last capture" flag. Populated asynchronously once
+  the Readability job (§6b) completes; nullable and absent until then.
 
-The full-HTML hash is a poor signal for "did the visible content change" — most
-real pages embed per-load-unique content (CSRF tokens, cache-busted asset URLs,
-session IDs, timestamps) even when nothing meaningful changed, so it will almost
-never repeat in practice. The reader-text hash is a much more reliable (though
-still imperfect — Readability output can shift for reasons unrelated to the main
-content) signal for that specific UI feature.
+The full-HTML hash rarely repeats in practice — most pages embed per-load-unique
+content (CSRF tokens, timestamps) even when nothing meaningful changed — so the
+reader-text hash is the more useful signal for that feature.
 
 ### 3c. Capture idempotency (crash recovery)
 
-The `pending_captures.id` (a client-generated UUID, already required for
-retry-safety on the upload-complete notification — see §8) doubles as a
-transient idempotency key for backend ingestion:
+`captures.source_capture_id` is a transient idempotency key — nullable, uniquely
+constrained, real only while a capture is in flight (client-generated for the
+extension/queue flow, backend-generated for manual uploads, §3d), cleared to
+`NULL` once ingestion is fully done. It exists to solve two problems a naive
+retry gets wrong:
 
-```sql
-ALTER TABLE captures ADD COLUMN source_capture_id TEXT UNIQUE;
-```
+- **A retry must not fail forever re-fetching an R2 object a prior attempt
+  already deleted** (e.g. a crash between the R2 delete and confirming D1's
+  `fetched_by_backend` flag).
+- **A conflict on this column isn't necessarily a retry.** It could be a genuine
+  collision between two different captures sharing an id (astronomically
+  unlikely, not impossible) — treating any conflict as "already handled" would
+  silently drop the second capture's data.
 
-**`source_capture_id` is nullable, and is cleared back to `NULL` once ingestion
-of that capture is fully done** — corrected twice over from earlier revisions of
-this document (which first left it `NULL` only for manual uploads, then briefly
-made it `NOT NULL` for every capture, before landing here). Its only job is
-letting a retry recognize an already-committed capture without redoing the whole
-pipeline, and that job has a natural end: once the R2 object is deleted **and**
-D1's `fetched_by_backend` flag is confirmed set, there is no further retry
-window left to protect, and nothing else ever reads this column. Clearing it
-isn't just tidiness — it's what keeps a permanent, forever-growing table from
-carrying a column whose entire purpose is transient, and it's what lets the
-`UNIQUE` constraint mean something meaningful (many "done" rows can all hold
-`NULL` simultaneously without conflict, since Postgres never treats two `NULL`s
-as equal).
+**Resolution:** ingestion always tries the full pipeline first — pull from R2,
+hash, compress to disk, then
+`INSERT ... ON CONFLICT (source_capture_id) DO UPDATE ... RETURNING`. The
+returned row's `content_hash` disambiguates the two cases: a match means a
+legitimate retry (no-op); a mismatch means a real collision, so a fresh UUID is
+generated and the insert retried (bounded to 5 attempts). Only if that whole
+attempt fails does ingestion fall back to checking Postgres for an
+already-committed row under the original id — safe to treat as "already done" if
+found, a real failure otherwise. This fallback never runs as an upfront gate,
+since that would skip the `content_hash` check and reopen the same collision
+risk.
 
-Every capture gets a real, unique value while it's actually in flight,
-regardless of source: **client-generated** for the extension/queue flow (the
-device already generates this UUID before ever talking to the Worker, for the
-upload-complete notification's own retry-safety), or **backend-generated** for
-manual uploads (§3d), which have no client in the loop to generate one.
+> The insert also uses Postgres's `xmax = 0` idiom to report whether the row was
+> newly inserted or returned via `ON CONFLICT` — that's what tells the caller
+> whether to enqueue screenshot/readability jobs, so a retry never
+> double-enqueues them.
 
-**Two separate problems, both real, both need solving — this section used to
-only solve one of them:**
+Cleanup runs disk write → DB commit → R2 delete → D1 flag → clear
+`source_capture_id`, in that order, so a crash at any point either leaves the R2
+object in place for a safe retry, or leaves only harmless orphaned state (a
+failed clear is harmless, since nothing looks the value up again once
+`fetched_by_backend` is set).
 
-1. **A retry must not fail forever trying to re-fetch an R2 object that a prior
-   attempt already deleted.** If the backend crashes between deleting the R2
-   object and confirming the D1 flag, the next poll cycle sees the same
-   `pending_captures.id` again — and naively re-running the whole pipeline would
-   try to pull an object that's already gone.
-2. **A conflict on `source_capture_id` must not be assumed to mean "this is a
-   retry."** It could instead be a genuine collision — two different captures
-   that happen to share an ID (astronomically unlikely for a random UUID, but
-   not impossible, and not something to just hope never happens). Treating any
-   conflict as "already handled, return the existing row" would silently discard
-   the second capture's real data in that case, with no error and no visible
-   sign anything was lost.
+**Disk storage is keyed the same way, one layer down:**
+`archive.Store.NewCapture` mints a backend-generated UUIDv7 directory
+exclusively (`os.Mkdir`, bounded to 5 attempts on `EEXIST`), never a
+client-supplied id — so a `source_capture_id` collision can never overwrite
+another capture's files. An `EEXIST` means zero bytes were written yet (retry
+with a new id, nothing at risk); a `source_capture_id` duplicate caught later by
+the insert means a _different_ attempt already committed this pending capture,
+so the directory this attempt just wrote is a harmless redundant copy left for
+`recueil gc` (§4) to reclaim — not a collision, and nothing to retry.
 
-**The resolution to both, together:** ingestion always attempts the full
-pipeline first — pull from R2, hash, compress to local disk (keyed by
-`content_hash`, not `source_capture_id`; see the note on this below), then a
-single Postgres transaction that upserts the page and inserts the capture. That
-insert uses `content_hash` to tell the two problems above apart:
-`INSERT ... ON CONFLICT (source_capture_id) DO UPDATE ... RETURNING`, then
-compare the returned row's `content_hash` against the one just computed. A match
-means a legitimate retry of the identical upload — safe no-op, return the
-existing row. A mismatch means a genuine collision between two different
-captures — generate a fresh UUID for _this_ capture and retry the insert (a
-small bounded loop), never silently dropping the new capture's data.
-
-**Only if that whole first attempt fails** does ingestion fall back to checking
-Postgres for an already-committed row matching the original `source_capture_id`
-(problem 1's actual fix): if found, whatever just failed — almost always the R2
-fetch, because a prior attempt's delete already succeeded — is safe to treat as
-"already done," and processing jumps straight to R2/D1 cleanup. If nothing is
-found, the failure is real and gets surfaced normally (logged, retried on the
-next poll). This fallback never runs _instead of_ the first attempt, only
-_after_ it fails — gating it upfront (checking Postgres before ever touching R2)
-was tried and rejected during implementation, specifically because it would skip
-the content_hash comparison above entirely and reintroduce problem 2 in a
-different place. R2's own `DeleteObject` (and R2's S3-compatible equivalent) is
-documented to be idempotent — deleting an already-gone key returns success, not
-an error — so the cleanup steps themselves need no special "tolerate already
-deleted" handling either way.
-
-Ordering the steps this way — disk write, then DB commit, then R2 delete, then
-D1 flag, then (only once both cleanup calls have actually succeeded) clearing
-`source_capture_id` — means a crash at any point either leaves the R2 object in
-place for a safe retry (nothing durable happened yet), or leaves only harmless
-orphaned cleanup state (the durable parts already succeeded; a failure to clear
-`source_capture_id` specifically is harmless on its own, since D1 will never
-resurface that capture's id once `fetched_by_backend` is set, so nothing will
-ever look the stale value up again regardless).
-
-This whole scheme is uniform across capture sources, not split into two code
-paths as an earlier revision of this document assumed: manual upload (§3d) just
-starts the process with a backend-generated UUID as its first candidate
-`source_capture_id` instead of a client-supplied one, since it has no client to
-supply one. Everything downstream — the content_hash-based conflict
-disambiguation, the collision retry loop, the try-first/fallback-on-failure
-pattern — is identical either way.
-
-**Local disk storage is keyed by a backend-minted id, never by anything the
-client supplied** (see §4/`internal/archive`'s docs for the full reasoning). The
-failure this avoids is the closely related disk-side twin of problem 2 above:
-two captures whose `source_capture_id`s collide would also collide on a
-`source_capture_id`-keyed disk path, and the atomic-rename write this project
-uses silently overwrites whatever's already at the destination — corrupting an
-unrelated, already-successfully-stored capture's file rather than merely failing
-to store the new one. Because `archive.Store.NewCapture` mints its own UUIDv7
-and creates the directory exclusively (a plain `os.Mkdir`, so an
-already-existing directory is regenerated past rather than adopted), a client-id
-collision simply cannot reach an existing capture's path at all.
-
-An earlier revision keyed the disk path by `content_hash` instead, which solved
-the same problem by a different route — but at the cost of aliasing every two
-captures with byte-identical HTML onto one directory. That is now reversed; see
-§4.
-
-**Two distinct things can go "wrong" here, and they are worth keeping apart,
-because the collision reasoning above primes a reader to conflate them:**
-
-- **A directory collision** — `NewCapture`'s `os.Mkdir` returns `EEXIST`. Zero
-  bytes have been written at that point, so nothing is at risk and nothing is
-  left behind: a new UUIDv7 is generated and the mint is retried. This is the
-  case that actually protects an already-completed capture's data, and it
-  resolves entirely inside `NewCapture` before ingestion ever reaches a write.
-- **A `source_capture_id` duplicate** — detected later, by the insert, and _not_
-  a collision of any kind. No directory collided; `NewCapture` handed back a
-  fresh, unique directory that no other capture has ever touched, and this
-  attempt wrote its bytes into that directory of its own. What the insert then
-  reports is that an earlier attempt already ingested this same pending capture,
-  so the committed row (and its `html_path`) belongs to that earlier attempt's
-  directory, not this one's.
-
-  Regenerating a UUID is not the response to this one: there is nothing to
-  retry, since the capture is already correctly stored — a fresh id would only
-  produce a second redundant copy. Ingestion takes the existing row and proceeds
-  to cleanup, and the copy this attempt wrote is left for `recueil gc` to
-  reclaim, exactly like any other unreferenced file. Nothing was overwritten and
-  no other capture's data was ever in reach; the cost is a redundant copy in a
-  private directory, not damage.
-
-Reaching that second case at all requires a prior attempt to have committed
-while its R2 object survives — either a crash strictly between the Postgres
-commit and the R2 delete, or two `agent` processes polling the same
-`pending_captures` row concurrently (`GET /internal/pending-captures` is a plain
-read, with no claim). The far more common crash-retry, where the R2 object was
-already deleted, never mints a directory at all: the R2 pull fails first and
-ingestion routes straight into the already-committed fallback above.
-
-Avoiding the redundant write would mean checking Postgres for
-`source_capture_id` _before_ touching disk, which is exactly the upfront gating
-rejected above — it would skip the `content_hash` comparison and reintroduce
-problem 2. Write first, discover second, and eat a rare redundant copy.
-
-One incidental improvement over content-addressing, in the concurrent-agents
-case specifically: under the old scheme both agents wrote to the _same_ path at
-once, which was safe only because the bytes were identical and the rename
-atomic. Per-capture directories make those writes disjoint, so they cannot
-interact at all.
-
-### Re-archiving the same URL
+#### Re-archiving the same URL
 
 Re-archiving a previously captured URL is **not** an update — it's a new version
-under the same logical page. The backend groups captures by `normalized_url`
-(see §9, URL normalization) into a `pages` row, and each individual capture
-becomes a new `captures` row linked to that page. The dashboard shows all
-historical versions of a page with their capture timestamps.
+under the same logical page. Captures are grouped by `normalized_url` (§9) into
+a `pages` row; the dashboard shows all historical versions with their capture
+timestamps.
 
 ### 3d. Manual upload (bypassing the queue)
 
-For the case where a page was captured somewhere Recueil's own extension wasn't
-installed — received as an email attachment, saved from a device without the
-extension, handed over by someone else — the dashboard supports directly
-uploading an already-captured, fully inlined SingleFile-style HTML file plus the
-URL it came from. This is a genuinely different pathway from §3's queue-based
-flow, not a variant of it:
+For a page captured somewhere the extension wasn't installed — an email
+attachment, a device without the extension, a file handed over by someone else —
+the dashboard supports directly uploading an already-captured, fully inlined
+SingleFile-style HTML file plus its URL. This bypasses R2, D1, and the Worker
+entirely: a single authenticated `POST` straight into the backend, gated the
+same way as any other dashboard endpoint.
 
-- **Bypasses R2, D1, and the Worker entirely.** The dashboard already talks
-  directly to the backend (§2, §11 — that's the one thing dashboard reachability
-  is for), so this is a single authenticated `POST` straight into the backend,
-  gated by the same `RequireSession` middleware as any other dashboard endpoint,
-  scoped to the authenticated user the same way any other capture is
-  (`pages.user_id`).
-- **Reader text is no longer extracted client-side for this pathway either.** An
-  earlier revision of this design had the dashboard's own browser run
-  Readability.js against the uploaded HTML at upload time, specifically to keep
-  "extraction happens in a real browser, never server-side" consistent with how
-  the extension worked. That reasoning inverted once this very pathway exposed
-  the actual question underneath it: manual upload has no live DOM at all, only
-  an already-captured static file — and Readability runs against that file just
-  as validly whether it's a headless Chrome tab or the dashboard's own tab. Once
-  that was true for manual uploads, it was true for every capture path, so
-  extraction was unified into a single async backend job (§6a) that all captures
-  share, extension-sourced or manually uploaded alike. This pathway needs no
-  Readability-specific handling of its own anymore — a manually uploaded capture
-  simply gets a `readability_jobs` row created the same as any other new capture
-  (see §6a). The page title is read from the uploaded HTML's `<title>` tag at
-  ingestion time, uniformly for every capture regardless of source (not a
-  Readability output) — this pathway needs no special handling for title either;
-  see §10's `captures` schema for why this ended up being the one real source of
-  title for extension-sourced captures too, not just this pathway.
-- **A backend-generated UUID as the starting `source_capture_id`, transient and
-  eventually cleared to `NULL`** — this pathway's own account of §3c has gone
-  through a couple of revisions: first `NULL` for manual uploads specifically,
-  then briefly `NOT NULL` for every capture, before landing on what §3c now
-  describes in full: nullable, real while a capture is actually in flight,
-  cleared once ingestion is fully done. Manual upload doesn't need its own
-  insert logic to fit this — it uses the exact same content_hash-based conflict
-  handling and try-first/fallback-on-failure pattern as the extension/queue flow
-  (§3c), just starting with a backend-generated candidate ID instead of a
-  client-supplied one, since there's no client in the loop to supply one.
-- **Everything downstream of ingestion is unchanged**: content hashing (§3b),
-  URL normalization (§9), grouping into `pages` by `normalized_url` — a manual
+- Reader-text extraction, title parsing, content hashing, URL normalization, and
+  grouping into `pages` are all identical to any other capture path — a manual
   upload of an already-captured URL is just another new version under the same
-  page, identical in kind to any other re-archive above. The async screenshot
-  job (§6) and the async Readability extraction job (§6a) both apply unmodified,
-  since both already explicitly operate on "already-captured, fully inlined
-  SingleFile HTML on local disk" — which is exactly the shape of a manually
-  uploaded file once ingestion has stored it. AI enrichment (§7) applies
-  unmodified too, once (and only once) the Readability job has populated
-  `reader_text` for this capture, same as any other capture.
-- **One real, concrete conflict with existing infrastructure, worth flagging
-  rather than discovering later**: SingleFile archives with inlined images/fonts
-  routinely run tens of megabytes, while the global
-  `middleware.RequestSize(1 << 20)` (§13a) caps every request body at 1MB. This
-  upload endpoint needs its own, much larger `RequestSize` scoped to just that
-  route — the same "scope it, don't rely on the global default" pattern already
-  used for `AllowContentType` on `/api` (§13a).
-- **Schema addition**: `captures.source TEXT` (`'extension'` |
-  `'manual_upload'`), mirroring the existing `page_tags.source` (`'manual'` |
-  `'ai'`) pattern — lets the dashboard show capture origin directly rather than
-  inferring it from whether `source_capture_id` happens to be `NULL`. See §10.
-
----
+  page.
+- Uses a backend-generated UUID as the starting `source_capture_id` (§3c already
+  covers the idempotency scheme in full; manual upload just supplies the id
+  itself, since there's no client to generate one).
+- Needs its own, larger `RequestSize` limit scoped to this one route — the
+  global 1MB cap would reject a real SingleFile archive immediately, since
+  inlined images/fonts routinely push these into the tens of megabytes.
+- `captures.source` (`'extension'` | `'manual_upload'`, §10) records which path
+  a capture came through, for the dashboard to show directly.
 
 ### 3e. The agent process (background job triggering)
 
-Both backend ingestion (§3c's `Ingester.RunOnce`) and the D1 bookmark-list
-mirror sync (§8's `Syncer.SyncOnce`) were built as fully self-contained, fully
-tested callable units with nothing actually invoking them — deliberate, not an
-oversight, since the trigger mechanism was a genuinely separate decision worth
-settling on its own.
+`recueil agent` is a separate subcommand/process from `recueil server`, sharing
+the same binary and deployed as its own container — so it can coordinate its own
+shutdown independently of in-flight HTTP requests, and a runaway job (a hung
+screenshot render, say) stays isolated from the web process rather than
+degrading request latency.
 
-**`recueil agent`: a dedicated subcommand/process, not a goroutine inside
-`recueil server`.** Both share the same binary/image, deployed as separate
-services in the same compose file with different commands. Two other shapes were
-seriously considered and rejected:
+Job coordination is plain Postgres, not a message broker: the only real ordering
+need — AI enrichment must not run before readability extraction succeeds — is
+expressed simply as "when does the job row get created" (an `ai_jobs` row
+doesn't exist until the readability job creates it, in the same transaction),
+not a broker-level dependency feature.
 
-- **A goroutine inside `server`** — the obvious lightest-weight option, and
-  rejected specifically over shutdown coordination: cleanly stopping two
-  different kinds of concurrent work (serving in-flight HTTP requests vs.
-  finishing or abandoning a background job) inside one process, on one
-  `SIGTERM`, is real complexity a separate process sidesteps entirely — each
-  process only ever has to coordinate shutdown for its own single kind of work.
-- **Cron** — ruled out early. The primary deploy target (Docker Compose) has no
-  cron mechanism of its own; the host scheduling `docker exec`/ `docker run`
-  invocations against a running compose stack isn't ergonomic; and a "poor man's
-  cron" (a tick embedded in some other process) just reintroduces the same
-  shutdown-coordination problem the goroutine option already lost on, while
-  adding scheduling complexity on top.
+`agent` doesn't run migrations itself — only `server` does, since D1 migrations
+have no equivalent of Postgres's advisory lock to safely coordinate two
+processes starting at once. `agent`'s earliest cycles simply retry until
+`server` catches up.
 
-A dedicated process also gets independent failure and resource isolation for
-free, as a consequence of the deployment shape rather than anything special
-built for it: a runaway or hung job (a headless-Chrome screenshot job spiking
-memory, say — not built yet, but the same reasoning applies in advance) is
-contained to the agent container and can't degrade HTTP request latency, and
-Docker's own per-service restart policy handles recovering it without touching
-the web process at all.
-
-**Coordination layer: Postgres, not a message broker.** RabbitMQ and a
-Redis-backed queue (`asynq`, the Go equivalent of Sidekiq — Redis itself isn't
-Ruby-specific even though Sidekiq is) were both seriously considered, on the
-reasoning that there's real job-ordering to coordinate: AI enrichment (§7) can
-only run after readability extraction (§6a) succeeds. Neither was adopted,
-because that ordering doesn't actually need a message-broker-level
-dependency/DAG feature at all — it's expressed simply as _when a job row gets
-created_: an `ai_jobs` row doesn't exist until whatever marks the corresponding
-`readability_jobs` row `done` creates it, in the same transaction. The queue
-itself never needs to understand the dependency; it only ever needs to answer
-"give me pending rows," which Postgres already does. What a real message broker
-actually buys over this — routing topologies, fan-out, many concurrent
-independent consumers, back-pressure across separate services — isn't something
-a single agent process at personal-archive scale ever exercises, and either
-option would be a second stateful service (deploy it, back it up, keep it
-patched) purely to gain capability this project doesn't need, when Postgres is
-already a hard dependency regardless. The claim pattern this needs
-(`UPDATE ... SET status = 'processing' WHERE status = 'pending' RETURNING *`) is
-exactly what `queue_items.claim` (§2) already does in the Worker — not a new
-pattern, the same one reused a layer down.
-
-`screenshot_jobs`/`readability_jobs` (§6, §6a) already have the shape this
-implies (`status`, `attempts`, `next_attempt_at`, `error`, `completed_at`) — not
-incidentally job-queue-shaped, built that way on purpose.
-
-**Postgres `LISTEN`/`NOTIFY`** (near-instant job pickup, layered on top of the
-poll loop as a pure latency optimization — the poll loop stays the actual
-correctness guarantee regardless, since `NOTIFY` isn't durable and a missed
-notification with no fallback poll would just silently never process that job)
-was discussed and intentionally deferred, not rejected. Plain polling is
-entirely sufficient at this project's scale for now; worth reconsidering only if
-poll-interval latency ever actually becomes a real complaint.
-
-**Startup and migrations**: `agent` does **not** run migrations itself, unlike
-`server`. Postgres migrations are safe to run from multiple processes
-concurrently (goose's own session-level advisory lock, via `internal/pgmigrate`,
-serializes that) — but D1 migrations have no equivalent locking, and
-`server`/`agent` starting together in Compose gives no ordering guarantee
-between them. Rather than have `agent` run Postgres migrations but not D1 (an
-asymmetry that would need its own explanation every time someone reads the
-code), it runs neither: `server` owns migrations exclusively, and `agent`
-assumes they're already applied. If `agent` happens to start first, its earliest
-cycle(s) simply fail against a not-yet-ready schema, get logged, and self-heal
-on the next tick once `server` catches up — the same graceful-degradation shape
-`RunOnce`/`SyncOnce` already have for a single failed item, just one level up,
-at the whole-cycle granularity.
-
-**Two tickers, split by destination, each running its jobs sequentially per
-tick** — corrected from an earlier revision of this section, which described a
-single shared `agent_poll_interval_seconds` (default 120) and predates the split
-actually landing. What's built: `agent_worker_poll_interval_seconds`
-(default 1800) drives everything that talks to the Cloudflare Worker
-(`Ingester.RunOnce`, then `Syncer.SyncOnce`, then — see below — the D1
-maintenance sweeps), and `agent_local_poll_interval_seconds` (default 300)
-drives everything that only touches this process's own Postgres (the screenshot,
-readability and AI jobs). The split is by _destination_, not by job: that's what
-lets the Worker-facing side stay comfortably inside Cloudflare's free tier while
-local work still picks up quickly. §6's "Two independent agent schedules" note
-covers the same decision from the screenshot job's side.
-
-**The D1 maintenance sweeps ride the worker ticker behind an elapsed-time
-check**, rather than getting a third ticker. `queue_items` and
-`pending_captures` both accumulate terminal rows that need sweeping (§8), but
-against a 72-hour retention window there's nothing to gain from checking every
-half hour, so a `workerCycle.lastCleanup` field gates them to roughly every 12
-hours. Two reasons this isn't its own ticker: the existing split is by
-destination and these sweeps are Worker-facing, so a per-job ticker would
-quietly redefine the taxonomy as "one ticker per job"; and a 12-hour
-`time.Ticker` restarts from zero on every process start, so an agent redeployed
-or restarted more often than that would sweep **never**. The elapsed check has
-the opposite failure — it sweeps shortly after each restart — which costs two
-idempotent `DELETE`s against a handful of indexed rows. Cleanup runs last in the
-cycle and its failures are logged, never allowed to delay the work something
-actually waits on.
-
-A cycle runs synchronously within the same `select` loop iteration that reads
-the ticker channel, not spawned into its own goroutine per tick —
-`time.Ticker`'s channel buffers exactly one pending tick, so a cycle that runs
-longer than the interval simply means some ticks are silently dropped rather
-than a backlog of queued cycles building up; the next cycle starts as soon as
-the current one finishes and at least one tick has fired since, not once per
-missed interval. Either job failing is logged, not propagated as the agent
-process's own failure — the same "log and continue" philosophy
-`RunOnce`/`SyncOnce` already apply at their own per-item/per-batch level, one
-layer further up.
-
----
+Two tickers, split by destination: `agent_worker_poll_interval_seconds`
+(default 1800) for everything talking to the Cloudflare Worker, and
+`agent_local_poll_interval_seconds` (default 300) for everything touching only
+this process's own Postgres — keeping the Worker-facing side comfortably inside
+Cloudflare's free tier while local work still picks up quickly.
 
 ### 3f. The CLI (`recueil auth` / `recueil enqueue`)
 
-The CLI's own two commands, and specifically why their configuration handling
-differs from `server`/`agent`'s:
+Two different config postures for two different audiences. `server`/`agent`
+require an explicit `--config` file or environment variables — no automatic
+discovery, since a production process silently picking up an unintended file is
+a real risk. `auth`/`enqueue` are the opposite: a personal tool, where automatic
+`$XDG_CONFIG_HOME` discovery is the expected UX (the same shape `git`/`ssh`
+already train people on). Neither command touches Viper or `internal/config` —
+everything they need is read from their own dedicated credentials file instead.
 
-- **Two different config postures for two different audiences.**
-  `server`/`agent` require an explicit `--config` file or environment variables
-  — no automatic search of `$HOME` or the working directory (§13a) — a
-  deliberate choice for production processes, where implicit config-discovery
-  could silently pick up an unintended file. `auth`/`enqueue` are the opposite
-  kind of thing: an end user's personal tool, where automatic discovery is the
-  expected, idiomatic UX (the same shape `git`, `ssh`, and most CLI tools
-  already have people trained on). This isn't a reversal of the earlier
-  decision, it's a second, narrower one for a genuinely different audience —
-  `server`/`agent`'s existing explicit-only behavior is completely unchanged.
-- **No shared/nested `config.toml` at all, in the end** — considered (a
-  `[server]` section vs. flat top-level keys) and set aside, for a sharper
-  reason than "the CLI has nothing to configure yet": once the pairing token
-  needed its own dedicated file anyway (below), and `worker_url` turned out to
-  belong with that token rather than as an independent setting, there was
-  nothing left for the CLI to read from `config.toml` at all. `enqueue`/`auth`
-  don't touch Viper or `internal/config` in any way; every server-only key stays
-  exactly as it is.
-- **Pairing token input: masked prompt if a TTY, stdin otherwise — never a
-  `--token` flag.** A flag would be visible in shell history and system-wide
-  `ps` output for the process's whole lifetime — a real exposure for a bearer
-  credential, not a theoretical one. `mattn/go-isatty` (already a dependency)
-  decides which path to take; `golang.org/x/term.ReadPassword` (new, small,
-  official) does the actual no-echo read. This gets scriptability for free
-  without ever needing the flag: `echo "$TOKEN" | recueil auth --url ...` reads
-  from stdin directly since stdin isn't a terminal in that case.
-- **`internal/clicreds`: a dedicated file, not a field in `config.toml`.**
-  `$XDG_CONFIG_HOME/recueil/credentials.json` (falling back to
-  `$HOME/.config/recueil/`, the Base Directory spec's own documented default),
-  `0600`, written via temp-file-then-atomic-rename (the same pattern
-  `internal/archive` already uses, for the same reason: a crash or error partway
-  through a write must never leave a half-written file at the real path). Two
-  reasons this isn't just a `config.toml` field: `auth` rewriting part of a file
-  a user might also hand-edit risks clobbering their formatting (nothing this
-  project uses for TOML writing round-trips cleanly), and a bearer credential
-  arguably deserves its own tighter-scoped file rather than sharing a general
-  settings file's permissions regardless. `XDG_CONFIG_HOME` specifically, not
-  `XDG_STATE_HOME` or `XDG_DATA_HOME` -- the Base Directory spec doesn't
-  perfectly disambiguate this by its own letter (a token isn't quite
-  "configuration," but it's even less "state"/session data or generated "data"
-  either), so this follows the ecosystem's own precedent instead of relitigating
-  the spec: `gh` (GitHub CLI) stores its own auth under `XDG_CONFIG_HOME` too.
-- **`worker_url` is stored alongside the token, not as an independent setting.**
-  A token is only ever meaningful for the specific Worker that issued it, so the
-  two are one unit that's always captured, stored, and read together — not two
-  related-but-separate values. Concretely:
-  `recueil auth --url <worker-url> [--name <name>]` requires `--url` (there's no
-  default to fall back to, and no config file to read one from either);
-  `recueil enqueue` then reads both back from the one stored file, with no
-  `--url` override flag on `enqueue` itself. A per-call override, or real
-  multi-server profile support, was considered and deferred: there's no
-  supporting machinery on the `auth` side yet (nothing to switch between), so
-  adding the flag now would just be confusing rather than actually useful — an
-  honest 401 if you ever do point a stored token at the wrong Worker is a fine
-  failure mode until multi-profile support is worth building for real.
-- **`internal/deviceapi`: `Pair` and `Client` are intentionally separate, not
-  one unified type.** `POST /pair` is unauthenticated by nature — it's how a
-  device obtains a bearer token in the first place, so it can't require one —
-  while `Client.Enqueue` (`POST /queue`) requires a token already in hand.
-  Forcing both into one type would mean either a `Client` that's usable before
-  it has real credentials, or a separate construction path for pairing anyway —
-  no simpler than just keeping them apart. Neither authenticates as the backend
-  itself (unlike `internal/mirror` and `internal/ingest.WorkerClient`, both
-  service-secret-gated); this package is specifically what a paired _device_
-  does against the Worker's public, device-facing endpoints.
-- **`recueil enqueue <url> [<url>...]`** accepts multiple URLs in one invocation
-  (`POST /queue` has no batch form, so this is a client-side loop, one call per
-  URL) and continues past an individual failure rather than stopping the whole
-  batch — the same "one bad item shouldn't block the rest" philosophy already
-  applied to `Ingester.RunOnce`/`Syncer.SyncOnce` (§3c, §8), reported as a
-  summary and a non-zero exit if anything failed, rather than aborting partway
-  through. Each URL gets its own freshly-generated `google/uuid` (already a
-  dependency) as `POST /queue`'s client-generated `id` — the same
-  idempotency-key pattern already established for that endpoint (a retried call
-  with the same `id` is a safe no-op, not a duplicate enqueue).
-- Schema-wise, there was nothing to add: `tokens.device_name` and `device_type`
-  (already including `'cli'` in its allowed set) were already in place from
-  Phase 2, and `POST /pair` already required and stored `device_name` in its
-  request body. `recueil auth`'s only actual job here is supplying a sensible
-  one — `os.Hostname()` by default, `--name` to override.
-
----
+- **`worker_url` is stored alongside the pairing-derived token, not as an
+  independent setting** — a token is only ever meaningful for the Worker that
+  issued it, so the two are captured, stored, and read together.
+- `recueil enqueue <url> [<url>...]` loops one `POST /queue` call per URL
+  (there's no batch endpoint) and continues past an individual failure rather
+  than stopping the whole batch, reporting a summary and a non-zero exit if
+  anything failed — the same "one bad item shouldn't block the rest" shape as
+  `Ingester.RunOnce`/`Syncer.SyncOnce` (§3c, §8). Each URL gets its own
+  freshly-generated UUID as the idempotency key.
 
 ### 3g. Favicon capture
 
-Captured client-side, the same way HTML is — not fetched by the backend. This is
-a deliberate extension of §1's core principle, not an exception to it: a favicon
+Captured client-side, the same way HTML is — not fetched by the backend. This
+extends §1's core principle rather than exempting an exception to it: a favicon
 fetch is still a live request against a URL the extension already has an
-authenticated browser context for (most favicons don't need that, but some do —
-an intranet tool or private wiki is a real if narrow case), so the backend never
-touches the live web at all, full stop, with no carve-out to reason about later.
+authenticated browser context for, so the backend never touches the live web at
+all.
 
-**Selection — link-level, not pixel-level.** The extension resolves a candidate
-URL by checking, in order: any `<link rel="icon">` /
-`<link rel="apple-touch-icon">` tags declared on the page (preferring
-`type="image/svg+xml"` over a raster candidate, and the largest declared `sizes`
-among raster candidates), then falling back to the conventional root-relative
-`/favicon.svg`, `/favicon.png`, `/favicon.ico`, tried in that order. If none of
-that resolves to anything, `favicon_path` simply stays `NULL` for that capture —
-not every site has one, and not finding one is never an error.
-
-**No image processing.** Whatever bytes come back — including a legacy
-multi-resolution `.ico` container — are stored exactly as received. Every modern
-browser renders `.ico` directly in an `<img>` tag, so there's no real need to
-decode "the largest embedded image" out of one; that's a "revisit if it becomes
-a felt problem" item, not a day-one requirement.
-
-**Favicon is per-capture state, not page state**, the same way the HTML itself
-is: `captures.favicon_path` (§10) is written once per capture and never mutated
-or cleaned up afterward, so there's no dangling-reference risk across a page's
-capture history (an old capture's favicon, if any, stays exactly as it was
-captured). `pages.favicon_path` is denormalized from the _latest_ capture the
-same way `pages.title` already is — including being overwritten back to `NULL`
-if the latest capture genuinely didn't find one, not preserved from an earlier
-capture that did.
-
-**Disk layout — shares the capture's directory.** Every asset belonging to one
-capture (the HTML, the favicon, the screenshot) lives together under that
-capture's single directory (§4). Because that directory belongs to exactly one
-capture, each asset just takes a plain role-based filename — `page.html.zst`,
-`favicon.{ext}`, `thumbnail.png`. An earlier revision named each secondary asset
-by _its own_ content hash, which was necessary only because the directory was
-then keyed by the HTML's `content_hash` and could therefore be shared by two
-captures with identical HTML but different favicons; with per-capture
-directories that collision can't arise, so the hash no longer has to appear in
-the filename. `favicon_hash`/`thumbnail_hash` remain columns regardless —
-they're how you tell after the fact whether two captures of a page carried the
-same icon, and the only integrity check available for a file nothing re-derives.
-Compression is per-asset-type, not a blanket zstd: SVG (plain XML) compresses
-well and gets it; PNG/ICO are already-compressed binary formats and are stored
-raw.
-
-**R2 key convention mirrors the HTML object's.** `POST /captures/upload-urls`
-accepts an optional `(favicon_ext, content_sha256_favicon)` pair — both present
-or both absent, no half-specified request — and, when present, issues a second
-presigned PUT alongside the HTML one, at a deterministic key
-`pending/{userId}/{captureId}/favicon.{ext}` (`ext` ∈ `svg | png | ico`). The
-extension itself is baked into the key (unlike `page.html`'s implicit,
-always-the-same suffix) specifically so the backend can recover the real format
-by reading the key back at ingestion (`filepath.Ext`), rather than needing a
-separate mime/type column anywhere in Postgres or D1. `POST /queue/:id/complete`
-and its direct-capture counterpart `POST /captures/complete` (added once actual
-extension work reached this point — completing a capture that was never enqueued
-in the first place, e.g. archiving a page the user is already on; see
-`pending_captures.queue_item_id`'s own nullability) both take the same
-treatment: the caller declares _whether_ it uploaded a favicon and in what
-format (`favicon_ext`), and the Worker recomputes the deterministic key itself —
-the same never-trust-a-client-supplied-key posture `r2_key_html` already has.
-
-**Ingestion is best-effort, and never fails the capture.** A favicon fetch or
-disk write failing at ingestion time is logged and otherwise ignored — an
-unreachable or malformed favicon object is a cosmetic loss, never a reason to
-lose an otherwise-good HTML capture. The favicon's R2 object gets cleaned up
-alongside the HTML object's the same way, best-effort on that side too (a
-leftover favicon object in R2's temporary buffer is harmless).
-
-**The extension's own bookmark-list menu (§8) does not carry a stored favicon at
-all — it live-fetches the site's current favicon at render time**, the same way
-a browser's native bookmarks UI would. This was a deliberate choice among three
-options considered: storing favicon bytes inline as a D1 `BLOB` on
-`archived_pages` (favicons are small enough that this would've worked, and
-remains the natural next step if live-fetching proves unsatisfying), a durable
-copy in R2 (rejected outright — R2 is documented as a temporary buffer only, §4,
-and every other object in it is deleted right after the backend pulls it;
-keeping favicons there permanently would be a new, different lifecycle with no
-other precedent in this design), or live-fetching with no sync/storage at all
-(what's actually built). Live-fetching also sidesteps a real semantic question
-the other two don't: whether the menu should show the favicon _as archived_ or
-_as it is right now_ — for a live bookmark list, current is arguably the more
-correct answer anyway.
-
----
+- **Selection is link-level, not pixel-level.** The extension checks
+  `<link rel="icon">`/`<link rel="apple-touch-icon">` tags first (preferring
+  SVG, then the largest declared raster size), then falls back to
+  `/favicon.svg`, `/favicon.png`, `/favicon.ico` in that order. `favicon_path`
+  simply stays `NULL` if none resolve — not every site has one.
+- **No image processing.** Whatever bytes come back — including a legacy
+  multi-resolution `.ico` — are stored exactly as received; every modern browser
+  already renders `.ico` directly.
+- **Per-capture state, like the HTML itself**: `captures.favicon_path` (§10) is
+  written once and never mutated. `pages.favicon_path` is denormalized from the
+  latest capture the same way `pages.title` is, including reverting to `NULL` if
+  the latest capture didn't find one.
+- **Shares the capture's directory (§4)**, taking a plain role-based filename
+  (`favicon.{ext}`) since a capture directory holds exactly one of each asset.
+  `favicon_hash`/`thumbnail_hash` remain columns regardless — the only integrity
+  check available for a file nothing re-derives. Compression is per-asset-type:
+  SVG gets zstd'd, PNG/ICO (already compressed) are stored raw.
+- **The R2 key bakes in the real extension** (`.../favicon.{ext}`, `ext` ∈
+  `svg | png | ico`) so the backend recovers the format from the key itself at
+  ingestion, rather than needing a separate mime/type column. The Worker always
+  recomputes this key itself — never trusts one supplied by the client, the same
+  posture `r2_key_html` already has.
+- **Ingestion is best-effort and never fails the capture.** A favicon fetch or
+  disk-write failure is logged and ignored — a cosmetic loss, never a reason to
+  lose an otherwise-good HTML capture.
 
 ### 3h. Browser extension architecture
 
-**Single Manifest V3 codebase covers Chrome and Firefox.** Chrome's MV2 support
-is fully gone (dead since October 2024); Firefox supports both indefinitely, but
-nothing recueil needs (no blocking `webRequest`) actually requires MV2 there.
-Upstream SingleFile forked into two separate repos (`SingleFile` for
-Firefox/MV2, `SingleFile-MV3` for Chrome/Edge) specifically because migrating a
-large, mature, feature-heavy extension is real, risky work its own maintainer is
-intentionally delaying — confirmed directly by gildas-lormeau in a GitHub
-discussion: Firefox is technically MV3-ready, he's "waiting until the last
-moment to migrate" because "Manifest V3 extension development is a real pain."
-That asymmetry doesn't apply to recueil: there's no existing MV2 codebase to
-preserve, so a single MV3 codebase from day one is the right call, even though
-it wasn't the right call for him. Safari is MV3-capable too but needs a
-genuinely separate packaging/distribution pipeline (Xcode-wrapped,
-`safari-web-extension-converter`) — deferred as a later, mechanical step once
-the extension itself works, not attempted yet.
+A single Manifest V3 codebase covers both Chrome and Firefox — Chrome's MV2
+support is gone entirely, and nothing recueil needs requires staying on MV2 for
+Firefox. Safari is MV3-capable too but needs a separate packaging/distribution
+pipeline so deferred for now (§16).
 
-**`single-file-core` is a direct dependency, not a vendored fork of either
-official extension.** Both `SingleFile` and `SingleFile-MV3` are full end-user
-extensions (options pages, multiple upload destinations, auto-save, annotation)
-built around a separate, genuinely engine-only npm package that also backs
-`single-file-cli` headlessly with zero browser-extension APIs involved. recueil
-depends on that same package directly and writes its own thin MV3 wrapper around
-it — recueil's surface area (no auto-save, no annotation, no multiple upload
-destinations) is much smaller than upstream's, so there was never a reason to
-inherit their UI or their Firefox/Chrome fork split. Both share the same
-AGPL-3.0-or-later license, so no licensing mismatch either.
+**Capture is a two-step injection.** `scripting.executeScript` first loads the
+capture bundle as a file (a `func`-injected function can't import anything
+itself, so the bundle has to land as a global first), then a second call invokes
+it and returns the result. Background, the capture bundle, and the popup are
+three separate esbuild entry points — different contexts (service worker,
+content-script world, extension page) loading at different times, so bundling
+them together would mean the largest thing in the build (`single-file-core`)
+parses on every service-worker wake for no benefit.
 
-**Capture is a two-step injection**, not a single call:
-`scripting .executeScript({files: ["capture-inject.js"]})` loads the bundle
-(defines a global, since `func`-injected functions can't themselves import
-anything), then a separate
-`executeScript({func: () => globalThis.__recueilSingleFile .captureFrame()})`
-actually invokes it and returns the result. Background
-(`extension/src/background/`), the injectable capture bundle
-(`extension/src/capture-inject/`), and the popup (`extension/src/popup/`) are
-three genuinely separate esbuild entry points/bundles, not one — they run in
-different contexts (service worker vs. a page's content-script world vs. an
-extension page) and load at different times, so bundling them together would
-mean the largest thing in this build (`single-file-core`) parses on every
-service-worker wake for no benefit.
+**Resource fetching tries the page's own `fetch()` first, relaying through the
+background only on failure.** A background-context fetch bypasses a page's CORS
+restrictions, which is why the relay exists at all — but routing every resource
+through the background unconditionally would tie a capture's success to the
+background staying alive for the whole operation, the wrong shape under MV3's
+non-persistent background model. Most resources are same-origin or already
+CORS-permitted, so this resolves the large majority of fetches with no
+background round-trip.
 
-**Resource fetching is direct-fetch-first, background-relay-fallback** — not the
-reverse. A background-context fetch bypasses a page's own CORS restrictions (the
-reason the relay exists at all: `single-file-core` needs to inline resources the
-page itself couldn't otherwise read), but routing _every_ resource through the
-background unconditionally means a capture's success depends on the background
-staying alive for the entire operation, which is exactly the wrong shape under
-MV3's non-persistent background model. Modeled directly on `SingleFile-MV3`'s
-own `fetchResource` (`src/lib/single-file/fetch/content/content-fetch.js`),
-which tries the page's own `fetch()` first and only relays on failure — most
-resources on most pages are same-origin or already CORS-permitted, so this
-resolves the large majority of fetches with no background round-trip at all.
-Notably, `SingleFile-MV3` has no keepalive mechanism anywhere in its source (no
-`runtime.connect` port, no alarm-based ping) — this fetch ordering is _why_, not
-a gap they left unaddressed.
-
-**Multi-frame (iframe) capture is implemented — embedded frames are inlined into
-the top document, not dropped.** `single-file-core` already unconditionally
-bundles frame-tree collection logic as a transitive dependency
-(`processors/index.js` → `content-frame-tree.js`), gated behind the
-`removeFrames` option and requiring the bundle to be injected into every frame
-(`target.allFrames: true`), not just the top one. Turning it on took three
-pieces, staged in isolated steps after an initial single-change attempt broke
-even single-frame pages in a way that was hard to diagnose:
-
-1. Injecting the bundle into every frame (`allFrames: true` on the `files` step,
-   `removeFrames` still `true` so collection never runs) — confirmed safe on its
-   own, both plain and iframe-containing pages captured correctly.
-2. Flipping `removeFrames: false` — where the symptom appeared: `getPageData()`
-   hung and Firefox reported
-   `Could not establish connection. Receiving end does not exist.`, on _any_
-   page including ones with zero iframes (the top frame still runs `getAsync`
-   there, because `globalThis.frames` is always truthy — it reports its own
-   empty frame list through the same path).
-3. Adding a **background frame-tree relay**
-   (`extension/src/background/frame-tree-relay.js`) — the actual fix.
-
-The root cause is a transport split inside `content-frame-tree.js`'s
-`sendMessage`, which chooses how a frame hands its serialized DOM back to the
-top frame by reading `globalThis.browser`:
-
-```js
-if (targetWindow == top && browser && browser.runtime && browser.runtime.sendMessage) {
-  browser.runtime.sendMessage(message); // expects the background to forward to frameId 0
-} else {
-  targetWindow.postMessage(...);        // in-page, no background involved
-}
-```
-
-- On **Chrome**, `globalThis.browser` is `undefined` in the content-script world
-  — `webextension-polyfill` is bundled as a module import, which under esbuild's
-  CJS path never assigns `globalThis.browser`, and Chrome has no native
-  `browser`. So the collector takes the `postMessage`/`MessageChannel` branch
-  and coordinates entirely in-page; no background is involved and step 1's
-  injection is all it needs.
-- On **Firefox** (where `web-ext run` puts iterative testing),
-  `globalThis .browser` is native, so a frame posts its result through
-  `browser.runtime.sendMessage` and _expects the background to relay it to the
-  top frame_. With no relay listener, that send both rejects with "Receiving end
-  does not exist." _and_ never delivers the frame data — so the top frame's
-  collection never completes. The hang and the error are the same event, which
-  is why it fired even on zero-iframe pages.
-
-`SingleFile-MV3` has exactly this relay and recueil simply lacked it: its
-`background.js` imports `frame-tree/bg/frame-tree.js`, a small listener that
-forwards `singlefile.frameTree.initResponse` / `ackInitRequest` to
-`tabs.sendMessage(tabId, message, { frameId: 0 })` and returns a resolved
-promise so the sender settles instead of rejecting. recueil's
-`frame-tree-relay.js` is modeled directly on it, registered alongside the fetch
-relay in `background/index.js`. It's a hard requirement on Firefox and a no-op
-on Chrome (never invoked there), so both targets stay on one background code
-path even though the content side diverges — which also keeps Chrome on its
-background-independent in-page path, consistent with the direct-fetch-first
-reasoning above.
-
-Two earlier source-reading theories pointed at the content side rather than the
-background, and neither fixed it — the more instructive one:
-`content-frame-tree.js`'s `sendInitResponse` _first_ tries a synchronous
-same-realm call, `top.singlefile.processors.frameTree.initResponse(message)`,
-before falling back to `sendMessage`. Both official extensions get
-`globalThis.singlefile` for free because their Rollup builds emit
-`single-file-core/single-file.js` as its own output with
-`output.name: "singlefile"`; recueil's wrapper entry point has no exports of its
-own, so the equivalent esbuild `globalName` wouldn't reproduce it, and
-`globalThis.singlefile = singlefile` (the already-imported namespace) would. But
-that leg only matters for the top frame's own frames — cross-origin subframes
-always throw on `top.singlefile` and fall through regardless — and the leg it
-falls _through to_ is the `runtime.sendMessage` transport above, the one with no
-receiver. That's why assigning the global didn't resolve the hang on its own: it
-fixes a path the code only sometimes takes. It's left out of the shipped fix; at
-most it's a latency optimization (one fewer round-trip for the top frame's own
-frames) worth adding later as its own isolated step.
-
-This was confirmed in a real capture, not just the toolchain — closing out the
-earlier state where source-reading had twice produced a plausible theory that
-didn't match observed behavior. `frameFetch` is wired to `relayFetch` explicitly
-in `bundle-entry.js`, though that's documentation only: `core/util.js`'s own
-`frameFetch || fetch` default already resolves to `relayFetch`.
-
----
+> A second relay (`background/frame-tree-relay.js`) exists for the same reason,
+> one layer up: Firefox requires the background to forward a frame's captured
+> DOM back to the top frame, and without it, multi-frame capture silently fails
+> — even on pages with no iframes at all. Chrome needs no equivalent; it
+> coordinates entirely in-page.
 
 ### 3i. Queue-driven capture
 
-**Human-in-the-loop by default, not as a detected-failure fallback.** The
-original design assumed queue-driven capture would open a tab in the background
-(`active: false`), wait for it to load, capture it, and close it — unsupervised,
-the same shape as a headless-browser cron job. That assumption turned out to be
-wrong for a specific, concrete reason: a CAPTCHA or paywall page captures
-_successfully_ from `single-file-core`'s point of view — no error, no timeout,
-just the wrong content, silently archived as if it were the real page (confirmed
-directly: pages already archived this way exist in testing). There is no generic
-signal — no DOM marker, no HTTP status, nothing — that distinguishes "this page
-needs a human" from "this page loaded fine." Any design that tries to detect
-that automatically doesn't work, and trying to solve it (auto-bypassing
-CAPTCHAs, defeating paywalls) isn't something this project should be doing
-anyway. So the design puts a human in the loop for every queue item, always —
-not as a fallback path for failures the system noticed, since it fundamentally
-can't notice this particular kind of failure.
+**Human-in-the-loop by default, not a fallback for detected failures.** The
+original design assumed an unsupervised background tab: open it, wait for it to
+load, capture it, close it. That's wrong for a specific reason: a CAPTCHA or
+paywall page captures _successfully_ from `single-file-core`'s point of view —
+no error, no timeout, just the wrong content, silently archived as if it were
+the real page. There's no generic signal — no DOM marker, no HTTP status — that
+distinguishes "this page needs a human" from "this page loaded fine," and
+building one (auto-bypassing CAPTCHAs, defeating paywalls) isn't something this
+project should do anyway. So a human is in the loop for every queue item,
+always.
 
-**Concretely:**
-
-- The popup shows a plain list of pending items (`GET /queue` — id and url are
-  all that's meaningful to show), cached in `storage.local` and refreshed from
-  four places: `runtime.onStartup`/`onInstalled`, a 6-hour alarm, the popup's
-  own manual refresh button, and immediately after a successful pairing
-  (otherwise the popup shows "nothing in the queue" until whichever of the first
-  three happens to fire next, even when the instance already has real pending
-  items). None of these run on every service-worker wake, which would mean an
-  extra Worker round-trip on nearly every message this background handles,
-  including ones with nothing to do with the queue.
-- **This cached list is never authoritative.** Clicking an item sends the real,
-  live `POST /queue/:id/claim` — reusing Phase 2's existing atomic claim
-  (`UPDATE ... WHERE status = 'pending' OR (status = 'claimed' AND claimed_at < ...)`)
-  and its 404/409/410 distinctions untouched; no new backend work was needed for
-  any of this. A claim failure's status code is translated into a human-readable
-  message in the background, before it ever crosses the `runtime.sendMessage`
-  boundary back to the popup — a custom property like an error's `.status` isn't
-  reliably preserved across that boundary the way `.message` is, so the
-  translation has to happen while it's still a real, in-process object, not be
-  reconstructed from whatever survives the crossing.
-- **On a successful claim, a new tab opens focused, in the current window**
-  (`tabs.create({url, active: true})`) — intentionally stealing focus, unlike
-  the original background-tab assumption, precisely because this is now an
-  explicit action the user just asked for, the same as clicking any other link.
-- **The user solves whatever the page needs entirely by hand** — no detection,
-  no automation, ever attempted.
-- **Completion reuses the exact existing direct-capture pipeline, not a separate
-  "queue capture" path.** `capture.js`'s `captureTab`/`captureActiveTab` take an
-  optional `queueItemId`, sourced from a small `tabId -> queueItemId` map
-  (`storage.js`, written by the claim step) — when set, completion calls
-  `POST /queue/:id/complete` instead of `POST /captures/complete`; everything
-  upstream of that one call (inject, hash, presign, upload) is identical either
-  way. The map entry is only cleared on success, not on failure — a failed
-  attempt (a transient network error) shouldn't lose the tab's association with
-  the item it's fulfilling; retrying is just clicking "Save this page" again on
-  the same tab, not going back to re-claim (which would be redundant anyway —
-  this device already holds the claim).
-- **An abandoned claim needs no explicit handling.** If the user closes the tab
-  without ever completing it, nothing further happens on the extension side —
-  the Worker's own claim already goes stale and becomes reclaimable (by any
-  device) after 15 minutes, a mechanism that already existed before any of this
-  was built. A `tabs.onRemoved` listener does tidy up the `tabId -> queueItemId`
-  map entry on tab close, but purely for storage hygiene (so it doesn't grow
-  without bound over a long browsing session), not because leaving it would be
-  incorrect.
-- **The tab auto-closes on success, but only for queue-driven captures, never
-  direct ones.** A direct capture's tab is one the user already had open for
-  their own reasons — closing it out from under them would be genuinely
-  disruptive. A queue-driven tab exists _only_ because clicking a queue item
-  created it; once the capture succeeds it's served its entire purpose, the same
-  way a print-preview window closing after printing feels natural rather than
-  disruptive. Left open on failure, so the user can see what went wrong or just
-  retry. Best-effort (`.catch(() => {})`) either way: the capture itself has
-  already fully succeeded by the point the tab close is attempted, so a failure
-  to close (the user having already closed it themselves in the interim, say) is
-  not a reason to report the capture as failed.
-- **A missed periodic alarm doesn't accumulate.** Confirmed against Chrome's own
-  documentation ("repeating alarms will fire at most once and then be
-  rescheduled using the specified period starting from when the device wakes")
-  and consistent with Firefox's own bug history (reports describe a missed alarm
-  firing _late_, never multiple times to catch up) — a laptop suspended through
-  several missed 6-hour ticks triggers exactly one refresh on resume, not one
-  per missed tick.
-
-The toolbar badge (`action.setBadgeText`/`setBadgeBackgroundColor`, cleared to
-empty when the queue is empty) is updated in the same function that refreshes
-the cache, so there's exactly one place that can ever disagree with the list the
-popup shows — not a separately-maintained count that could drift from it.
-
----
+- The popup shows a plain list of pending items (`GET /queue`), cached in
+  `storage.local` and refreshed on startup, a 6-hour alarm, manual refresh, and
+  right after pairing. The cache is never authoritative: clicking an item sends
+  the real, live `POST /queue/:id/claim` (the same atomic claim/404/409/410
+  shape as §2), and on success opens a new, focused tab — deliberately stealing
+  focus, since this is now an explicit action the user just asked for.
+- The user solves whatever the page needs entirely by hand — no detection, no
+  automation attempted.
+- Completion reuses the exact direct-capture pipeline: `captureTab`/
+  `captureActiveTab` take an optional `queueItemId` (tracked in a small
+  `tabId -> queueItemId` map), and call `POST /queue/:id/complete` instead of
+  `POST /captures/complete` when it's set. Everything upstream (inject, hash,
+  presign, upload) is identical either way.
+- An abandoned claim needs no explicit handling — the Worker's claim already
+  goes stale and becomes reclaimable after 15 minutes, the same mechanism the
+  queue already has (§2). A tab-close listener tidies up the tracking map purely
+  for storage hygiene.
+- The tab auto-closes on success, but only for queue-driven captures, never
+  direct ones — a direct capture's tab is one the user already had open for
+  their own reasons, and closing it out from under them would be disruptive.
+  Left open on failure so the user can see what went wrong.
 
 ### 3j. Bookmark sync (native browser bookmarks, not a custom list)
 
-**The original plan was a custom in-popup bookmark list, mirroring the same
-`archived_pages` D1 table §8 already maintains — that changed mid-phase, in
-favor of syncing into the browser's own native bookmarks instead.** Prompted
-directly by asking whether the browser's own bookmarks machinery could be used,
-rather than discovered as a problem with the custom-list plan. The reasoning
-that made the switch worthwhile: native bookmarks already come with a
-full-featured, familiar UI (search, folders, the browser's own sidebar/manager)
-that a cramped popup view would never match, and favicon display is handled
-entirely by the browser itself, for free — no separate favicon-fetching or
-caching logic needed on the extension side at all, for this specific feature.
+Syncs archived pages into the browser's native bookmarks, not a custom in-popup
+list — native bookmarks already have a full-featured, familiar UI (search,
+folders, the browser's manager) a cramped popup view would never match, and
+favicon display comes for free from the browser itself.
 
-**The one rule reconciliation is built around: recueil only ever touches
-bookmarks that are children of one dedicated folder it creates and manages
-itself.** It never searches the user's whole bookmark tree and never touches
-anything outside that folder. Any bookmark management inside that folder — the
-user adding their own bookmarks there, renaming or moving the ones recueil
-created, anything — is unsupported: it isn't preserved and isn't specially
-detected, it gets overwritten or removed the next time sync runs, on the same
-ordinary schedule as everything else, not just when disabling sync or unpairing.
-An earlier version of this document's own comments described that sweeping-away
-as a risk specific to teardown specifically — that was a real inconsistency in
-the write-up, not the behavior: `syncBookmarks` already applies this on every
-ordinary sync, and the comment was corrected to say so plainly once the
-inconsistency was pointed out.
-
-**Reconciled by URL, not by tracking bookmark ids at all — no stored
-`page_id -> bookmark id` map anywhere.** This is a real simplification found by
-asking a direct question (why not just diff by URL against the folder's actual
-contents?) rather than assumed safe: it depends on `raw_url` (what
-`GET /archived-pages` returns) actually being a stable, unique identity key,
-which turned out to already be true but wasn't obvious from the field name.
-`raw_url` is sourced from `pages.normalized_url` (`internal/mirror/sync.go`'s
-`RawURL: p.NormalizedUrl`), the exact column `pages`' own
-`UNIQUE (user_id, normalized_url)` constraint is built on — not the literal URL
-string from whichever capture happened to run last, which could differ across
-captures of the same page (tracking parameters, trailing slashes) even though
-the identity stays the same. With that confirmed, diffing the fetched
-archived-pages list directly against `browser.bookmarks.getChildren(folderId)`
-by URL is simpler than _and_ at least as correct as a tracked-id map: the
-browser's own bookmark tree already _is_ the persisted state to compare against,
-so keeping a redundant local copy of it would only be a second thing that could
-drift from the truth. It also means the cross-device-sync case (a bookmark
-recueil created on another device, already propagated here by Firefox Sync or
-similar, before this device's own next sync tick runs) needs no special "adopt"
-branch at all: it just looks like "a URL that's already there," identical to one
-created locally.
-
-**The dedicated folder itself needed the same create-or-adopt treatment, one
-level up — a second real gap, found the same way as the first.** An initial
-version only ever created the folder fresh if no tracked id resolved, which
-would blindly create a _second_ "recueil" folder on a fresh device where one had
-already arrived via native sync before this device's own first sync ran. The fix
-enforces the same standard as individual bookmarks: create or adopt, never
-duplicate. Finding the right place to look is the tricky part — Chrome and
-Firefox use different, non-portable ids for "Other Bookmarks"/"Unfiled
-Bookmarks" (and the title itself can be locale-translated), so neither a
-hardcoded id nor a title match on the container itself is reliable. The actual
-fix: a throwaway probe bookmark, created the same way the real folder is
-(`parentId` omitted), discovers the real default container's id empirically —
-whatever the browser just used for the probe is exactly where
-`bookmarks.create()` would also put the real folder, then the probe itself is
-removed. Confirmed directly against both Chrome's and Firefox's own docs that
-there's no way to do better than this — a genuinely top-level folder (a sibling
-of "Bookmarks Bar"/"Other Bookmarks" rather than nested inside one of them)
-isn't possible at all: both browsers explicitly block creating anything as a
-child of the true root node ("The bookmark root cannot be modified"), so landing
-inside the default container is the closest to top-level actually achievable,
-not a fallback settled for over a better option.
-
-**Opt-in, not bundled into pairing.** `bookmarks` is a distinct, user-visible
-permission (`optional_permissions` in the manifest) unrelated to capture itself,
-requested only when the popup's own toggle is turned on — synchronously in that
-toggle's change handler, same user-gesture reasoning as pairing's own
-`<all_urls>` request (§3h). Turning sync off relinquishes the permission too,
-not just stops syncing while holding it; turning it back on later just requests
-it again. The same teardown (delete the folder, clear tracked state, relinquish
-the permission) is shared between the popup's toggle and `unpair()` — with one
-ordering requirement where it's called from unpair specifically: it has to run
-_before_ unpair's own `storage.local.clear()`, since it needs to read the
-tracked folder id from storage before that wipe would otherwise have already
-erased it.
-
-**No incremental sync on the extension side either** — see §8's own
-bookmark-list-mirror section for why a full-list pull, diffed locally, is the
-right level of complexity at a personal archive's actual scale, rather than
-reusing the backend's own checkpoint-based approach.
-
----
+- **Recueil only ever touches bookmarks inside one dedicated folder it creates
+  and manages** — it never searches the wider bookmark tree. Anything a person
+  does inside that folder by hand — adding, renaming, moving — is unsupported:
+  it gets overwritten or removed on the next ordinary sync, not just at
+  teardown.
+- **Reconciled by URL, not by tracking bookmark ids.** `GET /archived-pages`'s
+  `raw_url` is sourced from `pages.normalized_url` — the exact column `pages`'
+  `UNIQUE (user_id, normalized_url)` constraint is built on — so it's already a
+  stable, unique identity key. Diffing the fetched list directly against
+  `browser.bookmarks.getChildren(folderId)` by URL is simpler than a tracked-id
+  map and avoids a second copy of the tree that could drift from the truth. It
+  also means a bookmark that arrived via the browser's sync from another device
+  needs no special "adopt" handling — it just looks like a URL that's already
+  there.
+- **The dedicated folder gets the same create-or-adopt treatment.** Chrome and
+  Firefox use different, non-portable ids for "Other Bookmarks"/ "Unfiled
+  Bookmarks" (and the title itself can be locale-translated), so neither a
+  hardcoded id nor a title match is reliable. A throwaway probe bookmark
+  (created the same way the real folder would be) discovers the real default
+  container's id empirically, then removes itself. Neither browser allows
+  creating anything as a sibling of "Bookmarks Bar" — landing inside the default
+  container is the closest to top-level actually achievable.
+- **Opt-in, not bundled into pairing.** `bookmarks` is a distinct, user-visible
+  optional permission, requested only when the popup's toggle is turned on.
+  Turning sync off relinquishes the permission too, not just stops syncing while
+  holding it.
+- No incremental sync on the extension side — a full-list pull, diffed locally,
+  is the right level of complexity at a personal archive's scale (§8 covers the
+  same reasoning from the backend's sync job).
 
 ### 3k. Internationalization (i18n)
 
-**The native WebExtensions i18n API, not a library.**
-`_locales/<locale> /messages.json` files, `__MSG_key__` substitution in
-`manifest.json`, `browser.i18n.getMessage()` in code — built into Chrome and
-Firefox both, zero new dependencies. This fits the project's existing bias
-against pulling in a library where a platform primitive already does the job
-(the same reasoning already applied to, e.g., not using a JWT library for bearer
-tokens, §5).
+The native WebExtensions i18n API, not a library:
+`_locales/<locale>/messages.json` files, `__MSG_key__` substitution in
+`manifest.json`, `browser.i18n.getMessage()` in code — zero new dependencies,
+consistent with this project's bias toward a platform primitive over a library
+wherever one exists.
 
-**Every lookup goes through one wrapper (`src/common/i18n.js`'s `t()`), never
-`browser.i18n.getMessage()` directly from a call site.** This isn't defensive
-architecture-for-its-own-sake — it's a real answer to a real, concrete
-constraint: the native API has no supported way to select a locale other than
-the browser's own current UI language. There's no "pass a locale" parameter
-anywhere in it. If the popup ever grows a manual language override (there's no
-settings UI at all today for one to attach to, so this is speculative, not
-planned), the only way to build it is for `t()` to stop delegating to
-`browser.i18n.getMessage()` and instead fetch a specific
-`_locales/<lang>/messages.json` itself and look keys up from that — a change
-confined to one file precisely because every call site already goes through it,
-not a rearchitecture of `popup.js`.
-
-**Scope: only strings recueil itself authors are translated — never passthrough
-browser/network error text.** A raw `fetch()` failure or an HTTP response body
-is the browser's or the network's own message, not something recueil wrote;
-there's no translatable string to look up for it, and attempting to wrap it
-would either lose information or require re-authoring content that isn't ours to
-begin with. `background/queue.js`'s `describeClaimFailure` is the concrete line:
-its own three authored messages (409/410/404) are translated; the generic
-`error.message` fallback for anything else is left exactly as the
-browser/network produced it. `auth.js`'s pairing-network-error templates and
-`capture.js`'s R2-upload-error templates are a related but not-yet-converted
-case — an authored template wrapping an untranslated interpolated value (a
-network error's own message, an HTTP response body) — deferred, not
-architecturally blocked: same `t()` pattern applies whenever it's worth doing.
-
-**`en` is `default_locale`, both the fallback for missing keys in any other
-locale and the source of truth for what keys exist.** `manifest.base.json`'s own
-`name`/`description` are localized too
-(`__MSG_extName__`/`__MSG_extDescription__`), the one place the browser
-substitutes `__MSG_*__` placeholders outside of code — general extension-page
-HTML has no equivalent automatic substitution, which is why `popup.html`'s own
-static `<title>`/loading-placeholder text stays an English fallback in the
-markup itself, overwritten by `popup.js` via `t()` as the first thing it does
-once it actually runs.
+- **Every lookup goes through one wrapper** (`src/common/i18n.js`'s `t()`),
+  never `browser.i18n.getMessage()` directly — the native API has no way to
+  select a locale other than the browser's current UI language, so if the popup
+  ever grows a manual override, `t()` is the one place that needs to change.
+- **Only strings recueil itself authors are translated** — never passthrough
+  browser/network error text. A raw `fetch()` failure or HTTP response body
+  isn't recueil's own writing, so there's nothing to look up a translation for.
+- **`en` is `default_locale`** — both the fallback for missing keys and the
+  source of truth for what keys exist. `manifest.base.json`'s
+  `name`/`description` are localized too, the one place the browser substitutes
+  `__MSG_*__` outside of code; general extension-page HTML has no equivalent,
+  which is why `popup.html`'s static text stays an English fallback until
+  `popup.js`'s `t()` calls overwrite it at runtime.
 
 ---
 
@@ -1149,69 +481,80 @@ once it actually runs.
   extension (which may not have a stable public endpoint to push to) to the
   backend (which may not be reachable to receive a push). Once the backend has
   pulled and locally stored a capture's blobs, they are deleted from R2.
-- **Local disk is canonical.** The backend stores the zstd-compressed HTML (HTML
-  compresses extremely well with zstd, commonly 80-90% size reduction) on local
-  disk, referenced by path from the `captures` table. Thumbnails (see §6) and
-  favicons (§3g) are also stored on local disk, never in R2 — every asset for
-  one capture lives together under a single directory.
-- **One capture, one directory — never shared, even for identical content.**
-  Each capture's directory is minted by `internal/archive`'s `Store.NewCapture`
-  as a backend-generated UUIDv7, sharded three levels deep
-  (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's own object-store shape, for the same
-  reason: a flat directory with hundreds of thousands of entries degrades badly
-  for `ls`, backup tools, and anything else that walks it). The shard comes from
-  the id's _trailing_ characters, not its leading ones, because UUIDv7's leading
-  bits are a millisecond timestamp — sharding on those would drop everything
-  captured in the same period into one bucket and defeat the point.
+- **Local disk is canonical.** The backend stores the zstd-compressed HTML on
+  local disk, referenced by path from the `captures` table. Thumbnails (§6a) and
+  favicons (§3g) are also stored on local disk — every asset for one capture
+  lives together under a single directory.
+- **One capture, one directory.** Each capture's directory is minted by
+  `internal/archive`'s `Store.NewCapture` as a backend-generated UUIDv7, sharded
+  three levels deep (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's object-store shape — a
+  flat directory with hundreds of thousands of entries degrades badly for `ls`,
+  backup tools, and anything else that walks it). The shard comes from the id's
+  _trailing_ characters, not its leading ones, since UUIDv7's leading bits are a
+  millisecond timestamp — sharding on those would drop everything captured in
+  the same period into one bucket.
 
-  **This reverses an earlier design that keyed the directory by the capture's
-  HTML `content_hash`**, under which two captures with byte-identical HTML
-  aliased onto one directory. Content-addressing was never load-bearing here:
-  `html_path`/`favicon_path`/`thumbnail_path` are stored columns, so every read
-  resolves row → path → disk and nothing ever derives a path from a hash. Its
-  only real benefit was deduplication, which isn't a goal for this project, and
-  which barely fired in practice anyway — §3b already notes that most real pages
-  embed per-load-unique content, so two captures rarely produce identical bytes.
-  What aliasing cost was ongoing rather than one-off: "is this file still
-  referenced?" became a set-membership question rather than a local one,
-  per-user deletion became unprovable (a tenant's bytes physically persist
-  whenever another tenant happens to share them, which matters for the
-  multi-tenant door this section deliberately leaves open below), and
-  `CaptureDir` was a misnomer for a directory that wasn't any one capture's.
+  Directories aren't keyed by content hash: two captures with byte-identical
+  HTML don't get aliased onto one directory. `html_path`/`favicon_path`/
+  `thumbnail_path` are stored columns, so every read resolves row → path → disk
+  regardless — content-addressing's only real benefit would have been
+  deduplication, which isn't a goal here and rarely fires anyway (§3b:
+  per-load-unique content means two captures rarely produce identical bytes). It
+  would also have made per-user deletion unprovable, since one tenant's bytes
+  could physically persist as long as another tenant happened to share them —
+  relevant given the multi-tenant hosted deployment mentioned below.
+  `content_hash`/`favicon_hash`/`thumbnail_hash` remain columns for exact-dedup
+  detection, §3c's retry-vs-collision disambiguation, and integrity checking —
+  they just don't name anything on disk.
 
-  `content_hash`, `favicon_hash` and `thumbnail_hash` all remain columns on
-  `captures` — exact-dedup _detection_, §3c's retry-vs-collision disambiguation,
-  and integrity checking all work exactly as before. The hashes simply no longer
-  name anything on disk.
+  The `os.Mkdir`/`EEXIST` collision-avoidance mechanism itself is covered in
+  §3c; `captures.html_path` additionally carries a `UNIQUE` constraint
+  (migration `00004`) as database-level belt-and-suspenders on top of it — a
+  collision that's already astronomically unlikely, given UUIDv7's 74 random
+  bits.
 
-  **Uniqueness is enforced, not assumed.** `NewCapture` creates the leaf
-  directory with a plain `os.Mkdir`, not `MkdirAll`, so an already-existing
-  directory surfaces as `EEXIST` and the id is regenerated rather than adopted
-  and written into. That check has to happen at mkdir time rather than in
-  Postgres, because the disk write precedes the commit (§3c) — a database
-  constraint alone would only reject the row _after_ the other capture's bytes
-  had already been overwritten. `captures.html_path` additionally carries a
-  `UNIQUE` constraint (migration `00004`), which is the same invariant restated
-  where the database can enforce it: belt-and-suspenders, not the primary
-  mechanism. Note that constraint would have been actively wrong under the
-  previous layout, where identical HTML deliberately shared a path. The
-  collision being guarded against cannot realistically occur — UUIDv7 carries 74
-  random bits, and two ids would have to collide across all of them within the
-  same millisecond — but the guard is nearly free.
+- **Deleting a page or capture doesn't reclaim its on-disk files
+  synchronously.** `DELETE /api/pages/{id}`/`DELETE /api/captures/{id}` remove
+  the Postgres rows (cascading to jobs/tags/collection memberships) but leave
+  the HTML/favicon/thumbnail files in place.
+- **`recueil gc` (`internal/gc`) is the operator-run sweep that reclaims them.**
+  It reads the live set of paths Postgres still references
+  (`ListReferencedArchivePaths`), walks every file `archive.Store`'s root
+  actually contains, and removes whatever isn't in that live set — `--dry-run`
+  reports the same scan/removal counts and reclaimable bytes without deleting
+  anything. Two safety rails guard against an otherwise silent, total failure
+  mode:
+  - **A 15-minute recency floor** — the same window used elsewhere for claim
+    staleness. Ingestion writes to disk _before_ committing to Postgres (§3c),
+    so an in-flight capture — including `archive.Store`'s `.tmp-*` files
+    mid-write — is legitimately absent from the live set; anything modified more
+    recently is left alone regardless.
+  - **An orphan-fraction refusal** — if more than half of at least 100 scanned
+    files come back unreferenced, the run removes nothing and reports an error
+    instead (`--force` overrides). The live set is built by comparing stored
+    path strings against walked path strings, so any future normalization
+    mismatch between the two would otherwise silently mark the entire archive as
+    garbage; this refusal is what stops that from being a one-shot way to delete
+    every capture on the instance.
+
+  A companion pass (`Store.WalkEmptyDirs`) prunes now-empty shard directories
+  left behind once their last file is removed, since a capture's directory is
+  created before anything is written into it and would otherwise accumulate
+  indefinitely.
 
 - **Backup is entirely the operator's responsibility** — see §14. The
   application itself performs no automated backup.
 - **Database choice: Postgres, not SQLite**, despite this being a personal
-  archive. Real user accounts (family members using one deployment, and a
-  potential future multi-tenant hosted version) tip this in Postgres's favor:
-  SQLite's single-writer lock becomes a real constraint with concurrent family
-  members archiving/querying at once, and multi-tenant isolation / hosted-DB
-  migration paths are native to Postgres. Docker Compose makes the extra
-  container a non-issue operationally.
+  archive. Real user accounts (family members on one deployment, and a potential
+  future multi-tenant hosted version) tip this toward Postgres: SQLite's
+  single-writer lock becomes a real constraint with concurrent family members
+  archiving/querying at once, and multi-tenant isolation / hosted-DB migration
+  paths are native to Postgres. Docker Compose makes the extra container a
+  non-issue operationally.
 - **Bind mounts, not named Docker volumes**, for both the Postgres data
-  directory and the local archive directory (see §14) — this makes it
-  straightforward for whatever external backup tool the operator chooses to
-  snapshot the directories directly from the host filesystem.
+  directory and the local archive directory (§14) — straightforward for whatever
+  external backup tool the operator chooses to snapshot the directories directly
+  from the host filesystem.
 
 ---
 
@@ -1235,95 +578,49 @@ once it actually runs.
 **Devices (extension, PWA, CLI) → opaque bearer tokens, backed by a per-user
 pairing token, D1-owned.**
 
-An earlier revision of this design had the backend mirror the account's **bcrypt
-password hash** into D1, verified by the Worker at pairing time against a
-submitted username/password. That approach turned out to be infeasible on its
-own terms, independent of the security question: bcrypt is designed to cost on
-the order of 100-300ms even in native code, and Cloudflare Workers on the free
-tier are capped at 10ms of CPU time per request. There is no cost factor that
-gets bcrypt (or an equivalent memory-hard hash) under that ceiling without
-weakening it past the point of doing its job — and there's no native bcrypt in
-the `workerd` runtime anyway, so a pure-JS implementation would only be slower
-still. A Worker-native fast primitive (PBKDF2 via `crypto.subtle.deriveBits`,
-which _would_ fit the CPU budget) was considered as a fix and rejected: it still
-means mirroring password-derived material into D1, just under a different
-algorithm, and doesn't address the underlying exposure.
-
-Instead, each account gets a separate, single-purpose credential — a **pairing
-token** — used only to authenticate a device once in exchange for a bearer
-token. It is never used to log into the dashboard, and the dashboard password is
-never used to pair a device:
+Device pairing doesn't mirror the account's login credential into D1 at all — a
+Cloudflare Worker's free-tier 10ms CPU cap makes any properly slow password hash
+(e.g., bcrypt) infeasible to verify there, and mirroring the credential under a
+weaker algorithm wouldn't fix the underlying exposure anyway. Instead, each
+account gets a separate, single-purpose credential — a **pairing token** — used
+only to authenticate a device once in exchange for a bearer token. It's never
+used to log into the dashboard, and the dashboard password is never used to pair
+a device.
 
 - Generated automatically at account creation: 32-byte CSPRNG value,
   base64url-encoded, `rcl_pair_...` prefix. One per user, valid indefinitely
-  until regenerated or revoked (not single-use, not scoped per-device).
-- **Postgres stores it reversibly** — `users.pairing_token_enc`, AES-256-GCM
-  (`crypto/aes`/`crypto/cipher`, stdlib) — a deliberate departure from how every
-  other credential in this system is stored. This is justified specifically
-  because a pairing token isn't a user-chosen secret carrying the same stakes as
-  a password; it's closer in kind to an API key, and the dashboard needs to
-  redisplay it on demand (see below) rather than forcing a regenerate-to-view
-  flow the way a show-once bearer/session token does. The AES key
-  (`PAIRING_TOKEN_KEY`, 32 random bytes, base64-encoded) is operator-generated
-  and lives in the backend's `.env` alongside the Worker service secret (§5a)
-  and D1 migration credential (§5b) — it isn't Cloudflare/Terraform-managed,
-  since it never needs to leave the backend's own trust boundary.
-- **D1 stores only `SHA-256(pairing_token)`** — the same shape and reasoning as
-  the existing device-token/session-token hashing: the token already carries
-  ~256 bits of entropy, so a leaked hash alone doesn't yield a usable
-  credential. Unlike the password-hash mirror it replaces, a full D1 compromise
-  now exposes nothing password-derived at all — only a credential whose sole
-  purpose is pairing new devices, independently revocable from the account's
-  actual login credential.
-- **Device pairing is single-credential.** A device submits only the pairing
-  token to the Worker — no username. The Worker hashes it, looks up the owning
-  `user_id` directly (a pairing token hashes to exactly one account), and issues
-  an opaque bearer token exactly as originally designed: 32-byte CSPRNG,
-  `rcl_live_...` prefix, hashed at rest (`SHA-256`) in D1's `tokens` table,
-  revoked by row deletion. Nothing about bearer-token issuance, storage, or
-  revocation changes from the original design — only what's submitted to obtain
-  one. A JWT was considered here too (for the same reasons as the original
-  design) and rejected for the same reason: a DB lookup already happens on every
-  request for revocation, so a JWT's main benefit doesn't apply, and it adds
-  signing/claims-schema surface for no payoff at this scale. Implemented as
-  `POST /pair` (request: `pairing_token`, `device_name`, `device_type`;
-  response: the raw bearer token, shown exactly once). `tokens.last_used_at` is
-  touched on every subsequent authenticated device request (`POST /queue`,
-  `GET /queue`, `POST /queue/:id/claim`) via a fire-and-forget write
+  until regenerated or revoked.
+- **Postgres stores it reversibly** — `users.pairing_token_enc`, AES-256-GCM — a
+  deliberate departure from how every other credential here is stored, justified
+  because a pairing token isn't a user-chosen secret carrying a password's
+  stakes; it's closer to an API key, and the dashboard needs to redisplay it on
+  demand rather than forcing a regenerate-to-view flow. The AES key
+  (`PAIRING_TOKEN_KEY`) is operator-generated and lives in the backend's `.env`
+  alongside the Worker service secret (§5a) and D1 migration credential (§5b) —
+  it never leaves the backend's trust boundary.
+- **D1 stores only `SHA-256(pairing_token)`** — the token already carries ~256
+  bits of entropy, so a leaked hash alone yields nothing usable. A full D1
+  compromise now exposes no password-derived material at all, only a credential
+  whose sole purpose is pairing new devices.
+- **Device pairing is single-credential** — a device submits only the pairing
+  token, no username; the Worker hashes it, looks up the owning `user_id`
+  directly, and issues an opaque bearer token (32-byte CSPRNG, `rcl_live_...`
+  prefix, hashed at rest in D1's `tokens` table, revoked by row deletion).
+  Implemented as `POST /pair` (request:
+  `pairing_token`/`device_name`/`device_type`; response: the raw bearer token,
+  shown exactly once). `tokens.last_used_at` is touched on every subsequent
+  authenticated device request via a fire-and-forget write
   (`ExecutionContext.waitUntil`), so it never adds latency to the request it's
   authenticating.
-- **Pairing-token management** — new session-gated backend endpoints
-  (dashboard-facing, not Worker-facing):
-  - `GET /api/pairing-token` — decrypts and returns the current token, so it's
-    always viewable on the dashboard. (Show-once-then-hash-only, the pattern
-    used for bearer/session tokens, was considered and rejected specifically for
-    this credential: losing it would otherwise force a regenerate, which is a
-    worse default for something a person may not immediately save to a password
-    manager, unlike a login password or session token.) Also returns
-    `worker_url` (`Server.WorkerURL`, set from `cfg.WorkerURL`) alongside the
-    token. Pairing a device needs both values together, and the URL isn't a
-    secret, so making someone ask whoever deployed the instance for it was
-    friction with no security purpose. Bundled into this response rather than a
-    new endpoint or `GetCaptureConfig` (which is purpose-built for that screen's
-    regenerate-button drift detection, not a general instance-config catch-all)
-    since pairing is the one place both values are actually needed together. One
-    consequence: a user who's never generated a pairing token yet won't see the
-    Worker URL until they do (this endpoint 404s with no token issued) -- a
-    first-run-only gap judged acceptable, since generating a token is the very
-    next thing they'd do anyway.
-  - `POST /api/pairing-token/regenerate` — issues a new token, overwrites both
-    the Postgres (encrypted) and D1 (hashed) copies. Returns `worker_url` too,
-    for the same reason GET does.
-  - `DELETE /api/pairing-token` — revokes without reissuing, blocking further
-    device pairing until a regenerate.
-  - All three are built alongside Phase 2's device-auth work even though the
-    dashboard UI to call them doesn't exist until much later — this avoids a
-    second pass through `internal/auth` solely for the dashboard's sake once
-    it's built.
-- **D1's `users` table (§10) is no longer a credential mirror in the login
-  sense.** It exists purely to hold `pairing_token_hash` and give
-  `queue_items`/`tokens`/etc. a `user_id` foreign key target — nothing else
-  about an account needs to live there.
+- **Pairing-token management** — session-gated backend endpoints:
+  `GET /api/pairing-token` (decrypts and returns the current token — kept
+  viewable rather than show-once-then-hashed, since losing it would otherwise
+  force an unwanted regenerate; also returns `worker_url`, since pairing a
+  device needs both together), `POST /api/pairing-token/regenerate` (issues a
+  new one, overwrites both copies), and `DELETE /api/pairing-token` (revokes
+  without reissuing, blocking further pairing).
+- D1's `users` table (§10) holds only `pairing_token_hash` and a `user_id`
+  foreign-key target — nothing else about an account lives there.
 
 ```sql
 -- D1
@@ -1341,17 +638,13 @@ CREATE INDEX idx_tokens_user_id ON tokens(user_id);
 ```
 
 **Dashboard → direct session auth against Postgres, DB-backed sessions.** The
-dashboard is a normal web app: it authenticates by checking
-`username`/`password_hash` directly in Postgres, with no involvement of D1 or
-the Worker at all. Sessions are **DB-backed** (a `sessions` table in Postgres),
-using the same hashed-opaque-token shape as device tokens above — a 32-byte
-CSPRNG value with a recognizable prefix (`rcl_sess_...`), stored as its SHA-256
-hash, with the raw value held only in an `HttpOnly`, `SameSite=Lax` cookie. This
-was a deliberate choice over a stateless signed cookie: it keeps sessions
-revocable the same way device tokens are (delete the row), at the cost of a DB
-lookup per authenticated request — an acceptable cost at this project's request
-volume, consistent with the reasoning already applied to device-token revocation
-and D1 polling elsewhere in this document.
+dashboard authenticates by checking `username`/`password_hash` directly in
+Postgres, with no D1 or Worker involvement. Sessions are DB-backed (a `sessions`
+table), using the same hashed-opaque-token shape as device tokens — a 32-byte
+CSPRNG value (`rcl_sess_...`), stored as its SHA-256 hash, with the raw value
+held only in an `HttpOnly`, `SameSite=Lax` cookie. This keeps sessions revocable
+the same way device tokens are (delete the row), at the cost of a DB lookup per
+request.
 
 ```sql
 -- Postgres
@@ -1371,150 +664,77 @@ CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 ```
 
 Sessions have a 30-day absolute TTL (`expires_at`) and no idle-timeout expiry —
-`last_seen_at` is updated on every authenticated request. Logout deletes the
-row. This is simpler than reusing the device-token mechanism and avoids needing
-a `tokens` table in Postgres — the earlier design's ambiguity about "does the
-backend keep its own copy of tokens" is resolved by not needing one; `sessions`
-and D1's `tokens` are two distinct, independently-revocable credential systems
-for two distinct kinds of client.
+`last_seen_at` updates on every authenticated request. Logout deletes the row.
+`sessions` and D1's `tokens` are two distinct, independently-revocable
+credential systems for two distinct kinds of client, so there's no Postgres
+`tokens` table at all.
 
-**`user_agent` (Active Sessions dashboard view) is exactly the "plausible
-future" this table's own original design already anticipated**: captured once at
-sign-in (the request's `User-Agent` header, verbatim, `startSession`), parsed
-fresh on every _read_ rather than split into columns at write time. No IP
-address column at all — a self-hosted tool's own IP-derived "location" would be
-meaningless at best, and there's no trusted-proxy configuration in this app to
-safely attribute an IP to the real client rather than a reverse proxy in front
-of it anyway.
+`user_agent` is captured once at sign-in (verbatim, unparsed) and parsed fresh
+on every read (Active Sessions screen) rather than split into columns at write
+time. No IP address column — a self-hosted tool's IP-derived "location" would be
+meaningless without a trusted-proxy configuration this app doesn't have.
 
 ### Manage Devices dashboard screen
 
-Because D1 is the sole owner of device tokens, this isn't purely a UI-only
-addition — the data (`tokens.device_name`, `device_type`, `created_at`,
-`last_used_at`) already exists in D1, but the dashboard/backend has no existing
-path to read or mutate it. Three pieces are needed:
+D1 is the sole owner of device tokens, so this needs real plumbing, not just a
+UI: `GET /internal/tokens?user_id=`/`DELETE /internal/tokens/:id?user_id=` (two
+Worker endpoints, gated by the service secret, §5a — the `user_id` on the delete
+call is checked against the token's actual owner, so a backend-side bug passing
+the wrong id pair deletes nothing rather than someone else's device); a backend
+passthrough (`internal/devices`, `GET /api/devices`/`DELETE /api/devices/{id}`)
+since the dashboard has no Worker credential of its own; and
+`recueil device list <username>`/ `recueil device revoke <username> <device-id>`
+as an operator-only CLI escape hatch for the rare lost-device case (`revoke`
+lists first rather than revoking blind, so a wrong device id fails clearly
+before ever reaching the Worker).
 
-1. **Two new Worker endpoints**, gated by the backend↔Worker service secret
-   (§5a): `GET /internal/tokens?user_id=` (list a user's device tokens) and
-   `DELETE /internal/tokens/:id?user_id=` (revoke one). Both simple,
-   single-operation endpoints, consistent with the "dumb Worker" principle.
-   **Built as part of Phase 2.** The revoke endpoint's `user_id` query parameter
-   is not just for listing — it's also required on the delete call and checked
-   against the token's actual owning user before the row is removed; a mismatch
-   deletes nothing rather than someone else's device. This is a deliberate
-   belt-and-suspenders addition beyond the original design: the Worker still
-   doesn't know about roles (see point 3 below, unchanged), but this catches a
-   backend-side bug that passes the wrong `user_id`/token `id` pair, at no real
-   cost.
-2. **A backend API passthrough**: the dashboard never talks to the Worker
-   directly (it has no bearer token or service secret of its own); it calls the
-   backend, which makes the outbound authenticated call to the Worker and
-   returns the result. This keeps the backend the single place that holds the
-   service secret. **Built in Phase 6** as `internal/devices`
-   (`GET /api/devices`, `DELETE /api/devices/{id}`) — a small package of its own
-   rather than folding into `internal/mirror` or `internal/deviceapi`: it
-   authenticates as the backend itself (the service secret), same credential
-   tier as `mirror` and `internal/ingest.WorkerClient`, which is a different
-   actor from `internal/deviceapi`'s paired-device bearer token, so it doesn't
-   belong there either.
-3. **Authorization scope: reconsidered from the original plan.** The original
-   design let an admin list/revoke _any_ user's devices from the dashboard
-   (useful, in principle, for responding to a compromised account without
-   waiting on that user). **Reversed in Phase 6** once actually built: managing
-   _another account's_ access is deliberately not a session-authenticated web
-   capability in this app, the same reasoning that already keeps user creation
-   itself CLI-only (`recueil user create`) rather than a dashboard feature —
-   reaching into another user's access shouldn't be one browser session away.
-   `GET /api/devices`/`DELETE /api/devices/{id}` are now strictly self-scoped
-   for every role, no exceptions; `resolveTargetUserID` and its `?user_id=`
-   handling were removed from `internal/httpapi` entirely. **One narrow
-   exception, later (Phase 16):** `GET /api/admin/stats` is the first real
-   caller of `RequireAdmin`, and it does cross a user boundary — but not the one
-   this reasoning is actually about. What's being protected against here is an
-   admin _acting on_ or _seeing into_ another account (its devices, its archived
-   pages, anything identifying) from a web session. Admin stats exposes none of
-   that: byte counts and capture counts, aggregated and per-username, with no
-   titles, URLs, or tags anywhere in the response — there's no "account access"
-   in it to reach into, read-only, nothing actionable.
+`GET /api/devices`/`DELETE /api/devices/{id}` are strictly self-scoped for every
+role — managing _another account's_ devices isn't a session-authenticated web
+capability at all, the same reasoning that keeps user creation itself CLI-only.
+Reaching into another user's access shouldn't be one browser session away. The
+one exception, `GET /api/admin/stats`, doesn't cross this boundary in the sense
+that matters — it exposes aggregated byte/capture counts per username, nothing
+identifying or actionable, so there's no real account access to protect.
 
-   **Built (Phase 9):** `recueil device list <username>` and
-   `recueil device revoke <username> <device-id>` (`cmd/device.go`) are the
-   operator-only CLI escape hatch this point originally just planned for — the
-   person who deployed the instance, not merely an admin account within it,
-   handling the rare lost-device case directly. Postgres is only ever consulted
-   to resolve a username into the user id `internal/devices.Client`'s calls need
-   (exactly the arbitrary `userID`-per-call shape this client already had,
-   unused until now); the actual list/revoke still goes through the same Worker
-   client the dashboard's own handlers use, not a separate path. `revoke` lists
-   first rather than revoking blind, so a wrong device id fails with a clear "no
-   such device" before ever reaching the Worker, and a successful run reports
-   which device it revoked by name. The Worker's own `?user_id=` parameter on
-   `DELETE /internal/tokens/:id` (point 1 above) stays exactly as it was — it's
-   still real defense-in-depth against a backend-side bug passing the wrong id
-   pair, independent of whether the caller is the dashboard or this CLI command.
-
-One behavior worth documenting rather than treating as a bug: revocation is
-**not** a live push to the device. A revoked extension/PWA/CLI will keep working
-until its next request to the Worker, at which point the token lookup fails and
-it gets a 401 — at that point it needs to be re-paired. There's no mechanism
-(and none is planned) to immediately invalidate an in-flight session on the
-device side.
+Revocation is **not** a live push to the device — a revoked extension/PWA/CLI
+keeps working until its next request to the Worker, which then 401s and requires
+re-pairing.
 
 ### Active Sessions dashboard screen
 
-The `sessions` table's `user_agent` column (see above) plus a small set of new
-self-scoped endpoints — no Worker/D1 involvement at all, unlike Manage Devices:
-sessions have always lived entirely in Postgres.
+Self-scoped endpoints backed entirely by the `sessions` table's `user_agent`
+column — no Worker/D1 involvement, since sessions have always lived entirely in
+Postgres.
 
-- **User-Agent parsing via `github.com/medama-io/go-useragent`, not
-  hand-rolled.** a browser/OS User-Agent parser needs to track an
-  actively-shifting landscape (new browser versions, Chrome's own User-Agent
-  Reduction effort, etc.) that a one-off regex would need ongoing maintenance to
-  keep up with in a way a maintained library already does.
-- **Parsed at read time, not write time** — `sessionResponseFromSession`
-  (`internal/httpapi`) calls the parser fresh on every `GET /api/sessions`,
-  rather than storing browser/OS/device-class as their own columns when the
-  session row is created.
-- **The current session is never revocable through this endpoint at all** —
-  `DeleteSession` checks the request's own session id (a new
-  `auth.SessionIDFromContext`, threaded through `RequireSession`'s middleware
-  alongside the existing user) against the one being deleted and refuses (400)
-  if they match. Signing out (the existing `POST /api/auth/logout` flow) is the
-  correct, already-understood way to end your own current session; letting this
-  endpoint delete it too would mean the DELETE request itself succeeds and then
-  the very next request — including whatever the dashboard tried to do next —
-  starts 401ing with no obvious explanation.
+- User-Agent parsing uses `github.com/medama-io/go-useragent`, not a hand-rolled
+  regex — browser/OS strings shift too often (new versions, Chrome's User-Agent
+  Reduction effort) for a one-off implementation to track.
+- Parsed at read time (`sessionResponseFromSession`, fresh on every
+  `GET /api/sessions`), not stored as separate columns at write time.
+- The current session is never revocable through this endpoint — `DeleteSession`
+  checks the request's session id (`auth.SessionIDFromContext`) against the one
+  being deleted and refuses (400) if they match, since deleting your own live
+  session would 401 your very next request with no obvious explanation. Signing
+  out (`POST /api/auth/logout`) is the correct way to end that one.
 
 ### API tokens (machine access, e.g. MCP)
 
-A third credential type, distinct from both device tokens and sessions —
-motivated by the planned MCP server (its own future section, not yet written —
-built in a later phase on top of this): a standing credential for a **program**
-acting on a user's behalf against the backend's own HTTP API directly, outside a
-browser, that isn't tied to a login session's TTL/idle-refresh semantics and
-isn't the pairing-token/D1 device-auth path either.
+A third credential type, distinct from both device tokens and sessions — for a
+**program** acting on a user's behalf against the backend's HTTP API directly
+(the MCP server, §15), outside a browser, needing a credential valid until
+explicitly revoked rather than tied to a session's TTL or the Worker/D1
+device-pairing path.
 
-**Why neither existing mechanism fits:**
+Neither existing mechanism fits: a session's 30-day TTL assumes a browser that
+can refresh it, which a long-running local MCP client has no way to do; and the
+pairing-token → device-token flow is specifically a Worker/D1 relay — the
+backend itself never inspects that credential, and MCP calls hit the backend's
+HTTP server directly, so routing through D1 would add a pointless round-trip for
+no benefit.
 
-- **Not a session.** Sessions exist for the dashboard's own browser-based login
-  and are DB-backed with a 30-day absolute TTL, refreshed via `last_seen_at` on
-  every request. A long-running local MCP client (e.g. a desktop app's config
-  pointing at a bearer token) has no browser and no login flow to refresh
-  anything through — it needs a credential that's simply valid until explicitly
-  revoked.
-- **Not a device token.** The pairing-token → device-token flow (above) is
-  specifically the Worker/D1 relay path: a device submits the pairing token to
-  the _Worker_, which issues a bearer token _stored and checked in D1_. That
-  path authenticates the extension/PWA/CLI/shortcut against the Worker's queue
-  endpoints — the backend itself never even inspects that credential. MCP tool
-  calls will hit the backend's own HTTP server directly; routing that through D1
-  for no reason would mean either teaching the backend to verify a D1-shaped
-  credential it currently has no relationship with, or adding a pointless Worker
-  round-trip.
-
-**Decision: a fourth token in the existing hashed-opaque-token family,**
-Postgres-only, same shape as `sessions`/D1 device tokens but with no
-`expires_at` at all — closer in kind to a personal access token:
+A fourth token in the existing hashed-opaque-token family, Postgres-only, same
+shape as `sessions`/D1 device tokens but with no `expires_at` — closer to a
+personal access token:
 
 ```sql
 CREATE TABLE api_tokens (
@@ -1531,200 +751,108 @@ CREATE TABLE api_tokens (
 CREATE INDEX idx_api_tokens_user_id ON api_tokens(user_id);
 ```
 
-- **Generation and storage reuse existing primitives, not new crypto.**
-  `internal/auth.GenerateSessionToken` already generates a 32-byte CSPRNG value
-  and hashes it via `HashToken` (SHA-256); the new `GenerateAPIToken` is the
-  same call shape with a distinct prefix, `rcl_api_...`, added to the same
-  human-recognizable-prefix convention as
-  `rcl_sess_`/`rcl_pair_`/`rcl_live_`/`rcl_bootstrap_`. Shown once at creation,
-  exactly like a session token or the original device bearer token — never
-  redisplayed, unlike the pairing token (§5's redisplay behavior is specific to
-  the pairing token's role as a long-lived, occasionally-needed-again secret; an
-  API token is a per-client credential where losing it just means minting a new
-  one and revoking the old).
-- **`last_used_at` updated synchronously** on every authenticated MCP request,
-  not the fire-and-forget `waitUntil` pattern used for D1 device tokens (§5) —
-  that pattern exists specifically to stay under Cloudflare Workers' 10ms CPU
-  budget, which doesn't apply here; a plain synchronous `UPDATE` against
-  Postgres is negligible overhead and keeps the write ordered with the request
-  it's attributed to.
-- **Revocation is effectively immediate**, unlike the device-token note above
-  about revocation not being a live push: there's no cross-system propagation
-  here (no Worker, no D1) — Postgres is checked synchronously on every request,
-  so a `DELETE /api/tokens/{id}` takes effect on the very next request made with
-  that token.
+- Generation/storage reuse existing primitives (`GenerateSessionToken`'s same
+  shape, `HashToken`'s same SHA-256) under a new `rcl_api_...` prefix. Shown
+  once at creation, never redisplayed — unlike the pairing token, which is
+  redisplayed because losing it forces a regenerate; an API token just gets
+  replaced.
 
-**New self-scoped endpoints** (session-gated, dashboard-facing — same tier as
-the pairing-token management endpoints above):
+New self-scoped endpoints: `POST /api/tokens` (mint; response: the raw token,
+once), `GET /api/tokens` (list, never the token/hash), `DELETE /api/tokens/{id}`
+(revoke). `internal/auth.RequireAPIToken` is structurally parallel to
+`RequireSession` — extracts the bearer token, hashes, looks up `api_tokens`,
+loads the user via the same `auth.UserFromContext` every handler already reads
+from — and is mounted only on the MCP route group, not on `/api/*` generally.
 
-- `POST /api/tokens` — mint a new token; request: `{name}`; response: the raw
-  token, shown exactly once.
-- `GET /api/tokens` — list `{id, name, created_at, last_used_at}` for the
-  current user; never the token or its hash.
-- `DELETE /api/tokens/{id}` — revoke.
-
-**New middleware:** `internal/auth.RequireAPIToken(q *db.Queries)`, structurally
-parallel to the existing `RequireSession` — extracts
-`Authorization: Bearer rcl_api_...`, hashes, looks up `api_tokens`, and loads
-the user into context via the same `auth.UserFromContext` every other handler
-already reads from. Once the MCP server exists, this middleware will be mounted
-only on its route group, not on `/api/*` generally — session cookies remain the
-only credential accepted there.
-
-**Dashboard UI: folded into the existing Manage Devices screen**, as a second
-list alongside paired devices, rather than a new settings page. An API token
-isn't literally a device in the pairing-token/D1 sense, but both lists answer
-the same underlying question — "what has standing access to my archive right
-now" — and a user managing one naturally wants to see the other. The two lists
-stay backed by clearly separate data (`api_tokens` here vs. D1 `tokens` via
-`internal/devices`) and separate endpoints; only the screen groups them.
+Surfaced in the dashboard as a second list on the existing Manage Devices screen
+rather than a new page: an API token isn't literally a device, but both lists
+answer the same question — "what has standing access to my archive right now."
 
 ### 5a. Backend ↔ Worker service authentication
 
-The backend itself is a distinct, higher-privilege actor from any single user's
-device — it polls for pending captures and pushes mirror rows across _all_ users
-in a deployment, and (per above) needs to issue revoke calls. This needs its own
-credential, separate from the per-device token system.
+The backend is a distinct, higher-privilege actor from any single user's device
+— it polls for pending captures and pushes mirror rows across _all_ users in a
+deployment, and issues revoke calls. This needs its own credential, separate
+from the per-device token system.
 
-**Decision: a static shared secret.**
+**A static shared secret**, generated via Terraform's `random_password`
+resource, injected into the Worker as a binding, and copied by the operator into
+the backend's `.env`. Checked by the Worker as a header (`X-Service-Key`) on the
+small set of backend-only endpoints. Rotation is regenerate + redeploy —
+acceptable given a single backend per deployment and infrequent rotation.
 
-- Generated via Terraform's `random_password` resource at `terraform apply`
-  time, output with `sensitive = true` so it doesn't leak into plaintext
-  state/CI output.
-- Injected into the Worker as an environment binding/secret.
-- The operator copies it from `terraform output` into the backend's `.env` after
-  apply.
-- Checked by the Worker as a header (e.g. `X-Service-Key`) on the small set of
-  backend-only endpoints (poll `pending_captures`, push credential/ bookmark
-  mirror rows, revoke a device token).
-- Rotation = regenerate + redeploy, which is acceptable at this operational
-  scale (single backend per deployment, infrequent rotation).
-
-Alternatives considered and rejected:
-
-- Reusing the `tokens` table with a "service" row — doesn't fit, since
-  `tokens.user_id` is scoped to one user and the backend needs cross-user
-  access.
-- mTLS or Cloudflare Access service tokens — real options, but add meaningfully
-  more operational complexity (cert management, or an additional Cloudflare
-  product dependency) for no real benefit at this scale.
+Two alternatives were rejected: reusing the `tokens` table with a "service" row
+(`tokens.user_id` is scoped to one user; the backend needs cross-user access),
+and mTLS or Cloudflare Access service tokens (real options, but more operational
+complexity than this scale needs).
 
 ### 5b. Backend ↔ Cloudflare D1 migrations
 
-The backend applies D1 schema migrations itself, at startup, rather than
-requiring the operator to install and run `wrangler d1 migrations apply` —
-consistent with the same "no external tool needed to run the binary" goal that
-keeps Postgres migrations tool-managed only by current-implementation choice,
-not architectural necessity (see §15 for that side's open status). This means
-the backend needs to reach Cloudflare's D1 query API directly — the one place in
-the system where the backend talks to Cloudflare directly rather than
-exclusively through the Worker. This doesn't weaken the "backend stays fully
-non-public" property elsewhere in this document (§2, §11): that property is
-about _inbound_ reachability, which is unaffected; this is a new _outbound_ path
-only, initiated by the backend, never received by it.
+The backend applies D1 schema migrations itself at startup, rather than
+requiring `wrangler d1 migrations apply` — consistent with the same "no external
+tool needed to run the binary" goal that also keeps Postgres migrations
+self-applied (§13a). This is the one place the backend talks to Cloudflare
+directly rather than exclusively through the Worker; it doesn't weaken the
+"backend stays fully non-public" property elsewhere (§2, §11), since that
+property is about _inbound_ reachability, and this is a new _outbound_ path
+only.
 
-- **Migrations live at `terraform/worker/migrations/*.sql`** — the same files
-  that define the D1 schema conceptually, embedded into the Go binary via
-  `go:embed` at build time (not fetched at runtime). Applied migrations are
-  tracked in a `schema_migrations` table (§10) that the backend creates and owns
-  itself.
-- Deliberately **not** wrangler's `d1_migrations` table/convention — wrangler is
-  not part of this project's toolchain anywhere (see §15), and reusing that name
-  would risk two independent, uncoordinated bookkeeping systems touching the
-  same table if an operator ever pointed `wrangler` at the database directly out
-  of habit.
-- **Credential: a Cloudflare API token scoped to `D1:Edit` on this one
-  database** — provisioned via Terraform's `cloudflare_api_token` resource,
-  output as `sensitive`, copied into the backend's `.env` alongside the Worker
-  service secret from §5a. This is a materially different kind of credential
-  from the service secret: an actual Cloudflare account-level token, not an
-  application-level shared secret, and narrower in scope than a full-account
-  token.
-- Runs once at startup, alongside the bootstrap-admin check below — a no-op once
-  nothing's pending. Safe to call on every restart.
+- Migrations live at `terraform/worker/migrations/*.sql`, embedded into the Go
+  binary via `go:embed`. Applied migrations are tracked in a `schema_migrations`
+  table (§10) the backend creates and owns — not wrangler's `d1_migrations`
+  convention, since wrangler isn't part of this project's toolchain anywhere.
+- Credential: a Cloudflare API token scoped to `D1:Edit` on this one database —
+  a real Cloudflare account-level token, narrower in scope than a full-account
+  one, and distinct from the Worker service secret.
+- Runs once at startup, alongside the bootstrap-admin check; a no-op once
+  nothing's pending.
 
-This was a deliberate tradeoff, not an oversight: the alternative (a Worker
-endpoint that runs migrations, gated by the existing service secret, keeping the
-Worker as the sole thing that ever touches D1) was considered and rejected,
-because it would mean a schema change requires a Worker redeploy (a
-`terraform apply`) even when nothing about the Worker's own code changed — worse
-operator friction than holding one additional narrowly-scoped credential.
+The alternative — a Worker endpoint that runs migrations, keeping the Worker as
+the sole thing that ever touches D1 — was considered and rejected: it would mean
+a schema change requires a Worker redeploy even when nothing about the Worker's
+code changed, worse operator friction than holding one additional
+narrowly-scoped credential.
 
 ### Account creation and roles
 
-- **Registration, gated by `ENABLE_OPEN_REGISTRATION` (default `false`).**
-  Anyone who can reach the dashboard while this is enabled can create a `member`
-  account via a signup form — no invite step. This was originally planned
-  open-by-default (reachability is already gated by whatever network the
-  operator chose — LAN/VPN/tunnel — so anyone who can reach the signup form is
-  presumed already trusted at the network level, the same way anyone on a home
-  LAN can usually reach a router's admin page), but landed closed-by-default
-  instead once actually built (Phase 9): a self-hosted personal archiving tool
-  has no business letting anyone who can reach it create their own account
-  without the operator opting in, and the bootstrap flow plus
-  `recueil user create` already cover account creation without it. An operator
-  running a small family/friends deployment who wants self-serve signup (or a
-  future hosted/SaaS mode, where open signup is the default expectation) can
-  still turn it on.
-- **Bootstrap token for the first admin, held in memory, not persisted.** On
-  startup, if `users` is empty, the backend generates a random bootstrap token
-  (32-byte CSPRNG, base64url-encoded, `rcl_bootstrap_...` prefix), prints it to
-  the backend's logs, and holds it — token value, a 1-hour expiry, and a
-  consumed flag — entirely in a process-local value, never written to Postgres.
-  A restart before the token is used simply generates a new one; the old one is
-  gone. This is a correction from an earlier revision of this design, which
-  specified a persisted `bootstrap_token` table: that approach had a real bug —
-  a restart before use would silently leave the _previous_ token valid until its
-  own expiry, alongside a newly generated one. The in-memory approach can't have
-  that failure mode, since there's nothing left to be stale after a restart.
-
-  The dashboard's "create first admin" screen requires this token as well as a
-  username/password. The token is only marked consumed after the admin account
-  is actually created **successfully** — not merely validated — so a request
-  that fails after validation (a username race, a transient DB error) can be
-  retried with the same token rather than requiring a full restart to get a
-  fresh one. This closes the narrow race where the dashboard is briefly
-  reachable on the network before the operator has locked it down — without the
-  token, reaching the setup screen isn't enough to claim admin.
-
-  This design assumes exactly one backend process. That assumption was already
-  implicit elsewhere (§5a's service-secret rotation reasoning assumes "single
-  backend per deployment"), but an in-memory, unshared bootstrap token makes it
-  a hard constraint for this one flow specifically: a second replica would hold
-  its own independent token, invisible to the first, until whichever one
-  processes the setup request wins.
-
-- **Roles:** `admin` and `member`. Add to the `users` schema:
-  ```sql
-  ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
-  -- values: 'admin' | 'member'
-  ```
-  Admins can create/manage other users; members manage only their own
-  bookmarks/tags/collections. Role is purely a backend/dashboard authorization
-  concern and is **not** included in the D1 mirror — D1 only needs enough to
-  authenticate a device and identify its owning `user_id`, never authorization
-  decisions.
-- **Operator account management via CLI, bypassing both the dashboard and the
-  bootstrap token.** `recueil user create <username> [--role admin|member]` and
-  `recueil user reset-password <username>` sit alongside the bootstrap-token
-  flow above, not in place of it — they're for an operator who already has shell
-  access to the box the backend runs on, useful anywhere the dashboard isn't
-  available yet (e.g. before Phase 4 ships) or where curling the HTTP API by
-  hand would be unpleasant. Both connect straight to Postgres using the same
-  config `recueil server` reads (`config.Load()`), apply migrations the same way
-  `server` does, and call the same `auth` package functions (`HashPassword`,
-  `GeneratePairingToken`, `EncryptPairingToken`) and `sqlc` queries the HTTP
-  handlers already use — there's no separate code path to keep in sync, just a
-  different transport (direct DB access instead of HTTP). `user create` also
-  pushes the new pairing token's hash to D1 via `internal/mirror`, exactly as
-  `POST /api/setup`/`POST /api/auth/register` do, since a token that only exists
-  in Postgres can't actually pair a device. `user reset-password` additionally
-  calls `DeleteSessionsForUser`, invalidating any existing dashboard sessions —
-  a pre-reset cookie staying valid would undercut the point of resetting a
-  password. Neither command touches the bootstrap token itself; they're a
-  straight-line administrative path that requires server-level access (the same
-  trust boundary `server`/`agent`'s config already assumes), not a second way to
-  satisfy the first-admin flow's own token requirement.
+- **Registration is gated by `ENABLE_OPEN_REGISTRATION` (default `false`).**
+  When enabled, anyone who can reach the dashboard can create a `member` account
+  via a signup form, no invite step — appropriate for a small family/friends
+  deployment, or a future hosted/SaaS mode where open signup is expected. Closed
+  by default: a self-hosted personal archiving tool has no business letting
+  anyone who can reach it create an account without the operator opting in, and
+  the bootstrap flow plus `recueil user create` already cover account creation
+  without it.
+- **The first admin is created via an in-memory bootstrap token.** On startup,
+  if `users` is empty, the backend generates a random token
+  (`rcl_bootstrap_...`, 1-hour expiry), prints it to the logs, and holds it
+  entirely in a process-local value — a restart before it's used simply
+  generates a new one, with nothing stale left behind. The dashboard's "create
+  first admin" screen requires this token alongside a username/password; it's
+  marked consumed only after the account is actually created successfully, so a
+  request that fails after validation (a username race, a transient DB error)
+  can retry with the same token rather than needing a fresh one. This closes the
+  narrow race where the dashboard is briefly reachable before the operator has
+  locked it down — without the token, reaching the setup screen isn't enough to
+  claim admin. (This assumes exactly one backend process, already implicit in
+  §5a's service-secret rotation reasoning — a second replica would hold its own
+  independent token, invisible to the first.)
+- **Roles: `admin` and `member`.** `users.role`
+  (`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'`). Admins
+  can create/manage other users; members manage only their own
+  bookmarks/tags/collections. Purely a backend/dashboard authorization concern,
+  not included in the D1 mirror — D1 only needs enough to authenticate a device
+  and identify its owning `user_id`, never authorization decisions.
+- **Operator account management via CLI**
+  (`recueil user create <username> [--role admin|member]`,
+  `recueil user reset-password <username>`), for an operator with shell access
+  to the box — connects straight to Postgres using the same config
+  `recueil server` reads, and calls the same `auth`/`sqlc` functions the HTTP
+  handlers use, so there's no separate code path to keep in sync. `user create`
+  pushes the new pairing token's hash to D1 the same way
+  `POST /api/setup`/`POST /api/auth/register` do. `user reset-password`
+  additionally invalidates any existing dashboard sessions, so a pre-reset
+  cookie can't stay valid.
 
 ### Security note: D1 as a mirror target
 
@@ -1734,504 +862,156 @@ doesn't mean zero risk:
 - The Worker itself is public, so a bug in its auth-check logic is a path to the
   D1-mirrored credentials. The Worker is kept intentionally minimal to limit
   this surface, but it isn't literally zero.
-- Cloudflare, as the D1 host, has access to the data at rest — using any managed
-  cloud service extends the trust boundary to that provider, which is a standard
-  tradeoff of this architecture and not unique to Recueil.
-- The practical residual risk is low, and lower than the design's original
-  revision: every credential D1 now holds — bearer-token hashes, the
-  pairing-token hash — is `SHA-256` of a CSPRNG-generated, ~256-bit-entropy
-  value, not anything human-chosen. There is no longer a password-derived value
-  of any kind in D1's mirror, so the earlier "password hashes need a proper
-  slow/salted hash, not SHA-256" caveat no longer applies to anything D1 stores.
-  The corresponding new risk lives entirely on the Postgres side instead:
-  `users.pairing_token_enc` is reversible by design (see §5), so a compromise of
-  both a Postgres backup and the `PAIRING_TOKEN_KEY` would expose usable pairing
-  tokens — notably, still not the account password itself, and a pairing token
-  alone only grants the ability to pair a new device, not dashboard access.
+- Cloudflare, as the D1 host, has access to the data at rest — a standard
+  tradeoff of using any managed cloud service, not unique to this project.
+- Every credential D1 holds — bearer-token hashes, the pairing-token hash — is
+  `SHA-256` of a CSPRNG-generated, ~256-bit-entropy value, never anything
+  human-chosen or password-derived. The corresponding risk lives on the Postgres
+  side instead: `users.pairing_token_enc` is reversible by design (see above),
+  so a compromise of both a Postgres backup and `PAIRING_TOKEN_KEY` would expose
+  usable pairing tokens — still not the account password itself, and a pairing
+  token alone only grants the ability to pair a new device, not dashboard
+  access.
 - The backend's D1 migration credential (§5b) is a second, narrower extension of
-  this trust boundary — scoped to `D1:Edit` on one database, used only at
-  startup, and distinct from the Worker service secret. It doesn't change the
-  "Worker stays public, backend stays private" shape (it's outbound-only from
-  the backend, same as everything else in §2), but it is a second real
-  Cloudflare credential the backend now holds, worth naming plainly alongside
-  the rest of this section's tradeoffs.
+  this trust boundary — scoped to `D1:Edit`, used only at startup, outbound-only
+  from the backend, same as everything else in §2.
 
-This tradeoff is accepted as part of the design and should be stated plainly in
-the repo's security documentation rather than left implicit.
+This tradeoff is accepted explicitly as part of the design.
 
 ### 5c. Cloudflare Browser Integrity Check bypass
 
-recueil's own non-browser Go clients — the CLI (`internal/deviceapi`) and the
-backend's Worker-facing clients (`internal/mirror`,
-`internal/ingest.WorkerClient`) — send every request with a fixed
-`User-Agent: recueil/1.0`. This exists because Cloudflare's Browser Integrity
-Check (BIC), when enabled on the zone, tends to flag exactly this shape of
-traffic (no browser TLS/JA3 fingerprint, no normal navigation headers) and drop
-it before it ever reaches the Worker — first hit years ago against a different
-zone, by the Python glue script this project's own CLI eventually replaced.
+recueil's own non-browser Go clients — the CLI and the backend's Worker-facing
+clients — send every request with a fixed User-Agent (`recueil/1.0`).
+Cloudflare's Browser Integrity Check (BIC), when enabled on the zone, tends to
+flag exactly this shape of traffic (no browser TLS/JA3 fingerprint, no
+navigation headers) and drop it before it reaches the Worker.
 
-A Terraform-provisioned `cloudflare_ruleset` (`terraform/waf.tf`'s
-`browser_integrity_check_bypass`, toggled by
-`var.enable_browser_integrity_check_bypass`, default `true`) skips BIC for
-requests matching that User-Agent. One important caveat:
+A Terraform-provisioned `cloudflare_ruleset` (`browser_integrity_check_bypass`,
+default enabled) skips BIC for requests matching that User-Agent — keyed on
+User-Agent alone, not on a bearer token or service-key header, since
+`POST /pair` is unauthenticated by design and carries neither. BIC is a
+low-stakes anti-scraping heuristic, not a real security boundary, so identifying
+"one of our own clients" by User-Agent alone is sufficient; the Worker's
+per-route bearer-token/`X-Service-Key` checks (§5, §5a) do the actual
+authentication work entirely on their own.
 
-- **The bypass is keyed on User-Agent alone, not on the presence of a bearer
-  token or service-key header.** An earlier version of this rule required both —
-  but `POST /pair` (§5) is unauthenticated by design, carrying neither header,
-  so a bearer-token requirement would leave pairing exposed to the exact
-  BIC-flagging problem this rule exists to fix. BIC is a low-stakes
-  anti-scraping heuristic, not a real security boundary, so identifying "this is
-  one of our own clients" by User-Agent alone is sufficient here — this rule
-  makes no attempt to enforce real authentication; the Worker's own per-route
-  bearer-token/`X-Service-Key` checks (§5, §5a) still do that job entirely on
-  their own.
-
-**The browser extension is deliberately untouched by any of this.** Its requests
-carry a real browser's TLS fingerprint and User-Agent, so BIC isn't expected to
-flag them in the first place — and forcing a custom User-Agent onto a
-WebExtension's own `fetch()` calls isn't something the browser reliably allows
-anyway.
-
-**The User-Agent string is a fixed protocol constant, not a release version.**
-`recueil/1.0` doesn't track the CLI/backend's actual build version (§13a) and
-isn't threaded through from it. Coupling the two would mean every app release
-needs a coordinated `terraform apply` to keep the WAF rule's exact-match
-expression working — otherwise the bypass silently breaks the moment a binary
-ships ahead of (or behind) the infra change. This string only needs to answer
-"is this one of our own clients," never "which version," so it's bumped only if
-its own meaning ever changes, independent of ordinary releases.
+The browser extension is untouched by any of this — its requests already carry a
+real browser's TLS fingerprint and User-Agent. The User-Agent string itself is a
+fixed protocol constant (`recueil/1.0`), not the actual release version —
+coupling the two would mean every app release needs a coordinated
+`terraform apply` to keep the WAF rule's exact-match expression working.
 
 ### 5d. Dashboard settings (`user_settings`)
 
-**A dedicated table, not more columns on `users`.** `users` already holds
-account-identity concerns (credentials, role, the pairing token); dashboard
-preferences are a different kind of thing — user-editable, expected to grow over
-time (language today, plausibly a theme or other display preferences later), and
-with no reason to be tangled into the same row that authentication code paths
-read and write. `user_settings.user_id` is the table's own primary key, not a
-separate identity column — a genuine 1:1 extension of `users`, not a one-to-many
-relationship, so there's no reason for a settings row to have an identity
-distinct from the account it belongs to.
+A dedicated table, not more columns on `users` — dashboard preferences (language
+today, plausibly theme/display preferences later) are a different kind of thing
+from account-identity concerns, with no reason to share a row that
+authentication code paths read and write. `user_settings.user_id` is the table's
+primary key: a 1:1 extension of `users`, not a one-to-many relationship.
 
-**No row exists until a user's first `PATCH`.** There's no backfill migration
-creating a row for every existing account, and no row-creation hook on
-account-creation paths (`Setup`, `Register`, `recueil user create`) either —
-deliberately, to keep this addition fully decoupled from every one of those
-existing flows rather than touching all of them for a feature that's still
-inert. `GET /api/settings` treats "no row" and "a row with `language` explicitly
-`NULL`" as exactly the same thing: both render as `{"language": null}`, both
-mean "no override, fall back to auto-detection once the dashboard has one."
+No row exists until a user's first `PATCH` — no backfill migration, no
+row-creation hook on any account-creation path. `GET /api/settings` treats "no
+row" and "a row with `language` explicitly `NULL`" identically (both render
+`{"language": null}`, meaning "no override, fall back to auto-detection");
 `PATCH /api/settings` is accordingly an upsert
 (`ON CONFLICT (user_id) DO UPDATE`), not an update that assumes a row already
-exists — a user's first-ever settings change is exactly as valid an operation as
-their hundredth.
+exists.
 
 ### 5e. Dashboard i18n (Paraglide JS)
 
-**A compiler, not a runtime library — a different choice from the extension's
-own i18n (§3k), not an inconsistency.** The extension uses the native
-WebExtensions `browser.i18n` API because that's a real platform primitive
-already built into the browser; nothing equivalent exists for arbitrary UI
-strings in a Vite-built SPA, so a library is genuinely warranted here in a way
-it wasn't there. Paraglide JS was chosen specifically because it's SvelteKit's
-own officially-recommended i18n integration. Its compile-time model (message
-keys become typed, tree-shaken functions rather than runtime dictionary lookups)
-also happens to be the closest available equivalent, in a Vite/Svelte context,
-to the "lean on a compiler/ platform primitive over a runtime abstraction"
-instinct that shaped §3k's own extension choice.
+A compiler, not a runtime library — a different choice from the extension's i18n
+(§3k) because the two problems are different: the extension has a real platform
+primitive (`browser.i18n`) already built in; nothing equivalent exists for
+arbitrary UI strings in a Vite-built SPA. Paraglide JS was chosen as SvelteKit's
+officially-recommended i18n integration, and its compile-time model (typed,
+tree-shaken message functions rather than runtime dictionary lookups) is the
+closest available equivalent to §3k's "lean on a compiler over a runtime
+abstraction" instinct.
 
-**recueil is not SvelteKit, so only Paraglide's framework-agnostic Vite plugin
-applies — deliberately none of its SvelteKit-specific integration.** The
-dashboard is plain Svelte 5 + Vite + `svelte-spa-router`: a client-only SPA, no
-SSR, no file-based routing. Most of Paraglide's own SvelteKit documentation
-(URL-based locale routing, `hooks.server.ts` middleware, cookie strategies for
-first-paint SSR) solves problems this dashboard doesn't have. The plain
-`paraglideVitePlugin` (one plugin, JSON message files, typed `m.*` functions,
-`getLocale()`/`setLocale()`) is Paraglide's own documented path for exactly this
-shape of app.
+recueil isn't SvelteKit, so only Paraglide's framework-agnostic Vite plugin
+applies — its SvelteKit-specific integration (URL-based locale routing, server
+middleware, SSR cookie strategies) solves problems a client-only SPA with no SSR
+doesn't have.
 
-**Locale resolution is a custom strategy backed by `user_settings.language`, not
-any of Paraglide's built-in cookie/localStorage/URL strategies.**
-`src/lib/locale.ts` defines a `custom-userSettings` client strategy
-(`defineCustomClientStrategy`) whose `getLocale()` reads a plain in-memory cache
-— client-side custom strategies must be synchronous, so a live network call on
-every lookup was never an option — populated once by `session.svelte.ts`'s
-existing bootstrap sequence (a third parallel `GET /settings` alongside its
-`/auth/me`/`/setup-status` reads) before `App.svelte` ever mounts the Router.
-Strategy order is `["custom-userSettings", "preferredLanguage", "baseLocale"]`:
-an explicit user override wins outright; absent that, Paraglide's built-in
-`preferredLanguage` strategy reads the browser's own `navigator.languages`
-(matched against `en`/`fr`); `baseLocale` (`en`) is the final fallback. This is
-exactly the two-tier behavior sketched out when `user_settings` was first
-proposed (§5d) — explicit override, then browser-language detection.
+Locale resolution is a custom strategy backed by `user_settings.language`, not
+any of Paraglide's built-in cookie/localStorage/URL strategies:
+`src/lib/locale.ts` defines a `custom-userSettings` client strategy whose
+`getLocale()` reads a plain in-memory cache (client-side custom strategies must
+be synchronous), populated once by `session.svelte.ts`'s existing bootstrap
+sequence before the Router ever mounts. Strategy order is
+`["custom-userSettings", "preferredLanguage", "baseLocale"]` — an explicit
+override wins outright; absent that, Paraglide's `preferredLanguage` strategy
+reads `navigator.languages`, falling back to `baseLocale` (`en`).
 
-**No Svelte reactivity (runes or otherwise) around locale changes.** Paraglide's
-own `setLocale()` triggers a full page reload by default, and its own docs argue
-that's the right tradeoff for a "user picks a language once" flow rather than
-something to optimize away — this project leans into that rather than fighting
-it, since the alternative (wrapping every localized string in a `$derived` that
-reads a locale rune, just to make `m.*()` calls reactive) is real, ongoing
-boilerplate at every call site for a change that happens rarely. `locale.ts`
-actually exports its own `applyLanguageOverride()` rather than calling
-Paraglide's exported `setLocale()` directly, though, because `setLocale()`'s own
-type only accepts a concrete `Locale` — it has no way to express "clear the
-override, fall back to `preferredLanguage`/`baseLocale`," which is exactly what
-picking "Automatic" in `Settings.svelte`'s language selector needs to do.
-`Settings.svelte` itself still owns persisting the choice to the backend
-(unchanged from §5d); `applyLanguageOverride()` only updates `locale.ts`'s own
-cache and reloads — the one thing Paraglide's `setLocale()` would otherwise have
-delegated to this strategy anyway.
+No Svelte reactivity around locale changes — Paraglide's `setLocale()` triggers
+a full page reload by default, and this project leans into that rather than
+fighting it (wrapping every localized string in a `$derived` just to make
+`m.*()` reactive would be real, ongoing boilerplate for a change that happens
+rarely). `locale.ts` exports its own `applyLanguageOverride()` rather than
+calling `setLocale()` directly, though, since `setLocale()`'s type only accepts
+a concrete `Locale` — it has no way to express "clear the override, fall back to
+`preferredLanguage`/`baseLocale`," which is exactly what picking "Automatic" in
+the language selector needs to do.
 
 ---
 
-## 6. Screenshot / Thumbnail Generation
+## 6. Screenshot / Thumbnail Generation and Readability Extraction
 
-**Moved from the extension to the backend.** The extension no longer captures a
-screenshot at all — it uploads only HTML (see §3). Thumbnail generation now
-happens as an async backend job, after a capture's HTML has already been pulled
-from R2 and stored locally.
+Two async backend jobs render a capture's already-stored HTML through a shared
+headless-Chrome sidecar (`chromedp` + `chromedp/headless-shell`, a separate
+container so Chromium's footprint stays out of the backend image): one takes a
+screenshot for the dashboard's thumbnail, the other runs Readability.js to
+extract reader text. Both run only once a capture's HTML has already been pulled
+from R2 and stored locally (§3) — rendering an already-captured, script-stripped
+document offline is not the "fetch a live URL" operation §1 forbids: no network
+requests, no live auth state, no CAPTCHA, no live JS.
 
-### Why this is safe, unlike a general "fetch and archive" fallback
+- The backend keeps a long-running connection to the sidecar
+  (`internal/sidecar`, shared by both jobs — a `chromedp.RemoteAllocator`
+  connection already supports many concurrent tabs, so there's no benefit to
+  each job holding its own) and opens a new tab per job rather than
+  cold-starting a browser process each time.
+- HTML is served to the sidecar via a brief ephemeral local HTTP server, not
+  `file://` — the sidecar has no filesystem access to the agent's local archive.
+  `sidecar_url`/`sidecar_render_host` cover the two directions of this
+  connection, since local dev (sidecar in Docker, agent on the host) and an
+  all-Docker deployment need different values on each side.
+- Both jobs are fully async and non-blocking, with the identical shape: bounded
+  worker-pool concurrency (default 3), exponential-backoff retry
+  (`30s * 2^(attempts-1)`, capped at 30 minutes, default 3 attempts), and atomic
+  `FOR UPDATE SKIP LOCKED` claiming with a 15-minute stale-claim reclaim
+  (matching the D1 queue's timeout). A startup `/json/version` ping fails loudly
+  if the sidecar is unreachable.
+- Tracked in two separate tables, `screenshot_jobs` and `readability_jobs`
+  (§10), not one combined table — the two jobs fail independently (a screenshot
+  can time out while extraction succeeds, or vice versa), and re-extraction
+  after a Readability.js upgrade shouldn't force a redundant re-screenshot.
 
-The core design principle in §1 forbids the backend from ever fetching a _live_
-URL — that's the CAPTCHA/paywall/auth problem the whole system exists to avoid.
-Rendering the **already-captured, fully inlined SingleFile HTML** is a different
-operation: no network requests, no live authentication state, no CAPTCHA, and
-(since SingleFile strips scripts) no live JS execution. It's an offline,
-sandboxed render of a static document that's already been through the "real
-browser tab" capture path.
+### 6a. Screenshot / Thumbnail Generation
 
-### Design
+A fixed 1280×800 viewport, not a full-page screenshot: uniform thumbnails in a
+dashboard grid matter more than maximal content.
 
-- **`chromedp`** (Go, drives Chrome/Chromium over the DevTools Protocol) — fits
-  the existing Go backend without adding a Node dependency.
-- Runs as a **separate sidecar container** in Docker Compose, using the
-  `chromedp/headless-shell` image — a small, purpose-built headless Chrome build
-  maintained specifically for this use case. Kept as its own service (not
-  bundled into the backend image) so Chromium's dependency footprint and
-  per-instance memory cost don't bloat the core backend image, and so it can be
-  updated/pinned independently.
-- The backend keeps a **long-running connection** to the headless-shell instance
-  and opens a new tab per screenshot job, rather than cold-starting a browser
-  process per capture (which adds ~1-3s of avoidable latency each time).
-- **Bounded concurrency** — a small worker pool (e.g. 2-3 concurrent tabs),
-  appropriate for modest self-hosted hardware.
-- The HTML is served to the headless browser via `file://` or a brief ephemeral
-  local HTTP server; since SingleFile inlines all resources as data URIs, there
-  are no external resource loads to worry about either way.
-- **Fully async and non-blocking**, matching the `ai_jobs` pattern (see §7): a
-  capture is fully valid and browsable with no thumbnail, and a failed/slow
-  screenshot never invalidates the capture. `captures.thumbnail_path` remains
-  nullable. Bounded retry with backoff, same shape as §7, tracked in its own
-  `screenshot_jobs` table (§10) — decoupled from `readability_jobs` (§6a)
-  despite both running through the same headless-Chrome sidecar and often the
-  same page load. This is deliberate, not an oversight: a screenshot can time
-  out while extraction succeeds (or the reverse), and re-extraction after a
-  Readability.js upgrade (§6a) has no reason to also redo a perfectly good
-  screenshot. One combined table would need per-artifact status/attempts columns
-  anyway to represent that independence, which is just two tables' worth of
-  columns forced into one row — no real benefit over keeping them separate. The
-  "same page load can serve both" idea is a scheduling optimization for
-  whichever code ends up driving the sidecar (notice two pending jobs
-  referencing the same capture, do one page load, write two separate
-  completions), not a reason to merge the schema.
+### 6b. Readability Extraction
 
-### Consequence for the schema
+Used by every capture path, including manual upload (§3d) — a manually uploaded
+file has no live browser tab or extension to extract reader text client-side, so
+extraction has to happen backend-side regardless, and once it does, every other
+capture path shares the same path too.
 
-Because the screenshot is no longer produced client-side and never touches R2:
-
-- `r2_key_thumbnail` is **removed** from the D1 `pending_captures` table.
-- The extension only needs to request a presigned URL for one object (HTML) —
-  see §6a for why `r2_key_readable` is removed too, for the same reason
-  reader-text extraction moved off the extension entirely.
-- New `screenshot_jobs` table (§10), mirroring `ai_jobs`'s
-  `status`/`attempts`/`next_attempt_at`/`error`/`completed_at` shape exactly,
-  one row per capture — this was referenced by name ("same shape as §7") in an
-  earlier revision but never actually given a schema entry; that gap is closed
-  here.
-
-### Implementation (Phase 7)
-
-Built as `internal/screenshot`, a `RunOnce`-shaped callable unit with no
-scheduler of its own, same as `internal/ingest` — `cmd/agent.go` drives it on
-its own faster, Postgres-only ticker (`agent_local_poll_interval_seconds`),
-separate from the slower ticker ingestion and the mirror sync share
-(`agent_worker_poll_interval_seconds`) — see "Two independent agent schedules"
-below.
-
-**Resolved: two independent runners, not a combined page-load.** §6a's "whether
-to actually combine them ... is an implementation-phase decision, not resolved
-here" is now resolved in favor of staying independent — simpler, and the
-scheduling optimization it gives up (one page load serving both a pending
-screenshot job and a pending readability job for the same capture) was judged
-not worth the added coordination complexity for what's still a modest-scale,
-self-hosted workload.
-
-**Claiming due jobs: atomic, `FOR UPDATE SKIP LOCKED`.**
-`ClaimDueScreenshotJobs` selects and claims the batch in one statement — see
-"Atomic multi-claimant claiming" below for the full reasoning (today's
-single-ticker, single-process agent doesn't strictly need the locking, but
-building it in now means a future horizontally-scaled or hosted deployment needs
-no changes to this package at all). Bounded concurrency _within_ one `RunOnce`
-call is separately plain Go concurrency — a semaphore-bounded worker pool over
-the one already-claimed batch (config's `screenshot_worker_concurrency`, default
-3, matching this section's own "2-3 concurrent tabs" guidance).
-
-**Serving HTML to the sidecar: an ephemeral HTTP server, not `file://`.** The
-sidecar is a separate process — usually a separate container — with no
-filesystem access to the agent's local archive, so `file://` was ruled out in
-favor of the "brief ephemeral local HTTP server" alternative this section
-already named as an option. `internal/screenshot.Runner` runs one long-lived
-HTTP server (bound to every interface) for its own lifetime; each render
-registers that job's already-decompressed HTML bytes at a fresh random-token
-path, hands the sidecar a URL pointing back at itself, and unregisters it once
-the render finishes (success or failure). This needed a config field on each
-side of the connection, since the two directions have genuinely different
-reachability answers:
-
-- `sidecar_url` — the agent's own outbound address for the sidecar (agent →
-  sidecar). `http://chromedp:9222` when both run in the same compose network;
-  `http://127.0.0.1:9222` when the agent binary runs directly on the operator's
-  own machine against the sidecar's published host port — see compose.yaml's own
-  comment on why that port stays published even though an all-in-docker
-  deployment doesn't need it.
-- `sidecar_render_host` — the hostname the _sidecar_ should use to reach back
-  into the agent's render server (sidecar → agent), the opposite direction.
-  `chromedp`'s own compose service name works when both run in the same network
-  (there is no agent-side published port to configure here, since the render
-  server's port is assigned dynamically and embedded in the per-job URL at
-  runtime — nothing for the operator to pin); the local-dev split shape (sidecar
-  in Docker, agent on the host) instead needs `host.docker.internal`, which is
-  why compose.yaml's `chromedp` service carries an explicit
-  `extra_hosts: host.docker.internal:host-gateway` (needed on Linux; harmless,
-  and unnecessary, on Docker Desktop).
-
-**Retry/backoff**: exponential, `30s * 2^(attempts-1)` capped at 30 minutes,
-bounded by `screenshot_max_attempts` (default 3) before the job moves to
-`failed` permanently — the concrete numbers this section's original "bounded
-retry with backoff" left unspecified.
-
-**Testing**: `internal/screenshot`'s tests run against a real Postgres (via
-`internal/dbtest`, same as every other DB-touching package) _and_ a real
-`chromedp` sidecar (`compose.yaml`'s `chromedp` service, `test` profile) rather
-than a mocked CDP client — consistent with this project's standing "no mocks for
-DB-touching code" convention, extended here to "no mocks for sidecar-touching
-code" for the same reason: a hand-rolled fake CDP implementation would just be
-re-testing this package's own assumptions about chromedp's behavior, not
-chromedp itself.
-
-**Revised after a first review pass**, before this had run for real:
-
-- **Fixed viewport, not full-page.** §6's own "Design" subsection already says
-  this job exists on the backend specifically for _consistent, full-page-quality
-  thumbnails_ — but "full-page" and "consistent" turn out to be in tension: a
-  full-page (variable-height) screenshot means every capture gets a different
-  aspect ratio, which is the opposite of consistent once there's an actual grid
-  of thumbnails to look at. Resolved in favor of `chromedp.CaptureScreenshot`
-  (current viewport only) against a fixed `chromedp.EmulateViewport(1280, 800)`,
-  not `chromedp.FullScreenshot` (the entire scrollable page). Uniform
-  dimensions, not maximal content, is the actual goal.
-- **Startup reachability check.** `Runner.New` now does one bounded-time
-  `GET /json/version` against the sidecar before creating any resources, and
-  fails loudly if it doesn't answer — rather than starting up "successfully" and
-  then having every single job fail against an unreachable sidecar forever. This
-  is what lets an orchestrator's restart-until-healthy policy (Docker Compose's
-  restart policy, systemd's `Restart=on-failure`, etc.) actually do its job. A
-  **container-level** Docker healthcheck on the `chromedp` service itself was
-  considered too, but ruled out once confirmed (not just suspected) that the
-  `headless-shell` image has neither `curl` nor `wget` — there's no `CMD-SHELL`
-  worth writing. This startup check is the only reachability signal this project
-  has, and arguably the more useful one anyway: it's written from the actual
-  consumer's perspective (can _our_ code reach it), not a generic
-  container-level probe.
-- **Atomic multi-claimant claiming, ahead of actually needing it.**
-  `ClaimDueScreenshotJobs` now does `FOR UPDATE SKIP LOCKED` plus an atomic
-  claim-and-mark-`processing` update (new migration: a `'processing'` status and
-  `claimed_at` column on both `screenshot_jobs` and `readability_jobs`), rather
-  than the plain unlocked `SELECT` the first version shipped with. Today's
-  single-ticker, single-process agent never actually needs the locking — but
-  building it in now means a future horizontally-scaled or hosted deployment (a
-  paid SaaS tier, say) needs zero changes to this package when that day comes,
-  rather than a retrofit. A `'processing'` job whose claimant crashed mid-render
-  becomes reclaimable again after 15 minutes (`claimStaleTimeout`), the same
-  number the D1 queue's own claim-visibility timeout already uses (§8) rather
-  than inventing a second one for the same underlying question.
-- **`renderTimeout` raised from 30s to 60s** — more headroom for a large,
-  fully-inlined SingleFile capture without changing anything else about the
-  design.
-- **Two independent agent schedules, not one shared ticker.** `cmd/agent.go` now
-  runs `AgentWorkerPollIntervalSeconds` (default 1800s) for everything that
-  talks to the Cloudflare Worker (ingestion, the D1 mirror sync, and the D1
-  maintenance sweeps — see §3e) and `AgentLocalPollIntervalSeconds` (default
-  300s) for everything that only touches this process's own Postgres (the
-  screenshot job today; readability and AI enrichment will join it on the same
-  schedule). This is what makes "runs comfortably on Cloudflare's free tier" and
-  "picks up new captures quickly" both true at once, rather than trading one off
-  against the other on a single shared interval — see §15.
-- **`thumbnail_size_bytes`/`favicon_size_bytes`.** Two new nullable columns on
-  `captures`, mirroring `html_compressed_size_bytes`'s own "so the dashboard can
-  surface real numbers" reasoning for the two other on-disk assets a capture can
-  have. `archive.Store.WriteAsset` now returns the actual on-disk
-  (post-compression) byte count instead of discarding it, so both this job and
-  ingestion's favicon handling record a real number rather than each re-deriving
-  (and risking silently getting wrong for the compressed case) an approximation
-  from `len(data)`.
-
-### Tradeoff, stated explicitly
-
-This adds a real piece of self-hosting weight — an extra container, its memory
-overhead, and one more moving part — compared to the originally proposed
-`chrome.tabs.captureVisibleTab` approach in the extension. In exchange it
-removes the extension's dependency on the user's current scroll/viewport state
-entirely and produces consistent, uniform-dimension thumbnails server-side (a
-fixed viewport — see "Implementation (Phase 7)" above for why that ended up
-being the right call over a full-page capture). Given Compose already
-orchestrates Postgres, this was judged worth the added weight.
-
-A cross-browser (Firefox) equivalent was considered and rejected: Firefox
-doesn't speak the Chrome DevTools Protocol, so there's no chromedp-equivalent
-for it; the closest option (Playwright for Go, which supports Firefox) is a
-heavier, unofficially-maintained dependency with its own binary-download step.
-Since the content being rendered is a static, already-inlined document with no
-live JS, rendering-engine differences that would normally motivate multi-browser
-coverage don't apply here — Chrome/Chromium via chromedp is sufficient.
-
----
-
-## 6a. Readability Extraction
-
-**Moved from the extension (and, for manual uploads, the dashboard's browser) to
-the backend, sharing the same headless-Chrome sidecar as §6.** Neither the
-extension nor manual upload runs Readability.js anymore; every capture's reader
-text is produced by a single async backend job, after the HTML has already been
-pulled from R2 (or, for manual uploads, accepted directly) and stored locally.
-
-### Why this is safe, and the one real tradeoff
-
-The same reasoning as §6 applies for the same reason: rendering
-already-captured, fully inlined, script-stripped HTML offline is not the "fetch
-a live URL" operation §1 forbids. No network requests, no live authentication
-state, no CAPTCHA.
-
-The honest tradeoff, not glossed over: §3a's original design ran Readability
-against a **live, rendered DOM**, specifically "before any re-archival loses
-render-time state." Running it later against SingleFile's serialized output
-instead bets that SingleFile's snapshot is a faithful enough substitute for that
-live DOM that nothing Readability actually needs gets lost in between. This is a
-reasonable bet — producing a faithful static snapshot is SingleFile's entire
-purpose — but it is a real relaxation of the original guarantee, worth stating
-plainly rather than assuming away.
-
-### Design
-
-- Runs in the **same headless-Chrome sidecar** as §6 (`chromedp` +
-  `chromedp/headless-shell`), not a second browser instance — a single page load
-  of the already-captured HTML can plausibly serve both the screenshot and the
-  Readability extraction, though whether to actually combine them into one
-  job/one page-load or keep them as two independently-scheduled jobs sharing one
-  browser pool is an implementation-phase decision, not resolved here.
-- Readability.js itself is **vendored into the backend** (or wherever the
-  sidecar-driving code lives) and injected into the loaded page via
-  `chromedp.Evaluate`, then run as `new Readability(document).parse()` against
-  the real DOM that headless Chrome has rendered — this is the actual upstream
-  Readability.js library, run in a real DOM, just no longer in the _original_
-  capturing browser tab.
-- **Fully async and non-blocking**, matching the `ai_jobs`/§6 pattern: a capture
-  is fully valid, searchable (its `content_hash`-based dedup still works), and
-  browsable with `reader_text`/`reader_text_hash` both `NULL` until extraction
-  completes — or permanently, if it never succeeds. Bounded retry with backoff,
-  same shape as §7.
-- **Re-extraction, in place, no history kept.** If the vendored Readability.js
-  is upgraded later, re-running extraction against a capture's already-stored
-  HTML overwrites `reader_text`/`reader_text_hash`/`readability_version` on that
-  `captures` row directly — no prior extraction's output is retained.
-  `readability_version` records only which version most recently produced what's
-  currently stored, not a history of every version ever tried.
-
-### Consequence for the schema
-
-- `captures.reader_text` and `captures.reader_text_hash` become **nullable**
-  (§3b) — previously implicitly synchronous, now populated asynchronously or not
-  at all.
-- `captures.readability_version TEXT` (nullable) — new column, alongside
-  `reader_text`, recording which vendored Readability.js version produced it.
-  Lives on `captures` itself, **not** a separate job-owned copy, for a concrete
-  technical reason: `captures.reader_text_tsv` (§10) is a Postgres
-  `GENERATED ALWAYS AS` column, and generated columns can only reference other
-  columns in the _same row_ — so the underlying `reader_text` has to live on
-  `captures` directly for full-text search to work at all, unlike `ai_jobs`,
-  which keeps its own copy of `summary` fully decoupled from `captures`.
-- New `readability_jobs` table (§10), mirroring `ai_jobs`'s
-  `status`/`attempts`/`next_attempt_at`/`error`/`completed_at` retry-and-backoff
-  shape exactly, one row per capture — but holding **no** copy of the extracted
-  text itself (that lives on `captures`, per above). Reading a capture's full
-  readability state means joining `captures` and `readability_jobs`, not reading
-  either table alone.
-- `pending_captures.r2_key_readable` (D1) is **removed** entirely — no client
-  will ever populate it going forward, since no client extracts or uploads
-  reader text anymore.
-
-### Implementation
-
-Built as `internal/readability`, same `RunOnce`-shaped callable unit as
-`internal/screenshot`, on the same faster, Postgres-only agent ticker
-(`agent_local_poll_interval_seconds`). Claiming, retry/backoff, and the atomic
-`FOR UPDATE SKIP LOCKED` claim-and-mark-`processing` shape are all identical in
-spirit to `internal/screenshot`'s own (`ClaimDueReadabilityJobs` mirrors
-`ClaimDueScreenshotJobs` exactly, just against `readability_jobs`).
-
-**§6's "whether to actually combine them into one job/one page-load" is resolved
-the same way here as it was on the screenshot side: they stay two independent
-runners** — but sharing the underlying sidecar _connection_ turned out to be a
-separate, and better, question than sharing a _page load_. `internal/sidecar`
-was factored out of what was originally `internal/screenshot`'s own private
-plumbing (one `chromedp.RemoteAllocator` connection, one ephemeral HTML render
-server) specifically because both jobs needed near-identical infrastructure with
-nothing but "what happens once a tab is loaded" actually differing between them.
-`cmd/agent.go` now constructs one `*sidecar.Sidecar` and hands it to both
-Runners — a `RemoteAllocator` connection is designed to have many tabs opened
-against it concurrently, which is exactly what two independent worker pools
-drawing from the same connection amounts to, so there's no real benefit to each
-job holding its own separate connection to the same sidecar process. This also
-simplified `cmd/agent.go` itself: one `Close()` call site instead of one per
-job, and `sidecar_url`/`sidecar_render_host` (renamed from their original
-`screenshot_`-prefixed names now that they're no longer that job's alone) are
-each set once, not duplicated per job.
-
-What `internal/sidecar` deliberately does _not_ own: retry/backoff/claim
-bookkeeping. `screenshot_jobs` and `readability_jobs` are sqlc-generated as
-separate Go types even though structurally identical, and forcing them through a
-shared interface (or Go generics) for what's ultimately a few dozen lines of
-already-well-tested bookkeeping each was judged not worth the abstraction cost —
-the two `backoff()` functions are simply duplicated, byte-for-byte, rather than
-shared.
-
-**Readability.js itself is threaded in via `Params`, not embedded by
-`internal/readability` at all.** `main.go` embeds
-`node_modules/@mozilla/readability/Readability.js` directly via `go:embed` — a
-sibling of `main.go` at the repo root, unlike `internal/urlnorm`'s
-`clearurls-rules` git submodule, which has to be vendored _inside_ that package
-specifically because `go:embed` can't cross package-directory boundaries. Since
-`node_modules/@mozilla/readability` is already inside `go:embed`'s reach from
-`main.go`'s own location, no copy-into-an-internal- package build step was
-needed at all. The embedded source and the installed package's own version
-(`node_modules/@mozilla/readability/package.json`'s `.version`, injected via the
-same `ldflags`-from-`package.json` mechanism the Makefile already used for
-`main.version`) are assigned to `cmd.ReadabilityJS`/`cmd.ReadabilityVersion` in
-`main.go`, mirroring exactly how
-`cmd.PostgresMigrationsFS`/`cmd.Commit`/`cmd.Date`/`cmd.Version` already worked
-— not a new pattern, the existing one applied to a second embedded asset.
-`cmd/agent.go` reads those two vars when constructing `readability.Runner`, and
-that Runner injects `Params.Source` as-is into each loaded page via
-`chromedp.Evaluate`: the real, unmodified upstream `Readability.js` is a plain
-global-scope script already (its one `module.exports` line is a no-op inside a
-browser page, guarded by `typeof module === "object"`), so no bundler step was
-needed either.
-
-`Params.Version` is empty outside of `make`-built binaries (`go test` doesn't go
-through the Makefile's `ldflags`), in which case `readability_version` is stored
-as `NULL` rather than an empty string — a real, deliberate distinction
-(`pgtype.Text{Valid: r.version != ""}`), not an oversight.
+- Readability.js — the real, unmodified upstream library — is injected via
+  `chromedp.Evaluate` and run as `new Readability(document).parse()` against the
+  rendered DOM. It's embedded via `go:embed` at the repo root (`main.go`) and
+  threaded into `internal/readability` via `Params`, since `go:embed` can't
+  cross package boundaries.
+- Re-extraction happens in place, no history kept: upgrading the vendored
+  Readability.js and re-running overwrites
+  `reader_text`/`reader_text_hash`/`readability_version` directly.
+- `captures.reader_text`/`reader_text_hash` are nullable (§3b) — populated
+  asynchronously, or not at all if extraction never succeeds.
+  `captures.readability_version` is stored alongside the capture itself, because
+  `captures.reader_text_tsv` (§10) is a `GENERATED ALWAYS AS` column and can
+  only reference other columns in the same row.
 
 ---
 
@@ -2242,145 +1022,65 @@ as `NULL` rather than an empty string — a real, deliberate distinction
   populated.
 - Runs against the Readability-extracted plain text, not the raw HTML — cheaper
   and produces better summaries than trying to parse rendered HTML. This
-  introduces a real **sequencing dependency** on §6a that didn't exist when
-  extraction was synchronous: the AI job for a capture should not run until that
-  capture's readability extraction has actually completed with a non-null
-  `reader_text`. Expressed the same way the "why not a message broker" reasoning
-  already describes: an `ai_jobs` row simply doesn't exist until the readability
-  job creates it, on success, in the same transaction — not a join/readiness
-  check at claim time.
-- **A single OpenAI-compatible backend, not two separate Ollama/OpenAI code
-  paths.** Ollama, llama.cpp's own server, and effectively every hosted provider
-  besides Anthropic have all standardized on the same `/v1/chat/completions`
-  request/response shape, so one configurable base URL + API key + model name
-  covers all of them — there's no separate backend abstraction to design or
-  maintain. (This is a revision of an earlier "two backend types" plan below
-  this section originally described; left resolved here rather than narrated as
-  history, since the two-backend design was never built.)
-- `ai_summary`/`ai_model` live on `captures` directly, not decoupled in
-  `ai_jobs` — the same reasoning §6a's `reader_text` already established once
-  TOAST made the original "keep this decoupled for storage reasons" concern
-  moot: a nullable column already gives "a capture is fully valid with zero AI
-  fields populated," regardless of which table those fields live in. `ai_model`
-  is kept (not just `ai_summary`) specifically so a summary can be regenerated
-  later against a different model, knowing what produced the existing one; no
-  `ai_summary_hash` — unlike favicon/ thumbnail/reader-text, this data only ever
-  lives in Postgres (nothing on disk to verify against), and LLM output is
-  non-deterministic even for identical input and model, so a hash couldn't
-  answer "did this change" in any useful way anyway.
+  introduces a sequencing dependency on §6b: an `ai_jobs` row simply doesn't
+  exist until the readability job creates it (on success).
+- **A single OpenAI-compatible backend.** Ollama, llama.cpp's server, and
+  effectively every hosted provider besides Anthropic have all standardized on
+  the same `/v1/chat/completions` request/response shape, so one configurable
+  base URL + API key + model name covers all of them.
+- `ai_summary`/`ai_model` live on `captures` directly. `ai_model` is kept
+  alongside `ai_summary` specifically so a summary can be regenerated later
+  against a different model, knowing what produced the existing one; no
+  `ai_summary_hash`, since this data only ever lives in Postgres (nothing on
+  disk to verify against) and LLM output is non-deterministic even for identical
+  input, so a hash couldn't answer "did this change" usefully anyway.
 - AI-generated tags are written to the same `page_tags` table as manual tags,
-  distinguished by a `source` column (see §9). Generated by a **separate** chat
-  completion call from the summary, not one combined prompt — simpler prompts
-  and no dependency on the model reliably producing one specific combined
-  structure, at the cost of an extra call's latency (tolerated: AI enrichment's
-  own request timeout is generously long, minutes not seconds, given
-  local/smaller models can legitimately take a while). Tag parsing is
-  deliberately lenient (a plain comma-separated list, not JSON or any
-  structured-output feature) since support for those varies significantly across
-  compatible servers, especially smaller local models. The dashboard visually
-  distinguishes AI tags from manual tags (e.g. a small badge/icon or muted
-  styling) rather than rendering them identically — the `source` column exists
-  specifically to support this.
+  distinguished by a `source` column (§9), and generated by a separate chat
+  completion call from the summary — simpler prompts, no dependency on the model
+  reliably producing one combined structure. Tag parsing is intentionally
+  lenient (a comma-separated list, not JSON or structured output), since support
+  for those varies significantly across compatible servers, especially smaller
+  local models. The dashboard visually distinguishes AI tags from manual ones
+  via the `source` column.
 
 ### Retry and failure handling
 
-```sql
-ALTER TABLE ai_jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE ai_jobs ADD COLUMN next_attempt_at TIMESTAMPTZ;
-```
+On failure: increment `attempts`; if under a small max (default 3), set `status`
+back to `pending` with `next_attempt_at` pushed out (exponential backoff, same
+shape as §6a/§6b); once exhausted, mark `status = 'failed'` permanently with
+`error` preserved. Failed jobs across all three of screenshot/readability/AI
+surface together on the dashboard's Queue screen (§8) — one place for everything
+currently stuck, rather than a per-capture badge on the capture detail view.
 
-On failure: increment `attempts`; if under a small max (e.g. 3), set `status`
-back to `pending` with `next_attempt_at` pushed out (simple exponential
-backoff); once attempts are exhausted, mark `status = 'failed'` permanently with
-`error` preserved. **Built (Phase 9), landed differently than originally planned
-here:** rather than a per-capture badge on the capture detail view, failed jobs
-across all three of screenshot/readability/AI surface together on the
-dashboard's Queue screen (§8's `queue_items` retry UI, extended to cover these
-too) — one place for everything currently stuck, not scattered badges per
-capture. (That "currently stuck" framing is no longer the whole story: the
-screen has since become a full lifecycle view — see "Manual retry" below for
-when `GET /api/jobs` broadened past `failed`, and §8's own pending-captures
-listing for the third section that closed the last invisible gap in it.) `error`
-is shown on its own line there, not folded into attempts/timing metadata: which
-provider error occurred (e.g. rate-limited vs. some other failure) is often the
-most actionable thing on the screen. No dead-letter queue is needed given this
-is optional and low-stakes; the failed row itself serves that purpose.
+### Manual retry
 
-The same `attempts`/`next_attempt_at`/bounded-retry shape is reused for the
-screenshot job in §6.
-
-### Manual retry (Phase 9)
-
-- `GET /api/jobs` (all three of `screenshot_jobs`/`readability_jobs`/`ai_jobs`,
+- `GET /api/jobs` (all three of `screenshot_jobs`/`readability_jobs`/ `ai_jobs`,
   self-scoped, grouped under their own response keys) and
   `POST /api/jobs/{kind}/{id}/retry` (`{kind}` one of
-  `screenshot`/`readability`/`ai`; a single dispatching handler rather than
-  three near-identical ones, since only the query called differs).
-- Unlike `queue_items`' manual retry (§8), no flag column is needed: these three
-  tables are only ever claimed by the backend's own
-  `ClaimDueScreenshotJobs`/`ClaimDueReadabilityJobs`/`ClaimDueAIJobs` (no device
-  races another actor for them), so a retry can just reset the row directly —
-  `status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL`
-  — and the backend's own next poll picks it up.
-- **Deliberately does not reset `attempts`.** A manual retry doesn't grant a
-  fresh budget; it spends the next one. If it fails again, `handleFailure`'s
-  existing `attempts+1 >= MaxAttempts` check fires exactly as it would for any
-  other attempt and the job goes back to permanently `failed` — one more try,
-  not an unbounded reset-and-retry loop.
-- A readability job that succeeds on retry still creates its `ai_jobs` row in
-  the same transaction as any other successful completion — nothing needed to
-  special-case "this was a retry" for that cascade to keep working.
-- **`GET /api/jobs` originally only returned `status = 'failed'` rows, matching
-  the "one place for everything currently stuck" framing above at the time.**
-  Broadened alongside `GET /internal/queue-items` (§8's own entry) once the
-  Queue screen's scope grew to "what's currently happening," not just "what
-  needs attention": `pending`/`processing`/`failed` unconditionally, `done` only
-  within the last 15 minutes — the exact same window and reasoning as
-  `queue_items`' own `captured` state, so "recent" means one consistent thing
-  across both halves of this screen, not two different numbers that happen to
-  live in different databases. That window is duplicated across all three job
-  queries (`ListRecentScreenshotJobsForUser`/`ListRecentReadabilityJobsForUser`/
-  `ListRecentAIJobsForUser`, renamed from their own `ListFailed...` names) as a
-  plain `NOW() - INTERVAL '15 minutes'` rather than centralized anywhere — each
-  query's own comment points at the other two so a future change to the window
-  doesn't miss one. `status` and `claimed_at` are both new fields in the
-  response too; both already existed as real columns, simply weren't surfaced
-  before now.
+  `screenshot`/`readability`/`ai` — a single dispatching handler, since only the
+  query called differs). No flag column is needed the way `queue_items`' manual
+  retry uses one (§8): these three tables are only ever claimed by the backend's
+  `ClaimDueScreenshotJobs`/`ClaimDueReadabilityJobs`/`ClaimDueAIJobs`, so a
+  retry can just reset the row directly
+  (`status = 'pending', next_attempt_at = NULL, error = NULL, claimed_at = NULL`)
+  and the backend's next poll picks it up.
+- **Does not reset `attempts`.** A manual retry doesn't grant a fresh budget; it
+  spends the next one. If it fails again, the existing
+  `attempts+1 >= MaxAttempts` check fires exactly as it would for any other
+  attempt and the job goes back to permanently `failed`.
+- A readability job that succeeds on retry creates its `ai_jobs` row in the same
+  transaction as any other successful completion — nothing needs to special-case
+  "this was a retry."
 
 ### Implementation
 
-Built as `internal/ai`, same `RunOnce`-shaped callable unit as
-`internal/screenshot`/`internal/readability`, on the same
-`agent_local_poll_interval_seconds` ticker — but, unlike either of those, it
-never touches `internal/sidecar` at all: there's no browser involved, just a
-plain HTTP JSON client (the official `openai-go` SDK, given `option.WithBaseURL`
-supports pointing it at any compatible server cleanly, and reusing it means less
-boilerplate/tests to maintain than a hand-rolled client, matching this backend's
-existing precedent of using official SDKs — `aws-sdk-go-v2` for R2 — rather than
-the Worker/JS side's deliberate zero-dependency approach).
-
-**Toggled off entirely by an empty `ai_base_url`**, not a separate `ai_enabled`
-boolean: `cmd/agent.go` simply never constructs an `*ai.Runner` when it's unset,
-which is simpler than an explicit flag that could disagree with whether the rest
-of the AI config is actually filled in.
-
-**`ClaimDueAIJobs` needs no readiness join at all**, unlike a first instinct
-might suggest — since a row only ever exists once `internal/readability`'s own
-`commitDone` creates it (in the same transaction as marking itself done), its
-mere existence already implies `reader_text` is set. This also means a capture
-whose readability extraction permanently fails simply never gets an `ai_jobs`
-row at all — AI enrichment silently never runs for it, which is correct: there's
-no text to summarize.
-
-**Tags required building `tags`/`page_tags` for real** — they existed only in
-this document's data model (§10) as prose, never as an actual migration, since
-they were originally meant to arrive with the dashboard/manual-tagging work (§6
-explicitly deferred that phase). Built now rather than deferred again, to avoid
-retrofitting the AI job around a schema change later. `AddPageTag`'s
-`ON CONFLICT (page_id, tag_id) DO NOTHING` is what makes an AI-suggested tag
-colliding with one the user already applied manually (or vice versa) a silent
-no-op rather than a constraint-violation error — whichever source got there
-first simply wins.
+Toggled off entirely by an empty `ai_base_url`, not a separate `ai_enabled`
+boolean — `cmd/agent.go` simply never constructs an `*ai.Runner` when it's
+unset. `ClaimDueAIJobs` needs no readiness join: a row only ever exists once
+`internal/readability`'s `commitDone` creates it, so its mere existence already
+implies `reader_text` is set. A capture whose readability extraction permanently
+fails simply never gets an `ai_jobs` row — AI enrichment silently never runs for
+it, which is correct: there's no text to summarize.
 
 ---
 
@@ -2392,9 +1092,8 @@ first simply wins.
   it does not attempt to archive anything server-side. The intended workflow is:
   queue remotely, archive later from the desktop extension, where a real
   rendered/authenticated browser session exists.
-- The desktop extension polls the queue via the Worker/D1 (see §7 polling
-  cadence in the original numbering — now consolidated below) and can notify the
-  user that items are waiting.
+- The desktop extension polls the queue via the Worker/D1 (see "Polling cadence"
+  below) and can notify the user that items are waiting.
 - Claiming is done with a conditional update (`WHERE status = 'pending'`) to
   prevent two devices from grabbing the same item simultaneously; a claimed item
   records which device claimed it and when.
@@ -2405,38 +1104,31 @@ first simply wins.
     `INSERT ... ON CONFLICT(id) DO NOTHING` — see §3c's identical reasoning for
     `pending_captures`).
   - `GET /queue` — lists this user's pending items, plus any claimed item whose
-    claim has gone stale (see visibility timeout below). Listing never claims.
-  - `POST /queue/:id/claim` — the actual atomic claim, via a conditional
+    claim has gone stale (see visibility timeout below). Listing doesn't claims.
+  - `POST /queue/:id/claim` — the atomic claim, via a conditional
     `UPDATE ... WHERE ... RETURNING`. This, not the listing endpoint, is where
-    the two-devices-race-for-the-same-item risk actually lives, and where the
-    phase-2 brief's instruction to "build the idempotency and visibility-timeout
-    logic in at this point, not later" was aimed.
+    the two-devices-race-for-the-same-item risk lives.
 
-**One exception (Phase 13): the dashboard's "recapture" action.** PageDetail's
-recapture button asks the backend to re-enqueue a page's most recent capture's
-URL — the backend has no rendered/authenticated browser session of its own to
-capture with (see §2's own reasoning for why capture only ever happens from a
-real tab), so this still only ever enqueues, same as a device would. It's a
-fourth, service-secret-gated Worker endpoint (`POST /internal/queue-items`,
-alongside the failed-queue-item review endpoints from Phase 9), not a
+**One exception: the dashboard's "recapture" action.** PageDetail's recapture
+button asks the backend to re-enqueue a page's most recent capture's URL — the
+backend has no rendered/authenticated browser session of its own to capture
+with, so this still only ever enqueues, same as a device would. It's a fourth,
+service-secret-gated Worker endpoint (`POST /internal/queue-items`), not a
 bearer-token one: the backend generates the `id` itself (there's no device on
-the other end to have generated one) and leaves `added_by_token_id` `NULL` (the
-schema already allows this). Once the row exists it's indistinguishable from any
-other queued item — picked up by whichever device next polls `GET /queue`, same
-claim/visibility-timeout/cleanup handling as the rest of this section.
+the other end to have generated one) and leaves `added_by_token_id` `NULL`. Once
+the row exists it's indistinguishable from any other queued item.
 
-**Claim failure is not a single status code.** A failed claim distinguishes
-three cases, decided during Phase 2 rather than left as a uniform `409`:
+**Claim failure is not a single status code** — a failed claim distinguishes
+three cases rather than a uniform `409`:
 
 - `404` — the item doesn't exist, or belongs to a different user. These two
   cases are collapsed together rather than distinguished, so a claim attempt
   never leaks cross-user existence.
 - `410` — the item is in a terminal state (`captured` or `failed`): it used to
-  be claimable and permanently isn't anymore. This is more precise than a bare
-  404 (which conventionally means "wrong ID") for "this happened, but it's
-  over."
+  be claimable and permanently isn't anymore. More precise than a bare 404 for
+  "this happened, but it's over."
 - `409` — the item is actively claimed by another device and the claim hasn't
-  gone stale yet: a genuine, temporary conflict worth retrying later.
+  gone stale yet: a temporary conflict worth retrying later.
 
 Distinguishing these costs one extra `SELECT`, but only on the failure path — a
 successful claim is still a single `UPDATE ... RETURNING` with no additional
@@ -2445,8 +1137,8 @@ round trip.
 ### Queue visibility timeout
 
 A claimed item can get stuck if the claiming device dies mid-capture or the tab
-is closed. Rather than a separate scheduled sweep job, this is handled as **lazy
-reclaim folded into the existing claim query**:
+is closed. Rather than a separate scheduled sweep job, this is handled as lazy
+reclaim folded into the existing claim query:
 
 ```sql
 WHERE status = 'pending'
@@ -2461,260 +1153,150 @@ scheduled infrastructure, consistent with the "dumb Worker" philosophy.
 
 Nothing above ever removes a terminal-state `queue_items` row on its own — a
 `captured` or `failed` item exists purely to support the 410 semantics above,
-and would otherwise accumulate forever. Surfaced during Phase 2 implementation,
-not anticipated in the original design:
+and would otherwise accumulate forever.
 
 - **`POST /internal/queue-items/cleanup`**, service-secret gated, called on the
-  backend's own schedule (once or twice a day is plenty) — **not** a Cloudflare
-  Cron Trigger, for exactly the same "keep the Worker dumb, let the backend own
-  scheduling" reasoning already applied to the visibility-timeout reclaim above.
-  Not scoped to a single user — this is a maintenance sweep across the whole
-  deployment, not a per-device operation, so it takes no `user_id` parameter the
-  way the device-facing endpoints do.
+  backend's schedule — this is a maintenance sweep across the whole deployment.
 - **Deletes only `captured` items**, and only once older than a 72-hour
   retention window (long enough to be useful for auditability/debugging shortly
   after the fact, short enough not to accumulate indefinitely). `failed` items
-  are **not** touched — they're kept indefinitely, a deliberate decision as of
-  Phase 9 (see below), not a deferred one.
-- **`failed` items are surfaced to the user with a manual-retry action (Phase
-  9), not left as a dead end.** A `queue_items.manual_retry` flag (D1, default
-  `0`) lets the dashboard's Queue screen ask for another attempt without losing
-  the `failed` status itself — `failed` stays the durable, queryable "needs
-  attention" state the screen lists against; the flag layers "and it should be
-  claimable again" on top, cleared automatically the moment some device's
-  `POST /queue/:id/claim` picks the item up (both the claim query's `WHERE` and
-  `GET /queue`'s own listing query were extended with
-  `OR (status = 'failed' AND manual_retry = 1)` to make this possible — see the
-  migration and `handleClaimQueueItem`/`handleListQueue` in `terraform/index.js`
-  for the exact shape). Two new service-secret-gated Worker endpoints back this:
-  `GET /internal/queue-items` (see below for what it returns as of the
-  dashboard's own Queue-screen recency-window work) and
-  `POST /internal/queue-items/:id/retry`, called by the backend's own
-  `internal/queueitems` client (structured like `internal/devices`) via
-  session-protected, self-scoped `GET`/`POST /api/queue-items...`. No automatic
-  retry mechanism and no separate/longer expiry were built — expected volume is
-  low at this project's personal/family scale, and an operator can always
-  intervene by hand if that stops holding.
-- **`GET /internal/queue-items` originally only returned `status=failed` (a
-  required query parameter), matching the Queue screen it existed for at the
-  time.** Broadened once the screen's own scope grew to "what's currently
-  happening," not just "what needs manual attention": it now returns every
-  `pending`/`claimed`/`failed` item unconditionally, plus `captured` items from
-  the last 15 minutes — the same window `handleListQueue`/
-  `handleClaimQueueItem`'s own claim visibility-timeout already uses elsewhere
-  in this file, reused rather than picking a second, different number for what's
-  conceptually the same "still worth a glance" idea. The `?status=` parameter is
-  gone entirely; there's nothing left to select between. `claimed_at` is now in
-  the response too — it already existed on the table (used internally for the
-  retention clock, see above), just wasn't surfaced.
-  `internal/httpapi.ListQueueItems` (renamed from `ListFailedQueueItems`) is the
-  passthrough on the dashboard side; the recency window itself is computed
-  entirely on the Worker side (`datetime('now', '-15 minutes')`), never in Go or
-  in the dashboard's own JS.
+  are **not** touched — they're kept indefinitely.
+- **`failed` items get a manual-retry action**, not left as a dead end. A
+  `queue_items.manual_retry` flag (D1, default `0`) lets the Queue screen
+  request another attempt without losing the `failed` status the screen lists
+  against — cleared automatically once a device's `POST /queue/:id/claim` picks
+  the item up (both the claim query's `WHERE` and `GET /queue`'s listing query
+  add `OR (status = 'failed' AND manual_retry = 1)`). Backed by two
+  service-secret-gated Worker endpoints (`GET /internal/queue-items`, see below,
+  and `POST /internal/queue-items/:id/retry`), proxied through
+  session-protected, self-scoped `GET`/`POST /api/queue-items...` on the
+  dashboard side. No automatic retry and no separate/longer expiry — expected
+  volume is low at this project's personal/family scale.
+- **`GET /internal/queue-items` returns every `pending`/`claimed`/`failed` item
+  unconditionally, plus `captured` items from the last 15 minutes** — the same
+  window the claim visibility-timeout uses elsewhere, reused rather than picking
+  a second number for what's conceptually the same "still worth a glance" idea.
+  `claimed_at` is in the response too.
 - **The retention clock is `claimed_at`, not `created_at`.** An item can sit
-  `pending` for a long time before being claimed; it's time since actual
-  completion that should drive retention, not time since the original enqueue.
-  There is no dedicated "when did this finish" timestamp on `queue_items` today
-  — `claimed_at` is used as a pragmatic proxy, reasonable at this project's
-  scale since the gap between a successful claim and the capture actually
-  completing is seconds to minutes, not enough to matter for a 72-hour window.
-  If a future phase's `complete`/`fail` endpoint adds a dedicated completion
-  timestamp, this is a one-line filter change, not a design change.
+  `pending` for a long time before being claimed; it's time since completion
+  that should drive retention, not time since the original enqueue. There is no
+  dedicated "when did this finish" timestamp on `queue_items` — `claimed_at` is
+  used as a pragmatic proxy, reasonable at this project's scale since the gap
+  between a successful claim and the capture completing is seconds to minutes,
+  not enough to matter for a 72-hour window.
 
 ### Pending-capture claiming and cleanup
 
 `pending_captures` is the queue's downstream sibling — a device has finished
 capturing, and the row exists until the backend pulls the blobs from R2 and
-commits. Two things it lacked, both added together:
+commits.
 
 - **Backend pickup is an atomic claim, not a plain read.**
-  `POST /internal/pending-captures` (a `POST`, not the original `GET`, because
-  it now mutates) claims a batch and returns it in one `UPDATE ... RETURNING`,
-  the same shape `POST /queue/:id/claim` already uses. SQLite has no
-  `FOR UPDATE SKIP LOCKED`, but D1 serializes writes, so the single statement is
-  atomic on its own.
+  `POST /internal/pending-captures` claims a batch and returns it in one
+  `UPDATE ... RETURNING`, the same shape `POST /queue/:id/claim` already uses.
+  SQLite has no `FOR UPDATE SKIP LOCKED`, but D1 serializes writes, so the
+  single statement is atomic on its own.
 
   **The bug this fixes is a silent duplicate capture, not merely wasted work.**
   Two agent processes polling at roughly the same time both ingest the same row;
   the second one's insert should be caught by `captures`'
   `ON CONFLICT (source_capture_id)` guard, but isn't — because the last thing
   ingestion does is clear `source_capture_id` back to `NULL` (§3c), and Postgres
-  treats `NULL`s as distinct in a unique index. So once the first agent
-  finishes, there is nothing left for the second to conflict with, and it
-  inserts a duplicate capture row. Nothing downstream catches it either: the two
-  agents mint their own separate archive directories, so `captures.html_path`'s
+  treats `NULL`s as distinct in a unique index. Once the first agent finishes,
+  there's nothing left for the second to conflict with, so it inserts a
+  duplicate capture row. Nothing downstream catches it either: the two agents
+  mint their own separate archive directories, so `captures.html_path`'s
   `UNIQUE` constraint doesn't fire, and the `pages` upsert simply attaches both
   to the same page.
 
-  Deliberately **not** fixed by keeping `source_capture_id` populated forever,
-  which would also have worked: that value is client-generated, and making a
-  permanent dedup guarantee depend on it is precisely what §3c's collision retry
-  loop exists because we can't do. One worker per job is the fix; a stronger
-  idempotency key downstream is not.
+  Keeping `source_capture_id` populated forever does **not** fix it: that value
+  is client-generated, and making a permanent dedup guarantee depend on it is
+  precisely what §3c's collision retry loop exists because we can't do. One
+  worker per job is the fix; a stronger idempotency key downstream is not.
 
   **A one-hour stale-claim window, not the 15 minutes used everywhere else** — a
-  deliberate departure, for a real asymmetry. A stuck `queue_item` has a human
-  waiting to capture something, so reclaiming quickly is worth the risk of two
-  devices racing. Nothing at all waits on a pending capture; the backend polls
-  on its own schedule regardless. The only cost of a long window is that a
-  genuinely dead agent's work waits longer to be retried, while the cost of a
-  short one is real — an ingestion still running when its claim expires lets a
-  second agent in, which is the exact duplicate this exists to prevent.
+  stuck `queue_item` has a human waiting to capture something, so reclaiming
+  quickly is worth the risk of two devices racing. Nothing waits on a pending
+  capture; the backend polls on its own schedule regardless. The cost of a short
+  window is real: an ingestion still running when its claim expires lets a
+  second agent in, the exact duplicate this exists to prevent.
 
-  **No claimant column**, unlike `queue_items.claimed_by_token_id`: devices race
-  each other and it's worth knowing which won, but every agent presents the same
-  service secret and has no per-instance identity. `claimed_at` alone is all the
-  stale-reclaim needs.
+  **No claimant column**, unlike `queue_items.claimed_by_token_id`: every agent
+  presents the same service secret and has no per-instance identity, so
+  `claimed_at` alone is all the stale-reclaim needs.
 
-- **`GET /internal/pending-captures?user_id=`** — the dashboard's own read-only,
-  user-scoped listing, on the same path the claim `POST`s to. Same path,
-  different verb, genuinely different operation: the `POST` is the backend
-  taking work across every user and it mutates `claimed_at`; the `GET` is one
-  person looking at their own rows and mutates nothing. Listing must never
-  claim, or a dashboard left open would starve the ingester.
-
-  This exists because the window between "a device finished uploading" and "the
-  backend has ingested it" was otherwise completely invisible — and at the
-  agent's default 1800s Worker poll interval, that's up to half an hour in which
-  a capture looks like nothing happened at all. It's surfaced as the Queue
-  screen's third section, between the capture queue and the enrichment jobs,
-  matching the actual lifecycle order.
-
-  Rows already ingested within the last 15 minutes are included, the same
-  recency window `GET /internal/queue-items` and `GET /api/jobs` already use, so
-  a capture doesn't vanish from the screen the instant it moves on. Unlike those
-  two there's no status column to filter on: `(fetched_by_backend, claimed_at)`
-  is the entire state, and its three reachable combinations map to
-  waiting/ingesting/ingested. **There is deliberately no failed state among
-  them** — a row whose ingestion keeps failing is indistinguishable from one
-  merely waiting its turn (the same fact that makes the cleanup sweep keep
-  both), so the section states its expected window in the hint text and lets an
-  obviously-stale row speak for itself, rather than inventing a distinction the
-  data can't support. Doing that properly needs the `attempts`/`error` column
-  this table doesn't have yet.
-
-- **`GET /internal/queue-items` also gained a device name**, via a `LEFT JOIN`
-  against `tokens` on `claimed_by_token_id`. For a `claimed` item this is the
-  actionable part — it says which browser to go and finish the capture in — and
-  for a `failed` one it says where it went wrong. The join is deliberately
-  `LEFT`: `claimed_by_token_id` is `NULL` for an item nobody has picked up, and
-  device revocation is a row delete rather than a soft-delete, so a revoked
-  device leaves nothing to name. Either way the item itself must still list.
+- **`GET /internal/pending-captures?user_id=`** — a read-only, user-scoped
+  listing on the same path the claim `POST` uses. Different verb, different
+  operation: the `POST` claims across every user and mutates `claimed_at`; the
+  `GET` never claims, or a dashboard left open would starve the ingester. It
+  exists because the window between "a device finished uploading" and "the
+  backend has ingested it" was otherwise invisible — up to 30 minutes at the
+  agent's default Worker poll interval, during which a capture looks like
+  nothing happened at all. Surfaced as the Queue screen's third section. There's
+  no status column to filter on: `(fetched_by_backend, claimed_at)` maps to
+  waiting/ingesting/ingested, with no failed state — a row whose ingestion keeps
+  failing is indistinguishable from one merely waiting its turn.
 
 - **`POST /internal/pending-captures/cleanup`**, mirroring the queue-item sweep
-  above, including its 72-hour retention window. Nothing had ever deleted a
-  `pending_captures` row, so the table grew forever. **Only successfully
-  ingested rows (`fetched_by_backend = 1`) are swept**; a row still at `0` is
-  either waiting for pickup or failing ingestion repeatedly, and this table has
-  no status column that could tell those apart, so both are kept indefinitely
+  above, including its 72-hour retention window. **Only successfully ingested
+  rows (`fetched_by_backend = 1`) are swept**; a row still at `0` is either
+  waiting for pickup or failing ingestion repeatedly, and this table has no
+  status column that could tell those apart, so both are kept indefinitely
   rather than risk discarding the only record of a capture that never landed.
   Surfacing and retrying persistently-failing rows needs an `attempts`/`error`
-  column and something equivalent to `POST /queue/:id/fail` — deferred, not
-  forgotten. The retention clock is `claimed_at`, for the same reasoning the
-  queue-item sweep documents; unlike there, though, it isn't merely a reasonable
-  proxy — `fetched_by_backend = 1` is only reachable by an agent that claimed
-  the row first, so it's guaranteed non-`NULL` on exactly the rows this deletes.
+  column and something equivalent to `POST /queue/:id/fail` — not built yet.
 
-### Bookmark-list mirror (backend → D1 → the browser's own native bookmarks)
+### Bookmark-list mirror (backend → D1 → the browser's native bookmarks)
 
 - Separately from the queue, the extension syncs everything already archived
-  into the browser's own native bookmarks — not a custom in-popup list. See §3j
-  for why that changed from the original custom-UI plan and how the extension
-  side actually works; this section covers the backend → D1 half only, which
-  didn't change.
+  into the browser's native bookmarks, not a custom in-popup list (§3j covers
+  the extension side). This section covers the backend → D1 half.
 - This is a **one-way, backend → D1 push** — the mirror-image of the credential
-  mirror (backend → D1, rather than D1 → backend), keeping the same principle:
-  the extension only ever needs to talk to the Worker/D1, never the backend.
-- **Schedule-based, not triggered on individual mutations** — reconsidered from
-  an earlier revision of this document, which had the backend push a row
-  immediately after processing each capture. That doesn't handle deletion (a
-  deleted page was never "updated," it's just gone — an event-triggered push on
-  capture-processing would never notice), and more importantly it requires every
-  future code path that ever touches `pages` (a deletion endpoint, a re-tagging
-  endpoint, whatever else) to remember to also push a D1 update — exactly the
-  same fragility already avoided elsewhere in this project (why `updated_at`
-  itself isn't left to individual queries to set by hand). A schedule doesn't
-  care how or where Postgres changed; it just asks "what's different now" on its
-  own cadence. What actually triggers the sync job to run is `recueil agent`
-  (§3e) — the same shared trigger as backend ingestion (§3c): both are callable
-  units (`internal/ingest.Ingester.RunOnce`, `internal/mirror.Syncer.SyncOnce`)
-  invoked from one ticker loop.
-- **The sync checkpoint is read directly from D1's own data — `MAX(updated_at)`
-  across `archived_pages` — not a separately-tracked watermark value stored
-  anywhere on the backend.** Considered and rejected: a Postgres-side "last
-  synced at" row, which has to be kept correct by hand and can drift from what
-  D1 actually contains if a push silently fails partway. Deriving the checkpoint
-  from D1's own state makes that whole class of drift structurally impossible —
-  the checkpoint and the data are the same read, by construction. The one real
-  cost is a small Worker read endpoint whose only job is exposing that value;
-  judged worth it and in keeping with what this Worker already does elsewhere
-  (`GET /internal/pending-captures` already answers a factual question about
-  D1's own data the same way).
+  mirror, keeping the same principle: the extension only ever needs to talk to
+  the Worker/D1, never the backend.
+- **Schedule-based, not triggered on individual mutations.** An event-triggered
+  push wouldn't handle deletion (a deleted page was never "updated," it's just
+  gone), and would require every future code path that touches `pages` to
+  remember to also push a D1 update. A schedule doesn't care how or where
+  Postgres changed; it just asks "what's different now" on its own cadence,
+  triggered by `recueil agent` (§3e) the same way backend ingestion is.
+- **The sync checkpoint is read directly from D1's data — `MAX(updated_at)`
+  across `archived_pages`** — not a separately-tracked watermark on the backend,
+  which would have to be kept correct by hand and could drift from what D1
+  actually contains if a push silently fails partway. Deriving the checkpoint
+  from D1's state makes that whole class of drift structurally impossible: the
+  checkpoint and the data are the same read, by construction.
 - **Two passes each sync cycle:**
   1. **Incremental upsert** — `pages WHERE updated_at > $checkpoint` (all of it,
-     unpaginated — no `LIMIT`/cursor: at this project's scale a full delta in
-     one call is fine, and pagination would reintroduce a subtler version of the
-     same equal-timestamp boundary problem the checkpoint design otherwise
-     avoids), pushed to D1 in one request.
+     unpaginated: at this project's scale a full delta in one call is fine),
+     pushed to D1 in one request.
   2. **Deletion reconciliation** — the only way a schedule-based sync can ever
-     notice a deletion at all, since a deleted row was never "updated." The
-     backend fetches D1's full current `page_id` set (a raw list, no comparison
-     logic in the Worker — see below) and its own current Postgres `page_id`
+     notice a deletion, since a deleted row was never "updated." The backend
+     fetches D1's full current `page_id` set and its current Postgres `page_id`
      set, diffs them locally, and deletes from D1 whatever's no longer in
-     Postgres. Deletion itself isn't built yet; this pass runs correctly
-     regardless, simply finding nothing to remove until it exists.
+     Postgres.
 - **Per-page mirror exclusion** —
-  `pages.excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE` (§10). No D1
-  schema change needed at all: exclusion is purely a Postgres-side filter on
-  what the backend chooses to push, not a concept D1 needs to know about. Both
-  passes above already have everything needed for this to fall out for free,
-  without any special-casing:
-  - **Incremental upsert** simply never selects excluded pages
-    (`GetPagesUpdatedSince` adds `AND NOT excluded_from_mirror`), so a newly-
-    excluded page is never (re-)pushed.
-  - **Deletion reconciliation**'s Postgres-side set is redefined from "every
-    page_id that exists" to "every page_id that belongs in the mirror"
-    (`GetMirrorEligiblePageIDs`, same `WHERE NOT excluded_from_mirror`). A page
-    that gets excluded _after_ already being synced looks identical to this pass
-    as a page that was deleted outright — both are simply "in D1 but no longer
-    in the desired set" — so the exact same diff-and-delete logic removes it,
-    with zero new code in `internal/mirror` itself.
-  - Un-excluding a page works the same way any other edit does: the toggle bumps
-    `updated_at` like any `pages` mutation must (§8's own checkpoint design
-    already depends on this), so the page simply reappears in the next cycle's
-    incremental upsert once the flag flips back.
-  - No dashboard toggle for this yet — the column and query-level filtering
-    exist now, but the actual UI to set it is built alongside the dashboard
-    itself (Phase 5), same as every other dashboard-only feature.
+  `pages.excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE` (§10,
+  dashboard-toggleable on PageDetail), a pure Postgres-side push filter with no
+  D1 schema change. Both passes above handle it without special-casing:
+  incremental upsert simply excludes it from the query, and deletion
+  reconciliation's "desired set" excludes it too — an excluded page looks
+  identical to a deleted one from that pass's point of view, so the same
+  diff-and-delete logic removes it either way. Un-excluding just bumps
+  `updated_at` like any other edit, so the page reappears on the next cycle.
 - **The incremental push's atomicity is what makes the checkpoint safe without
   any extra ordering logic on the backend.** The push endpoint applies its whole
-  batch via the Worker's own `env.DB.batch()`, which is transactional: either
-  every row in the batch lands, or none do. So there's no scenario where a
-  partial failure leaves D1's `MAX(updated_at)` ahead of some unpushed row —
-  either the full delta lands and the new max correctly reflects all of it, or
-  nothing lands and the next cycle's `WHERE updated_at > $checkpoint` naturally
-  retries the identical, unchanged set. (An earlier line of reasoning about this
-  design assumed a separately-tracked, non-atomic push would need the backend to
-  push rows in strict ascending `updated_at` order and stop at the first
-  failure, to avoid exactly this gap — that concern doesn't apply once the
-  checkpoint comes from D1's own atomically-updated state instead.)
-- **Every Worker endpoint involved stays deliberately dumb**, consistent with
-  this Worker's stated design: it reads or writes exactly what it's told, and
-  never computes a diff or a decision itself. `GET .../last-sync` answers a
-  factual question; `POST .../mirror` upserts whatever batch it's given;
-  `GET .../page-ids` returns a raw list; `POST .../delete` deletes exactly the
-  ids it's given. All the actual logic — what changed, what to delete — lives on
-  the backend.
-- The extension does **not** live-sync this list either. It refreshes on a
-  coarse schedule (see §7 polling cadence below) or on explicit user request —
-  but, unlike the backend's own Postgres → D1 sync above, with **no incremental
-  checkpoint at all**: it pulls the whole current list every time and diffs it
-  locally (§3j). That's a deliberate scale-appropriate simplification, not an
-  oversight — a personal archive is realistically hundreds to low-thousands of
-  pages, nowhere near where an incremental `since` parameter would start to
-  matter the way it does for the backend's own sync job above.
-- Because this list is just title + URL, no thumbnail storage is needed in R2 or
-  D1 for this feature.
+  batch via the Worker's `env.DB.batch()`, which is transactional: either every
+  row lands, or none do. So there's no scenario where a partial failure leaves
+  D1's `MAX(updated_at)` ahead of some unpushed row — either the full delta
+  lands and the new max correctly reflects it, or nothing lands and the next
+  cycle's `WHERE updated_at > $checkpoint` naturally retries the identical set.
+- The extension does **not** live-sync this list either — it refreshes on a
+  coarse schedule (see "Polling cadence" below) or on explicit user request,
+  with **no incremental checkpoint at all**: it pulls the whole current list
+  every time and diffs it locally (§3j). A scale-appropriate simplification: a
+  personal archive is realistically hundreds to low-thousands of pages, nowhere
+  near where an incremental `since` parameter would start to matter.
 
 ```sql
 -- D1
@@ -2745,7 +1327,7 @@ Settled as **infrequent background polling with on-demand override**, rather
 than tight polling or any push mechanism:
 
 - Extension → queue (D1 via Worker): every 5-15 minutes in the background, plus
-  a manual "check now" button in the extension popup for on-demand polling.
+  a manual "check now" button in the extension popup.
 - Extension → bookmark-list mirror refresh: coarse (e.g. once per day) or on
   explicit user request.
 - Backend → `pending_captures` (D1 via Worker): every few minutes. No on-demand
@@ -2753,138 +1335,96 @@ than tight polling or any push mechanism:
 
 No WebSocket/push infrastructure (e.g. a Durable Object) is used — that would be
 real added infrastructure for a problem infrequent polling plus a manual refresh
-button already solves adequately at this scale. (The "once a minute" figure used
-in the original §13 cost analysis was illustrative headroom math, not a spec.)
+button already solves adequately at this scale.
 
 ---
 
 ## 9. URL Normalization
 
-Two URL fields are stored for every capture, never conflated:
+Two URL fields are stored for every capture:
 
-- **`raw_url`** — exactly what was captured, byte-for-byte, never rewritten.
+- **`raw_url`** — exactly what was captured, byte-for-byte.
 - **`normalized_url`** — a computed, canonical form used purely as the
   dedup/grouping key that determines which `pages` row a capture belongs to.
 
-### Runs in the backend, not the Worker
+### Runs in the backend
 
 Normalization happens entirely backend-side (Go), at ingestion time — not in the
-Cloudflare Worker. Two independent reasons converge on the same answer:
+Cloudflare Worker, for two reasons:
 
 - **Manual upload (§3d) has no Worker involved at all** — it's a direct
-  dashboard→backend upload, bypassing R2/D1/the Worker entirely. A Worker-side
-  normalization step would simply never run for that capture path, and a user
-  manually uploading a file has no reason to have already normalized the URL
-  themselves.
-- **The Worker's "plain JS, no build step, no dependencies" constraint (§11,
-  §13a) rules it out anyway.** ClearURLs' ruleset (below) has no existing Go
-  _or_ dependency-free-JS implementation to embed; whichever side implements it
-  needs a real regex/JSON-parsing dependency, and only the backend is free to
-  take on dependencies at all.
+  dashboard→backend upload, bypassing R2/D1/the Worker entirely, so a
+  Worker-side normalization step would simply never run for that path.
+- **The Worker's "plain JS, no build step, no dependencies" constraint (§11)
+  rules it out anyway.** ClearURLs' ruleset (below) has no dependency-free JS
+  implementation to embed; whichever side implements it needs a real
+  regex/JSON-parsing dependency, and only the backend is free to take one on.
 
 ### Pipeline architecture
 
 Normalization is a **pipeline of independent steps**, not a single hardcoded
-function — , since ClearURLs is expected to be the first entry, not the only
-one. A future step might be a different third-party library, or a hand-rolled
-Recueil-specific ruleset; the pipeline shape means adding one never requires
-touching an existing step, and steps can be freely reordered. Implemented as
-`internal/urlnorm`: a `Step` interface
-(`Normalize(ctx, rawURL string) (string, error)`, string in/string out —
-intentionally not a shared parsed-URL representation, so an external library
-with its own string-based API is trivial to slot in as a step) and a `Pipeline`
-that runs a sequence of `Step`s, each fed the previous one's output. Today's
-pipeline is exactly two steps, run in this order:
+function, since ClearURLs is expected to be the first entry, not the only one —
+a future step (a different library, a hand-rolled ruleset) can be added without
+touching existing ones. Implemented as `internal/urlnorm`: a `Step` interface
+(`Normalize(ctx, rawURL string) (string, error)`, string in/string out rather
+than a shared parsed-URL representation, so an external library's string-based
+API slots in trivially) and a `Pipeline` that runs a sequence of `Step`s.
+Today's pipeline is two steps:
 
 1. **ClearURLs** — strips known tracking parameters and unwraps redirect-wrapper
-   URLs (below).
+   URLs.
 2. **Recueil's own additional canonicalization** — host/scheme casing, default
-   ports, fragment, query-param ordering, trailing slash (below) — also just a
-   `Step`, not a hardcoded tail bolted onto step 1.
+   ports, fragment, query-param ordering, trailing slash (below).
 
 ### ClearURLs: a Go port, vendored as a git submodule
 
-Adopt the **ClearURLs** community-maintained ruleset (regex-based rules per
-site/provider, actively maintained, LGPL-3.0 licensed — corrected from an
-earlier revision of this document, which stated MIT) to strip known tracking
-parameters (`utm_*`, `fbclid`, `gclid`, etc.) and unwrap tracking-redirect
-wrapper URLs, without touching functionally meaningful query parameters. Do not
-hand-roll a tracking-parameter list.
+Adopts the **ClearURLs** community-maintained ruleset (regex-based rules per
+site/provider, actively maintained, LGPL-3.0) to strip known tracking parameters
+(`utm_*`, `fbclid`, `gclid`, etc.) and unwrap tracking-redirect wrapper URLs,
+without touching functionally meaningful query parameters.
 
 - **The ruleset (`data.min.json`) is vendored as a git submodule** at
-  `internal/urlnorm/clearurls-rules` — inside the package that actually uses it,
-  not at the repo root — pinned to a specific commit and embedded directly as
-  `[]byte` via `go:embed` (`//go:embed clearurls-rules/data.min.json`, entirely
-  local to `internal/urlnorm`). This is a deliberate departure from how the
-  Postgres/D1 migration directories are embedded (those live at the repo root
-  and get embedded in `main.go`, then threaded down through `cmd` — see §13a):
-  that indirection exists there because `cmd/server.go` itself needs to read
-  those directories directly. Nothing outside `internal/urlnorm` ever needs the
-  ClearURLs ruleset, so embedding it locally, as a single file rather than a
-  directory `embed.FS` needing an `fs.Sub`/`fs.ReadFile` step to extract the one
-  file back out of it, avoids indirection this package has no use for. The
-  vendoring-as-a-submodule reasoning itself is unrelated to where the embed
-  directive lives: it's a deliberate consequence of the upstream project not
-  publishing to any package registry (npm, a Go module proxy, or otherwise) that
-  could be depended on directly with a version constraint the normal way; a
-  submodule pinned to a commit is the closest equivalent, giving reproducible
-  builds the same way a registry version pin would. Updating to a newer ruleset
-  snapshot is a deliberate, manual operation — advance the submodule's pinned
-  commit, commit that pointer change on its own, and cut a new Recueil release —
-  never automatic.
+  `internal/urlnorm/clearurls-rules`, pinned to a specific commit and embedded
+  directly via `go:embed` — the upstream project doesn't publish to any package
+  registry, so a pinned submodule is the closest equivalent to a normal
+  version-constrained dependency. Updating to a newer snapshot is a manual
+  operation (advance the pin, commit that pointer change on its own).
 - **`internal/urlnorm`'s `ClearURLs` type is a Go port of the real extension's
-  own algorithm** (`pureCleaning`/`_cleaning`/ `removeFieldsFormURL` in
-  ClearURLs/Addon's `core_js`), not an inference from the ruleset format's own
-  documentation — the documentation describes the data shape but not every
-  matching/precedence detail (anchoring, case-sensitivity, iteration order, the
-  redirection short-circuit). Every behavior was checked against the actual
-  upstream JS source directly. Notably: providers are matched in the ruleset's
-  own file order (not alphabetical, not a Go map's randomized order — order
-  matters because a matched redirection immediately short-circuits the rest of
-  that pass); a full cleaning pass repeats until it produces no further change
-  (handles a redirect-wrapper unwrapping to reveal a URL a _different_ provider
-  now matches); and each `rules`/`referralMarketing` entry is matched as a full,
-  case-insensitive, anchored match against the parameter name (`^rule$`), not a
-  substring/prefix match.
-- **Uses `github.com/dlclark/regexp2`, not stdlib `regexp`.** Go's stdlib
-  `regexp` (RE2) can't compile some patterns the real ruleset relies on
-  (lookaround and similar PCRE-ish constructs); `regexp2` is a real, PCRE-like
-  engine that can. This is a real dependency addition, acceptable because it's
-  backend-only — the Worker's dependency-free constraint doesn't apply here.
-- **Two upstream behaviors are not ported at all** — not bugs, not future work,
-  structurally excluded from `internal/urlnorm`'s own data model:
-  - `completeProvider` ("block this request outright") is a live-browsing
-    concept — dropping a tracking-pixel request before it's ever made. It
-    doesn't apply to a URL a user already chose to archive: a bookmark is
-    definitionally not a stray tracking request, so this essentially never
-    legitimately fires against real Recueil input regardless.
-  - `forceRedirection` is a live-tab browser-navigation technique (directly
-    rewriting a browser's own `main_frame` object when a site defeats normal
-    redirect interception). It has no meaning once you're transforming an
-    already-known URL string rather than intercepting a real navigation event —
-    which Recueil never does. `redirections` itself (the actual URL-string
-    transformation: unwrap a tracking-gateway URL to its real destination) _is_
-    ported; `forceRedirection` is a separate, unrelated flag about _how_ a live
-    browser would perform that same unwrap during real navigation.
+  algorithm**, not an inference from the ruleset's documentation, which
+  describes the data shape but not every matching/precedence detail — every
+  behavior was checked against the actual upstream JS source. Notably: providers
+  are matched in the ruleset's file order, since a matched redirection
+  short-circuits the rest of that pass; a full cleaning pass repeats until it
+  produces no further change (a redirect unwrapping can reveal a URL a
+  _different_ provider now matches); and rule/`referralMarketing` entries are
+  matched as a full, case-insensitive, anchored match against the parameter
+  name, not a substring.
+- **Uses `github.com/dlclark/regexp2`, not stdlib `regexp`** — Go's stdlib RE2
+  engine can't compile some patterns the real ruleset relies on (lookaround and
+  similar PCRE-ish constructs).
+- **Two upstream behaviors aren't ported**: `completeProvider` ("block this
+  request outright") is a live-browsing concept with no meaning for a URL
+  someone already chose to archive; `forceRedirection` is a live-tab
+  navigation-interception technique with no meaning once you're transforming an
+  already-known URL string rather than intercepting a real navigation.
+  `redirections` itself (the URL-unwrapping transformation) _is_ ported —
+  `forceRedirection` is a separate flag about _how_ a live browser performs that
+  same unwrap during navigation.
 
-### Recueil's own additional canonicalization
+### Recueil's additional canonicalization
 
-Runs as the pipeline's second `Step` (`urlnorm.Canonicalize`), after ClearURLs
-has already had a chance to strip tracking parameters and unwrap redirects:
+Runs as the pipeline's second step, after ClearURLs has already stripped
+tracking parameters and unwrapped redirects:
 
-- Lowercase the host, and the scheme (the latter not originally listed here,
-  added because Go's own `net/url.Parse` doesn't lowercase the scheme itself,
-  which is both a correctness requirement for the default-port comparison below
-  and a reasonable canonicalization in its own right per RFC 3986).
+- Lowercase the host and scheme (Go's `net/url.Parse` doesn't lowercase the
+  scheme itself, which matters for the default-port comparison below).
 - Strip default ports (`:443` for `https`, `:80` for `http`).
-- Drop the URL fragment, unless the site is a known SPA that encodes meaningful
-  route state in the fragment. **Not implemented yet** — no such site list
-  exists, so the fragment is dropped unconditionally for now; this is a known,
-  stated gap, not a silent one.
+- Drop the URL fragment unconditionally — the intended exception (preserving a
+  fragment for a known SPA that encodes route state there) has no implementation
+  yet (§16).
 - Sort remaining query parameters alphabetically for a stable key.
-- Strip trailing slash (including a bare root `/`, so `example.com` and
-  `example.com/` normalize identically — a deliberate consequence of applying
-  this unconditionally, not an overlooked edge case).
+- Strip trailing slash, including a bare root `/` — `example.com` and
+  `example.com/` normalize identically.
 
 ---
 
@@ -2892,98 +1432,86 @@ has already had a chance to strip tracking parameters and unwrap redirects:
 
 ### Postgres (backend-owned — canonical archive)
 
-`BIGINT GENERATED ALWAYS AS IDENTITY` primary keys are used throughout (rather
-than UUIDs) for smaller indexes and better insert/join performance at this
-project's scale.
-
-All constraints (primary keys, unique constraints, checks, and foreign keys) are
-explicitly named (`<table>_pkey`, `<table>_<column>_key`,
+`BIGINT GENERATED ALWAYS AS IDENTITY` primary keys are used throughout. Every
+constraint (primary keys, unique constraints, checks, and foreign keys) is
+explicitly named in the real migrations (`<table>_pkey`, `<table>_<column>_key`,
 `<table>_<column>_check`, `<table>_<column>_fkey`) rather than left to
-Postgres's auto-generated names — this makes later
-`ALTER TABLE ... DROP CONSTRAINT` migrations (e.g. changing the set of allowed
-`role` values) referenceable by a name stated in the migration file, rather than
-needing to look up whatever Postgres happened to call them. Applied below to
-`users` and `sessions`, the two tables actually implemented so far; the rest of
-this section's tables will pick up the same convention as they're implemented.
+Postgres's auto-generated names — this makes a later
+`ALTER TABLE ... DROP CONSTRAINT` referenceable by a name stated in the
+migration file, rather than needing to look up whatever Postgres happened to
+call it. The blocks below simplify constraint syntax for readability; the
+migrations themselves are the source of truth for exact names.
 
 ```sql
 CREATE TABLE users (
-  id BIGINT GENERATED ALWAYS AS IDENTITY,
-  username TEXT NOT NULL,
-  password_hash TEXT NOT NULL,       -- bcrypt; verified backend-side only,
-                                      -- never mirrored anywhere (see §5)
-  pairing_token_enc TEXT NOT NULL,   -- AES-256-GCM, reversible; source for
-                                      -- the D1 pairing_token_hash mirror and
-                                      -- for dashboard redisplay (§5)
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,       -- bcrypt
+  pairing_token_enc TEXT,            -- AES-256-GCM, reversible; nullable --
+                                      -- cleared on revoke, until regenerated
+                                      -- (§5). Source for the D1
+                                      -- pairing_token_hash mirror and for
+                                      -- dashboard redisplay.
   role TEXT NOT NULL DEFAULT 'member',   -- 'admin' | 'member'
   display_name TEXT,                 -- nullable; UI falls back to username
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT users_pkey PRIMARY KEY (id),
-  CONSTRAINT users_username_key UNIQUE (username),
-  CONSTRAINT users_role_check CHECK (role IN ('admin', 'member'))
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Dashboard sessions (§5) — DB-backed, hashed opaque tokens, same shape as
 -- D1 device tokens. Revocation is a row delete (logout); no idle timeout,
--- only the absolute expires_at.
+-- only the absolute expires_at. user_agent is captured once at sign-in,
+-- verbatim, and parsed at read time by the Active Sessions screen (§5).
 CREATE TABLE sessions (
-  id BIGINT GENERATED ALWAYS AS IDENTITY,
-  session_hash TEXT NOT NULL,
-  user_id BIGINT NOT NULL,
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  session_hash TEXT NOT NULL UNIQUE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at TIMESTAMPTZ NOT NULL,
-  CONSTRAINT sessions_pkey PRIMARY KEY (id),
-  CONSTRAINT sessions_session_hash_key UNIQUE (session_hash),
-  CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  expires_at TIMESTAMPTZ NOT NULL
 );
 CREATE INDEX idx_sessions_user_id ON sessions(user_id);
 
 -- One row per distinct URL ever archived, grouped by normalized_url
 CREATE TABLE pages (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   normalized_url TEXT NOT NULL,
   title TEXT,                        -- denormalized from latest capture,
-                                      -- but also directly PATCH-able as a
-                                      -- manual override (Phase 13,
-                                      -- PATCH /api/pages/{id}) -- a later
+                                      -- also directly PATCH-able as a
+                                      -- manual override
+                                      -- (PATCH /api/pages/{id}) -- a later
                                       -- recapture overwrites an override
                                       -- the same way it always overwrites
-                                      -- this column, deliberately: no
-                                      -- separate title_override column, no
-                                      -- display-time fallback
+                                      -- this column; no separate
+                                      -- title_override column
   latest_capture_at TIMESTAMPTZ NOT NULL,  -- also denormalized from latest
                                       -- capture (via GREATEST, tolerating
                                       -- out-of-order ingestion) -- feeds
-                                      -- the D1 bookmark-list mirror's own
+                                      -- the D1 bookmark-list mirror's
                                       -- latest_capture_at column directly
   excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE,  -- opt a page out of
                                       -- the D1 bookmark-list mirror (§8);
                                       -- purely a Postgres-side push filter,
                                       -- no corresponding D1 column exists
   favicon_path TEXT,                 -- denormalized from the latest
-                                      -- capture's own favicon_path (§3g),
+                                      -- capture's favicon_path (§3g),
                                       -- the same way title is -- including
                                       -- back to NULL if the latest capture
-                                      -- genuinely didn't find one
-  notes TEXT,                        -- free-text, user-authored (Phase 14,
-                                      -- PATCH /api/pages/{id}) -- a light
+                                      -- didn't find one
+  notes TEXT,                        -- free-text, user-authored
+                                      -- (PATCH /api/pages/{id}) -- a light
                                       -- markdown subset (bold/italic/lists;
                                       -- src/lib/markdown.ts), stored as
-                                      -- source and rendered client-side,
-                                      -- same as reader_text/ai_summary's
-                                      -- own "store source, render on read"
-                                      -- choice. Page-level like tags/
+                                      -- source and rendered client-side.
+                                      -- Page-level like tags/
                                       -- collections, not per-capture.
-                                      -- Deliberately not mirrored to D1:
-                                      -- personal annotations, not bookmark
-                                      -- structure
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, normalized_url)
 );
+CREATE INDEX idx_pages_user_id ON pages(user_id);
 
 -- One row per capture event: the version history
 CREATE TABLE captures (
@@ -2994,23 +1522,28 @@ CREATE TABLE captures (
                                       -- extension/queue flow, backend-
                                       -- generated for manual uploads (§3d);
                                       -- cleared back to NULL once ingestion
-                                      -- of this capture is fully done --
-                                      -- nothing reads it after that
-  source TEXT NOT NULL DEFAULT 'extension',  -- 'extension' | 'manual_upload'
-                                      -- (§3d) — mirrors page_tags.source
+                                      -- of this capture is fully done
+  source TEXT NOT NULL DEFAULT 'extension'  -- 'extension' | 'manual_upload'
+    CHECK (source IN ('extension', 'manual_upload')),
   raw_url TEXT NOT NULL,
   title TEXT,
-  html_path TEXT NOT NULL,           -- path relative to the backend's
+  html_path TEXT NOT NULL UNIQUE,    -- path relative to the backend's
                                       -- configured archive-directory root,
-                                      -- zstd-compressed (see §14 for why
-                                      -- relative rather than absolute)
+                                      -- zstd-compressed. UNIQUE is
+                                      -- belt-and-suspenders, not primary
+                                      -- defense (§4's os.Mkdir/EEXIST check
+                                      -- runs first, before this constraint
+                                      -- could ever fire)
   html_compressed_size_bytes INTEGER NOT NULL,
   html_uncompressed_size_bytes INTEGER NOT NULL,  -- both stored, not just
-                                      -- the compressed size actually on
+                                      -- the compressed size on
                                       -- disk, so the dashboard can surface
                                       -- real compression-ratio numbers
   thumbnail_path TEXT,               -- populated async by the screenshot
-                                      -- service (§6); null until then
+                                      -- job (§6a); NULL until then
+  thumbnail_size_bytes INTEGER,
+  thumbnail_hash TEXT,               -- sha256 of the thumbnail bytes --
+                                      -- an integrity check;
   favicon_path TEXT,                 -- captured client-side alongside the
                                       -- HTML itself (§3g), so -- unlike
                                       -- thumbnail_path -- populated
@@ -3018,19 +1551,28 @@ CREATE TABLE captures (
                                       -- a later async job; NULL whenever no
                                       -- favicon was found, which is a
                                       -- normal, non-error outcome
+  favicon_size_bytes INTEGER,
+  favicon_hash TEXT,
   reader_text TEXT,                  -- Readability plain-text extraction;
                                       -- populated asynchronously by the
-                                      -- readability job (§6a) -- NULL until
+                                      -- readability job (§6b) -- NULL until
                                       -- that job completes, or permanently
                                       -- if it never succeeds
   readability_version TEXT,          -- vendored Readability.js version that
                                       -- produced reader_text; overwritten in
                                       -- place on re-extraction, no history
-                                      -- kept (§6a)
-  content_hash TEXT NOT NULL,        -- full-HTML hash (exact dedup)
+                                      -- kept (§6b)
+  content_hash TEXT NOT NULL,        -- full-HTML hash
   reader_text_hash TEXT,             -- powers "unchanged since last capture";
                                       -- nullable for the same reason as
-                                      -- reader_text above (§3b, §6a)
+                                      -- reader_text above (§3b, §6b)
+  ai_summary TEXT,                   -- populated asynchronously by the AI
+                                      -- job (§7), once readability
+                                      -- extraction has produced reader_text
+  ai_model TEXT,                     -- which model produced ai_summary --
+                                      -- kept alongside it so a summary can
+                                      -- be regenerated later against a
+                                      -- different model
   language REGCONFIG NOT NULL DEFAULT 'simple',  -- see below for why
                                       -- REGCONFIG, not TEXT, and why
                                       -- 'simple' as the fallback
@@ -3045,12 +1587,9 @@ ALTER TABLE captures ADD COLUMN reader_text_tsv tsvector
 CREATE INDEX idx_captures_fts ON captures USING GIN (reader_text_tsv);
 ```
 
-**Full-text search is per-capture-language, not hardcoded to English** —
-corrected from an earlier revision of this document, which assumed all captured
-content would be English. That assumption actively makes search _worse_, not
-just unhelpful, for any other language: applying English stemming rules to
-French or German text produces garbage tokens, since stemming is
-language-specific by nature.
+**Full-text search is per-capture-language, not hardcoded to English.** Applying
+English stemming rules to French or German text produces garbage tokens, since
+stemming is language-specific by nature.
 
 - **`language` is typed `REGCONFIG`, not `TEXT`.** Casting a language name to
   `regconfig` (`'french'::regconfig`) is a catalog lookup, which Postgres
@@ -3061,44 +1600,36 @@ language-specific by nature.
   anywhere in it, satisfying the immutability requirement. The cast from a
   language name to `regconfig` still happens, just once, at INSERT/UPDATE time —
   an ordinary, unrestricted operation, not inside a generated expression.
-- **Detection happens at ingestion**, parsing the captured HTML's own
+- **Detection happens at ingestion**, parsing the captured HTML's
   `<html lang="...">` attribute (the standard HTML5 way a page declares its
-  content language) — not a Readability output, and not guaranteed to be present
-  or accurate, but a reasonable, zero-cost signal already sitting in every
-  capture.
+  content language) — not guaranteed to be present or accurate, but a
+  reasonable, zero-cost signal already sitting in every capture.
 - **The detected tag is validated against this specific Postgres instance's live
   `pg_ts_config` catalog, not a hardcoded Go-side list of "languages Postgres
-  supports."** Which configs are actually available genuinely depends on the
-  running Postgres version; asking the live catalog is the only source that's
-  authoritative for that.
+  supports."** Which configs are available depends on the running Postgres
+  version; asking the live catalog is the only source that's authoritative for
+  that.
 - **Falls back to `'simple'`** — no language-specific stemming, but never
-  actively wrong for any language, unlike guessing — whenever there's no `lang`
-  attribute, the detected tag has no known mapping (e.g. Chinese, Japanese,
-  Korean: languages Postgres has no snowball stemmer for at all, since they need
-  segmentation rather than stemming), or the mapped candidate doesn't actually
-  exist on this Postgres instance.
+  actively wrong for any language — whenever there's no `lang` attribute, the
+  detected tag has no known mapping (e.g. Chinese, Japanese, Korean: languages
+  Postgres has no snowball stemmer for at all, since they need segmentation
+  rather than stemming), or the mapped candidate doesn't actually exist on this
+  Postgres instance.
 - **The dashboard lets a user correct a capture's detected language after the
-  fact** (`PatchCaptureLanguage`, Phase 6), choosing from whatever configs this
-  Postgres instance actually has, or "Other" (mapping to `simple`; relabeled
-  from the raw config name in Phase 14 — "simple" isn't a real language, and
-  showing Postgres's own internal name for "no stemming" as if it were one just
-  reads as a stray option nobody explained) — a plain
+  fact** (`PatchCaptureLanguage`), choosing from whatever configs this Postgres
+  instance has, or "Other" (mapping to `simple` — "simple" isn't a real
+  language, and showing Postgres's internal name for "no stemming" as if it were
+  one just reads as a stray option nobody explained) — a plain
   `UPDATE captures SET language = ...`, which Postgres automatically recomputes
   `reader_text_tsv` (and its GIN index) for as part of that same statement, the
   same way it already does whenever `reader_text` itself changes (e.g.
-  re-extraction, §6a). No manual reindex, no extra synchronization code needed.
-  Every other option's own label is translated into the dashboard's current
-  locale (Phase 14, `lib/languageNames.ts`) rather than shown as Postgres's raw
-  config name — the opposite direction from Settings' language picker (which
-  shows each option self-named, since there you're choosing your own language
-  and need to recognize it among others; here you're already reading the
-  dashboard in your language and labeling someone else's content, so the labels
-  themselves should match).
+  re-extraction, §6b). No manual reindex, or extra synchronization code is
+  needed.
 
 ```sql
 CREATE TABLE tags (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -3113,37 +1644,30 @@ CREATE TABLE tags (
 CREATE TABLE page_tags (
   page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  source TEXT NOT NULL DEFAULT 'manual',  -- 'manual' | 'ai'
+  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
   PRIMARY KEY (page_id, tag_id)
 );
+CREATE INDEX idx_page_tags_tag_id ON page_tags(tag_id);
 
 -- Nested collections. Adjacency list (parent_id self-reference) rather
 -- than a closure table: simpler writes, and at this project's scale a
 -- recursive CTE for "this collection and all descendants" is fast enough
--- that a closure table's extra write-complexity isn't justified. (That
--- recursive-descendant capability has never actually been needed:
--- CollectionDetail deliberately shows only a collection's own direct
--- pages plus its sub-collections as links, not a subtree rollup -- see
--- §13a. If that changes, this adjacency-list choice is exactly why it'd
--- still be cheap to add.)
+-- that a closure table's extra write-complexity isn't justified.
 --
 -- Uniqueness is per (user_id, parent_id, name), but that can't be a
 -- single UNIQUE table constraint: parent_id is nullable for top-level
 -- collections, and Postgres treats NULL as distinct from itself in a
 -- unique constraint, so a plain UNIQUE(user_id, parent_id, name) would
 -- silently allow two top-level collections named the same thing. Two
--- partial unique indexes instead (implemented in Phase 6, replacing an
--- earlier revision of this section that had the single-constraint bug
--- above) -- one per case, since each is a normal (non-NULL) unique check
--- within its own partition. slug (added alongside description/timestamps
--- in the tags/collections slug work) gets the identical treatment, for
--- the identical reason: two more partial indexes, not folded into the
--- existing two as a compound (name, slug) pair -- a name collision and a
--- slug collision should each surface as their own distinct conflict, not
--- an ambiguous "the pair wasn't unique" error.
+-- partial unique indexes instead — one per case, since each is a normal
+-- (non-NULL) unique check within its own partition. slug gets the
+-- identical treatment, for the identical reason — four partial indexes
+-- total, not folded into a compound (name, slug) pair, so a name
+-- collision and a slug collision each surface as their own distinct
+-- conflict rather than an ambiguous "the pair wasn't unique" error.
 CREATE TABLE collections (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   parent_id BIGINT REFERENCES collections(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
@@ -3159,6 +1683,7 @@ CREATE UNIQUE INDEX collections_user_id_parent_id_name_key
   ON collections(user_id, parent_id, name) WHERE parent_id IS NOT NULL;
 CREATE UNIQUE INDEX collections_user_id_parent_id_slug_key
   ON collections(user_id, parent_id, slug) WHERE parent_id IS NOT NULL;
+CREATE INDEX idx_collections_user_id ON collections(user_id);
 CREATE INDEX idx_collections_parent ON collections(parent_id);
 
 -- A page may be in zero, one, or many collections. Deleting a collection
@@ -3171,13 +1696,14 @@ CREATE TABLE page_collections (
   added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (page_id, collection_id)
 );
+CREATE INDEX idx_page_collections_collection_id ON page_collections(collection_id);
 
--- Explicit, bidirectional page-to-page links (Phase 15) -- pairwise edges,
--- not a shared link-group/cluster concept: linking B and C to each other
--- later doesn't imply any relationship between A and C just because both
--- are linked to B. Each relationship stored once, as a canonically-ordered
+-- Explicit, bidirectional page-to-page links — pairwise edges, not a
+-- shared link-group/cluster concept: linking B and C to each other later
+-- doesn't imply any relationship between A and C just because both are
+-- linked to B. Each relationship stored once, as a canonically-ordered
 -- pair (the CHECK enforces page_id_a < page_id_b), rather than twice as
--- both A-B and B-A rows -- "everything linked to page X" is simply
+-- both A-B and B-A rows — "everything linked to page X" is simply
 -- WHERE page_id_a = X OR page_id_b = X, so there's no direction to get
 -- backwards and no risk of a duplicate reverse-direction insert. The
 -- ordering check also rules out a page linking to itself as a side effect
@@ -3197,79 +1723,109 @@ CREATE INDEX idx_page_links_page_id_b ON page_links(page_id_b);  -- the
                                       -- half of the bidirectional OR query
 
 -- Decoupled from captures so a capture remains fully valid/browsable
--- with zero AI enrichment ever having run.
+-- with zero AI enrichment ever having run. ai_summary/ai_model live on
+-- captures directly (above), not here — a nullable column already gives
+-- "fully valid with nothing populated" regardless of which table it's on,
+-- and captures is where the dashboard already reads from.
 CREATE TABLE ai_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
-  summary TEXT,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
 );
+CREATE INDEX idx_ai_jobs_capture_id ON ai_jobs(capture_id);
 
--- Retry/backoff bookkeeping for the async Readability extraction job (§6a),
--- one row per capture -- same shape as ai_jobs above, EXCEPT it holds no
--- copy of the extracted text itself. reader_text/reader_text_hash/
--- readability_version live on captures directly (see that table above),
--- not here, because captures.reader_text_tsv is a Postgres
--- GENERATED ALWAYS AS column and generated columns can only reference
--- other columns in the same row -- unlike ai_jobs.summary, which has no
--- such constraint and can stay fully decoupled. Reading a capture's full
--- readability state means joining captures and readability_jobs, not
--- reading either table alone.
+-- Retry/backoff bookkeeping for the async Readability extraction job (§6b),
+-- one row per capture — same shape as ai_jobs above.
 CREATE TABLE readability_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
 );
+CREATE INDEX idx_readability_jobs_capture_id ON readability_jobs(capture_id);
 
--- Retry/backoff bookkeeping for the async screenshot job (§6), one row per
--- capture -- same shape as readability_jobs above, and intentionally its own
--- table rather than merged with it, even though both run through the same
--- headless-Chrome sidecar and often the same page load (see §6's "Design"
--- subsection for why: independent failure modes, and re-extraction after a
--- Readability.js upgrade has no reason to redo a perfectly good screenshot).
+-- Retry/backoff bookkeeping for the async screenshot job (§6a), one row per
+-- capture — same shape as readability_jobs above, and intentionally its
+-- own table rather than merged with it, even though both run through the
+-- same headless-Chrome sidecar and often the same page load (§6:
+-- independent failure modes, and re-extraction after a Readability.js
+-- upgrade has no reason to redo a perfectly good screenshot).
 CREATE TABLE screenshot_jobs (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   capture_id BIGINT NOT NULL REFERENCES captures(id) ON DELETE CASCADE,
-  status TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'processing', 'done', 'failed')),
   attempts INTEGER NOT NULL DEFAULT 0,
   next_attempt_at TIMESTAMPTZ,
   error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  claimed_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ
+);
+CREATE INDEX idx_screenshot_jobs_capture_id ON screenshot_jobs(capture_id);
+
+-- One row per user, user_id itself as the primary key rather than its own
+-- identity column — a 1:1 extension of users (§5d), not a
+-- one-to-many table, so there's no reason for a row to have an identity
+-- distinct from the user it belongs to. No row exists until a user's
+-- first PATCH /api/settings — there is no backfill migration and no
+-- row-creation hook on any account-creation path.
+CREATE TABLE user_settings (
+  user_id BIGINT NOT NULL PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  language TEXT CHECK (language IN ('en', 'fr')),  -- NULL means no explicit
+                                      -- override -- falls back to
+                                      -- auto-detecting from the browser
+                                      -- (§5d). A closed set, the
+                                      -- same as `theme` below: adding a
+                                      -- language is a migration.
+  theme TEXT CHECK (theme IN ('light', 'dark')),  -- NULL means "automatic"
+                                      -- (follow prefers-color-scheme). Same
+                                      -- CHECK treatment as role/source/status
+                                      -- elsewhere in this schema
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- One row per agent cycle ("worker" or "local", matching
+-- agent_worker_poll_interval_seconds/agent_local_poll_interval_seconds,
+-- §3e), updated whenever that cycle completes with no step failing —
+-- backs the recueil_agent_last_success_seconds metric (§13a).
+CREATE TABLE agent_heartbeats (
+  cycle TEXT PRIMARY KEY CHECK (cycle IN ('worker', 'local')),
+  last_success_at TIMESTAMPTZ NOT NULL
 );
 ```
 
 There is **no `tokens` table in Postgres** — device tokens are owned entirely by
-D1 (see §5), and the dashboard uses its own DB-backed `sessions` table above, so
-no bearer-token table is needed on the backend side at all.
+D1 (§5), and the dashboard uses its own DB-backed `sessions` table above, so no
+bearer-token table is needed on the backend side at all.
 
 ### D1 (Worker-owned — auth, queue, bookmark mirror only)
 
 D1 tables use `STRICT` (enforcing declared column types, since SQLite is
 dynamically typed by default) and, where a table's primary key is non-integer
 and only ever looked up by that key, `WITHOUT ROWID` (avoiding an unnecessary
-hidden-rowid indirection) — applied below to the tables actually implemented so
-far; the rest of this section's tables will pick up the same convention as
-they're implemented.
+hidden-rowid indirection).
 
 `queue_items` and `pending_captures` use client-generated UUIDs rather than
 server-generated identity columns, for idempotency on retry (see §3c) and
 because the extension generates the ID before the row exists server-side.
 
 ```sql
--- Bookkeeping for the backend's own D1 migration runner (§5b) — not
--- wrangler's `d1_migrations` table; wrangler is not used anywhere in this
--- project's toolchain (see §15).
+-- Bookkeeping for the backend's D1 migration runner (§5b)
 CREATE TABLE schema_migrations (
   id TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -3277,18 +1833,17 @@ CREATE TABLE schema_migrations (
 
 -- Mirrors Postgres users.id for device pairing without ever exposing the
 -- backend. Holds only pairing_token_hash — no password-derived value of
--- any kind (see §5's redesign away from a password-hash mirror). Does NOT
--- include `role` — authorization is a backend/dashboard concern only. id
--- is never D1-generated: it's always supplied explicitly from the
--- Postgres-side value on every mirror-push INSERT, so plain
--- `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT) is correct here —
--- D1 only assigns its own value if a row is inserted with id omitted or
--- NULL, which never happens on this path. `username` is dropped entirely:
--- pairing is single-credential (submit the pairing token, no username), so
--- the Worker never needs to look a user up by name.
+-- any kind (§5). id is never D1-generated: it's always supplied explicitly
+-- from the Postgres-side value on every mirror-push INSERT, so plain
+-- `INTEGER PRIMARY KEY` (rowid alias, not AUTOINCREMENT) is correct here.
+-- `username` is dropped entirely: pairing is single-credential (submit the
+-- pairing token, no username), so the Worker never needs to look a user up
+-- by name. `pairing_token_hash` is nullable — a revoked user
+-- (`DELETE /api/pairing-token`, no reissue) has this cleared to `NULL` until
+-- they regenerate.
 CREATE TABLE users (
   id INTEGER PRIMARY KEY,
-  pairing_token_hash TEXT NOT NULL UNIQUE,
+  pairing_token_hash TEXT UNIQUE,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT;
 
@@ -3314,10 +1869,12 @@ CREATE INDEX idx_tokens_user_id ON tokens(user_id);
 -- added_by_token_id/claimed_by_token_id are ON DELETE SET NULL: device
 -- revocation (§8) is DELETE FROM tokens, and without SET NULL that DELETE
 -- throws a foreign key violation the moment the revoked device has ever
--- added or claimed a queue item -- discovered as a real 500 in testing,
--- not by design review. SET NULL is what actually makes the "revoked
--- device leaves nothing to name" LEFT JOIN behavior described below true,
--- rather than merely intended.
+-- added or claimed a queue item. SET NULL is what makes the "revoked
+-- device leaves nothing to name" LEFT JOIN behavior described below true.
+--
+-- manual_retry (§8) lets a failed item become claimable again without
+-- losing its `failed` status for the Queue screen's display purposes --
+-- cleared automatically the moment a device claims it.
 CREATE TABLE queue_items (
   id TEXT PRIMARY KEY,              -- client-generated UUID
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -3325,6 +1882,7 @@ CREATE TABLE queue_items (
   added_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
   status TEXT NOT NULL DEFAULT 'pending',  -- pending | claimed | captured | failed
   claimed_by_token_id INTEGER REFERENCES tokens(id) ON DELETE SET NULL,
+  manual_retry INTEGER NOT NULL DEFAULT 0,
   claimed_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) STRICT, WITHOUT ROWID;
@@ -3337,15 +1895,10 @@ CREATE INDEX idx_queue_items_user_status ON queue_items(user_id, status);
 CREATE INDEX idx_queue_items_added_by_token_id ON queue_items(added_by_token_id);
 CREATE INDEX idx_queue_items_claimed_by_token_id ON queue_items(claimed_by_token_id);
 
--- Completed captures awaiting backend pickup from R2.
--- Note: r2_key_thumbnail has been removed — screenshots are generated
--- backend-side from the already-pulled HTML (see §6), never uploaded by
--- the extension. r2_key_readable has been removed for the same reason —
--- Readability extraction also moved backend-side (see §6a), so no client
--- ever uploads reader text anymore. r2_key_favicon (§3g) is the one
--- exception to "the extension only ever uploads HTML": a favicon is a
--- genuinely separate resource that has to be fetched, not derived from the
--- already-captured HTML, so it stays a client-upload concern -- nullable,
+-- Completed captures awaiting backend pickup from R2. r2_key_favicon (§3g)
+-- is the one exception to "the extension only ever uploads HTML": a favicon
+-- is a separate resource that has to be fetched, not derived from
+-- the already-captured HTML, so it stays a client-upload concern -- nullable,
 -- since not every capture has one.
 CREATE TABLE pending_captures (
   id TEXT PRIMARY KEY,              -- client-generated UUID
@@ -3356,9 +1909,9 @@ CREATE TABLE pending_captures (
   r2_key_favicon TEXT,               -- e.g. ".../favicon.svg" -- the real
                                       -- extension lives in the key itself
                                       -- (§3g), not a separate mime column
-  captured_at TIMESTAMP NOT NULL,
-  fetched_by_backend BOOLEAN NOT NULL DEFAULT FALSE,
-  claimed_at TIMESTAMP,              -- backend pickup is an atomic claim,
+  captured_at TEXT NOT NULL,
+  fetched_by_backend INTEGER NOT NULL DEFAULT 0,
+  claimed_at TEXT,                   -- backend pickup is an atomic claim,
                                       -- not a plain read (§8) -- without it
                                       -- two agent processes both ingest the
                                       -- same row and the second silently
@@ -3368,10 +1921,14 @@ CREATE TABLE pending_captures (
                                       -- every agent presents the same
                                       -- service secret and has no
                                       -- per-instance identity
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT;
 
--- Bookmark-list mirror, kept in sync by the backend's own scheduled sync
+CREATE INDEX idx_pending_captures_user_id ON pending_captures(user_id);
+CREATE INDEX idx_pending_captures_queue_item_id ON pending_captures(queue_item_id);
+CREATE INDEX idx_pending_captures_fetched_by_backend ON pending_captures(fetched_by_backend);
+
+-- Bookmark-list mirror, kept in sync by the backend's scheduled sync
 -- job (internal/mirror.Syncer -- see §8 for the full design), not pushed
 -- on individual mutations. Pulled by the extension on its own coarse/
 -- on-demand schedule.
@@ -3384,8 +1941,8 @@ CREATE TABLE archived_pages (
   latest_capture_at TEXT NOT NULL,
   updated_at TEXT NOT NULL          -- mirrors Postgres pages.updated_at
                                      -- verbatim -- the sync checkpoint
-                                     -- itself (§8), not D1's own clock
-);
+                                     -- itself (§8), not D1's clock
+) STRICT;
 CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
 CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
 ```
@@ -3408,35 +1965,34 @@ writes to `schema_migrations`.
 
 ## 11. Components Summary
 
-| Component                 | Tech                                                                                                                                                                           | Reachability required                                              | Responsibility                                                                                                                                                 |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                                                                                                      | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6a), upload to R2                                                                  |
-| Share-sheet PWA           | Static site, served as Cloudflare Workers static assets bound to the same Worker below (Phase 9 — see §13's own note on the reversal from a separate Cloudflare Pages project) | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
-| iOS Shortcut              | Apple Shortcuts                                                                                                                                                                | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
-| CLI                       | Small script/binary                                                                                                                                                            | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
-| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting                                                                        | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
-| D1                        | Cloudflare D1 (SQLite)                                                                                                                                                         | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
-| R2                        | Cloudflare R2                                                                                                                                                                  | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
-| Backend                   | Go + Postgres, Docker Compose                                                                                                                                                  | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
-| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                                                                                                   | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6) and Readability extractions (§6a)                                                      |
-| Dashboard                 | Svelte                                                                                                                                                                         | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
+| Component                 | Tech                                                                                                    | Reachability required                                              | Responsibility                                                                                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Desktop browser extension | WebExtensions (Chrome/Firefox compatible)                                                               | Worker + R2 only                                                   | Poll queue, capture HTML via vendored SingleFile (no Readability — see §3a/§6b), upload to R2                                                                  |
+| Share-sheet PWA           | Static site, served as Cloudflare Workers static assets bound to the same Worker                        | Worker only                                                        | Android share-target: enqueue a URL, nothing else                                                                                                              |
+| iOS Shortcut              | Apple Shortcuts                                                                                         | Worker only                                                        | Enqueue a URL from iOS share sheet                                                                                                                             |
+| CLI                       | Small script/binary                                                                                     | Worker only                                                        | Enqueue URLs, scriptable                                                                                                                                       |
+| Cloudflare Worker         | Plain JS (ES modules), no build step — `@ts-check` + JSDoc for static type-checking, ESLint for linting | Public                                                             | Device auth (checks D1 credential mirror), issues bearer tokens, presigned R2 URLs, D1 read/write, service-secret-gated backend endpoints                      |
+| D1                        | Cloudflare D1 (SQLite)                                                                                  | N/A (accessed via Worker only, except backend migrations — §5b)    | Device tokens, queue, bookmark-list mirror, schema-migration bookkeeping                                                                                       |
+| R2                        | Cloudflare R2                                                                                           | N/A (accessed via presigned URLs)                                  | Temporary blob storage between capture and backend pickup                                                                                                      |
+| Backend                   | Go + Postgres, Docker Compose                                                                           | Outbound-only for archiving; inbound optional (dashboard, LAN/VPN) | Pull from R2, compress, store, version, search, tags, collections, AI enrichment, dashboard session auth, dashboard API, Postgres + D1 schema migrations (§5b) |
+| Headless-Chrome sidecar   | chromedp + `chromedp/headless-shell`, Docker                                                            | Backend-internal only (no inbound, no outbound)                    | Renders already-captured inlined HTML offline; produces thumbnails (§6a) and Readability extractions (§6b)                                                     |
+| Dashboard                 | Svelte                                                                                                  | Same as backend                                                    | Library browsing, search, reader view, version history, tags, collections, user/session management                                                             |
 
 ---
 
 ## 12. Deployment
 
-- **Backend**: Docker Compose, bundling the Go backend, Postgres, and the new
-  headless-Chrome screenshot sidecar as services. Postgres's data directory and
-  the local archive directory both use **bind mounts** (not named volumes) so an
+- **Backend**: Docker Compose, bundling the Go backend, Postgres, and the
+  headless-Chrome sidecar (§6) as services. Postgres's data directory and the
+  local archive directory both use **bind mounts** (not named volumes) so an
   external backup tool can snapshot them directly from the host (see §14).
 - **Cloudflare side**: Terraform/OpenTofu module in the public repo,
   provisioning D1, R2, the Worker (and its routes/bindings, plus the share-sheet
-  PWA's static files bound to that same Worker as of Phase 9 — see §13's own
-  note on why this isn't a separate Cloudflare Pages project), a
-  `random_password` resource for the backend↔Worker service secret (§5a), and a
-  `cloudflare_api_token` resource scoped to `D1:Edit` on the D1 database for the
-  backend's migration runner (§5b) — both output as `sensitive`, to be copied
-  into the backend's `.env` after `terraform apply`.
+  PWA's static files bound to that same Worker), a `random_password` resource
+  for the backend↔Worker service secret (§5a), and a `cloudflare_api_token`
+  resource scoped to `D1:Edit` on the D1 database for the backend's migration
+  runner (§5b) — both output as `sensitive`, to be copied into the backend's
+  `.env` after `terraform apply`.
 - **Networking**: the repo takes no position on how the backend/dashboard is
   exposed beyond the local machine — that's a deployment-time decision left to
   the operator (LAN-only, reverse proxy, VPN, tunnel, etc.). The core archiving
@@ -3447,647 +2003,76 @@ writes to `schema_migrations`.
 
 ## 13. Repository Layout
 
-Monorepo, structured flat by "what a thing is" rather than by architectural
-layer. Components only get their own directory when they genuinely need
-isolation (their own build tooling, dependency manifest, or — in the
-Worker/PWA's case — a hard requirement of having **no** build step at all). The
-screenshot service does not add a new top-level directory: it's driven by Go
-code in the existing backend module (via `chromedp`, connecting to the sidecar
-container over the network) plus a new service definition in
-`docker-compose.yml`.
-
-```
-recueil/
-├── main.go                  # embeds Postgres migrations/ and D1's
-│                               # terraform/worker/migrations/ (embed
-│                               # directives can't reach either from cmd/,
-│                               # one directory below both — see cmd/server.go),
-│                               # assigns them to exported cmd package vars,
-│                               # then os.Exit(cmd.Execute())
-├── cmd/
-│   ├── root.go              # cobra root command; owns the one signal-aware
-│   │                           # context (SIGINT/SIGTERM), threaded to
-│   │                           # subcommands via cmd.Context() rather than
-│   │                           # each subcommand creating its own (§13a)
-│   ├── server.go             # `recueil server` — the actual backend startup:
-│   │                            # config, both migration runs (via fs.Sub on
-│   │                            # the embedded FS's from main.go), the
-│   │                            # bootstrap holder, httpapi wiring, graceful
-│   │                            # shutdown on cmd.Context().Done()
-│   ├── agent.go              # `recueil agent` — the background job runner
-│   │                            # (ticker-driven Ingester.RunOnce +
-│   │                            # Syncer.SyncOnce; see §3e)
-│   ├── auth.go               # `recueil auth` — pairs this device, stores
-│   │                            # the result via internal/clicreds
-│   └── enqueue.go            # `recueil enqueue` — submits URLs to the
-│                                 # Worker's queue, via internal/deviceapi
-├── internal/
-│   ├── config/               # viper-based config: --config TOML file, env
-│   │                            # vars, defaults set in this package's own
-│   │                            # init() (§13a)
-│   ├── clicreds/              # where `recueil auth`/`enqueue` store/read
-│   │                             # this device's pairing result (§3f) --
-│   │                             # intentionally separate from
-│   │                             # internal/config, not one more thing
-│   │                             # that package's server-oriented Load()
-│   │                             # has to stay agnostic about
-│   ├── deviceapi/              # the CLI's own client for the Worker's
-│   │                             # public, device-facing endpoints
-│   │                             # (POST /pair, POST /queue) -- distinct
-│   │                             # from internal/mirror and
-│   │                             # internal/ingest.WorkerClient, both of
-│   │                             # which authenticate as the backend
-│   │                             # itself, never as a device (§3f)
-│   ├── auth/                  # password hashing, session tokens, bootstrap flow
-│   ├── db/                     # sqlc-generated query code (renamed from
-│   │                             # an earlier `dbgen` during Phase 1)
-│   ├── pgmigrate/              # applies migrations/*.sql via goose's Provider
-│   │                             # API against an already-open pool (§13a)
-│   ├── dbtest/                 # Postgres integration-test harness: connects
-│   │                             # to docker-compose.test.yml, applies
-│   │                             # migrations via internal/pgmigrate, t.Cleanup
-│   │                             # fixture factories (§13a)
-│   ├── d1migrate/              # applies D1 migrations via the Cloudflare
-│   │                             # API (§5b) against an fs.FS the caller
-│   │                             # supplies — main.go embeds
-│   │                             # terraform/worker/migrations/*.sql and
-│   │                             # passes it in, same pattern as pgmigrate
-│   ├── mirror/                 # pushes the credential mirror to the Worker
-│   ├── devices/                 # backend's service-secret-authenticated
-│   │                              # client for the Manage Devices Worker
-│   │                              # endpoints (GET/DELETE /internal/tokens)
-│   │                              # -- added Phase 6; same credential tier
-│   │                              # as mirror/ and ingest.WorkerClient, a
-│   │                              # different actor from deviceapi/'s
-│   │                              # paired-device bearer token
-│   └── httpapi/                # dashboard-facing HTTP handlers + chi router;
-│                                  # also mounts /info, /ping, /health
-│                                  # (unauthenticated — §13a) on the same router
-├── migrations/                 # Postgres migrations — plain .sql files, no
-│                                  # embed.go: main.go embeds these directly
-│                                  # (a sibling directory, no `..` needed) and
-│                                  # passes the fs.FS into pgmigrate.Run; the
-│                                  # test harness instead reads this same
-│                                  # directory straight off disk (os.DirFS),
-│                                  # since tests always run with the full repo
-│                                  # present and don't need go:embed's
-│                                  # binary-self-containment property (§13a)
-├── queries/                    # sqlc source .sql query files
-├── sqlc.yaml
-├── src/                     # Svelte dashboard source
-├── index.html                # Vite entry point
-├── Dockerfile
-├── go.mod
-├── package.json             # root: the Svelte dashboard's own package
-│                               # (Svelte/Vite/sass/svelte-check/
-│                               # svelte-spa-router deps) plus repo-wide
-│                               # shared tooling (eslint, prettier, vitest,
-│                               # typescript) — NOT the Worker's own deps;
-│                               # see §13a
-├── vite.config.ts
-├── svelte.config.js          # exports vitePreprocess() so svelte-check
-│                               # understands SCSS the same way Vite does
-├── tsconfig.json              # dashboard's own TS config (src/**, plus
-│                               # vite.config.ts/svelte.config.js)
-├── vitest.config.js          # root-level; covers Worker tests now, expected
-│                               # to grow a Svelte-scoped project (§13a)
-├── eslint.config.js           # root-level; per-directory-scoping (§13a) —
-│                               # now covers the dashboard's src/**/*.svelte
-│                               # and src/**/*.ts too, not just the Worker
-├── Makefile                   # test-db-up/test-db-down/test — the same
-│                                 # commands drive docker-compose.test.yml
-│                                 # locally and in CI (§13a)
-├── docker-compose.test.yml    # dedicated ephemeral test Postgres (§13a) —
-│                                 # distinct port + tmpfs, separate from the
-│                                 # dev database below
-│
-├── terraform/                  # OpenTofu module, the Worker's own source, AND
-│   │                              # the share-sheet PWA's static files --
-│   │                              # reversed from an earlier revision of this
-│   │                              # tree, which kept the Worker's source flat
-│   │                              # alongside the OpenTofu config and put pwa/
-│   │                              # at the repo root: once the PWA started
-│   │                              # deploying as static assets bound to this
-│   │                              # same cloudflare_workers_script resource
-│   │                              # (Phase 9) rather than a separate
-│   │                              # Cloudflare Pages project, both needed to
-│   │                              # live somewhere `path.module`-relative, so
-│   │                              # the Worker's own source moved into its own
-│   │                              # worker/ subdirectory and pwa/ became its
-│   │                              # sibling
-│   ├── main.tf                   # includes random_password for the
-│   │                                # backend↔Worker service secret (§5a) and
-│   │                                # a cloudflare_api_token scoped to D1:Edit
-│   │                                # for the backend's migration runner (§5b)
-│   ├── variables.tf
-│   ├── outputs.tf
-│   ├── versions.tf
-│   ├── waf.tf                    # Browser Integrity Check bypass ruleset
-│   │                                # for backend→Worker service-secret
-│   │                                # traffic (§5c)
-│   ├── README.md
-│   ├── worker/                   # plain JS, no build step for deployment —
-│   │   │                            # local test/lint tooling doesn't change
-│   │   │                            # that
-│   │   ├── index.js
-│   │   ├── package.json          # Worker's own devDependencies (wrangler,
-│   │   │                            # @cloudflare/*, @aws-crypto/*,
-│   │   │                            # @smithy/*) — added Phase 6, makes
-│   │   │                            # terraform/worker/ a pnpm workspace
-│   │   │                            # member; see §13a for why ESLint/Vitest
-│   │   │                            # themselves stay root-level regardless
-│   │   ├── tsconfig.json          # @ts-check/JSDoc type-checking, index.js only
-│   │   ├── migrations/            # D1 schema — applied by the backend (§5b),
-│   │   │   │                        # not by wrangler
-│   │   │   ├── 0000_schema_migrations.sql
-│   │   │   └── 0001_users.sql
-│   │   └── tests/                 # @cloudflare/vitest-pool-workers — real
-│   │       │                        # simulated D1 via Miniflare, not mocks
-│   │       ├── apply-migrations.js
-│   │       ├── fetch.test.js
-│   │       └── handleUserMirror.test.js
-│   └── pwa/                       # static share-target PWA (Phase 9), no
-│       │                            # build step, no dependencies — same
-│       │                            # "no build step" constraint as worker/,
-│       │                            # for the same reason (deploys as plain
-│       │                            # static files, not a build artifact).
-│       │                            # Served by main.tf's
-│       │                            # cloudflare_workers_script `assets`
-│       │                            # block, alongside worker/'s own
-│       │                            # content_file — one terraform apply for
-│       │                            # the whole Cloudflare side, not a
-│       │                            # separate Pages project + separate
-│       │                            # `wrangler pages deploy` step
-│       ├── index.html
-│       ├── style.css               # reuses src/app.scss's exact token
-│       │                              # values (extension/dashboard/PWA all
-│       │                              # share them today) rather than a new
-│       │                              # palette -- full reconciliation
-│       │                              # against the marketing site's own
-│       │                              # ledger/brass/stamp palette is still
-│       │                              # the separate, still-deferred
-│       │                              # "dashboard visual design system"
-│       │                              # item (§15)
-│       ├── app.js                  # pairs and enqueues same-origin (no
-│       │                              # Worker URL field anywhere in this
-│       │                              # app -- it's served by the Worker it
-│       │                              # talks to)
-│       ├── sw.js                   # minimal: satisfies installability,
-│       │                              # cache-first for the app shell only
-│       ├── manifest.json           # Web Share Target (GET, url/text/title)
-│       ├── icon.svg
-│       ├── token.html               # standalone (own token.js, no service
-│       │                              # worker) -- exchanges a pairing token
-│       │                              # for a bearer token and displays it
-│       │                              # once, for pasting into a client that
-│       │                              # can't run POST /pair itself (the
-│       │                              # iOS Shortcut recipe below); not
-│       │                              # part of app.js's own pair/enqueue
-│       │                              # flow, and saves nothing itself
-│       └── token.js
-
-├── extension/                # WebExtension, own package.json (needs bundling
-│   ├── src/                    # to pull in vendored SingleFile capture code
-│   ├── manifest.json            # and a WebExtension polyfill — no longer
-│   └── package.json             # Readability.js; see §3a/§6a)
-│
-├── www/                          # Zola site — self-contained, own layout
-│   │                                # (named www/, not website/ as an
-│   │                                # earlier revision of this tree had it)
-│   ├── zola.toml
-│   ├── content/
-│   ├── templates/
-│   └── sass/
-│
-├── pnpm-workspace.yaml
-├── docker-compose.yml            # backend + postgres + screenshot sidecar
-│                                    # (dev database — see docker-compose.test.yml
-│                                    # above for the separate test one)
-├── README.md                      # includes backup guidance, see §14
-└── LICENSE
-```
-
-Note: this tree reflects the Go package layout, Worker tooling, and the Postgres
-testing/migration setup as actually implemented, plus the root-level
-`vitest.config.js`/`eslint.config.js` placement agreed on during that work
-(§13a). The CLI's own commands (`auth.go`, `enqueue.go`) landed as flat files
-directly in `cmd/`, confirming they share `go.mod`/the single binary cleanly —
-not a separate `cmd/cli/` subdirectory as an earlier revision of this tree
-assumed, before the `main.go`/`cobra` restructure had actually produced
-`server.go`/`agent.go` as the pattern to follow. Phase 6 additionally corrected
-several other places where this tree had drifted from reality (some from before
-this project's own working sessions had reality to check it against): the
-Worker's source living flat in `terraform/`, not nested under a `worker/`
-subdirectory; the marketing site's actual directory name (`www/`, not
-`website/`); and `terraform/package.json`'s existence, per §13a.
-
-### Notes on specific decisions
-
-(Unchanged from v1 — see original rationale for Go-at-root, CLI sharing the
-server's Go module, the dashboard's build output being embedded via `go:embed`,
-the Worker/PWA's no-build-step requirement, the extension's own
-directory/bundler, and `www/`'s self-containment.)
+A monorepo, structured flat by "what a thing is" rather than by architectural
+layer — a component only gets its own directory when it needs isolation (its own
+build tooling, dependency manifest, or, for the Worker/PWA, the hard requirement
+of having no build step at all). See the root README for the current layout and
+package map.
 
 ### 13a. Implementation Stack & Tooling
 
-Concrete tooling choices made during implementation, kept here rather than split
-into a separate document — per this section's own placement, this is meant to be
-read before implementing the next piece, not discovered after the fact in a
-README that can drift out of sync with the architecture decisions around it.
+Build, test, and lint tooling is documented in the root/extension/terraform
+READMEs, not here — this section covers only tooling choices that reflect a real
+architectural constraint, not a build-process detail.
 
-**Backend (Go):**
-
-- **Postgres access:** `pgx/v5` as the driver; `sqlc` for codegen from
-  `queries/*.sql` against the `migrations/` schema (`sql_package: pgx/v5`) — the
-  hand-written query files are the source of truth, the generated code under
-  `internal/db/` is regenerable, not hand-maintained.
-- **Postgres migrations:** `goose`, as a library — not the external CLI. Uses
-  goose's `Provider` API (`goose.NewProvider`/`WithStore`/ `WithSessionLocker`)
-  rather than its older package-level `SetBaseFS`/ `SetDialect` functions: those
-  mutate shared package-global state, which is a genuine data race if ever
-  called concurrently within one process (confirmed with `-race` — two
-  goroutines calling them simultaneously race immediately, even setting
-  identical values); `Provider` scopes all config to the call and is documented
-  safe for concurrent use (confirmed: 8 concurrent calls against the same pool,
-  zero race warnings). Bookkeeping lives in a table named `schema_migrations`
-  (via `WithStore`), matching D1's migration bookkeeping table name, not goose's
-  default `goose_db_version`. Also takes a Postgres session (advisory) lock for
-  the duration of a migration run (`WithSessionLocker`), so two processes racing
-  to migrate the same database — a rolling deploy briefly overlapping two
-  backend instances, a stray manual invocation — serialize rather than
-  interleave. Takes an already-open `*pgxpool.Pool` rather than a database URL,
-  so a caller that already has a pool (production startup, the test harness
-  below) doesn't open a second connection just to migrate. This resolves the
-  goose-as-library question raised and deferred earlier (see §15) — and ends up
-  going a step further than D1's migration runner by adding the session lock,
-  which D1's Cloudflare-API-based approach has no equivalent for.
-- **Postgres test harness:** `internal/dbtest` — connects to a dedicated,
-  ephemeral test Postgres container (`docker-compose.test.yml`; a distinct port
-  from the dev database so both can run at once; `tmpfs` data directory so every
-  start is genuinely clean, unlike dev's bind-mounted durability), applies
-  migrations via the same `internal/pgmigrate` code path production startup uses
-  — not a separate test-only migration runner — and provides
-  `t.Cleanup`-registering fixture factories (`CreateUser`, `CreateSession`).
-  Fails the test hard (`t.Fatalf`) if the database isn't reachable, never skips:
-  a missing test database should be loud everywhere it happens, not quietly
-  hidden behind a passing (skipped) run. `Reset` (for tests needing a
-  guaranteed-clean starting state) truncates every table in the schema
-  discovered dynamically via `pg_tables`, not a hardcoded list — so it doesn't
-  need updating every time a migration adds a table, and correctly clears tables
-  with no foreign-key path back to `users` at all, which a hardcoded
-  `TRUNCATE users CASCADE` would silently miss. `testcontainers-go` was
-  considered for container provisioning and rejected: its dependency tree (a
-  full Docker API client, containerd, OpenTelemetry, `gopsutil`) is heavier than
-  anything else in this project, including Viper.
-  `make test-db-up`/`test-db-down`/`test` drive the same
-  `docker-compose.test.yml` locally and in CI, rather than a separately
-  maintained GitHub Actions `services:` block.
-- **D1 migrations:** run by the backend itself at startup — embedded
-  (`go:embed`) SQL files applied via a direct call to Cloudflare's D1 query API
-  using the official `cloudflare-go` SDK. See §5b for the credential and
-  rationale; tracked in D1's `schema_migrations` table (§10), not wrangler's.
-- **CLI / config:** `cobra` for command structure — `main.go` embeds both
-  migration directories and hands them to the `cmd` package (see the repo tree
-  above), then `os.Exit(cmd.Execute())`; the actual backend startup lives in
-  `cmd/server.go` as a `recueil server` subcommand, not in `main.go` itself.
-  `Execute()` owns a single signal-aware context (`signal.NotifyContext` on
-  `SIGINT`/`SIGTERM`) passed to `rootCmd` via `ExecuteContext`; subcommands read
-  it back via `cmd.Context()` rather than each creating its own — confirmed for
-  real that this context reaches a subcommand's `RunE` correctly and that its
-  cancellation is what `cmd/server.go` waits on to shut the HTTP server down
-  gracefully (a real behavior this gained over the phase-1 `main.go`, which
-  built a cancellable context but never actually used it). `viper` for
-  configuration — an explicit `--config` TOML file (shell completion restricted
-  to `.toml` via `MarkPersistentFlagFilename`, no automatic search of `$HOME` or
-  the working directory the way cobra-cli's default scaffold does), environment
-  variables, and in-package defaults. Defaults are set in `internal/config`'s
-  own `init()`, not in `cmd/root.go` — they need to apply regardless of which
-  binary or test calls `config.Load()`, not only when `cmd`'s `init()` has
-  already run. Viper pulls in a notably heavier dependency tree than most
-  choices in this project — parsers for formats never used (YAML, HCL, Java
-  properties, INI, dotenv) alongside the one actually used (TOML) — accepted for
-  the CLI-ecosystem integration cobra and viper provide together, on the
-  reasoning that Go's own dead-code elimination strips the unused format parsers
-  from the final binary regardless of how large the source dependency is.
-- **Health checks:** `go.finelli.dev/healthchecks` (module
-  `github.com/mfinelli/go-healthchecks`), mounted directly on the same chi
-  router as the dashboard API (`internal/httpapi`) rather than a second port —
-  `/info` (build metadata), `/ping` (machine-consumable status code, for a
-  Docker `HEALTHCHECK` or uptime monitor), `/health` (always `200`,
-  human-readable JSON detail on failure). Deliberately unauthenticated and
-  registered outside the `RequireSession` group. Two things confirmed against
-  the real library rather than assumed from its docs: it declares
-  `package healthcheck` (singular) despite the plural import path, and its
-  handlers are returned as the library's own unexported function type, not
-  `http.HandlerFunc` — chi's `Get` requires the latter specifically, so mounting
-  them needs an explicit `http.HandlerFunc(hc.Health())` conversion, not a
-  direct pass. The `Check` function itself calls a small `Ping` method added to
-  `internal/db.Queries` (`SELECT 1` through the existing `DBTX` interface)
-  rather than threading the raw `*pgxpool.Pool` into `httpapi`.
-- **Metrics:** `/metrics`, Prometheus exposition format, mounted on the same chi
-  router (`internal/metrics`). Standard Go runtime and process collectors
-  (`collectors.NewGoCollector`/`NewProcessCollector`) plus custom gauges — a
-  `recueil_users_total` count, and, once the screenshot/readability/AI jobs
-  existed to have something worth watching, `recueil_jobs_total{job,status}`
-  (every (job, status) combination emitted explicitly every scrape, including
-  zeros, rather than only whatever a given scrape's query happens to return —
-  PromQL's `rate()`/`sum()` behave far more predictably against a
+- **`recueil server` owns a single signal-aware context**
+  (`signal.NotifyContext` on `SIGINT`/`SIGTERM`), passed down via
+  `cmd.Context()` rather than each subcommand creating its own — this is what
+  its graceful shutdown waits on to stop accepting requests cleanly.
+- **The archived-HTML endpoint sends a defensive
+  `Content-Security-Policy: script-src 'none'`**, even though SingleFile's
+  capture already strips scripts — belt-and-suspenders, since that response is
+  served same-origin with the authenticated dashboard, and anything that slipped
+  through would otherwise run with access to the session cookie.
+- **`internal/metrics` is Postgres-only, even where D1 has the more complete
+  picture** — real queue depth (`queue_items`/`pending_captures` counts) lives
+  only in D1, and a typical Prometheus scrape interval hitting the Worker on
+  every tick risks the Cloudflare free tier for no operational benefit worth
+  that cost. Every `(job, status)` combination is emitted explicitly on every
+  scrape, including zeros, rather than only whatever a scrape's query happens to
+  return — PromQL's `rate()`/`sum()` behave far more predictably against a
   continuously-present-at-0 series than one that silently appears and
-  disappears) and `recueil_job_oldest_pending_age_seconds{job}` (absent, not
-  zero, for a job type with nothing currently pending — a real backlog signal a
-  raw pending count alone wouldn't surface as clearly). Every metric here is a
-  `prometheus.Collector` that queries fresh on every scrape rather than
-  maintaining cached state. Deliberately built on its own
-  `prometheus.NewRegistry()`, not the global `prometheus.DefaultRegisterer` —
-  same reasoning as choosing goose's `Provider` API over its package-level
-  `SetBaseFS`/`SetDialect`: avoids hidden shared mutable state that could
-  collide across multiple instantiations (confirmed via test: two
-  independently-built registries never collide, which they would under the
-  global default). A failed collection (e.g. the DB unreachable) is logged and
-  simply omits that one metric rather than failing the whole scrape — confirmed
-  for real, both the success and failure paths, independently for each custom
-  gauge.
+  disappears. `recueil_agent_last_success_seconds{cycle}` is gated on every step
+  of that cycle succeeding, not just the cycle running, since recording a
+  heartbeat regardless of outcome would hide exactly the failure it exists to
+  catch.
+- **Testing convention: no mocks for anything that talks to a real dependency.**
+  DB-touching code runs against a real Postgres (`internal/dbtest`); code that
+  calls an external HTTP API runs against a real `httptest.Server`; the
+  sidecar-driving jobs (§6) run against a real `chromedp` instance.
+  `internal/httpapi` handler tests are external `_test` packages, exercising
+  only exported constructors the way a real caller would.
+- **The dashboard is plain Svelte 5 + Vite (no SvelteKit)** — the session model
+  is already a same-origin `httpOnly`/`SameSite=Lax` cookie (§5) checked via
+  ordinary chi middleware, so there's no SSR or server-side data-loading need
+  SvelteKit's extra layer would earn its keep for.
+- **Frontend tests of Svelte 5 runes need `resolve.conditions: ['browser']`
+  alongside `environment: 'jsdom'`** in the Vitest config — without it, `$state`
+  silently resolves to Svelte's inert SSR runtime rather than a live reactive
+  signal, testing the wrong thing without ever failing loudly.
 
-  **Everything here is Postgres-only by design, even where D1 has the more
-  complete picture.** True queue depth (`queue_items`/`pending_captures` counts)
-  lives only in D1, and a Prometheus scrape interval (15-60s typical) hitting
-  the Worker on every tick risks the Cloudflare free tier for no operational
-  benefit worth that cost.
-
-  - `recueil_pages_total`, `recueil_captures_total`, and
-    `recueil_storage_bytes{kind}` (`html_compressed` | `html_uncompressed` |
-    `favicon` | `screenshot`) reuse `GetSystemStats` — the same query the
-    dashboard's admin stats screen already runs — rather than adding a
-    metrics-specific one. Doubles as free ingestion-throughput visibility
-    (`rate()`/`increase()` over either total) without ever asking the Worker,
-    which is the more useful "is the queue actually draining" signal anyway
-    compared to a raw depth count.
-  - `recueil_agent_last_success_seconds{cycle}` (`worker` | `local`, matching
-    `AgentWorkerPollIntervalSeconds`/`AgentLocalPollIntervalSeconds` — see
-    cmd/agent.go) answers a real gap: `recueil agent` is a separate deployed
-    process from `recueil server` (§2), and `/metrics` is only mounted on
-    `server`'s router, so nothing today surfaces whether the agent is still
-    alive and succeeding versus silently stuck. Backed by a new
-    `agent_heartbeats(cycle, last_success_at)` table the agent upserts into
-    itself after a cycle completes — but only when every step in that cycle
-    succeeded, not merely because the cycle ran: `workerCycle.run`'s heartbeat
-    is gated on ingestion _and_ mirror sync both succeeding (explicitly
-    excluding the once-per-`cleanupInterval` D1 sweep, which is best-effort
-    maintenance, not part of every cycle), and `runLocalCycle`'s on screenshot,
-    readability, and AI enrichment (when enabled) all succeeding. Recording a
-    heartbeat regardless of outcome would hide exactly the failure this metric
-    exists to catch. Same absent-not-zero shape as the job-age gauge: a cycle
-    that's never recorded a success has no row at all, not a stale zero.
-
-- **OpenTelemetry (distributed tracing) was considered and intentionally
-  deferred, not rejected outright.** The core API/SDK
-  (`go.opentelemetry.io/otel`) is actually light on its own (just `go-logr`),
-  but any real exporter — confirmed even the OTLP-over-HTTP variant, not just
-  gRPC — pulls in `google.golang.org/grpc`'s full tree, comparable in weight to
-  `testcontainers-go` (§13a, rejected earlier for the same reason). More
-  fundamentally, tracing's value scales with a request's hop count across
-  services, and this project's current call graph is shallow (one backend
-  process, Postgres, occasional Worker calls) — the architectural case isn't
-  there yet, and self-hosted personal-scale operators are unlikely to be running
-  a trace backend to send spans to regardless. Worth revisiting once the
-  screenshot service (§6) and AI enrichment (§7) exist as a genuine async
-  multi-stage pipeline — that's the shape (multiple hops, independent failure
-  points, a second real process boundary in the chromedp sidecar) where
-  tracing's value proposition actually applies here.
-- **Password hashing:** `bcrypt` (`golang.org/x/crypto/bcrypt`).
-- **HTTP routing:** `chi` (`github.com/go-chi/chi/v5`) — confirmed zero
-  transitive dependencies, and its middleware signature
-  (`func(http.Handler) http.Handler`) is identical to stdlib's own convention,
-  so `internal/auth`'s `RequireSession`/`RequireAdmin` needed no changes to work
-  as ordinary chi middleware. This supersedes the earlier phase-1 choice of
-  stdlib `net/http`'s own pattern routing with no router library at all —
-  reasonable for three routes, less so once route grouping (stating an auth
-  requirement once for a whole group, e.g. future admin-scoped routes under §5's
-  Manage Devices screen) and middleware composition became the actual friction,
-  rather than routing itself.
-- **HTTP middleware:** `github.com/go-chi/httplog/v2` for structured request
-  logging, plus a handful of chi's own middlewares — chosen and ordered based on
-  what actually held up under testing, not just chi's defaults.
-  `httplog.RequestLogger` already wraps chi's own `RequestID` and `Recoverer`
-  internally (confirmed via source and by intentionally panicking a handler:
-  clean `500`, full stacktrace logged, server kept running) — neither needed
-  adding separately. `CleanPath` is kept; `RedirectSlashes` is not, because
-  `CleanPath`'s `path.Clean()` silently strips a trailing slash into chi's
-  internal `RoutePath` before any redirect-based slash-handling middleware would
-  ever see one — confirmed for real that a `POST` to a trailing-slash route
-  variant hits the handler directly with no visible redirect, same method,
-  making `RedirectSlashes` inert given this ordering (and a silent internal
-  normalization is the safer behavior for a JSON API regardless — no HTTP
-  redirect method-preservation question ever arises). `RequestSize` (1MB cap)
-  and `Timeout` (30s, returning `504`) are route-agnostic hardening applied
-  globally; `AllowContentType("application/json")` is scoped to the `/api`
-  sub-router specifically, since it's enforcing the JSON API's data contract,
-  not a general protection every current or future route should inherit
-  (confirmed harmless on bodyless requests either way — it skips the check when
-  `r.ContentLength == 0` — but scoped for what it communicates, not because
-  scoping changes behavior today). `RealIP` was considered and not added:
-  genuinely useful behind a trusted reverse proxy, but this project treats
-  network exposure (LAN-only, VPN, tunnel, reverse proxy) as entirely the
-  operator's choice (§2, §12) — blindly trusting a client-supplied header
-  without knowing a proxy is actually in front would let anyone reachable spoof
-  their IP in logs. `pprof` (`middleware.Profiler`) was also considered and not
-  added: useful for an operator diagnosing their own instance, but exposes
-  sensitive runtime info and its own CPU-cost surface, not something to mount on
-  the same unauthenticated router as health checks without a separate,
-  deliberate decision about how it's gated.
-- **Testing:** `testify`, with table-driven cases (`t.Run` subtests, or
-  `[]struct{...}` tables) where that reduces duplication rather than as a
-  blanket rule. For code that calls an external HTTP API, tests run against a
-  real `httptest.Server` plus that library's own base-URL override where one
-  exists (e.g. `option.WithBaseURL` for `cloudflare-go`), rather than a
-  hand-rolled interface mock — closer to the real request/response shape for the
-  same effort. Handler-level tests (`internal/httpapi`) are written as external
-  `_test` packages exclusively — exercising only the package's exported
-  constructors, the same way a real caller would, rather than reaching into
-  unexported internals.
-
-**Cloudflare Worker:**
-
-- **No build step, ever.** Plain JS (ES modules), not TypeScript; deployed via
-  Terraform's Cloudflare provider directly, never `wrangler deploy`.
-- **Static type-checking without a build step:** `@ts-check` + JSDoc annotations
-  in `index.js`, checked via `tsc --noEmit` against a `tsconfig.json` scoped to
-  the deployed script only. Test files are deliberately out of that scope — they
-  import the `cloudflare:test` virtual module, which only exists inside the
-  Vitest pool's runtime and which plain `tsc` has no way to resolve.
-- **Linting:** ESLint (flat config), root-level (`eslint.config.js`), scoped
-  per-directory via each config object's `files` glob rather than a separate
-  config file per component. The Worker's own `index.js` needs
-  `globals.serviceworker` (for `Request`/`Response`/`URL`/`fetch`/`crypto`, none
-  of which are standard Node or browser globals as far as ESLint's built-in
-  knowledge goes); its test files additionally need `globals.vitest`. Phase 6
-  added the expected Svelte-dashboard-scoped block to this same file (`.svelte`/
-  dashboard `.ts` globs, `typescript-eslint` + `eslint-plugin-svelte`) rather
-  than a separate config file, as planned here.
-- **Testing:** `@cloudflare/vitest-pool-workers` — runs test files inside the
-  real `workerd` runtime (not a Node-side approximation of it), with Miniflare
-  providing a real local D1 database. The same `migrations/*.sql` files that
-  back §5b's runtime migrations are applied to that local database via
-  `readD1Migrations`/`applyD1Migrations`, so there's one schema source of truth
-  rather than a separate test fixture schema to keep in sync. Root-level
-  `vitest.config.js`, using Vitest's `projects` array (not the older, now
-  superseded `vitest.workspace.ts` mechanism) so the same file and the same
-  `vitest run` invocation will also cover Svelte dashboard tests once those
-  exist — each project scoped to its own runtime/environment (`workerd` for the
-  Worker, presumably `jsdom` or similar for Svelte component tests), never mixed
-  within one project.
-- **Dependency ownership vs. tooling orchestration are separate concerns.**
-  `terraform/package.json` (added in Phase 6) holds the Worker's own
-  dependencies (`wrangler`, `@cloudflare/*`, `@aws-crypto/*`, `@smithy/*`) and
-  makes `terraform/` a pnpm workspace member, mirroring `extension/`'s existing
-  pattern (its own `package.json` for `esbuild`/`web-ext`/`crx3`, but no
-  `eslint.config.js`/`vitest.config.js` of its own). ESLint and Vitest
-  themselves, though, stay root-level and package-agnostic — they orchestrate
-  across every workspace member (Worker, extension, and now the dashboard's own
-  `src/`) via per-directory `files` globs / per-project scoping rather than each
-  package running its own separate lint/test invocation. Root `package.json` is,
-  correspondingly, the Svelte dashboard's own package (its `dependencies`/
-  `devDependencies` are Svelte/Vite/dashboard-specific), not a shared dumping
-  ground for every package's deps — an earlier revision of this section had that
-  backwards. The "no build step" constraint is about what ships to Cloudflare on
-  deploy; it was never a constraint on what local tooling (including a
-  `package.json` purely for devDependencies) is allowed to exist for development
-  and CI.
-
-**Svelte Dashboard:**
-
-- **Svelte 5 (runes), Vite, TypeScript, SCSS** — a real build step, unlike the
-  Worker/PWA: `go:embed`-ing the built `dist/` output into the Go binary means
-  nothing about the "no build step" constraint applies here (that constraint is
-  specifically about what ships to Cloudflare on deploy). SCSS support comes
-  from `@sveltejs/vite-plugin-svelte`'s own `vitePreprocess()` (exported via
-  `svelte.config.js`, so `svelte-check` sees the same preprocessing Vite itself
-  uses) — not the separate `svelte-preprocess` package, which the modern
-  Vite-plugin-Svelte toolchain has made redundant for the common TS/SCSS case.
-- **Routing:** `svelte-spa-router` — a small client-side router, not SvelteKit.
-  SvelteKit's file-based routing/server-route/loader machinery would mostly go
-  unused here: the session model is already a same-origin
-  `httpOnly`/`SameSite=Lax` cookie (§5) checked via ordinary chi middleware, so
-  there's no SSR or server-side data-loading need SvelteKit's extra layer would
-  actually earn its keep for.
-- **Dev workflow:** `pnpm dev` runs Vite's own dev server, whose config proxies
-  `/api` to the Go backend (default `http://localhost:8080`, matching
-  `listen_addr`'s own default) so the dashboard doesn't need a full Go rebuild
-  on every frontend change. `dist/` is gitignored, not committed — built via
-  CI/the Makefile like any other generated output, same convention as
-  `internal/db/`.
-- **Capture HTML delivery** (`GET /api/captures/{id}/html`) prefers passing
-  through the archive's own on-disk zstd compression untouched
-  (`Content-Encoding: zstd`) when the client's `Accept-Encoding` says it can
-  handle it, rather than decompressing server-side just to maybe recompress.
-  Otherwise it decompresses and leans on `middleware.Compress`'s existing
-  gzip/deflate negotiation (its allowed-types list includes `text/html`
-  specifically for this) rather than hand-rolling a second compression path —
-  verified against chi's own `compress.go` source that it steps aside correctly
-  once `Content-Encoding` is already set, so the two paths can't double-compress
-  each other.
-
-- **API client:** hand-rolled (`src/lib/api.ts`), not generated — there's no
-  OpenAPI spec on the Go side to generate from, so response types
-  (`src/lib/types.ts`) are manually kept in sync with `internal/httpapi`'s own
-  response DTOs. A real, disclosed sync point (unlike `sqlc`'s automated
-  Postgres↔Go one), judged acceptable while the API surface stays the size it
-  currently is.
-- **Session/auth:** Svelte 5 runes-based state (`src/lib/session.svelte.ts`),
-  bootstrapped once via a module-level `sessionReady` promise that `App.svelte`
-  awaits before ever mounting the router — route guards (`svelte-spa-router`'s
-  `wrap({conditions})`) don't need their own "have we checked session state yet"
-  handling as a result. `GET /auth/me` and the new `GET /api/setup-status`
-  (unauthenticated, closing a real gap: there was no way to distinguish "show
-  Setup" from "show Login" on first load) run via `Promise.allSettled`, not
-  `Promise.all` — one failing shouldn't strand the app on the loading screen
-  forever.
-- **Favicon/thumbnail delivery** (`GET /api/pages/{id}/favicon`,
-  `GET /api/pages/{id}/thumbnail`): unlike capture HTML, no content-negotiation
-  dance — small already-binary images, not worth it. Deliberately no
-  `Cache-Control` either: both URLs are page-identity- addressed, not
-  content-addressed, so a later re-capture changing the favicon/thumbnail
-  shouldn't risk being masked by a stale browser cache. Thumbnails aren't a
-  denormalized `pages` column the way `favicon_path` is (they're written async
-  by the screenshot job well after ingestion, not at `UpsertPage` time), so the
-  thumbnail endpoint resolves the latest capture fresh per request instead.
-
-- **Frontend logic testing**: a `"dashboard"` Vitest project alongside the
-  existing Worker/extension ones, deliberately scoped to logic
-  (`src/lib/*.test.ts`) rather than component rendering for now — a separate,
-  later decision with its own setup cost (`@testing-library/svelte`). Testing
-  Svelte 5 runes under Vitest needs `resolve.conditions: ['browser']` alongside
-  `environment: 'jsdom'`; without it `$state` resolves to Svelte's inert SSR
-  runtime rather than a live reactive signal, silently testing the wrong thing
-  rather than failing loudly. Verified against Svelte's own official testing
-  docs, not assumed.
-- **`src/components/`** (new, alongside `src/lib/` and `src/routes/`): shared UI
-  that's neither pure logic nor a routed page. `AppHeader.svelte` is the first
-  resident — extracted once three real screens would otherwise be repeating the
-  same title/nav/account bar, not decided in advance of needing it.
-- **Optimistic writes, not refetch-after-write**: `PageDetail`'s tag/
-  collection/mirror-toggle/language-correction actions all update local state
-  directly from each write's own response. Reasonable for a single-user personal
-  tool; not defended against concurrent-editor conflicts, and would need
-  reconsidering if multi-user concurrent editing of the same page ever became a
-  real scenario.
-- **Collections management** (`Collections.svelte`): the tree is built
-  client-side from the flat `(id, parent_id)` list `GET /api/collections`
-  already returns, not requested pre-nested — consistent with
-  `ListCollectionsByUser`'s own documented reasoning that a full-user listing
-  doesn't need a recursive CTE. Cascading delete (removing a collection removes
-  its whole subtree, per §10) surfaces a `confirm()` naming the actual
-  descendant count before proceeding, rather than a silent or generic warning.
-
-- **In-app reader view, not an iframed archived-HTML view.** Settled during
-  planning: the archived HTML is a full, self-contained snapshot of the original
-  page's own layout/CSS/images, and an iframe would mean fighting
-  sizing/scrolling for the whole viewing session for little benefit over a plain
-  new tab, which gets native zoom/find-in-page/the full viewport for free.
-  `reader_text` gets the in-app treatment instead — nothing to sanitize, safe to
-  render directly. The archived-HTML endpoint itself also picked up a defensive
-  `Content-Security-Policy: script-src 'none'` regardless (belt-and-suspenders
-  on top of the extension's own `blockScripts: true` capture setting, since the
-  response is served same-origin with the dashboard).
-
-- **Fonts and icons** (visual-pass tooling, Phase 12): `@fontsource/fraunces`
-  and `@fontsource/ibm-plex-mono` self-host the dashboard's two non-body font
-  families rather than pulling from a CDN — the dashboard is the authenticated
-  half of a self-hosted tool, unlike the marketing site's public page.
-  `@lucide/svelte` (the current official package; not the deprecated
-  `lucide-svelte` v0 name) provides icons via per-icon subpath imports, with
-  app-wide size/stroke-width defaults set once through its own `setLucideProps`
-  context API rather than a local wrapper component. Same category as
-  `chi`/`cobra`/`viper` above — a concrete tooling choice, not an architectural
-  one. The actual design tokens/patterns these support (color palette,
-  typography roles, breakpoints, icon usage conventions) live in the new
-  `DESIGN_SYSTEM.md`, not here — that content is a living reference meant to be
-  read while building a screen, a different shape than this section's own
-  tooling-choice log.
-
-This section is expected to keep growing as the extension, dashboard, and CLI
-are built out.
+This isn't comprehensive — it's the subset of tooling decisions that would
+otherwise cost real debugging time to rediscover. Visual/UX design tokens and
+patterns live in `DESIGN_SYSTEM.md`, not here.
 
 ---
 
 ## 14. Backup & Restore
 
-**The application performs no automated backup.** This is a deliberate choice:
-baking `pg_dump` (or equivalent) into the backend's own image or shelling out to
-it from the Go binary is an awkward dependency for an application binary to
-carry, and commits the project to tracking Postgres version compatibility
-indefinitely. Instead, backup is documented as the operator's responsibility.
+**The application performs no automated backup.** This is an intentional choice:
+baking `pg_dump` (or equivalent) into the backend's image or shelling out to it
+from the Go binary is an awkward dependency for an application binary to carry,
+and commits the project to tracking Postgres version compatibility indefinitely.
+Instead, backup is documented as the operator's responsibility.
 
 ### What must be backed up
 
 Two things, together, on the same schedule:
 
-1. **The Postgres database** — via `pg_dump` or equivalent. This is the
-   irreplaceable half: page groupings, tags, collections, version history,
-   accounts. Note that copying Postgres's raw data directory while the container
-   is running is **not** safe without WAL-aware tooling — a proper dump (or a
-   backup tool that understands Postgres's on-disk format) is required, not a
-   raw file copy.
+1. **The Postgres database** — via `pg_dump` or equivalent. Note that copying
+   Postgres's raw data directory while the container is running is **not** safe
+   without WAL-aware tooling — a proper dump (or a backup tool that understands
+   Postgres's on-disk format) is required, not a raw file copy.
 2. **The local archive directory** (zstd-compressed HTML + thumbnails) — a plain
    directory copy/sync is fine here, since these are static files once written.
 
@@ -4104,422 +2089,41 @@ should be backed up in the same job/window.
 ### Restore
 
 - **`captures.html_path` is stored relative to the backend's configured
-  archive-directory root**, not as an absolute path — a reversal from an earlier
-  revision of this document, which specified absolute paths on the reasoning
-  that a restore then had to land at the exact same mount path or lookups would
-  break. That's backwards: a relative path is strictly more flexible with no
-  real cost — the operator can restore to any location and simply point the
-  (already-required) archive-directory config value at it, move the archive
-  directory later without a database migration, and the database itself doesn't
-  bake in one host's specific filesystem layout. The one real constraint this
-  leaves is unchanged in spirit, just relocated: whatever archive-directory path
-  the backend is configured with at restore time must actually contain the
-  restored files at the expected relative layout (see §4 for the actual on-disk
-  layout: three levels of hex sharding on a per-capture UUIDv7) — the config
-  value can point anywhere, but it does have to point somewhere real.
+  archive-directory root**, not as an absolute path — the operator can restore
+  to any location and simply point the (already-required) archive-directory
+  config value at it, move the archive directory later without a database
+  migration, and the database itself doesn't bake in one host's specific
+  filesystem layout. One real constraint: whatever archive-directory path the
+  backend is configured with at restore time must actually contain the restored
+  files at the expected relative layout (§4 covers the on-disk sharding) — the
+  config value can point anywhere, but it does have to point somewhere real.
 - After restoring Postgres from a backup, the **D1 credential mirror can be
   stale** relative to the restored state (e.g. password changes or account
   creations made after the backup was taken won't be reflected, or deleted/
   changed accounts may still have valid mirrored credentials).
-  **`recueil user resync`** (Phase 9, `cmd/user.go`) is the manual resync
-  command this section called for — CLI-only, not an admin dashboard action,
-  matching the operator-only precedent already set for device management. It
-  re-runs the same idempotent `mirror.PushUser` push already used at
-  create/regenerate/revoke time across every account: decrypts each account's
-  `pairing_token_enc` where present, re-hashes it, and re-pushes it (or pushes
-  `nil` for an account with a revoked/NULL token, clearing any stale D1 hash
-  left over from before the restore). Should be run after any Postgres restore.
+  **`recueil user resync`** re-runs the same idempotent `mirror.PushUser` push
+  already used at create/regenerate/revoke time across every account: decrypts
+  each account's `pairing_token_enc` where present, re-hashes it, and re-pushes
+  it (or pushes `nil` for an account with a revoked/NULL token, clearing any
+  stale D1 hash left over from before the restore). CLI-only, not an admin
+  dashboard action, matching the operator-only precedent already set for device
+  management. Should be run after any Postgres restore.
 
 ---
 
-## 15. Open Questions / Future Decisions
+## 15. MCP Server
 
-All items from the previous revision have been resolved (AI tag styling,
-manage-devices design, bootstrap hardening, and registration model — see §5,
-§7). Phase 0 (Cloudflare scaffolding — D1, R2, and a bare Worker, provisioned
-via a public Terraform module) is also complete and resolved the module layout
-question below in favor of a reusable module in `terraform/`, consumed via
-source = `"..."` (pinned to a tag once releases exist) from the operator's own
-root config.
-
-Phase 1 (backend + Postgres + bootstrap admin, §5) is also complete: session
-auth, the bootstrap-admin flow (§5, now in-memory as described there), and the
-Worker's first real route (`/internal/users/mirror`, §5, §5b) are built and
-tested. **`wrangler` is deliberately absent from this project's toolchain
-entirely** — the Worker deploys via Terraform's Cloudflare provider directly
-(not `wrangler deploy`), and D1 schema migrations run via a direct,
-backend-embedded call to Cloudflare's D1 query API (§5b) rather than
-`wrangler d1 migrations apply`. This is worth stating plainly since it's a real,
-deliberate absence rather than something that just hasn't come up yet.
-
-Since that revision, Postgres migrations were also moved off the external
-`goose` CLI and onto goose-as-a-library (§13a), resolving the item this section
-previously left open — Postgres now mirrors D1's "the binary applies its own
-migrations" shape, and in one respect goes further (a session advisory lock
-around the migration run, which D1's Cloudflare-API-based approach has no
-equivalent for). `chi` also replaced stdlib `net/http`'s own routing (§13a) once
-route grouping and middleware composition became the actual friction as the API
-surface grew past a handful of routes; `cobra` and `viper` were adopted for CLI
-structure and configuration. None of these supersede an architectural decision
-recorded elsewhere in this document — they're implementation-phase tooling
-choices, tracked in §13a rather than here.
-
-What remains open is purely implementation-phase, not architectural:
-
-- **Resolved this round (Phase 9): `ENABLE_OPEN_REGISTRATION` is built**
-  (config: `enable_open_registration`, default `false`) — gates
-  `POST /api/auth/register` directly in the handler rather than conditionally
-  registering the route, so routing stays static. Defaulted closed rather than
-  matching the previously-unconditional-open behavior: a self-hosted personal
-  archiving tool has no business letting anyone who can reach the dashboard
-  create their own account by default, and nothing was depending on the old
-  behavior since this was pre-1.0.
-- The pairing-token redesign (round five) retrofitted already-built Phase 1
-  code: the `/internal/users/mirror` Worker route and D1 `users` schema both
-  changed from password-hash mirroring to pairing-token-hash mirroring before
-  Phase 2's device-pairing endpoint could be built against them. This is now
-  complete.
-- **Resolved this round:** the Worker API endpoint surface flagged as "the
-  logical next design step" in the previous revision — device pairing
-  (`POST /pair`), the queue (`POST /queue`, `GET /queue`,
-  `POST /queue/:id/claim`), device-token management
-  (`GET`/`DELETE /internal/tokens`), and queue-item cleanup
-  (`POST /internal/queue-items/cleanup`) — is now built and tested (§5, §8,
-  §10). What's _not_ built yet, and remains the next logical step: presigned R2
-  upload URLs, and the `complete`/`fail` endpoints that transition a claimed
-  queue item to `captured`/`failed` and write the corresponding
-  `pending_captures` row — deliberately deferred out of Phase 2, since that work
-  is entangled with the capture-upload pipeline's shape rather than the
-  queue/auth mechanics Phase 2 was scoped to.
-- **Resolved this round (Phase 9): `failed` queue items are now surfaced to the
-  user with a manual-retry action**, not just kept forever with no further
-  recourse. A new `queue_items.manual_retry` D1 column (cleared on claim), two
-  new service-secret-gated Worker endpoints
-  (`GET /internal/queue-items?status=failed` at the time -- broadened since, see
-  §8's own entry on this), `POST /internal/queue-items/:id/retry`), a backend
-  `internal/queueitems` client mirroring `internal/devices`'s shape,
-  session-protected `GET`/`POST /api/queue-items...` (self-scoped, same
-  reasoning as Manage Devices), and a new dashboard Queue screen. §8's cleanup
-  endpoint is otherwise unchanged — `captured` items are still swept, `failed`
-  items are still never deleted, now a deliberate decision (low expected volume
-  at this project's scale, and an operator can always clean up by hand) rather
-  than a deferred one.
-- **Resolved this round: Readability extraction moved from the extension (and
-  the dashboard's browser, for manual uploads) to a single deferred, async
-  backend job, sharing the headless-Chrome sidecar with the screenshot job — see
-  §3a, §3d, §6a.** This was prompted by manual upload (§3d) forcing the question
-  of how to extract reader text with no live DOM available at all; the answer
-  generalized to every capture path, not just that one. Chosen explicitly over a
-  native-Go Readability port (e.g. `go-shiori/go-readability`) on the reasoning
-  that the headless-Chrome sidecar already exists for screenshots, so running
-  the actual upstream Readability.js inside it is less net-new machinery than it
-  would be without that sidecar already being built — this is the _same_
-  tradeoff reasoning as §6's own chromedp choice, just applied a second time now
-  that there are two things worth rendering a page for. Real, stated
-  consequences: `captures.reader_text`/`reader_text_hash` are now nullable
-  (previously implicitly synchronous), a new `readability_jobs` table exists
-  (§10), and `pending_captures.r2_key_readable` is removed from D1 entirely. The
-  already-built Phase 3 Worker code (`handleGetUploadUrls`/
-  `handleCompleteQueueItem`, and the `pending_captures` migration), which had
-  been built against this design's _previous_ (two-object-upload) shape, has
-  since been revised to match — single-object (HTML-only) upload throughout.
-- **New this round: `screenshot_jobs` given an actual schema entry (§10),
-  closing a gap in the previous revision.** §6 already said the screenshot job
-  needed "bounded retry with backoff, same shape as §7," but no table was ever
-  defined for it — only `ai_jobs` and, later, `readability_jobs` were. Also
-  decided explicitly this round: `screenshot_jobs` and `readability_jobs` stay
-  as two separate tables despite both running through the same headless-Chrome
-  sidecar and often the same page load, rather than merging them into one — see
-  §6's "Design" subsection for the reasoning (independent failure modes;
-  re-extraction after a Readability.js upgrade shouldn't force a redundant
-  re-screenshot).
-- **Resolved this round (Phase 7): the screenshot job is built** —
-  `internal/screenshot`, wired into `cmd/agent.go`. This also resolves §6's own
-  "whether to actually combine [screenshot and readability] into one job/one
-  page-load ... is an implementation-phase decision, not resolved here": they
-  stay two fully independent runners, not a shared page-load, judged simpler for
-  a modest-scale self-hosted workload than the coordination a combined scheduler
-  would need. See §6's "Implementation (Phase 7)" subsection for the
-  ephemeral-render-server design this needed (the sidecar has no filesystem
-  access to the agent's local archive), the two new, direction-specific config
-  values it introduced (`sidecar_url`, `sidecar_render_host`), and its "Revised
-  after a first review pass" subsection for what changed after initial review
-  (fixed-viewport screenshots, atomic multi-claimant job claiming, and —
-  resolving the per-job scheduling cadence question this bullet used to leave
-  open — two independent agent tickers: a slower Worker-facing one and a faster
-  Postgres-only one). Still open: the readability and AI jobs themselves, which
-  this same phase builds next.
-- **Resolved this round: every piece of the original five-step extension plan
-  (pairing, capture, upload, queue-driven capture, bookmark sync — §3h–§3j) is
-  now built and confirmed working end to end**, including two mid-phase design
-  pivots (queue-driven capture's human-in-the-loop redesign, bookmark sync's
-  switch to native browser bookmarks) that only became the right call once
-  actually tested or directly questioned, not apparent from the original plan
-  alone. What's left, all explicitly deferred rather than forgotten: Safari
-  packaging (mechanical, Xcode-wrapped, not a current priority); a real visual
-  design pass on the popup (deferred to a separate session — expected to be
-  larger, iterative work); and moving settings into a dedicated extension
-  options page, considered and declined for now after actually using the popup
-  during testing — everything stays there unless/until there are enough settings
-  that it stops making sense to.
-- **Resolved this round (Phase 6): the Manage Devices dashboard screen's third
-  piece — the backend API passthrough — is built** (`internal/devices`,
-  `GET`/`DELETE /api/devices[/{id}]`), closing out §5's Manage Devices section
-  entirely (all three pieces now built). Role-based auth gets exercised for the
-  first time beyond login, per this phase's original brief, but not as a
-  route-level `RequireAdmin` gate: member-vs-admin scoping happens per-request
-  inside the handlers themselves (`resolveTargetUserID` in `internal/httpapi`),
-  since a member and an admin hit the exact same routes with different allowed
-  `?user_id=` values — an all-or-nothing route gate doesn't fit that shape. Also
-  fixed a real bug in §10's previously-documented `collections` schema, caught
-  while building its migration: a single `UNIQUE(user_id, parent_id, name)`
-  constraint doesn't actually enforce anything for top-level collections, since
-  Postgres treats a NULL `parent_id` as distinct from itself — replaced with two
-  partial unique indexes (see §10). The rest of Phase 6's dashboard-facing
-  read/write API (library browsing/search, capture detail/HTML
-  streaming/language correction, tags, collections CRUD) is also built; see
-  IMPLEMENTATION.md for the full route table and remaining Svelte-side work.
-- **Resolved this round (Phase 6, continued): the dashboard's first real screens
-  are built** — Setup/Login (with the session-state and route-guard plumbing
-  behind them), Library (list and grid views, search, pagination), and
-  PageDetail (display-only: capture history, tags, collections). Two small
-  backend additions came out of actually building against the API rather than
-  just designing it: `GET /api/setup-status` (there was no way for the frontend
-  to tell "needs setup" from "needs login" on first load without one) and
-  `GET /api/pages/{id}/favicon`/`GET /api/pages/{id}/thumbnail` (the response
-  DTOs already carried `favicon_path`/`thumbnail_path`, but nothing ever served
-  the actual bytes). Also closed a real gap in the toolchain itself, not the
-  app: Prettier had never actually been checking `.svelte` files — it has no
-  built-in parser for them and silently skips what it can't parse rather than
-  erroring, so CI's `pnpm run check` had been a false pass on every `.svelte`
-  file since the skeleton. See §13a's Svelte Dashboard subsection and
-  IMPLEMENTATION.md for the details.
-- **Resolved this round (Phase 6, continued): `PageDetail` is now a full
-  read/write loop**, not display-only — tag/collection add-remove, the
-  mirror-exclusion toggle, and per-capture language correction all call their
-  real endpoints. A dedicated **Collections management screen** landed too (tree
-  view, create/rename/delete), after two real gaps surfaced from actually using
-  the write actions rather than being planned ahead of time: AI-sourced tags
-  weren't visually distinguished from manual ones, and there was no way to
-  create a collection from the dashboard at all, let alone browse the tree to
-  choose a parent for a nested one. Frontend logic testing also started (a
-  `"dashboard"` Vitest project), and a shared `AppHeader` component got
-  extracted once three real screens existed to repeat the same title/nav/account
-  bar across. See §13a's Svelte Dashboard subsection and IMPLEMENTATION.md for
-  the details.
-- **Resolved this round (Phase 13): three gaps flagged while building
-  PageDetail's read/write loop (Phase 6) are now closed — page delete
-  (`DELETE /api/pages/{id}`), a manual title override (`PATCH /api/pages/{id}`
-  now also accepts `title`, direct-overwrite semantics — see §10's `pages.title`
-  comment for why a recapture clearing it is deliberate, not a gap), and manual
-  recapture (§8's own new subsection covers the enqueue path).** Delete cascades
-  cleanly through Postgres (captures/jobs/tags/collection-memberships all
-  already `ON DELETE CASCADE`) and the D1 bookmark mirror self-heals via the
-  existing periodic sync's deletion reconciliation — nothing new needed on
-  either front. What it deliberately does **not** do: reclaim the deleted page's
-  on-disk archive files. Those are content-hash-addressed (§4) and can be shared
-  across captures or even across pages (identical content recaptured
-  independently), so a safe per-page delete would need a reference-counting pass
-  across every capture's hash, not a simple "delete this page's files." Left
-  genuinely open: a **`recueil gc` CLI command**, operator-run (scheduled or
-  manual, matching the `recueil user resync`/device-management precedent of
-  operator-only tooling over dashboard automation), that walks every capture's
-  referenced hash and removes anything on disk with no remaining referent — not
-  built this round, tracked here as the next piece of this same gap.
-- **Resolved this round: the capture reader view (`/captures/{id}`, Phase 13's
-  "Capture rows now link to..." note) gained the same delete/regenerate loop
-  PageDetail's own Phase 13 gave pages.** `DELETE /api/captures/{id}` extends
-  this project's no-empty-pages policy down a level: deleting a page's _last_
-  capture deletes the page too, in the same transaction
-  (`internal/httpapi.DeleteCapture`), rather than leaving a zero-capture page
-  around as a new edge case nothing else in this project anticipates.
-  `POST /api/captures/{id}/regenerate-summary` and
-  `POST /api/captures/{id}/regenerate-readability` both just reset the relevant
-  job row back to `pending` (`ai_jobs`/`readability_jobs` respectively) and let
-  the already-running `ai.Runner`/readability job runner pick it up on their own
-  schedule — no new processing logic, same "enqueue, don't do the work here"
-  shape as Phase 13's own recapture. Regenerate-readability deliberately does
-  **not** also requeue the AI job: today there's no extra state to track that
-  decision by, so a stale AI summary just stays exactly as stale as it already
-  was until someone clicks regenerate-summary too, separately. Also added
-  `GET /api/capture-config`, reporting this running agent's own
-  currently-configured `readability_version`/`ai_model` (the same values
-  `cmd/agent.go` threads into `readability.Params`/`ai.Params`). Separately,
-  task A of this same round exposed six columns (`readability_version`,
-  `content_hash`, `thumbnail_size_bytes`, `thumbnail_hash`,
-  `favicon_size_bytes`, `favicon_hash`) that were already tracked in Postgres
-  but never surfaced in `GET /api/captures/{id}`'s own response — DTO/mapping
-  work only, no schema change, no new decision to record here.
-- `recueil gc` CLI command: `internal/gc.Runner.Run` is the actual sweep: read
-  every path Postgres still references (`ListReferencedArchivePaths`, spanning
-  `captures.{html,thumbnail,favicon}_path` **and** `pages.favicon_path` — see
-  below for why the latter matters on its own), walk every file
-  `archive.Store`'s root actually contains (`Store.Walk`, new), and remove
-  whatever isn't in that live set (`Store.Remove`, new — also prunes each
-  now-empty parent shard directory it leaves behind, the three shard levels
-  collapsed back down once nothing's left in them). A `--dry-run` flag reports
-  the same scan/removal counts and byte total without calling `Store.Remove` at
-  all. (Both safety rails and the empty-directory pass described further down
-  this section came later, in the storage-model round.) Also, since
-  `pages.favicon_path` is a denormalized copy of whichever capture last provided
-  one (`UpsertPage`, same pattern as `pages.title`) — deleting _that_ capture
-  (while the page survives via others) used to leave it pointing at a path no
-  capture row referenced anymore. `DeleteCapture` now refreshes it from
-  `GetLatestCaptureByPage` whenever the page isn't also being deleted (new
-  `SetPageFavicon` query) — always recomputed, not just when the deleted capture
-  happens to be the source, since detecting which case that is would be more
-  complex than just doing the recomputation unconditionally (a no-op write when
-  it wasn't the source). `ListReferencedArchivePaths` still includes
-  `pages.favicon_path` in its own right regardless — belt-and-suspenders, not a
-  substitute for the real fix, since the live-set query shouldn't have to lean
-  on that recomputation always having happened correctly everywhere it could
-  matter.
-- **Resolved this round: dark mode is a real `Settings`-screen preference, not
-  just automatic `prefers-color-scheme`.** `user_settings.theme` — same
-  `NULL`-means-automatic convention, same full-replace `PATCH /api/settings`
-  shape (both `language` and `theme` sent together on every save; see
-  `patchSettingsRequest`'s own doc comment for why that stayed the deliberate
-  choice once a second field showed up, not pointer-based partial updates), same
-  CHECK-constraint treatment §10's schema already gives closed enums like
-  `role`/`status` (unlike `language`, which is deliberately open-ended and
-  validated at the application layer instead — see its own migration comment).
-  `src/styles/_tokens.scss` gained `[data-theme="light"|"dark"]` attribute
-  selectors (higher specificity than the existing `prefers-color-scheme` media
-  query's bare `:root`, so an explicit override always wins) alongside two Sass
-  mixins so the light/dark palettes are each defined once, not duplicated
-  between the automatic and explicit paths.
-  - One accepted gap: the `localStorage` cache is global per browser, not scoped
-    per account — two different users sharing one browser (a real scenario for a
-    self-hosted, multi-account tool) could see one frame of the _other_
-    account's last-applied theme before the real value loads and corrects it.
-    Same tradeoff every other production site using this exact technique already
-    accepts; not worth an account-scoped cache key for a one-frame, purely
-    cosmetic edge case.
-
-### Storage model: per-capture directories, replacing content-hash addressing
-
-**Resolved this round, deliberately before the first tagged release**, since
-this is one of the few decisions in the project that becomes genuinely hard to
-revisit once real archives exist in the wild. The full reasoning lives in §4;
-what follows is the account of the decision itself, kept here rather than
-narrated as history there.
-
-The question raised was whether content-addressed storage was the right call for
-security, privacy, and correctness — specifically whether two users' captures
-could ever overlap with different content. On the security question the answer
-was no: reads are gated by Postgres ownership (`pages.user_id`, self-scoped
-handlers), paths are never guessed or client-supplied, the Worker recomputes R2
-keys itself rather than trusting a client, and SHA-256 collision is not a
-reachable attack even for a malicious account with manual-upload access. Nor was
-there an existence oracle: ingestion is asynchronous and backend-side, so a user
-never observes whether their bytes already existed.
-
-The scheme was replaced anyway, for reasons that turned out not to be about
-security at all:
-
-- **The benefit was one the project doesn't want.** Deduplication is explicitly
-  not a goal here, and §3b already observed it would rarely fire regardless.
-- **The read path never used it.** `html_path` and friends are stored columns.
-  Nothing derives a path from a hash, so content-addressing was a naming scheme
-  wearing the clothes of an addressing scheme.
-- **The costs were structural rather than acute.** A shared directory turns "is
-  this file still referenced?" into a set-membership question, makes per-tenant
-  deletion unprovable (relevant to the hosted/multi-tenant door §4 leaves open),
-  and made `CaptureDir` a name for something that wasn't a capture's directory.
-
-**What made the switch cheap was that `internal/gc` already existed.** The
-expensive part of moving off content-addressing would otherwise have been
-crash-retry: a retry that mints a fresh id writes a directory it may then
-discover it didn't need. With a mark-and-sweep collector already in place for
-page/capture deletion, that orphan is reclaimed by the same machinery as any
-other, and no staging-and-rename scheme was needed. Worth recording as the
-general shape: this was the second time the sweep paid for itself somewhere it
-wasn't designed for.
-
-**§3c's original objection to id-keyed paths was satisfied rather than
-overruled.** That objection was about _client-supplied_ ids colliding and
-silently overwriting through the atomic rename. A backend-minted id created via
-an exclusive `os.Mkdir` addresses it directly, so the reasoning recorded there
-still stands — it just now points at a different mechanism.
-
-Two related changes landed alongside, both in §4's own terms: asset filenames
-inside a capture directory dropped their content hashes in favour of plain role
-names (`favicon.{ext}`, `thumbnail.png`), since there is now exactly one of each
-per directory — which also means a re-render overwrites in place rather than
-orphaning its predecessor — and `captures.html_path` gained a `UNIQUE`
-constraint.
-
-**`recueil gc` was hardened in the same round**, partly because the sweep is now
-load-bearing for more than deletion:
-
-- **A 15-minute recency floor.** Ingestion writes to disk _before_ committing to
-  Postgres (§3c), so a genuinely in-flight capture is legitimately absent from
-  the live set. The sharpest case is `archive.Store`'s own `.tmp-*` files, which
-  are in the walk's namespace and by construction can never appear in the live
-  set — without the floor a sweep would delete one mid-write and the writer's
-  rename would fail. 15 minutes is reused from the D1 queue's claim-visibility
-  timeout and `internal/screenshot`'s `claimStaleTimeout` rather than
-  introducing a third number for the same "stuck, or merely in progress?"
-  question.
-- **An empty-directory pass** (`Store.WalkEmptyDirs`/`RemoveEmptyDir`).
-  `NewCapture` creates a capture's directory before anything is written into it,
-  so an ingestion failing early leaves a directory that `Store.Walk` — which
-  reports regular files only — would never see.
-- **An orphan-fraction refusal.** If more than half of the scanned files come
-  back unreferenced (and at least 100 files were scanned, below which the
-  fraction carries no information), the run removes nothing and returns
-  `TooManyOrphansError`; `--force` overrides. This guards a footgun rather than
-  a known bug: the live set is built by comparing stored path strings against
-  walked path strings, so any future divergence in how the two sides are
-  normalized — a leading `./`, a separator difference, a `filepath.Clean`
-  applied on one side only — would silently produce an empty intersection and
-  mark the entire archive as garbage. That failure would be silent, total, and
-  aimed at the half §14 calls irreplaceable. The check runs after the full scan
-  but before the first deletion, so the refusal is always clean rather than a
-  partial sweep. A dry run reports that the real run would refuse rather than
-  silently proceeding, which would be actively misleading.
-
-### Pending-capture claiming, and wiring up the D1 maintenance sweeps
-
-**Resolved this round.** Raised while reviewing the per-capture-storage change's
-own crash-retry behaviour, and turned out to be a latent correctness bug
-predating it: `pending_captures` had no claim, so two `agent` processes polling
-at roughly the same time both ingest the same row, and the second silently
-writes a **duplicate capture**. §8's own section covers the mechanism in full;
-the short version is that `captures`' `ON CONFLICT (source_capture_id)` guard
-stops protecting the moment the first agent finishes, because ingestion's last
-step clears that column to `NULL` and Postgres treats `NULL`s as distinct in a
-unique index.
-
-Worth being explicit that this is **not** a consequence of moving off
-content-addressed storage. Under the previous layout the same duplicate row
-would have been inserted; it would simply have pointed at the same file rather
-than a second copy of it.
-
-The fix is a claim (`POST /internal/pending-captures`, one-hour stale window),
-rather than the available alternative of never clearing `source_capture_id` —
-which would also have closed this hole, but only by making a durable dedup
-guarantee depend on a client-generated value, which is exactly what §3c's
-collision-retry loop exists because we can't do.
-
-## 16. MCP Server
-
-Read-only access to a user's archive for local MCP clients (Claude Desktop,
-etc.), per the decision recorded in §5's "API tokens" subsection. Deliberately
-scoped to answering questions about the archive, not manipulating it — no write
-tools in this phase, and none planned; if that changes it's a separate design
-decision, not an extension of this one.
+Read-only access to a user's archive for local MCP clients. Intentionally scoped
+to only answering questions about the archive, not manipulating it — no write
+tools right now and none are planned.
 
 **Transport and reachability.** Streamable HTTP, mounted at `POST /mcp` on the
 existing backend HTTP server (`internal/httpapi.NewRouter`) — reachable wherever
-the dashboard already is (LAN or Tailscale, per the deployment decision in this
-section's originating discussion), nothing routed through the Worker/D1.
-`internal/mcpapi` is a sibling to `internal/httpapi`, not a subpackage of it:
-both are HTTP-facing surfaces over the same `internal/db`/`internal/auth`, and
-`/mcp` is mounted in `router.go` alongside `/api`, not nested under it.
-
-**Auth**: `auth.RequireAPIToken`, unchanged from how it was built and tested —
-this phase is the first thing to actually mount it.
+the dashboard already is (LAN, VPN, or tunnel, etc; see §12), nothing routed
+through the Worker/D1. `internal/mcpapi` is a sibling to `internal/httpapi`, not
+a subpackage of it: both are HTTP-facing surfaces over the same
+`internal/db`/`internal/auth`, and `/mcp` is mounted in `router.go` alongside
+`/api`, not nested under it.
 
 **Stateless mode.** `StreamableHTTPOptions.Stateless = true`. Required outright
 for the `2026-07-28` protocol revision (session resumability -- Last-Event-ID,
@@ -4529,27 +2133,6 @@ session-affinity/sticky-routing problem to design around by picking it. Clients
 on an older protocol revision still negotiate down automatically; the SDK
 (`v1.7.0`) supports every revision from `2024-11-05` through `2026-07-28` in one
 build.
-
-**Cross-origin protection, explicitly configured, not left to the SDK's
-default.** The SDK shipped a real CVE
-([GO-2026-5771](https://pkg.go.dev/github.com/modelcontextprotocol/go-sdk/jsonschema),
-patched in v1.4.0): pre-patch, a malicious webpage could use DNS rebinding to
-reach a localhost-bound MCP server that had no auth of its own. We're already
-past that fix by virtue of pinning `v1.7.0`, and bearer-token auth changes the
-threat model further in our favor regardless — unlike a cookie, a browser never
-auto-attaches an `Authorization` header, so a malicious page can't ride existing
-credentials the way classic CSRF/rebinding attacks depend on. Even so, defense
-in depth is cheap here: `StreamableHTTPOptions.CrossOriginProtection` is
-explicitly set to `http.NewCrossOriginProtection()` (stdlib, Go 1.25+, already
-satisfied by this project's `go 1.26.5`) rather than relying on the SDK's own
-default, which as of `v1.6.0` is _off_ unless opted back in via the
-`enableoriginverification` `MCPGODEBUG` flag -- itself a compatibility shim
-slated for removal in `v1.8.0`, not something worth building a permanent
-dependency on. With zero trusted origins configured, `CrossOriginProtection`
-still does exactly what's wanted here: browser-context cross-origin requests
-(the only requests that carry `Sec-Fetch-Site`/`Origin` at all) get rejected,
-while genuine MCP clients — which send neither header, being non-browser HTTP
-clients — are unaffected.
 
 **Tools** (all read-only, all scoped to the authenticated user via
 `auth.UserFromContext`, same as every `internal/httpapi` handler):
@@ -4563,28 +2146,37 @@ clients — are unaffected.
 - `list_pages_by_collection(collection_id, limit?)` — `GetCollectionByID` first
   (same ownership-check-then-list shape as tags), then `ListCollectionPages`.
 - `get_page(page_id, capture_id?)` — page metadata (title, url, notes, tags,
-  collections) plus one capture's actual `reader_text`/`ai_summary`, defaulting
-  to the latest capture. Deliberately _not_ a 1:1 mirror of the dashboard's own
-  `GET /api/pages/{id}` + `GET /api/captures/{id}` split: those stay separate
-  because a page-detail _view_ shouldn't eagerly load every capture's full text,
-  but a single MCP tool call is the actual unit of work being asked for, and
-  forcing two round trips for the common case ("give me this page's content")
-  doesn't serve that. The other available captures (id + date, no text) are
-  listed alongside, so a model can ask for a specific `capture_id` without a
-  separate "list this page's versions" tool. `capture_id`, when given, is
-  checked against the resolved page's own id before its text is returned —
-  `GetCaptureByIDForUser` only scopes by `user_id`, not by the specific page
-  passed alongside it, so without this check a caller could name a `page_id` it
-  owns and a `capture_id` belonging to a _different_ one of its own pages and
-  get back metadata from one page paired with content from another.
+  collections) plus one capture's `reader_text`/`ai_summary`, defaulting to the
+  latest capture. _Not_ a 1:1 mirror of the dashboard's `GET /api/pages/{id}` +
+  `GET /api/captures/{id}` split: those stay separate because a page-detail
+  _view_ shouldn't eagerly load every capture's full text, but a single MCP tool
+  call is the unit of work being asked for, and forcing two round trips for the
+  common case ("give me this page's content") doesn't serve that. The other
+  available captures (id + date, no text) are listed alongside, so a model can
+  ask for a specific `capture_id` without a separate "list this page's versions"
+  tool. `capture_id`, when given, is checked against the resolved page's id
+  before its text is returned — `GetCaptureByIDForUser` only scopes by
+  `user_id`, not by the specific page passed alongside it, so without this check
+  a caller could name a `page_id` it owns and a `capture_id` belonging to a
+  _different_ one of its own pages and get back metadata from one page paired
+  with content from another.
 
 **`limit` handling.** `SearchPages`/`ListPages` already take `limit`/`offset`
 and return `total_count` via a window function — reused as-is, default 20,
 capped at 100. `ListTagPages`/`ListCollectionPages` have neither (dashboard-
-scale, unpaginated by design, per those queries' own comments) — fetched in full
-and sliced to the same default/cap in Go, rather than adding a new query variant
-for two call sites.
+scale, unpaginated by design, per those queries' comments) — fetched in full and
+sliced to the same default/cap in Go, rather than adding a new query variant for
+two call sites.
 
-**Dependency.** `github.com/modelcontextprotocol/go-sdk v1.7.0`, no other new
-third-party dependency — tool schemas are derived automatically from Go struct
-tags (`AddTool`'s generic form), so `jsonschema-go` isn't imported directly.
+---
+
+## 16. Known Limitations
+
+- **Safari packaging.** The extension is MV3-capable on Safari, but Safari
+  requires a separate packaging/distribution pipeline (Xcode-wrapped, via
+  `safari-web-extension-converter`) rather than loading the same build the other
+  browsers use. Not attempted yet — see §3h.
+- **Fragment-aware URL canonicalization for SPAs.** `urlnorm.Canonicalize` drops
+  every URL fragment unconditionally. The intended exception — preserving a
+  fragment for a known SPA that encodes meaningful route state there — has no
+  implementation and no site list to check against yet. See §9.
