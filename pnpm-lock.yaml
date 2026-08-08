@@ -60,6 +60,9 @@ importers:
       prettier-plugin-jinja-template:
         specifier: ^2.2.0
         version: 2.2.0(prettier@3.9.6)
+      prettier-plugin-pkg:
+        specifier: ^0.22.1
+        version: 0.22.1(prettier@3.9.6)
       prettier-plugin-svelte:
         specifier: ^4.1.1
         version: 4.1.1(prettier@3.9.6)(svelte@5.56.8(@typescript-eslint/types@8.65.0))
@@ -2594,6 +2597,12 @@ packages:
     resolution: {integrity: sha512-FVZtWvSW8RKvHToWHgI9j1eau7t2mekYoVKg7GdDS16QVOYM8f08yzVptBUvSXKQR2xJAXCLi0rGGvJGFtCUrA==}
     peerDependencies:
       prettier: ^3.0.0
+
+  prettier-plugin-pkg@0.22.1:
+    resolution: {integrity: sha512-l9qnxic48hgTXsvXi9yWWWzovpqkEYo/Ljf8Af7zSkDTNVmLwscXW63IEVMJXH94DyloO8YkogeLheJUzJh/ZQ==}
+    engines: {node: ^14.18.0 || >=16.0.0}
+    peerDependencies:
+      prettier: ^3.0.3
 
   prettier-plugin-svelte@4.1.1:
     resolution: {integrity: sha512-wXvbXMjSvb4C9ENWTHXyd+ihakKCsJ6rJhLP6/8HFNj4GkZr48jqL9PoKsl2sk7SyCZRTnJ7O2TTowUpOxP/KA==}
@@ -5497,6 +5506,10 @@ snapshots:
   prelude-ls@1.2.1: {}
 
   prettier-plugin-jinja-template@2.2.0(prettier@3.9.6):
+    dependencies:
+      prettier: 3.9.6
+
+  prettier-plugin-pkg@0.22.1(prettier@3.9.6):
     dependencies:
       prettier: 3.9.6
 

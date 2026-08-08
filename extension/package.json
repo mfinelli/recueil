@@ -1,12 +1,12 @@
 {
   "name": "@recueil/extension",
   "version": "1.0.0",
+  "type": "module",
   "description": "recueil browser extension: pairing, capture, and upload",
   "homepage": "https://github.com/mfinelli/recueil",
   "author": "Mario Finelli",
   "license": "AGPL-3.0-or-later",
   "private": true,
-  "type": "module",
   "scripts": {
     "build": "node build.js",
     "package": "node package.js",
