@@ -38,11 +38,12 @@ for any of them:
 
 ## Server
 
-| Setting                    | Default | What it does                                                                                                                                                           |
-| -------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `listen_addr`              | `:8080` | Address the HTTP server binds to.                                                                                                                                      |
-| `session_cookie_secure`    | `true`  | Sets the `Secure` flag on session cookies. Only turn this off for a plain-HTTP setup with no TLS at all, which isn't recommended.                                      |
-| `enable_open_registration` | `false` | Lets anyone who can reach the dashboard create their own account without an invite. The bootstrap flow and `recueil user create` both work regardless of this setting. |
+| Setting                           | Default           | What it does                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `listen_addr`                     | `:8080`           | Address the HTTP server binds to.                                                                                                                                                                                                                                                                                                                            |
+| `session_cookie_secure`           | `true`            | Sets the `Secure` flag on session cookies. Only turn this off for a plain-HTTP setup with no TLS at all, which isn't recommended.                                                                                                                                                                                                                            |
+| `enable_open_registration`        | `false`           | Lets anyone who can reach the dashboard create their own account without an invite. The bootstrap flow and `recueil user create` both work regardless of this setting.                                                                                                                                                                                       |
+| `capture_manual_upload_max_bytes` | 104857600 (100MB) | Size ceiling for `POST /api/manual-upload` — the dashboard's [manual upload](@/docs/readers/manual-upload.md) route is allowed a bigger body than the rest of the API's shared 1MB cap. Raising this past what your reverse proxy itself allows won't help; see [Deploying recueil](@/docs/operators/deploying-recueil.md#putting-a-reverse-proxy-in-front). |
 
 ## Agent scheduling
 

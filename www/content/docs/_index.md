@@ -25,11 +25,14 @@ one dashboard.
   <dd>A one-tap Shortcut for sending the current page without opening an app at all.</dd>
   <dt>CLI</dt>
   <dd><code>recueil enqueue &lt;url&gt;</code> from a terminal.</dd>
+  <dt>Manual upload</dt>
+  <dd>Upload a captured page straight from the dashboard.</dd>
 </dl>
 
-All four feed the same queue. Nothing archives immediately — see
+The first four feed the same queue; nothing archives immediately — see
 [Getting Started](@/docs/readers/getting-started.md) for why, and what to expect
-the first time.
+the first time. Manual upload is slightly different and bypasses the queue. See
+[Manual Upload](@/docs/readers/manual-upload.md) for details.
 
 ## How captures get past logins and paywalls
 

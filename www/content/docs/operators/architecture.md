@@ -67,6 +67,10 @@ within it rather than push against the limit.
 7. It shows up in your dashboard — `server` reading all of the above back out of
    Postgres.
 
+[Manual upload](@/docs/readers/manual-upload.md) is different and skips steps
+1–4 entirely — an already-captured HTML file goes straight from the dashboard
+into `server`, without involving the Worker, D1, or R2.
+
 ## Why the backend never has to be reachable from outside
 
 Every step above — enqueue, queue, capture, upload, pull — only ever depends on
