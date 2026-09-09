@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { apiFetch, apiJSON, ApiError } from "./api";
+import { apiFetch, apiJSON, uploadManualCapture, ApiError } from "./api";
 
 // Real Response objects (Node's built-in global, not hand-rolled fakes) so
 // .ok/.status/.json() behave exactly like a real fetch would -- the same
@@ -144,6 +144,125 @@ describe("apiJSON", () => {
     await expect(apiJSON("/pages")).rejects.toMatchObject({
       status: 502,
       message: "Bad Gateway",
+    });
+  });
+});
+
+describe("uploadManualCapture", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("posts multipart/form-data with url/html/favicon fields, no explicit Content-Type", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ page_id: 1, capture_id: 2 }), {
+        status: 201,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const htmlFile = new File(["<html></html>"], "capture.html", {
+      type: "text/html",
+    });
+    const faviconFile = new File(["<svg></svg>"], "favicon.svg", {
+      type: "image/svg+xml",
+    });
+
+    await uploadManualCapture(
+      "https://example.com/article",
+      htmlFile,
+      faviconFile,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [calledURL, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledURL).toBe("/api/manual-upload");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    // No Content-Type set by hand because the browser fills in the multipart
+    // boundary itself.
+    expect(init.headers).toBeUndefined();
+
+    const body = init.body as FormData;
+    expect(body.get("url")).toBe("https://example.com/article");
+    expect(body.get("html")).toBe(htmlFile);
+    expect(body.get("favicon")).toBe(faviconFile);
+  });
+
+  it("omits the favicon field entirely when none is given", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ page_id: 1, capture_id: 2 }), {
+        status: 201,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const htmlFile = new File(["<html></html>"], "capture.html", {
+      type: "text/html",
+    });
+
+    await uploadManualCapture("https://example.com/article", htmlFile, null);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = init.body as FormData;
+    expect(body.get("favicon")).toBeNull();
+  });
+
+  it("decodes a successful response", async () => {
+    mockFetchOnce(
+      new Response(JSON.stringify({ page_id: 5, capture_id: 9 }), {
+        status: 201,
+      }),
+    );
+
+    const htmlFile = new File(["<html></html>"], "capture.html", {
+      type: "text/html",
+    });
+    const result = await uploadManualCapture<{
+      page_id: number;
+      capture_id: number;
+    }>("https://example.com/article", htmlFile, null);
+
+    expect(result).toEqual({ page_id: 5, capture_id: 9 });
+  });
+
+  it("throws ApiError with the backend's own error message on a non-2xx response", async () => {
+    mockFetchOnce(
+      new Response(JSON.stringify({ error: "url is required" }), {
+        status: 400,
+      }),
+    );
+
+    const htmlFile = new File(["<html></html>"], "capture.html", {
+      type: "text/html",
+    });
+
+    await expect(uploadManualCapture("", htmlFile, null)).rejects.toMatchObject(
+      {
+        name: "ApiError",
+        status: 400,
+        message: "url is required",
+      },
+    );
+  });
+
+  it("falls back to statusText when the error body isn't valid JSON", async () => {
+    mockFetchOnce(
+      new Response("<html>not json</html>", {
+        status: 413,
+        statusText: "Request Entity Too Large",
+      }),
+    );
+
+    const htmlFile = new File(["<html></html>"], "capture.html", {
+      type: "text/html",
+    });
+
+    await expect(
+      uploadManualCapture("https://example.com", htmlFile, null),
+    ).rejects.toMatchObject({
+      status: 413,
+      message: "Request Entity Too Large",
     });
   });
 });

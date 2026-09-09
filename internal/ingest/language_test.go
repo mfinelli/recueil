@@ -53,22 +53,21 @@ func TestExtractLanguage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := extractLanguage([]byte(tt.html))
+			got := ExtractLanguage([]byte(tt.html))
 			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestIngester_resolveLanguageConfig(t *testing.T) {
+func TestResolveLanguageConfig(t *testing.T) {
 	// Read-only against pg_ts_config (a system catalog, untouched by
 	// dbtest.Reset's application-table truncation), so no Reset needed
 	// here -- these tests don't modify anything.
 	pool := dbtest.Setup(t)
-	ing := &Ingester{pool: pool}
 	ctx := context.Background()
 
 	t.Run("no language tag falls back to simple", func(t *testing.T) {
-		got, err := ing.resolveLanguageConfig(ctx, "")
+		got, err := ResolveLanguageConfig(ctx, pool, "")
 		require.NoError(t, err)
 		assert.Equal(t, "simple", got)
 	})
@@ -77,43 +76,42 @@ func TestIngester_resolveLanguageConfig(t *testing.T) {
 		// Chinese has no snowball stemmer in Postgres (it needs
 		// segmentation, not stemming), so postgresLanguageConfigs
 		// deliberately has no entry for it.
-		got, err := ing.resolveLanguageConfig(ctx, "zh")
+		got, err := ResolveLanguageConfig(ctx, pool, "zh")
 		require.NoError(t, err)
 		assert.Equal(t, "simple", got)
 	})
 
 	t.Run("a mapped, genuinely-available language resolves to its postgres config", func(t *testing.T) {
-		got, err := ing.resolveLanguageConfig(ctx, "en")
+		got, err := ResolveLanguageConfig(ctx, pool, "en")
 		require.NoError(t, err)
 		assert.Equal(t, "english", got)
 	})
 
 	t.Run("a full BCP 47 tag with a region subtag is not recognized directly", func(t *testing.T) {
-		// resolveLanguageConfig itself doesn't strip region subtags --
-		// that's extractLanguage's job, upstream of this function.
+		// ResolveLanguageConfig itself doesn't strip region subtags --
+		// that's ExtractLanguage's job, upstream of this function.
 		// "en-US" has no entry in postgresLanguageConfigs (only "en"
 		// does), so this correctly falls back to simple, confirming the
 		// two functions' division of responsibility rather than silently
 		// double-handling it in both places.
-		got, err := ing.resolveLanguageConfig(ctx, "en-US")
+		got, err := ResolveLanguageConfig(ctx, pool, "en-US")
 		require.NoError(t, err)
 		assert.Equal(t, "simple", got)
 	})
 }
 
-func TestIngester_languageConfigExists(t *testing.T) {
+func TestLanguageConfigExists(t *testing.T) {
 	pool := dbtest.Setup(t)
-	ing := &Ingester{pool: pool}
 	ctx := context.Background()
 
 	t.Run("a config that ships with every postgres installation", func(t *testing.T) {
-		exists, err := ing.languageConfigExists(ctx, "english")
+		exists, err := languageConfigExists(ctx, pool, "english")
 		require.NoError(t, err)
 		assert.True(t, exists)
 	})
 
 	t.Run("a name that is not a real config", func(t *testing.T) {
-		exists, err := ing.languageConfigExists(ctx, "not-a-real-config-name")
+		exists, err := languageConfigExists(ctx, pool, "not-a-real-config-name")
 		require.NoError(t, err)
 		assert.False(t, exists)
 	})

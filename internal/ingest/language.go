@@ -23,12 +23,14 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // languageTagPattern extracts the value of an <html lang="..."> attribute
 // -- the standard HTML5 way a page declares its own content language.
 // Deliberately a simple, tolerant pattern (case-insensitive, matching this
-// package's existing extractTitle approach: extracting one well-known
+// package's existing ExtractTitle approach: extracting one well-known
 // attribute from already-trusted, already-captured HTML doesn't need a
 // full parser) rather than one, but it does need to cover every value
 // syntax HTML5 itself actually allows, not just the quoted ones: an
@@ -38,7 +40,7 @@ import (
 // single-quoted, and unquoted (bounded by whitespace/`=`/`<`/`>`/backtick,
 // the actual HTML5 unquoted-attribute-value grammar) in that order, with
 // exactly one of the three capture groups populated depending on which
-// alternative matched -- see extractLanguage below for picking out
+// alternative matched -- see ExtractLanguage below for picking out
 // whichever one that was. `\b` before `lang` (rather than the previous
 // version's bare `lang`) also fixes a real, separate false-match: without
 // it, an `<html xmlns:lang="...">` namespace-prefixed attribute could
@@ -54,12 +56,12 @@ var languageTagPattern = regexp.MustCompile(`(?is)<html\b[^>]*\blang\s*=\s*(?:"(
 // Deliberately not exhaustive of every human language -- only languages
 // Postgres ships a snowball stemmer for have an entry at all. Anything
 // else (Chinese, Japanese, Korean, and any tag with no entry here)
-// falls through to "simple" correctly in resolveLanguageConfig below,
+// falls through to "simple" correctly in ResolveLanguageConfig below,
 // which is the right behavior for a language Postgres has no
 // language-specific stemming for anyway -- there's no wrong config to
 // pick for it.
 //
-// This is only ever a *candidate* -- resolveLanguageConfig always
+// This is only ever a *candidate* -- ResolveLanguageConfig always
 // validates it against this specific Postgres instance's live
 // pg_ts_config catalog before trusting it (see languageConfigExists),
 // rather than assuming this Go map is itself an authoritative list of
@@ -95,12 +97,12 @@ var postgresLanguageConfigs = map[string]string{
 	"tr": "turkish",
 }
 
-// extractLanguage parses the primary language subtag from the captured
+// ExtractLanguage parses the primary language subtag from the captured
 // HTML's <html lang="..."> attribute: lowercased, with any
 // region/script/variant subtag after the first "-" stripped (e.g.
 // "en-US" -> "en", "pt-BR" -> "pt"). Returns "" if no lang attribute is
 // present at all.
-func extractLanguage(htmlBytes []byte) string {
+func ExtractLanguage(htmlBytes []byte) string {
 	m := languageTagPattern.FindSubmatch(htmlBytes)
 	if m == nil {
 		return ""
@@ -121,13 +123,13 @@ func extractLanguage(htmlBytes []byte) string {
 	return primary
 }
 
-// resolveLanguageConfig maps a detected language tag to a validated
+// ResolveLanguageConfig maps a detected language tag to a validated
 // Postgres text search configuration name, falling back to "simple" --
 // no language-specific stemming, but never actively wrong for any
 // language, unlike guessing -- whenever there's no tag, no mapping for
 // it, or the mapped candidate doesn't actually exist on this Postgres
 // instance.
-func (ing *Ingester) resolveLanguageConfig(ctx context.Context, langTag string) (string, error) {
+func ResolveLanguageConfig(ctx context.Context, pool *pgxpool.Pool, langTag string) (string, error) {
 	if langTag == "" {
 		return "simple", nil
 	}
@@ -135,7 +137,7 @@ func (ing *Ingester) resolveLanguageConfig(ctx context.Context, langTag string) 
 	if !ok {
 		return "simple", nil
 	}
-	exists, err := ing.languageConfigExists(ctx, candidate)
+	exists, err := languageConfigExists(ctx, pool, candidate)
 	if err != nil {
 		return "", fmt.Errorf("checking language config %q: %w", candidate, err)
 	}
@@ -155,9 +157,9 @@ func (ing *Ingester) resolveLanguageConfig(ctx context.Context, langTag string) 
 // schema analysis only knows about tables defined in our own
 // migrations, not Postgres's built-in system catalogs, so a query
 // referencing pg_ts_config doesn't fit its normal model.
-func (ing *Ingester) languageConfigExists(ctx context.Context, candidate string) (bool, error) {
+func languageConfigExists(ctx context.Context, pool *pgxpool.Pool, candidate string) (bool, error) {
 	var exists bool
-	err := ing.pool.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM pg_ts_config WHERE cfgname = $1)", candidate,
 	).Scan(&exists)
 	if err != nil {

@@ -258,9 +258,9 @@ func (ing *Ingester) captureAndCommit(ctx context.Context, pc *pendingcaptures.P
 		return 0, fmt.Errorf("uncompressed size %d exceeds captures.html_uncompressed_size_bytes's int32 range", uncompressedSize)
 	}
 
-	title := extractTitle(data)
+	title := ExtractTitle(data)
 
-	language, err := ing.resolveLanguageConfig(ctx, extractLanguage(data))
+	language, err := ResolveLanguageConfig(ctx, ing.pool, ExtractLanguage(data))
 	if err != nil {
 		return 0, fmt.Errorf("resolving language: %w", err)
 	}
@@ -511,14 +511,14 @@ func (ing *Ingester) insertCaptureWithCollisionHandling(
 // already-trusted, already-captured HTML doesn't need one.
 var titleRegexp = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
-// extractTitle parses the page title from the captured HTML's <title> tag
+// ExtractTitle parses the page title from the captured HTML's <title> tag
 // at ingestion time, uniformly for every capture regardless of source.
 // This isn't a Readability output, and it isn't currently transmitted by the
 // extension either: SingleFile's own getPageData return includes a title
 // but nothing in POST /queue/:id/complete request body carries it through to
 // the Worker/D1. Parsing it here from the raw HTML is therefore the one real
 // source of truth for a capture's title today.
-func extractTitle(htmlBytes []byte) string {
+func ExtractTitle(htmlBytes []byte) string {
 	m := titleRegexp.FindSubmatch(htmlBytes)
 	if m == nil {
 		return ""

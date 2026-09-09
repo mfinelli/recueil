@@ -93,3 +93,52 @@ export async function apiJSON<T>(
   }
   return (await res.json()) as T;
 }
+
+// uploadManualCapture is POST /api/manual-upload's  client.
+// It's not routed through apiFetch/apiJSON above, which both hardcode a JSON
+// request body. This one route takes multipart/form-data instead (an HTML
+// file, an optional favicon file, and a plain url field), so it builds its own
+// FormData and skips setting Content-Type entirely (the browser fills in the
+// multipart boundary).
+//
+// Same error-decoding convention as apiJSON (backend's {"error": "..."}
+// body -> ApiError), duplicated because sharing with apiJSON would mean
+// threading a "don't JSON-encode the body" escape hatch through RequestOptions
+// just for this one caller.
+export async function uploadManualCapture<T>(
+  url: string,
+  htmlFile: File,
+  faviconFile: File | null,
+): Promise<T> {
+  const body = new FormData();
+  body.append("url", url);
+  body.append("html", htmlFile);
+  if (faviconFile) {
+    body.append("favicon", faviconFile);
+  }
+
+  const res = await fetch(API_BASE + "/manual-upload", {
+    method: "POST",
+    credentials: "include",
+    body,
+  });
+
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const errBody: unknown = await res.json();
+      if (
+        errBody &&
+        typeof errBody === "object" &&
+        "error" in errBody &&
+        typeof errBody.error === "string"
+      ) {
+        message = errBody.error;
+      }
+    } catch {
+      // Non-JSON error body -- fall back to statusText, same as apiJSON.
+    }
+    throw new ApiError(res.status, message);
+  }
+  return (await res.json()) as T;
+}

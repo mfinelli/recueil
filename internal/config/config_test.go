@@ -90,6 +90,7 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, 0, cfg.AIMaxInputChars, "no default here -- internal/ai applies its own fallback for zero")
 				assert.Equal(t, 3, cfg.ScreenshotWorkerConcurrency)
 				assert.Equal(t, 3, cfg.ScreenshotMaxAttempts)
+				assert.Equal(t, int64(100<<20), cfg.ManualUploadMaxBytes)
 			},
 		},
 		{
@@ -172,6 +173,7 @@ func TestLoad(t *testing.T) {
 			viper.SetDefault("ai_request_timeout_seconds", 300)
 			viper.SetDefault("screenshot_worker_concurrency", 3)
 			viper.SetDefault("screenshot_max_attempts", 3)
+			viper.SetDefault("capture_manual_upload_max_bytes", 100<<20)
 			tt.setup()
 
 			cfg, err := Load()

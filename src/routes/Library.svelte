@@ -21,6 +21,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      the search box and pagination. -->
 <script lang="ts">
   import Search from "@lucide/svelte/icons/search";
+  import Upload from "@lucide/svelte/icons/upload";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
@@ -28,6 +29,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import type { Page, PageListResponse } from "../lib/types";
   import AppHeader from "../components/AppHeader.svelte";
   import PageList from "../components/PageList.svelte";
+  import ManualUploadModal from "../components/ManualUploadModal.svelte";
   import { m } from "../paraglide/messages";
 
   const PAGE_SIZE = 50;
@@ -39,6 +41,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let loading = $state(true);
   let error = $state<string | null>(null);
   let searchDebounce: ReturnType<typeof setTimeout> | undefined;
+  let showUploadModal = $state(false);
 
   async function load() {
     loading = true;
@@ -103,6 +106,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         aria-label={m.library_search_label()}
       />
     </div>
+    <button type="button" onclick={() => (showUploadModal = true)}>
+      <Upload size={14} />
+      {m.library_upload_button()}
+    </button>
   </div>
 
   {#if loading}
@@ -141,6 +148,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     </div>
   {/if}
 </main>
+
+<ManualUploadModal bind:open={showUploadModal} />
 
 <style lang="scss">
   @use "../styles/typography" as type;
