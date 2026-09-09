@@ -23,13 +23,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"math"
 	"net/http"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -38,6 +36,7 @@ import (
 
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/ingest"
 )
 
 // maxManualUploadMultipartMemory bounds how much of a manual-upload
@@ -65,13 +64,13 @@ type manualUploadResponse struct {
 // inlined SingleFile-style HTML file plus its URL and an optional favicon,
 // directly from the dashboard. A single authenticated POST straight into the
 // backend: R2, D1, and the Worker are never involved, unlike the
-// extension/queue capture path, which this deliberately does not share code
-// with since that package's pipeline is built tightly around pulling an
-// already-uploaded blob from R2 via a pendingcaptures.PendingCapture, and
-// bending it to also accept bytes already in hand here isn't worth the
-// coupling. The overlap that matters (hashing, local-disk storage, URL
-// normalization, title/language extraction) is small enough to duplicate
-// directly against archive.Store/urlnorm.Pipeline/db.Queries instead.
+// extension/queue capture path (internal/ingest), whose own pipeline is
+// built tightly around pulling an already-uploaded blob from R2 via a
+// pendingcaptures.PendingCapture -- bending it to also accept bytes already
+// in hand here isn't worth the coupling, so this handler talks to
+// archive.Store/urlnorm.Pipeline/db.Queries directly rather than going
+// through *ingest.Ingester. That said, this reuses internal/ingest's
+// components where is makes sense to do so.
 func (s *Server) ManualUpload(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
@@ -121,9 +120,9 @@ func (s *Server) ManualUpload(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256(htmlData)
 	contentHash := hex.EncodeToString(sum[:])
 
-	title := extractManualUploadTitle(htmlData)
+	title := ingest.ExtractTitle(htmlData)
 
-	language, err := s.resolveManualUploadLanguageConfig(ctx, extractManualUploadLanguage(htmlData))
+	language, err := ingest.ResolveLanguageConfig(ctx, s.Pool, ingest.ExtractLanguage(htmlData))
 	if err != nil {
 		log.Printf("warning: failed to resolve language config for manual upload (user %d): %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -250,82 +249,7 @@ func (s *Server) writeManualUploadFavicon(relDir string, data []byte, ext string
 	return faviconPath, int32(writtenSizeRaw), faviconHash
 }
 
-// manualUploadTitleRegexp is extractManualUploadTitle's copy of
-// internal/ingest's titleRegexp.
-var manualUploadTitleRegexp = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-
-// extractManualUploadTitle is internal/ingest's extractTitle.
-func extractManualUploadTitle(htmlBytes []byte) string {
-	m := manualUploadTitleRegexp.FindSubmatch(htmlBytes)
-	if m == nil {
-		return ""
-	}
-	return strings.TrimSpace(html.UnescapeString(string(m[1])))
-}
-
-// manualUploadLanguageTagPattern is internal/ingest's languageTagPattern
-// (internal/ingest/language.go).
-var manualUploadLanguageTagPattern = regexp.MustCompile(`(?is)<html\b[^>]*\blang\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>` + "`" + `]+))`)
-
-// manualUploadPostgresLanguageConfigs is internal/ingest's
-// postgresLanguageConfigs.
-var manualUploadPostgresLanguageConfigs = map[string]string{
-	"ar": "arabic", "hy": "armenian", "eu": "basque", "ca": "catalan",
-	"da": "danish", "nl": "dutch", "en": "english", "et": "estonian",
-	"fi": "finnish", "fr": "french", "de": "german", "el": "greek",
-	"hi": "hindi", "hu": "hungarian", "id": "indonesian", "ga": "irish",
-	"it": "italian", "lt": "lithuanian", "ne": "nepali", "no": "norwegian",
-	"nb": "norwegian", "nn": "norwegian", "pt": "portuguese", "ro": "romanian",
-	"ru": "russian", "es": "spanish", "sv": "swedish", "tr": "turkish",
-}
-
-// extractManualUploadLanguage is internal/ingest's extractLanguage.
-func extractManualUploadLanguage(htmlBytes []byte) string {
-	m := manualUploadLanguageTagPattern.FindSubmatch(htmlBytes)
-	if m == nil {
-		return ""
-	}
-	var raw []byte
-	for _, group := range m[1:] {
-		if len(group) > 0 {
-			raw = group
-			break
-		}
-	}
-	tag := strings.ToLower(strings.TrimSpace(string(raw)))
-	primary, _, _ := strings.Cut(tag, "-")
-	return primary
-}
-
-// resolveManualUploadLanguageConfig is internal/ingest's
-// resolveLanguageConfig/languageConfigExists, duplicated (against s.Pool
-// rather than an *Ingester's pool field).
-func (s *Server) resolveManualUploadLanguageConfig(ctx context.Context, langTag string) (string, error) {
-	if langTag == "" {
-		return "simple", nil
-	}
-	candidate, ok := manualUploadPostgresLanguageConfigs[langTag]
-	if !ok {
-		return "simple", nil
-	}
-
-	var exists bool
-	err := s.Pool.QueryRow(ctx,
-		"SELECT EXISTS(SELECT 1 FROM pg_ts_config WHERE cfgname = $1)", candidate,
-	).Scan(&exists)
-	if err != nil {
-		return "", fmt.Errorf("checking language config %q: %w", candidate, err)
-	}
-	if !exists {
-		return "simple", nil
-	}
-	return candidate, nil
-}
-
-// int32OrNull is internal/ingest's int32OrNull: presence is established
-// independently (faviconPath != "") rather than inferred from the value
-// itself, so a genuinely zero-byte favicon isn't indistinguishable from
-// "no favicon at all."
+// int32OrNull is the same as internal/ingest's int32OrNull duplicated here.
 func int32OrNull(v int32, present bool) pgtype.Int4 {
 	return pgtype.Int4{Int32: v, Valid: present}
 }
