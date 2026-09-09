@@ -16,50 +16,51 @@
 
 [private]
 default:
-  @just --list
+    @just --list
 
 compose PROFILE:
-  docker compose --profile={{ PROFILE }} up
+    docker compose --profile={{ PROFILE }} up
 
 create-migration NAME:
-  goose -dir migrations -s create {{ NAME }} sql
+    goose -dir migrations -s create {{ NAME }} sql
 
 fmt:
-  go fmt ./...
-  pnpm run fmt
-  pnpm run fmt:www
-  tofu fmt -recursive
+    go fmt ./...
+    pnpm run fmt
+    pnpm run fmt:www
+    tofu fmt -recursive
+    just --fmt
 
 lint:
-  errcheck -ignoregenerated ./...
-  go-critic check -checkGenerated=false -checkTests=true -enableAll ./...
-  staticcheck ./...
-  pnpm run lint
-  pnpm run types
-  pnpm run --filter=@recueil/extension types
-  pnpm run --filter=@recueil/terraform types
-  mandoc -Tlint recueil.1
+    errcheck -ignoregenerated ./...
+    go-critic check -checkGenerated=false -checkTests=true -enableAll ./...
+    staticcheck ./...
+    pnpm run lint
+    pnpm run types
+    pnpm run --filter=@recueil/extension types
+    pnpm run --filter=@recueil/terraform types
+    mandoc -Tlint recueil.1
 
 serve:
-  make all
-  ./recueil server --config local.toml
+    make all
+    ./recueil server --config local.toml
 
 agent:
-  make all
-  ./recueil agent --config local.toml
+    make all
+    ./recueil agent --config local.toml
 
 [private]
 www-assets:
-  pnpm run --filter=@recueil/www assets
+    pnpm run --filter=@recueil/www assets
 
-[working-directory: 'www']
+[working-directory('www')]
 www-build: www-assets
-  zola build --minify
+    zola build --minify
 
-[working-directory: 'www']
+[working-directory('www')]
 www-serve: www-assets
-  zola serve
+    zola serve
 
 test:
-  go test -p 1 ./...
-  pnpm run test
+    go test -p 1 ./...
+    pnpm run test
