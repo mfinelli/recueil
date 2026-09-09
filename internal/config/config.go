@@ -194,6 +194,13 @@ type Config struct {
 	// outright rather than just producing a slightly-truncated summary).
 	// Defaults to internal/ai's own defaultMaxInputChars if unset (0).
 	AIMaxInputChars int `mapstructure:"ai_max_input_chars"`
+
+	// ManualUploadMaxBytes bounds request bodies on POST /api/manual-upload
+	// specifically since that route is registered outside the rest of
+	// /api's shared middleware.RequestSize(1MB) cap because a SingleFile
+	// archive, with inlined images/fonts can easily run into the tens of
+	// megabytes.
+	ManualUploadMaxBytes int64 `mapstructure:"capture_manual_upload_max_bytes"`
 }
 
 func init() {
@@ -213,6 +220,7 @@ func init() {
 	viper.SetDefault("ai_worker_concurrency", 1)
 	viper.SetDefault("ai_max_attempts", 3)
 	viper.SetDefault("ai_request_timeout_seconds", 300)
+	viper.SetDefault("capture_manual_upload_max_bytes", 100<<20) // 100MB
 }
 
 func Load() (Config, error) {

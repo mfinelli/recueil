@@ -105,13 +105,16 @@ const baseCapture: CaptureDetail = {
 const upToDateConfig: CaptureConfig = {
   readability_version: null,
   ai_model: null,
+  // Not under test here (this file is about the readability/AI regenerate
+  // buttons specifically) so an arbitrary fixed value is fine.
+  manual_upload_max_bytes: 104857600,
 };
 
 interface LoadOptions {
   id?: string;
   capture?: CaptureDetail;
   captureError?: Error;
-  captureConfig?: CaptureConfig;
+  captureConfig?: Partial<CaptureConfig>;
   captureConfigError?: Error;
   languages?: string[];
   languagesError?: Error;

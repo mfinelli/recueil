@@ -55,6 +55,11 @@
 // heaviest users by storage. Routed via chi, with auth.RequireSession used as
 // ordinary chi middleware (no httpapi-specific auth plumbing of its own).
 //
+// POST /api/manual-upload is session-protected too, but registered outside
+// the r.Route("/api", ...) group everything above lives in because it needs
+// multipart/form-data and a much larger body than that group's shared
+// JSON-only, 1MB-capped middleware allows.
+//
 // This package holds request validation and wiring only; the actual work
 // happens in internal/auth (passwords, sessions, the bootstrap holder),
 // internal/db (Postgres), internal/archive (reading archived HTML off
@@ -208,6 +213,23 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 	// cookies) and its own request framing (JSON-RPC over Streamable
 	// HTTP, not this package's REST conventions).
 	r.Handle("/mcp", auth.RequireAPIToken(q)(mcpapi.NewHandler(q, build.Version)))
+
+	// POST /api/manual-upload is also not registered inside the
+	// r.Route("/api", ...) block above because that block's
+	// r.Use(middleware.AllowContentType("application/json"))
+	// and r.Use(middleware.RequestSize(1<<20)) apply to every route
+	// nested under it, with no per-route way to opt out once a parent
+	// router has set them. Manual upload needs multipart/form-data and a
+	// much larger body because a real SingleFile archive with inlined
+	// images/fonts and all, easily runs into the tens of megabytes -- so
+	// it gets its own top-level mount with its own middleware stack
+	// instead.
+	//
+	// auth.RequireSession runs before middleware.RequestSize (opposite of
+	// the /api group's own ordering) so an unauthenticated request is
+	// rejected before the server ever commits to reading a large body.
+	r.Method(http.MethodPost, "/api/manual-upload",
+		auth.RequireSession(q)(middleware.RequestSize(s.ManualUploadMaxBytes)(http.HandlerFunc(s.ManualUpload))))
 
 	// dashboard is nil only in this package's own tests (which never
 	// exercise dashboard-serving); cmd/server.go always supplies a real

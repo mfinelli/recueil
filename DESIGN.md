@@ -251,21 +251,46 @@ timestamps.
 
 For a page captured somewhere the extension wasn't installed — an email
 attachment, a device without the extension, a file handed over by someone else —
-the dashboard supports directly uploading an already-captured, fully inlined
-SingleFile-style HTML file plus its URL. This bypasses R2, D1, and the Worker
-entirely: a single authenticated `POST` straight into the backend, gated the
-same way as any other dashboard endpoint.
+the dashboard's Library screen (an Upload button beside the search box, opening
+a modal) supports directly uploading an already-captured, fully inlined
+SingleFile-style HTML file plus its URL, and optionally a favicon, via
+`POST /api/manual-upload`. This bypasses R2, D1, and the Worker entirely: a
+single authenticated request straight into the backend (`internal/httpapi`),
+never touching `internal/ingest` at all.
 
-- Reader-text extraction, title parsing, content hashing, URL normalization, and
-  grouping into `pages` are all identical to any other capture path — a manual
-  upload of an already-captured URL is just another new version under the same
-  page.
+- Reader-text extraction (async, same `readability_jobs` row any other capture
+  gets), content hashing, URL normalization, and grouping into `pages` all
+  produce identical results to any other capture path — a manual upload of an
+  already-captured URL is just another new version under the same page — but the
+  code itself is a separate, smaller implementation
+  (`internal/httpapi/manualupload.go`) against `archive.Store`/
+  `urlnorm.Pipeline`/`db.Queries` directly, not a shared code path with
+  `internal/ingest`: that package's own pipeline is built tightly around pulling
+  an already-uploaded blob from R2 via a `pendingcaptures.PendingCapture`, and
+  bending it to also accept bytes already in hand isn't worth the coupling for
+  the small amount of logic (title/language extraction, hashing) that actually
+  overlaps.
 - Uses a backend-generated UUID as the starting `source_capture_id` (§3c already
   covers the idempotency scheme in full; manual upload just supplies the id
   itself, since there's no client to generate one).
-- Needs its own, larger `RequestSize` limit scoped to this one route — the
-  global 1MB cap would reject a real SingleFile archive immediately, since
-  inlined images/fonts routinely push these into the tens of megabytes.
+- Registered outside the rest of `/api`'s shared middleware
+  (`middleware.AllowContentType("application/json")`, a global 1MB
+  `middleware.RequestSize`) — chi middleware only stacks, it never unsets, so a
+  route needing multipart/form-data and a much larger body gets its own
+  top-level mount instead, the same way `/mcp` already does for its own,
+  different reasons. The size ceiling is `capture_manual_upload_max_bytes`
+  (`config.Config.ManualUploadMaxBytes`, defaulting to 100MB) — configurable
+  rather than a hardcoded constant, since a real SingleFile archive with inlined
+  images/fonts routinely runs into the tens of megabytes, and how big is
+  reasonable depends on the operator's own disk and pages. Surfaced to the
+  dashboard via `GET /api/capture-config`'s `manual_upload_max_bytes`, so the
+  upload form can reject an oversized file client-side rather than only after a
+  slow upload.
+- A favicon upload is validated against the same closed extension set §3g's
+  client-side favicon capture already uses (`svg`/`png`/`ico`) — the only shapes
+  `archive.Store.WriteAsset`'s compress-by-extension logic understands — derived
+  from the uploaded file's own name, since there's no capture URL to derive it
+  from the way the extension's own favicon fetch has.
 - `captures.source` (`'extension'` | `'manual_upload'`, §10) records which path
   a capture came through, for the dashboard to show directly.
 

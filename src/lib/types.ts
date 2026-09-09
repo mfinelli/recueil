@@ -355,4 +355,19 @@ export interface InfoResponse {
 export interface CaptureConfig {
   readability_version: string | null;
   ai_model: string | null;
+  // manual_upload_max_bytes is never null, unlike the two fields above because
+  // the Go side sets a default even when the operator doesn't set it
+  // explicitly. The manual-upload form uses this to reject an oversized
+  // file client-side, rather than only finding out after a slow upload
+  // that the server was always going to reject it.
+  manual_upload_max_bytes: number;
+}
+
+// POST /api/manual-upload -- multipart/form-data (not JSON) so this
+// doesn't go through api.ts's apiJSON/apiFetch (both hardcode a JSON
+// body); page_id/capture_id are enough for the caller to navigate straight to
+// the new page.
+export interface ManualUploadResponse {
+  page_id: number;
+  capture_id: number;
 }

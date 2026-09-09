@@ -48,6 +48,7 @@ import (
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 	"github.com/mfinelli/recueil/internal/queueitems"
+	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
 var (
@@ -126,7 +127,17 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if cfg.AIBaseURL != "" {
 		aiModel = cfg.AIModel
 	}
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL)
+
+	// server needs its own urlnorm.Pipeline even if normally only the
+	// agent uses it because manual upload runs entirely inside the server,
+	// bypassing agent's R2-sourced ingestion pipeline.
+	clearURLs, err := urlnorm.NewClearURLs()
+	if err != nil {
+		return fmt.Errorf("loading clearurls ruleset: %w", err)
+	}
+	pipeline := urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
+
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

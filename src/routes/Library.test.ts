@@ -168,4 +168,29 @@ describe("Library", () => {
     expect(apiJSONMock).toHaveBeenLastCalledWith("/pages?limit=50&offset=0");
     expect(await screen.findByText("1–50 of 120")).toBeTruthy();
   });
+
+  it("opens the manual-upload modal from the Upload button", async () => {
+    // mockLoad's apiJSONMock throws on anything besides "/pages?" to catch
+    // unexpected calls elsewhere but opening the modal also triggers its own
+    // GET /api/capture-config, so this one test needs a slightly wider mock.
+    apiJSONMock.mockImplementation((path: string) => {
+      if (path.startsWith("/pages?"))
+        return Promise.resolve({ pages: [], total: 0 });
+      if (path === "/capture-config")
+        return Promise.resolve({
+          readability_version: null,
+          ai_model: null,
+          manual_upload_max_bytes: 104857600,
+        });
+      throw new Error(`unexpected apiJSON call: ${path}`);
+    });
+    render(Library);
+
+    await screen.findByText("Nothing archived yet.");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Upload" }));
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
 });

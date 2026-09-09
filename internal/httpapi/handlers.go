@@ -44,6 +44,7 @@ import (
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/slug"
+	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
 type Server struct {
@@ -70,13 +71,25 @@ type Server struct {
 	// alongside the pairing token (see pairingTokenResponse) so a user
 	// configuring a new device has everything they need on one screen.
 	WorkerURL string
+
+	// Pipeline normalizes a raw URL for ManualUpload which is the same
+	// urlnorm.Pipeline internal/ingest's R2-sourced path uses.
+	Pipeline *urlnorm.Pipeline
+
+	// ManualUploadMaxBytes is config.Config.ManualUploadMaxBytes, threaded
+	// through for GetCaptureConfig to report: the dashboard's upload
+	// form uses it to reject an oversized file client-side with a clear
+	// message, rather than only finding out after a slow upload that the
+	// server was always going to reject it.
+	ManualUploadMaxBytes int64
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64) *Server {
 	return &Server{
 		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
 		ReadabilityVersion: readabilityVersion, AIModel: aiModel, WorkerURL: workerURL,
+		Pipeline: pipeline, ManualUploadMaxBytes: manualUploadMaxBytes,
 	}
 }
 
@@ -1960,8 +1973,9 @@ func (s *Server) RegenerateReadability(w http.ResponseWriter, r *http.Request) {
 }
 
 type captureConfigResponse struct {
-	ReadabilityVersion *string `json:"readability_version"`
-	AIModel            *string `json:"ai_model"`
+	ReadabilityVersion   *string `json:"readability_version"`
+	AIModel              *string `json:"ai_model"`
+	ManualUploadMaxBytes int64   `json:"manual_upload_max_bytes"`
 }
 
 // GET /api/capture-config: this running agent's currently configured
@@ -1970,11 +1984,14 @@ type captureConfigResponse struct {
 // already-stored readability_version/ai_model and decide whether to
 // show/hide/disable its regenerate buttons. Empty string means "not
 // configured" (or AI enrichment disabled entirely) and is reported as null,
-// not "".
+// not "". Also reports manual_upload_max_bytes, so the manual-upload form
+// can reject an oversized file client-side rather than only after a slow
+// upload.
 func (s *Server) GetCaptureConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, captureConfigResponse{
-		ReadabilityVersion: stringOrNil(s.ReadabilityVersion),
-		AIModel:            stringOrNil(s.AIModel),
+		ReadabilityVersion:   stringOrNil(s.ReadabilityVersion),
+		AIModel:              stringOrNil(s.AIModel),
+		ManualUploadMaxBytes: s.ManualUploadMaxBytes,
 	})
 }
 
