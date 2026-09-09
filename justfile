@@ -14,9 +14,30 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+sed := if os() == "macos" { "gsed" } else { "sed" }
+
 [private]
 default:
     @just --list
+
+bump VERSION:
+    jq '.version = "{{ VERSION }}"' package.json | sponge package.json
+    jq '.version = "{{ VERSION }}"' extension/package.json | \
+        sponge extension/package.json
+    jq '.version = "{{ VERSION }}"' terraform/worker/package.json | \
+        sponge terraform/worker/package.json
+    jq '.version = "{{ VERSION }}"' www/package.json | sponge www/package.json
+    jq '.version = "{{ VERSION }}"' extension/manifest.base.json | \
+        sponge extension/manifest.base.json
+    {{ sed }} -i -E "s|(Version:\s+\").*(\",)|\1{{ VERSION }}\2|" cmd/root.go
+    {{ sed }} -i -E \
+        "s|(LABEL org\.opencontainers\.image\.version=v).*|\1{{ VERSION }}|" \
+        Dockerfile
+    {{ sed }} -i "s|//terraform?ref=v.*\"|//terraform?ref=v{{ VERSION }}\"|" \
+        www/content/docs/operators/deploying-recueil.md
+    {{ sed }} -i \
+        "s|image: mfinelli/recueil:.*|image: mfinelli/recueil:{{ VERSION }}|" \
+        www/content/docs/operators/deploying-recueil.md
 
 compose PROFILE:
     docker compose --profile={{ PROFILE }} up
@@ -40,6 +61,11 @@ lint:
     pnpm run --filter=@recueil/extension types
     pnpm run --filter=@recueil/terraform types
     mandoc -Tlint recueil.1
+
+gover VERSION:
+    {{ sed }} -i  -E "s|^go .*|go {{ VERSION }}|" go.mod
+    {{ sed }} -i "s|FROM golang:.*-alpine|FROM golang:{{ VERSION }}-alpine|" \
+        Dockerfile
 
 serve:
     make all
