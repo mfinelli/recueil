@@ -111,8 +111,7 @@ func runGC(cmd *cobra.Command, args []string) error {
 		// TooManyOrphansError already explains itself in full, including
 		// what to do about it -- wrapping it in "running gc: ..." would
 		// just prefix noise onto an already-actionable message.
-		var tooMany *gc.TooManyOrphansError
-		if errors.As(err, &tooMany) {
+		if _, ok := errors.AsType[*gc.TooManyOrphansError](err); ok {
 			return err
 		}
 		return fmt.Errorf("running gc: %w", err)
