@@ -59,21 +59,18 @@ func NewHandler(q *db.Queries, version string) http.Handler {
 	registerTools(server, q)
 
 	getServer := func(*http.Request) *mcp.Server { return server }
-	return mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
+	handler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
 		// Required outright for the 2026-07-28 protocol revision (session
 		// resumability is dropped from it entirely), and a reasonable
 		// default regardless for a single-process backend with no
 		// session-affinity problem to design around.
 		Stateless: true,
-		// Explicit, not left to the SDK's own default -- which as of
-		// v1.6.0 is off unless opted back in via a deprecated MCPGODEBUG
-		// compatibility flag. With zero trusted origins configured, this
-		// still does exactly what's wanted: browser-context cross-origin
-		// requests get rejected, while genuine MCP clients (which send
-		// neither Sec-Fetch-Site nor Origin, being non-browser HTTP
-		// clients) are unaffected.
-		CrossOriginProtection: http.NewCrossOriginProtection(),
 	})
+
+	// Browser-context cross-origin requests get rejected, while  MCP
+	// clients (which send neither Sec-Fetch-Site nor Origin,
+	// being non-browser HTTP clients) are unaffected.
+	return http.NewCrossOriginProtection().Handler(handler)
 }
 
 // clampLimit applies this package's uniform default/cap to every
