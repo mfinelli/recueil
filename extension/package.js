@@ -40,6 +40,10 @@ async function main() {
   // here first means `pnpm package` is always correct on its own, not
   // dependent on remembering to `pnpm build` immediately beforehand.
   execFileSync("node", ["build.js"], { cwd: EXTENSION_DIR, stdio: "inherit" });
+  execFileSync("node", ["licenses.js"], {
+    cwd: EXTENSION_DIR,
+    stdio: "inherit",
+  });
   await mkdir(PACKAGES_DIR, { recursive: true });
 
   await packageFirefox();
