@@ -39,6 +39,7 @@ all: recueil
 clean:
 	rm -rf recueil
 
+recueil: export CGO_ENABLED = 1
 recueil: $(SOURCES) internal/db/db.go dist/index.html
 	$(GO) build -o $@ \
 		-trimpath \

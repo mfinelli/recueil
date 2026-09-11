@@ -30,7 +30,8 @@ pnpm ci
 sqlc generate
 go mod vendor
 
-go-licenses save . --ignore github.com/mfinelli/recueil --save_path licenses
+go-licenses save . --ignore github.com/mfinelli/recueil --save_path licenses \
+  || true
 pnpm exec license-checker-rseidelsohn --production --files licenses
 find licenses -type f -exec chmod 0644 {} \;
 
@@ -54,7 +55,7 @@ cp -r node_modules "${bname}"
 cp -r extension/node_modules "${bname}/extension"
 [[ -d terraform/worker/node_modules ]] && cp -r terraform/worker/node_modules \
   "${bname}/terraform/worker"
-cp -r www/node_modules "${bname}/www"
+[[ -d www/node_modules ]] && cp -r www/node_modules "${bname}/www"
 
 tar --owner=0 --group=0 --sort=name -cavf "${bname}.tar.zst" "${bname}"
 if [[ ${GITHUB_EVENT_NAME} != pull_request ]]; then
@@ -70,6 +71,7 @@ mkdir "${bname}_amd64"
 mkdir "${bname}_arm64"
 
 mv recueil "${bname}_amd64"
+export CC=aarch64-linux-gnu-gcc
 export GOARCH=arm64
 make recueil
 mv recueil "${bname}_arm64"
