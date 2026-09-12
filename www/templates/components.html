@@ -1,0 +1,14 @@
+{% component callout(label) -%}
+  <div class="callout">
+    <span class="callout__label">{{ label }}</span>
+    {{ body | markdown(inline=false) | safe }}
+  </div>
+{%- endcomponent %}
+
+{% component cross_link(href, title, label, desc) -%}
+  <a class="cross-link" href="{{ href }}">
+    <span class="cross-link__label">{{ label }}</span>
+    <span class="cross-link__title">{{ title }}</span>
+    <span class="cross-link__desc">{{ desc }}</span>
+  </a>
+{%- endcomponent %}
