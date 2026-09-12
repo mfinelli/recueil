@@ -28,6 +28,7 @@ fi
 
 pnpm ci
 sqlc generate
+pnpm run build
 go mod vendor
 
 go-licenses save . --ignore github.com/mfinelli/recueil --save_path licenses \
@@ -50,6 +51,7 @@ git archive HEAD | tar -x -C "${bname}"
   sqlc generate
 )
 
+cp -r dist "${bname}"
 cp -r vendor "${bname}"
 cp -r node_modules "${bname}"
 cp -r extension/node_modules "${bname}/extension"
