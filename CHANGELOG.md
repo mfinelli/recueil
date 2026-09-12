@@ -5,6 +5,6 @@ based on the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
 
 `recueil` adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## TBD
+## v1.0.0 — TBD
 
 Initial release

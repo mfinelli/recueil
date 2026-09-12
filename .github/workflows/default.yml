@@ -192,6 +192,17 @@ jobs:
             *.xpi
             *.xpi.asc
           retention-days: 2
+      - run: ./scripts/changelog.bash
+      - run: cat /tmp/release-notes.md
+      - run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file /tmp/release-notes.md \
+            --latest \
+            ./*.sha256{,.asc} ./*.tar.zst{,.asc} ./*.xpi{,.asc}
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   web:
     runs-on: ubuntu-latest
