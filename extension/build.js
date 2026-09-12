@@ -83,6 +83,17 @@ async function copyStatic(browser, filename) {
   );
 }
 
+async function copyLicense(browser) {
+  // Both web-ext build and crx3 package whatever's sitting in dist/<browser>
+  // verbatim (an .xpi/.crx is just a zip of that directory), so dropping
+  // the LICENSE in here is all that's needed to get it into the final
+  // extension packages.
+  await copyFile(
+    new URL("../LICENSE", import.meta.url),
+    new URL(`./dist/${browser}/LICENSE`, import.meta.url),
+  );
+}
+
 async function compileStyles(browser) {
   const result = await compileAsync(
     new URL("./src/popup/popup.scss", import.meta.url).pathname,
@@ -124,6 +135,7 @@ async function buildAll() {
     await copyStatic(browser, "popup.html");
     await compileStyles(browser);
     await copyLocales(browser);
+    await copyLicense(browser);
     console.log(`built extension/dist/${browser}`);
   }
 }

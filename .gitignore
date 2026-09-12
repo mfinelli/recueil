@@ -9,6 +9,7 @@
 /terraform/.terraform*
 /terraform/node_modules/*
 /tmp/*
+/vendor/*
 /www/public/*
 /www/static/fonts/*
 /www/static/icons/*

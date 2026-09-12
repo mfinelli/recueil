@@ -124,7 +124,11 @@ export default [
     },
   },
   {
-    files: ["extension/build.js", "extension/package.js"],
+    files: [
+      "extension/build.js",
+      "extension/licenses.js",
+      "extension/package.js",
+    ],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "module",
