@@ -34,12 +34,62 @@ GITSHA ?= $(shell $(GIT) rev-parse --short HEAD)
 
 READABILITY_PACKAGE := node_modules/@mozilla/readability/package.json
 
+# Detect target OS (respect GOOS if set, fall back to host)
+TARGET_OS ?= $(shell uname -s | tr '[:upper:]' '[:lower:]')
+ifdef GOOS
+	TARGET_OS = $(GOOS)
+endif
+
+# Detect target architecture (respect GOARCH if set, fall back to host arch)
+TARGET_ARCH ?= $(shell uname -m)
+ifdef GOARCH
+	ifeq ($(GOARCH),arm64)
+		TARGET_ARCH = aarch64
+	endif
+	ifeq ($(GOARCH),amd64)
+		TARGET_ARCH = x86_64
+	endif
+endif
+
+# hardening flags adapted from archlinux makepkg.conf (GNU ld only)
+LDFLAGS_linux ?= -Wl,-O1 -Wl,--sort-common -Wl,--as-needed -Wl,-z,relro \
+		 -Wl,-z,now -Wl,-z,pack-relative-relocs
+
+# macOS linker (ld64/lld) doesn't support GNU ld flags;
+# PIE and ASLR are enforced by the OS; dead_strip ~= --as-needed
+LDFLAGS_darwin ?= -Wl,-dead_strip
+
+LDFLAGS ?= $(LDFLAGS_$(TARGET_OS))
+
+# base flags for all architectures (linux only)
+CGO_CFLAGS_BASE_linux ?= -O2 -fno-plt -fexceptions \
+			 -Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3 \
+			 -Wformat -Werror=format-security \
+			 -fstack-clash-protection \
+			 -fno-omit-frame-pointer \
+			 -mno-omit-leaf-frame-pointer
+
+# macOS: conservative base flags, let the SDK handle hardening
+CGO_CFLAGS_BASE_darwin ?= -O2 -fexceptions \
+			   -Wformat -Werror=format-security \
+			   -fno-omit-frame-pointer
+
+CGO_CFLAGS_BASE ?= $(CGO_CFLAGS_BASE_$(TARGET_OS))
+
+# x86_64 only flags (linux only)
+CGO_CFLAGS_x86_64_linux ?= -fcf-protection
+
+# final flags to actually use
+CGO_CFLAGS ?= $(CGO_CFLAGS_BASE) $(CGO_CFLAGS_$(TARGET_ARCH)_$(TARGET_OS))
+
 all: recueil
 
 clean:
 	rm -rf recueil
 
 recueil: export CGO_ENABLED = 1
+recueil: export CGO_CFLAGS := $(CGO_CFLAGS)
+recueil: export CGO_LDFLAGS := $(LDFLAGS)
 recueil: $(SOURCES) internal/db/db.go dist/index.html
 	$(GO) build -o $@ \
 		-trimpath \
