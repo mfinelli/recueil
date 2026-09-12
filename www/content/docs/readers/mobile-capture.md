@@ -68,14 +68,14 @@ revoked independently later.
 8. Optional: add a **Show Notification** step at the end so you get a
    confirmation each time it runs.
 
-{% callout(label="Tip") %} The token lives in plain text inside the shortcut's
+{% <callout label="Tip"> %} The token lives in plain text inside the shortcut's
 saved configuration — viewable if you open the shortcut to edit it, the same
 exposure any other client's stored credential has. Don't export or share this
-particular shortcut with anyone. {% end %}
+particular shortcut with anyone. {% </callout> %}
 
-{% callout(label="Heads up") %} Shortcuts treats **Get Contents of URL** as
+{% <callout label="Heads up"> %} Shortcuts treats **Get Contents of URL** as
 successful once it gets any HTTP response at all — a 401 from a revoked or
 expired token, a 500 for an internal error, or any other error response won't
 show up as a failure on its own. If enqueues silently stop landing, you might
 want to add a **Show** step to show the results from the request to help you
-diagnose the problem. {% end %}
+diagnose the problem. {% </callout> %}

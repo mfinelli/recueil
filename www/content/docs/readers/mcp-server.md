@@ -28,10 +28,10 @@ something like `https://your-instance.example.com/mcp`. Any MCP client that
 supports a remote server with a bearer token can use it: send
 `Authorization: Bearer <your API token>` with every request.
 
-{% callout(label="Reachability") %} This only works from wherever your dashboard
-itself is already reachable — the same network or VPN, nothing more open than
-that. If your instance is LAN- or Tailscale-only, the machine running your MCP
-client needs to be on it too. {% end %}
+{% <callout label="Reachability"> %} This only works from wherever your
+dashboard itself is already reachable — the same network or VPN, nothing more
+open than that. If your instance is LAN- or Tailscale-only, the machine running
+your MCP client needs to be on it too. {% </callout> %}
 
 ## What it can do
 

@@ -219,7 +219,7 @@ jobs:
           node-version: lts/*
       - uses: taiki-e/install-action@v2
         with:
-          tool: zola@0.22.1
+          tool: zola@0.23.5
       - run: pnpm ci
       - run: pnpm run --filter=@recueil/www assets
       - run: zola build --minify
