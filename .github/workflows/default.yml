@@ -143,6 +143,8 @@ jobs:
     needs: [main, docker]
     permissions:
       contents: write
+      attestations: write
+      id-token: write
     steps:
       - run: sudo apt-get update
       - run: sudo apt-get upgrade -y
@@ -180,6 +182,14 @@ jobs:
       - run: tar tvf "recueil_${GITHUB_REF_NAME//\//-}_amd64.tar.zst"
       - run: tar tvf "recueil_${GITHUB_REF_NAME//\//-}_arm64.tar.zst"
       - run: bsdtar tvf "recueil_${GITHUB_REF_NAME//\//-}.xpi"
+      - uses: actions/attest@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          subject-path: |
+            *.tar.zst
+            *.xpi
+            *.sha256
+            *.asc
       - uses: actions/upload-artifact@v7
         if: "!startsWith(github.ref, 'refs/tags/')"
         with:
