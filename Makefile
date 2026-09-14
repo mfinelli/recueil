@@ -82,7 +82,7 @@ CGO_CFLAGS_x86_64_linux ?= -fcf-protection
 # final flags to actually use
 CGO_CFLAGS ?= $(CGO_CFLAGS_BASE) $(CGO_CFLAGS_$(TARGET_ARCH)_$(TARGET_OS))
 
-all: recueil
+all: recueil recueil.bash recueil.fish recueil.zsh
 
 clean:
 	rm -rf recueil
@@ -107,5 +107,14 @@ internal/db/db.go: $(MIGRATIONS) $(QUERIES) sqlc.yaml
 
 dist/index.html: $(FRONTEND)
 	$(PNPM) run build
+
+recueil.bash: recueil
+	./$< completion bash > $@
+
+recueil.fish: recueil
+	./$< completion fish > $@
+
+recueil.zsh: recueil
+	./$< completion zsh > $@
 
 .PHONY: all clean

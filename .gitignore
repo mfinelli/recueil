@@ -4,6 +4,9 @@
 /internal/db/*
 /node_modules/*
 /recueil
+/recueil.bash
+/recueil.fish
+/recueil.zsh
 /src/paraglide/*
 /terraform/*.tfstate*
 /terraform/.terraform*
