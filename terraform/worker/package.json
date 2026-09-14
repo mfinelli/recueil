@@ -13,9 +13,9 @@
   "devDependencies": {
     "@aws-crypto/sha256-js": "^5.2.0",
     "@cloudflare/vitest-pool-workers": "^0.22.0",
-    "@cloudflare/workers-types": "^5.20260713.1",
-    "@smithy/protocol-http": "^5.5.8",
-    "@smithy/signature-v4": "^5.6.4",
+    "@cloudflare/workers-types": "^5.20260905.1",
+    "@smithy/protocol-http": "^5.6.2",
+    "@smithy/signature-v4": "^5.7.3",
     "typescript": "^6.0.3"
   }
 }

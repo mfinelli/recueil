@@ -29,9 +29,9 @@ another device — the extension shows a notification badge when something's
 waiting. Open the popup, click a queued URL to open it, take care of anything in
 the way (a CAPTCHA, a login wall), and capture it the same way you just did.
 
-{% callout(label="Tip") %} No extension installed yet? Queued pages simply wait
+{% <callout label="Tip"> %} No extension installed yet? Queued pages simply wait
 — nothing expires. Install it on any browser you use regularly and it'll pick up
-the queue automatically. {% end %}
+the queue automatically. {% </callout> %}
 
 ## How this gets past logins and paywalls
 

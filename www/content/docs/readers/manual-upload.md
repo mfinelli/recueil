@@ -38,8 +38,8 @@ the same as any other capture — searchable full text, a readable version, a
 screenshot, and (if you've configured it) an AI summary all follow shortly
 after, exactly like a page the extension captured directly.
 
-{% callout(label="Heads up") %} There's a size ceiling on the HTML file (100MB
+{% <callout label="Heads up"> %} There's a size ceiling on the HTML file (100MB
 by default) — ask whoever runs your instance if you hit it, since it's a setting
 they control (`capture_manual_upload_max_bytes`, see
 [Configuration Reference](@/docs/operators/configuration-reference.md)), not a
-fixed limit. {% end %}
+fixed limit. {% </callout> %}

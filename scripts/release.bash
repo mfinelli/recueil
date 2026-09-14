@@ -31,8 +31,8 @@ sqlc generate
 pnpm run build
 go mod vendor
 
-go-licenses save . --ignore github.com/mfinelli/recueil --save_path licenses \
-  || true
+go-licenses save . --ignore github.com/mfinelli/recueil --save_path licenses ||
+  true
 pnpm exec license-checker-rseidelsohn --production --files licenses
 find licenses -type f -exec chmod 0644 {} \;
 
@@ -101,8 +101,7 @@ done
   fi
 )
 
-sha256sum -b ./*.tar.zst > "${bname}.sha256"
-sha256sum -b ./*.xpi > "${bname}.sha256"
+sha256sum -b ./*.tar.zst ./*.xpi > "${bname}.sha256"
 if [[ ${GITHUB_EVENT_NAME} != pull_request ]]; then
   gpg -u ci@recueil.app -ba "${bname}.sha256"
 fi

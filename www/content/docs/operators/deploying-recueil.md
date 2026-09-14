@@ -244,7 +244,7 @@ server {
 }
 ```
 
-{% callout(label="Heads up") %} nginx's default `client_max_body_size` is 1MB —
+{% <callout label="Heads up"> %} nginx's default `client_max_body_size` is 1MB —
 comfortably enough for everything except
 [manual upload](@/docs/readers/manual-upload.md), which needs a bigger one to
 match `capture_manual_upload_max_bytes` (100MB by default; see
@@ -252,7 +252,7 @@ match `capture_manual_upload_max_bytes` (100MB by default; see
 `client_max_body_size 100M;` inside the `location / {}` block above (or whatever
 value matches your own configured limit) — otherwise nginx itself rejects an
 oversized upload with a 413 before it ever reaches `server`, which looks like
-recueil's limit misbehaving when it's actually this one. {% end %}
+recueil's limit misbehaving when it's actually this one. {% </callout> %}
 
 ## Creating your first account
 

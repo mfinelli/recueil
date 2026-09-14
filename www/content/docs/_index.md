@@ -61,6 +61,6 @@ you saved about a topic last month. See
 [MCP Server](@/docs/readers/mcp-server.md) for setup.
 
 <div class="cross-links">
-{{ cross_link(href="/docs/readers/", title="For Readers", label="Using recueil", desc="Pair a device, capture pages, and work with your archive.") }}
-{{ cross_link(href="/docs/operators/", title="For Operators", label="Running an instance", desc="Deployment, configuration, and administration.") }}
+{{ <cross_link href="/docs/readers/" title="For Readers" label="Using recueil" desc="Pair a device, capture pages, and work with your archive." /> }}
+{{ <cross_link href="/docs/operators/" title="For Operators" label="Running an instance" desc="Deployment, configuration, and administration." /> }}
 </div>
