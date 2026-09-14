@@ -92,9 +92,10 @@ recueil: export CGO_CFLAGS := $(CGO_CFLAGS)
 recueil: export CGO_LDFLAGS := $(LDFLAGS)
 recueil: $(SOURCES) internal/db/db.go dist/index.html
 	$(GO) build -o $@ \
+		-buildmode=pie \
 		-trimpath \
 		-mod=readonly \
-		-ldflags "-s -w -linkmode=external \
+		-ldflags "-s -w -linkmode=external -extldflags '$(LDFLAGS)' \
 			-X main.commit=$(GITSHA) \
 			-X main.date=$(shell $(DATE) --utc --iso-8601=seconds) \
 			-X main.version=$(shell $(JQ) -r .version package.json) \
