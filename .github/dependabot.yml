@@ -1,0 +1,39 @@
+---
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 10
+  - package-ecosystem: gitsubmodule
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+  - package-ecosystem: npm
+    directories:
+      - /
+      - /extension
+      - /terraform/worker
+      - /www
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+  - package-ecosystem: opentofu
+    directory: /terraform
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 10
