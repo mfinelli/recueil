@@ -32,14 +32,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           cache: true
           go-version-file: go.mod
       - uses: pnpm/action-setup@v6
         with:
           version: latest
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           cache: pnpm
           node-version: lts/*
@@ -157,14 +157,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           cache: true
           go-version-file: go.mod
       - uses: pnpm/action-setup@v6
         with:
           version: latest
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           cache: pnpm
           node-version: lts/*
@@ -223,7 +223,7 @@ jobs:
       - uses: pnpm/action-setup@v6
         with:
           version: latest
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           cache: pnpm
           node-version: lts/*
