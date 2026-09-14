@@ -19,6 +19,9 @@ FRONTEND := $(shell find src -type f -not -name "*.test.ts")
 MIGRATIONS := $(wildcard migrations/*.sql)
 QUERIES := $(wildcard queries/*.sql)
 
+PREFIX := /usr/local
+DESTDIR :=
+
 DATE := date
 GIT := git
 GO := go
@@ -117,4 +120,26 @@ recueil.fish: recueil
 recueil.zsh: recueil
 	./$< completion zsh > $@
 
-.PHONY: all clean
+install: all
+	install -Dm0755 recueil "$(DESTDIR)$(PREFIX)/bin/recueil"
+	install -Dm0644 CHANGELOG.md \
+		"$(DESTDIR)$(PREFIX)/share/doc/recueil/CHANGELOG.md"
+	install -Dm0644 recueil.bash \
+		"$(DESTDIR)$(PREFIX)/share/bash-completion/completions/recueil"
+	install -Dm0644 recueil.fish \
+		"$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/recueil.fish"
+	install -Dm0644 recueil.zsh \
+		"$(DESTDIR)$(PREFIX)/share/zsh/site-functions/_recueil"
+	install -Dm0644 recueil.1 \
+		"$(DESTDIR)$(PREFIX)/share/man/man1/recueil.1"
+
+uninstall:
+	rm -rf \
+		"$(DESTDIR)$(PREFIX)/bin/recueil" \
+		"$(DESTDIR)$(PREFIX)/share/doc/recueil" \
+		"$(DESTDIR)$(PREFIX)/share/bash-completion/completions/completions/recueil" \
+		"$(DESTDIR)$(PREFIX)/share/fish/vendor_completions.d/recueil.fish" \
+		"$(DESTDIR)$(PREFIX)/share/doc/zsh/site-functions/_recueil" \
+		"$(DESTDIR)$(PREFIX)/share/man/man1/recueil.1"
+
+.PHONY: all install clean uninstall
