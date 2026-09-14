@@ -5,6 +5,8 @@ based on the [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) format.
 
 `recueil` adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v1.0.0 — TBD
+## v1.0.0 — 2026/09/14
 
-Initial release
+Initial release. There are still a few items on my TODO list but they're all
+cosmetic. I don't expect any more major code/schema changes at this point and
+I'd like to get a real install to start doing some more testing with.
