@@ -85,7 +85,7 @@ docker compose exec -T postgres \
 # ./data/archive is a real host directory (a bind mount, not a named
 # Docker volume), so this is a plain tar (the files are already compressed),
 # and no disposable container is needed.
-tar czf "$backup_dir/archive.tar.gz" -C ./data/archive .
+tar cf "$backup_dir/archive.tar" -C ./data/archive .
 ```
 
 **Intentionally not in this list**, since it's an easy thing to get backwards:
