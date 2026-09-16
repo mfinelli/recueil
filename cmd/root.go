@@ -34,7 +34,7 @@ var cfgFile string
 var rootCmd = &cobra.Command{
 	Use:               "recueil",
 	Short:             "Recueil backend server and admin CLI",
-	Version:           "1.0.0",
+	Version:           "1.0.1",
 	CompletionOptions: cobra.CompletionOptions{HiddenDefaultCmd: true},
 }
 

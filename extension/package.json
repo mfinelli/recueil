@@ -1,6 +1,6 @@
 {
   "name": "@recueil/extension",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "recueil browser extension: pairing, capture, and upload",
   "homepage": "https://github.com/mfinelli/recueil",

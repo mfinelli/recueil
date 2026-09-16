@@ -32,7 +32,7 @@ standalone root config:
 
 ```hcl
 module "recueil" {
-  source = "github.com/mfinelli/recueil//terraform?ref=v1.0.0"
+  source = "github.com/mfinelli/recueil//terraform?ref=v1.0.1"
 
   account_id       = var.cloudflare_account_id
   name_prefix      = "yourname"           # must be globally unique
@@ -134,7 +134,7 @@ services:
     command: ["tcp-listen:9222,fork,reuseaddr", "tcp:127.0.0.1:9223"]
 
   server:
-    image: mfinelli/recueil:1.0.0
+    image: mfinelli/recueil:1.0.1
     restart: unless-stopped
     command: ["recueil", "server"]
     depends_on:
@@ -167,7 +167,7 @@ services:
       retries: 5
 
   agent:
-    image: mfinelli/recueil:1.0.0
+    image: mfinelli/recueil:1.0.1
     restart: unless-stopped
     command: ["recueil", "agent"]
     depends_on:

@@ -45,7 +45,7 @@ RUN GITSHA=$GITSHA make
 
 FROM alpine
 LABEL org.opencontainers.image.title=recueil
-LABEL org.opencontainers.image.version=v1.0.0
+LABEL org.opencontainers.image.version=v1.0.1
 LABEL org.opencontainers.image.description="webpage bookmarker and archiver"
 LABEL org.opencontainers.image.url=https://recueil.app
 LABEL org.opencontainers.image.source=https://github.com/mfinelli/recueil
