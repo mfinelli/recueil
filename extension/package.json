@@ -23,7 +23,7 @@
     "esbuild": "^0.28.2",
     "jsdom": "^30.0.1",
     "sass": "^1.104.0",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "web-ext": "^10.6.0"
   }
 }
