@@ -11,9 +11,9 @@ dek = "Install the extension, pair it with your recueil instance, and capture yo
 1. **Get your pairing token and worker URL.** Sign in to your recueil dashboard
    and open the _Devices_ screen — both are there.
 
-2. **Install the extension.** Add it from the [Chrome Web Store](#) or
-   [Firefox Add-ons](#) <!-- TODO: real store links --> — see
-   [Browser Extension](@/docs/readers/browser-extension.md) for details.
+2. **Install the extension.** Add it from
+   [Firefox Add-ons](https://addons.mozilla.org/addon/recueil/) — see
+   [Browser Extension](@/docs/readers/browser-extension.md) for more details.
 
 3. **Pair it.** Open the extension and paste in your worker URL and pairing
    token.

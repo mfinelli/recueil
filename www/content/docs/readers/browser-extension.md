@@ -9,10 +9,14 @@ dek = "Capturing, working through your queue, and bookmark sync."
 +++
 
 If you haven't already, [Getting Started](@/docs/readers/getting-started.md)
-walks through installing and pairing in full. The short version: add it from the
-[Chrome Web Store](#) or [Firefox Add-ons](#), then open it and paste in your
-worker URL and pairing token from the dashboard's _Devices_ screen.
-<!-- TODO: real store links -->
+walks through installing and pairing in full. The short version: add it from
+[Firefox Add-ons](https://addons.mozilla.org/addon/recueil/), then open it and
+paste in your worker URL and pairing token from the dashboard's _Devices_
+screen.
+
+{% <callout label="Chrome"> %} Not currently published for Chrome. If that would
+be useful to you, open an issue or discussion on
+[GitHub](https://github.com/mfinelli/recueil). {% </callout> %}
 
 ## Capturing a page
 
