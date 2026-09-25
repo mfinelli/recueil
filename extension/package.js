@@ -52,8 +52,9 @@ async function main() {
 
 async function packageFirefox() {
   execFileSync(
-    "npx",
+    "pnpm",
     [
+      "exec",
       "web-ext",
       "build",
       "--source-dir=dist/firefox",
