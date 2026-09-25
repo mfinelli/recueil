@@ -85,6 +85,8 @@ jobs:
       - run: pnpm run --filter=@recueil/extension types
       - run: pnpm run package
         working-directory: extension
+      - run: pnpm run lint
+        working-directory: extension
       - uses: actions/upload-artifact@v7
         with:
           name: extension

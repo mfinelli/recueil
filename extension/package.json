@@ -10,6 +10,7 @@
   "scripts": {
     "build": "node build.js",
     "licenses": "node licenses.js",
+    "lint": "web-ext lint --source-dir=dist/firefox",
     "package": "node package.js",
     "types": "tsc -p tsconfig.json"
   },
