@@ -34,7 +34,7 @@ COPY index.html vite.config.ts svelte.config.js tsconfig.json /app/
 COPY src /app/src
 RUN pnpm run build
 
-FROM golang:1.27.1-alpine AS buildgo
+FROM golang:1.27.2-alpine AS buildgo
 ARG GITSHA
 WORKDIR /app
 RUN apk add coreutils gawk gcc git jq make musl-dev

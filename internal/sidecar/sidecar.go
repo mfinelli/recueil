@@ -63,6 +63,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/remote"
 )
 
 // sidecarPingTimeout bounds New's one-shot startup reachability check --
@@ -73,7 +74,7 @@ const sidecarPingTimeout = 5 * time.Second
 type Params struct {
 	// SidecarURL is the agent's own outbound address for the shared
 	// headless-Chrome sidecar (config's sidecar_url) -- an
-	// http(s) base URL, not a raw ws:// one: chromedp.NewRemoteAllocator
+	// http(s) base URL, not a raw ws:// one: remote.NewAllocator
 	// fetches /json/version itself and swaps in the real
 	// webSocketDebuggerUrl, so this package never has to.
 	SidecarURL string
@@ -159,7 +160,7 @@ func New(p *Params) (*Sidecar, error) {
 	// ctx a caller might pass to NewTab: this connection is meant to
 	// outlive any single render, same lifetime as the Sidecar itself,
 	// torn down only by an explicit Close.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), p.SidecarURL)
+	allocCtx, allocCancel := remote.NewAllocator(context.Background(), p.SidecarURL)
 	s.allocCtx = allocCtx
 	s.allocCancel = allocCancel
 

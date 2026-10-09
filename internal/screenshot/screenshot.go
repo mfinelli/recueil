@@ -366,15 +366,13 @@ func (r *Runner) render(ctx context.Context, htmlData []byte) ([]byte, error) {
 	tabCtx, url, cleanup := r.sidecar.NewTab(htmlData, renderTimeout)
 	defer cleanup()
 
-	var buf []byte
-	err := chromedp.Run(tabCtx,
+	err := chromedp.Do(tabCtx,
 		chromedp.EmulateViewport(viewportWidth, viewportHeight),
 		chromedp.Navigate(url),
-		chromedp.CaptureScreenshot(&buf),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return buf, nil
+	return chromedp.Run(tabCtx, chromedp.CaptureScreenshot())
 }
