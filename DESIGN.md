@@ -2,45 +2,57 @@
 
 ## 1. Overview
 
-Recueil is a self-hosted personal web archiving tool, built to replace a
-patchwork of several existing self-hosted archivers — each storing content
-differently, none of them syncing with one another — held together with custom
-glue scripts.
+Recueil is a self-hosted personal web archiving tool designed to replace a
+collection of separate archivers and the glue required to keep them together.
 
-### Motivating problems with the previous setup
+The previous setup had three main problems:
 
-- Headless-browser archivers fail on sites with CAPTCHAs, paywalls, or content
-  behind interaction (click-to-expand, infinite scroll, etc).
-- Multiple tools store multiple redundant formats (WARC, PDF, screenshots,
-  MHTML, etc.), most of which are never used.
-- Keeping several self-hosted tools in sync requires custom glue scripts.
+- Headless browsers cannot reliably capture pages that require an authenticated
+  session, human interaction, CAPTCHA solving, or access behind a paywall.
+- Multiple archivers produce overlapping formats such as WARC, PDF, screenshots,
+  and MHTML, most of which are unnecessary.
+- Combining several independent tools requires custom synchronization and
+  maintenance.
 
 ### Core design principle
 
-**Capture happens in a real, already-authenticated, already-rendered browser tab
-— not a headless fetch.** This is the fix for the CAPTCHA/paywall problem. The
-system deliberately does **not** add any server-side "fetch and archive a URL"
-fallback — doing so would reintroduce the exact failure mode being solved.
+**Recueil captures webpages directly from a real, already-authenticated,
+already-rendered browser tab rather than fetching the live URL from the server
+with a headless browser.**
 
-This principle applies to the _initial capture_ only. Deriving further artifacts
-from an already-captured file (e.g. a thumbnail — see §6a) is a different, safe
-operation: rendering static, already-authenticated content offline, not
-re-fetching a live page.
+Recueil captures the page as it has actually been rendered and authenticated in
+the user's browser, allowing it to archive content that depends on browser
+sessions, authentication, cookies, client-side state, or other context that
+would not be available to a server-side fetch.
 
-### Format decision
+This restriction applies to initial capture only. Once a page has been captured,
+the backend may safely process the resulting static HTML offline. Server-side
+headless Chrome is used for this post-capture processing and not for the capture
+itself.
 
-Store exactly one artifact format per capture: a fully inlined single HTML file
-(SingleFile-style — CSS, images, fonts inlined as data URIs), plus a plain-text
-Readability extraction, plus a thumbnail image. No WARC, no PDF, no MHTML. The
-HTML is the only artifact ever uploaded by a capturing client; the Readability
-extraction and the thumbnail are both produced later, offline, by the backend
-(§6a/§6b) — not synchronously at capture time.
+### Archive format
+
+Each capture consists of:
+
+- A fully inlined, SingleFile-style HTML document containing the page and its
+  resources.
+- A plain-text Readability extraction.
+- A thumbnail.
+- Optionally, a favicon captured from the browser.
+
+The HTML is the canonical captured artifact. Readability text and thumbnails are
+derived asynchronously by the backend.
+
+Recueil deliberately does not store WARC, PDF, or MHTML copies.
 
 ---
 
-## 2. High-Level Architecture
+## 2. Architecture
 
-```
+Recueil is split between a public Cloudflare-based capture relay and a private
+backend that owns the archive.
+
+```text
 ┌──────────────────┐     ┌───────────────────┐     ┌──────────────────┐
 │  iOS Shortcut    │     │  Share-sheet PWA  │     │       CLI        │
 │  (enqueue only)  │     │  (Cloudflare      │     │  (enqueue only)  │
@@ -117,24 +129,83 @@ extraction and the thumbnail are both produced later, offline, by the backend
         └──────────────────────────────┘   └──────────────────────────────┘
 ```
 
-### Key architectural property: capture path never touches the backend
+**Key architectural principle:** The public Cloudflare layer acts as a
+lightweight relay between capture clients and the private backend. D1 stores
+only transient state such as device credentials and the capture queue, while R2
+provides temporary storage for uploads. The private backend is the canonical
+system of record for archived content and metadata.
 
-The desktop extension, the share-sheet PWA, and the CLI depend **only** on the
-Worker and R2 — both public, both authenticated via bearer token. None of them
-ever need the backend to be network-reachable. The backend's only required
-connectivity is **outbound**: polling the Worker/D1 API, pulling objects from
-R2, making occasional authenticated calls to the Worker for device-token
-revocation (§5), and — the one exception to "only ever talks to the Worker" — a
-direct, narrowly-scoped call to Cloudflare's D1 query API to run schema
-migrations at startup (§5b). It can run with zero inbound firewall rules and the
-entire archiving loop still works end to end.
+The backend requires only outbound network access. How users reach the backend
+is a deployment concern outside Recueil's scope; it may be exposed over a LAN,
+VPN, or another private network according to the needs and security requirements
+of the instance administrator.
 
-Backend network reachability is a concern **only** for the optional dashboard
-(browsing your library, search, login). How that's exposed (LAN only, reverse
-proxy, VPN, tunnel, etc.) is entirely up to the deployer and is intentionally
-out of scope for this project — the repo should document the requirement ("must
-be reachable by whatever device you want the dashboard on") without assuming any
-specific networking solution.
+### Components
+
+**Browser extension**
+
+The primary capture client. It captures pages from the user's real browser
+session and uploads the resulting HTML. It also handles the cross-device queue
+and optional browser bookmark synchronization.
+
+**Cloudflare Worker**
+
+A small public relay between capture clients and the private backend. It handles
+device authentication, queue operations, temporary R2 uploads, and the small
+amount of data that must be available to clients without exposing the backend.
+
+**D1**
+
+Stores device credentials, the cross-device capture queue, and a lightweight
+mirror of archived pages used by the extension.
+
+D1 is not the canonical archive.
+
+**R2**
+
+Temporary storage for captured blobs while they wait for the private backend.
+Objects are removed after successful ingestion.
+
+**Backend**
+
+The canonical application and archive. It owns users, captures, page history,
+metadata, search, tags, collections, asynchronous processing, and the dashboard.
+
+The backend does not need to accept inbound connections for the capture
+pipeline. It polls the Worker and R2 instead.
+
+**Agent**
+
+Background process responsible for asynchronous processing and other tasks that
+require access to the local environment, including post-capture processing
+through headless Chrome.
+
+**Headless Chrome**
+
+Used only to process already-captured HTML. It generates thumbnails and performs
+Readability extraction. It never fetches the original live page.
+
+**Dashboard**
+
+A Svelte application for browsing and searching the archive, viewing page
+versions, reading extracted content, managing tags and collections, and managing
+the user's account and devices.
+
+### Network boundary
+
+The core capture path does not depend on the backend being publicly reachable:
+
+```text
+Browser / phone / CLI
+        │
+        ▼
+Worker → R2 → private backend
+```
+
+The dashboard is different. It requires whatever network access the operator
+chooses to provide, such as a LAN, VPN, reverse proxy, or tunnel.
+
+The deployment does not prescribe a particular way of exposing it.
 
 ---
 
