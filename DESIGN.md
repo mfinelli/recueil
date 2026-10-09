@@ -2276,3 +2276,346 @@ two call sites.
   every URL fragment unconditionally. The intended exception — preserving a
   fragment for a known SPA that encodes meaningful route state there — has no
   implementation and no site list to check against yet. See §9.
+
+---
+
+## 17. Links (Bookmark-Only Entries)
+
+> **Status: designed, not yet implemented.** This section records the agreed
+> design for a post-v1 feature so it can be built across sessions without
+> re-deciding anything. As pieces ship, fold them into the sections they belong
+> to (§3, §5, §8, §10, §15) and correct anything that turned out differently in
+> practice. Anything under "Open questions" (§17m) is deliberately undecided.
+
+### 17a. Motivation and scope
+
+Recueil archives knowledge and articles. Some things worth keeping a pointer to
+can't be archived well by that model: videos, git repositories, multi-page sites
+where capturing every page is impractical, and JavaScript-heavy apps and demos
+that SingleFile's output reduces to nothing. §1's format decision (one inlined
+HTML file per capture) is right for articles and is **not** relaxed by this
+feature.
+
+A **link** is a bookmark-only entry for those cases: a URL with the niceties
+recueil already has — a locally stored favicon, tags, collections, a one-way
+sync into the browser's native bookmarks — plus on-demand submission to the
+Internet Archive's Wayback Machine, which can do a better job on the tricky
+pages than recueil can (§17i).
+
+The alternative considered was running a dedicated bookmark manager (linkding)
+alongside recueil. Rejected for the same reason §1 gives for replacing the
+previous setup: two tag systems, two collection trees, nothing relating them,
+and an MCP server (§15) that would only ever see half of what's saved.
+
+**Non-goals:**
+
+- Two-way bookmark sync. §3j's rule applies unchanged: recueil owns its folder
+  and manual edits are overwritten.
+- Replacing the browser's own bookmark manager.
+- Any server-side fetching or crawling, including to backfill missing titles or
+  favicons (§17c).
+
+### 17b. A separate entity, not a state of `pages`
+
+Considered and rejected: a link as a `pages` row with zero captures. Every
+existing query that joins `captures` (library listing, search, MCP `get_page`,
+the D1 mirror, whose `latest_capture_at` is `NOT NULL`) would have to tolerate a
+captureless page, which is a risky change to released v1 behavior for no real
+benefit. Links are instead their own first-class tables, and an existing setup
+sees no change in any existing behavior.
+
+**Naming.** "Links" in code, API, docs and UI. "Bookmark" already means the
+archived-pages mirror (§3j, §8), and reusing it would be confusing.
+
+**Data model sketch** (the shape is agreed; exact columns and constraint names
+are settled in the migration):
+
+```sql
+-- Postgres
+CREATE TABLE links (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  raw_url TEXT NOT NULL,
+  normalized_url TEXT NOT NULL,      -- same urlnorm pipeline as pages (§9)
+  title TEXT,                        -- client-supplied (§17c); nullable
+  favicon_path TEXT,                 -- link favicon store (§17e)
+  favicon_size_bytes INTEGER,
+  favicon_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, normalized_url)   -- see "Open questions"
+);
+
+CREATE TABLE link_tags (
+  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (link_id, tag_id)
+);
+
+CREATE TABLE link_collections (
+  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (link_id, collection_id)
+);
+```
+
+- **Tags and collections are shared with pages** (working assumption, to be
+  confirmed when the UX is mocked up, §17h): the existing `tags`/`collections`
+  tables are reused with the new join tables above, so one tag or collection can
+  span both pages and links. The cost is that anything listing or counting a tag
+  or collection (tag counts, collection views, MCP) has to consider both
+  entities.
+- **No jobs.** A link has no HTML, so there is no screenshot, readability or AI
+  job, no `reader_text`, and no AI tags (`source` on `page_tags` has no
+  equivalent here — every link tag is manual). Search over links is over title
+  and URL only.
+- **No versions.** A link is one row, not a page-with-history.
+- Wayback submission state is covered in §17i.
+
+### 17c. Capture path
+
+The extension gets a second action beside the full capture: **save as link**. It
+stores the tab's favicon and title and nothing else — no HTML.
+
+This extends §1's principle rather than exempting an exception to it. The save
+happens in the real, already-authenticated tab, so the extension already has
+everything it needs (the same reasoning as §3g's client-side favicon capture),
+and the backend still never touches the live web. The corollary is that **the
+backend never fills in missing metadata server-side** (no title fetch, no
+favicon fetch): a link that arrives without them simply has none, and the
+dashboard falls back to the URL and the existing `Globe` icon.
+
+**Adding from a phone, Shortcut or CLI** is unchanged: those only enqueue a URL
+(§8), and the user later picks, in the desktop extension, whether to capture it
+or save it as a link (§17d). A link added without ever visiting it in a desktop
+browser is not a supported shape, since there would be nothing to take the title
+or favicon from.
+
+**Transport** follows the existing pattern in §3/§8, since the extension only
+ever talks to the Worker: a bearer-token Worker endpoint writes a row to a new
+D1 table (`pending_links`, client-generated UUID id, same idempotency reasoning
+as §3c), the backend polls for it on the agent's Worker ticker (§3e), ingests it
+into Postgres, writes the favicon to the link store (§17e), flags the row as
+fetched, and a cleanup sweep removes old fetched rows the way
+`pending_captures`' does (§8). Favicon selection, the "no image processing" rule
+and "best-effort, never fails the save" (§3g) apply unchanged.
+
+Ingestion should be idempotent by construction (upsert on
+`(user_id, normalized_url)`), which may make §3c's transient `source_capture_id`
+key unnecessary for links — settle this during implementation.
+
+### 17d. Queue: no `kind`
+
+`queue_items` gets **no new `kind` column**. The user already knows whether they
+want a capture or a link when they pick the item in the extension, and a `kind`
+could only ever be a hint — nothing stops the user from taking either action on
+any queued URL anyway. Choosing wrong is self-correcting: queue the URL again
+and delete the unwanted entry.
+
+What is required is **completion**. The link save takes the same optional
+`queueItemId` that `captureTab`/`captureActiveTab` already take (the
+`tabId -> queueItemId` map, §3i), and its completion endpoint marks the queue
+item `captured`, exactly as `POST /queue/:id/complete` does for a capture —
+otherwise the item stays pending and keeps getting re-offered. `pending_links`
+carries a nullable `queue_item_id` for this, mirroring
+`pending_captures.queue_item_id` (§10).
+
+Accepted consequences:
+
+- The Queue screen's "Captured" badge also appears for items completed as links.
+  The label is slightly off but cosmetic; "Done" would fit both if it's ever
+  worth rewording.
+- The 72-hour `captured`-item cleanup (§8) applies unchanged.
+
+**Promoting or demoting** a URL between a page and a link works through the same
+mechanism and needs no special case: re-queue the URL (the dashboard's existing
+recapture path, `POST /internal/queue-items`, §8), capture or save it in the
+browser, then delete whichever entry isn't wanted. Copying tags, collections or
+notes across is explicitly deferred; revisit only if it proves annoying in
+practice.
+
+### 17e. Link favicon store
+
+Link favicons live in **their own store, separate from the captures archive**
+(§4), under their own configured directory and their own **bind mount**, which
+is only required when the feature is enabled (§17f).
+
+The reason is `recueil gc` (§4): it treats every file under the archive root
+that Postgres doesn't reference as garbage. Link favicons must not live where it
+can reach them, and keeping them outside the archive root means even an old
+`recueil gc` binary is safe regardless of upgrade ordering.
+
+- Same compress-by-extension rule as §3g (SVG zstd'd, PNG/ICO stored raw) and
+  the same closed `svg | png | ico` extension set.
+- Backup (§14) gains a third item to back up, on the same schedule as the other
+  two, when links are enabled.
+- If the feature is on and the store directory is missing or unwritable, the
+  backend **fails loudly at startup** rather than silently dropping favicons. It
+  can't tell whether the path is a real bind mount or a directory inside the
+  container, so the operator docs must say so explicitly.
+- How orphaned link favicons get reclaimed is an open question (§17m).
+
+### 17f. Feature flag
+
+The feature is **off by default**. Opting in means turning it on and updating
+`compose.yaml` to provide the new bind mount (§17e).
+
+- **Migrations run unconditionally.** Postgres and D1 migrations are all
+  additive (§17g), so enabling the flag later needs no migration step, and a
+  deployment's schema doesn't depend on the flag.
+- **The backend gates behavior, not schema.** With the flag off: link routes
+  404, the agent does no link ingestion or Wayback work, the MCP link tools
+  (§17k) aren't registered, and `GET /api/capture-config` reports the flag so
+  the dashboard hides the Links nav item. This is the same shape as
+  `ENABLE_OPEN_REGISTRATION` and `ai_base_url`.
+- **The extension can't read backend config** — it only talks to the Worker
+  (§2). So the Worker needs a matching switch (a Terraform variable surfaced in
+  a Worker response the extension already reads) to show or hide the "save as
+  link" button. Without it, a device could submit links to a deployment that
+  isn't ingesting them and they would pile up in D1. This makes **two flags that
+  must agree**; the operator docs must say so.
+- The flag's exact name and the Worker-side mechanism are settled at
+  implementation time.
+
+### 17g. Rollout compatibility
+
+This ships after v1, so existing setups must not break.
+
+- Every schema change is additive. D1 gets new tables only (`pending_links`,
+  `archived_links`, §17j); **`queue_items` is untouched** (§17d). No existing
+  table needs a data migration.
+- The backend applies D1 migrations at startup (§5b) while the Worker deploys
+  separately through Terraform, so either can go first: new D1 tables are unused
+  until the flag is on, and new Worker endpoints are unused until an extension
+  calls them.
+- An old extension ignores the new button and keeps working. An old extension
+  that claims a queue item meant to become a link just does a full capture,
+  which §17d already accepts.
+- An old `recueil gc` can't touch the link store (§17e).
+- With the flag off, there is no behavior change at all.
+
+### 17h. Dashboard
+
+- **A dedicated Links page**, not mixed into Library. Links have no thumbnail,
+  so they can only be shown as a **list** — there is no grid view for them.
+  Favicon fallback is the existing `Globe` treatment (DESIGN_SYSTEM.md). The nav
+  item is hidden when the flag is off.
+- **Same-URL hint.** If a link and a page share a `normalized_url`, each side
+  shows a hint pointing at the other. This is a read-time join on
+  `normalized_url`, not a stored relationship, so there is nothing to keep
+  consistent. There's no conflict in having both; the user deletes whichever
+  they don't want.
+- **Wayback.** The Links page and page detail show when an entry was last
+  submitted (§17i).
+- **Undecided: how links appear on the tags and collections pages.** Those pages
+  are built around grid/list views of pages, and links can't be shown in a grid,
+  so mixing them in may not work. Options include a separate "Links" section on
+  each page, a count with a link through to a filtered Links page, or links only
+  on the Links page. The decision is deferred until it can be mocked up to find
+  the right shape (§17m).
+
+### 17i. Wayback Machine submission
+
+Submitting to the Internet Archive's Wayback Machine is **on demand only** —
+never automatic — and applies to **links and to ordinary captured pages** both.
+
+- **Respects §1.** Archive.org does the fetching, not recueil.
+- **Tracked and shown.** The last submission time is stored and displayed on the
+  dashboard for each entry. Storing the resulting snapshot URL, if the API
+  returns one, is a proposal, not a decision.
+- **Rate limited**, globally per backend rather than per user (the limit applies
+  to the backend's outbound identity), with an **optional API key** in config.
+- **Job shape** (proposed): a `wayback_jobs` table following the existing
+  retry/backoff shape (§6, §7), surfaced on the Queue screen with the same
+  status-badge vocabulary and manual retry (§7).
+- **Privacy.** Submitting sends the URL to a third party. Archive.org fetches
+  the URL itself, so it sees only what a logged-out request would — not the
+  content the user captured from their authenticated browser — and the UI should
+  say so.
+- **Not yet verified:** the current save API, authentication requirements and
+  rate limits. Check them against Wayback's current documentation before
+  implementing; nothing here is based on a verified reading of it.
+
+### 17j. Browser bookmark sync
+
+A second sync, the same shape as the existing one (§3j, §8), with its own
+folder:
+
+- A new D1 table, `archived_links`, mirrors links the same way `archived_pages`
+  mirrors pages: a scheduled backend job, checkpoint read from D1's
+  `MAX(updated_at)`, an incremental upsert pass plus a deletion-reconciliation
+  pass.
+- The extension reconciles by URL against **its own dedicated folder**, separate
+  from the archived-pages folder, **completely owned by recueil**. Sync is
+  **one-way**, and any manual change in that folder is overwritten on the next
+  sync (§3j).
+- It's its own opt-in toggle in the popup. It can reuse the same optional
+  `bookmarks` permission the existing sync already requests.
+- The folder starts **flat**. Mapping collections to subfolders is deferred.
+- The same URL can appear in both folders if a page and a link share it. That's
+  harmless; the docs should mention it.
+- Whether links get a per-entry mirror exclusion like
+  `pages.excluded_from_mirror` is open (§17m).
+
+### 17k. MCP
+
+Link support lands **with the feature**, not later, so it ships complete. It
+stays read-only (§15's "no write tools" is unchanged) and scoped to the
+authenticated user like every other tool.
+
+- The link tools are **registered only when the flag is on** (§17f).
+- Proposed tools: `search_links(query, limit?)` and `get_link(link_id)`. Whether
+  the existing tag and collection tools (`list_pages_by_tag`,
+  `list_pages_by_collection`) also return links, or get link-specific siblings,
+  depends on the §17h decision.
+- A link carries no body text, so its value to a model is title, URL, tags and
+  collections. `get_link` should include the matching `page_id` when the same
+  `normalized_url` is also archived, so a model can follow it to the full text.
+- `limit` handling matches §15 (default 20, cap 100).
+
+### 17l. Implementation order and housekeeping
+
+The feature is intended to ship **complete** (links, flag, MCP, bookmark sync,
+Wayback), but it touches the schema, Worker, extension, backend, dashboard,
+mirror and docs at once, so it should be built in stages. A reasonable order:
+
+1. Tables and migrations, the flag, the favicon store, Worker endpoints, backend
+   ingestion, the extension action, the dashboard Links page, and the MCP tools.
+2. Browser bookmark sync (§17j).
+3. Wayback submission (§17i), for links and pages together.
+
+Housekeeping that should not be forgotten:
+
+- i18n: new strings in both the dashboard (Paraglide, §5e) and the extension
+  (`_locales`, §3k), `en` and `fr`.
+- The docs site: enabling the flag, the new bind mount, the Worker-side switch,
+  backup (§14), and the one-way folder behavior.
+- `DESIGN_SYSTEM.md` when the Links page is built, and the README's package map
+  for any new `internal/` packages.
+- `recueil gc`'s documentation if it grows a link-store pass (§17m), and
+  `internal/metrics` for any new job tables (§13a).
+
+### 17m. Open questions
+
+- How links appear on the tags and collections pages (§17h) — mock up before
+  deciding.
+- Whether tags and collections really are shared tables with pages (§17b), or
+  links get their own.
+- Whether a note field exists on links (pages have `notes`), and whether links
+  get a per-entry mirror exclusion.
+- `UNIQUE (user_id, normalized_url)` on `links`, i.e. re-saving an existing link
+  updates it rather than creating a second row — assumed, not confirmed.
+- Favicon transport: through R2 with a presigned URL as in §3g, or inline in the
+  Worker request, since a favicon is tiny.
+- Whether `source_capture_id`-style transient idempotency (§3c) is needed for
+  links at all (§17c).
+- How orphaned link favicons are reclaimed: a link-store pass in `recueil gc`
+  with its own live set and the same safety rails, or synchronous deletion with
+  the row, given the files are tiny.
+- The flag's name, the config key for the link store, and the Worker-side switch
+  (§17f).
+- Where Wayback state lives for pages (a column on `pages` versus a separate
+  table covering both entities), and the exact Wayback API behavior (§17i).
+- Browser bookmark import as an onboarding path, and collections as subfolders
+  (§17j) — mentioned, neither designed nor scheduled.
