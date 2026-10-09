@@ -363,7 +363,7 @@ func backoff(attempts int32) time.Duration {
 // viewport only), not FullScreenshot (the entire scrollable page): see
 // the package doc for why uniform dimensions matter here.
 func (r *Runner) render(ctx context.Context, htmlData []byte) ([]byte, error) {
-	tabCtx, url, cleanup := r.sidecar.NewTab(htmlData, renderTimeout)
+	tabCtx, url, cleanup := r.sidecar.NewTab(ctx, htmlData, renderTimeout)
 	defer cleanup()
 
 	err := chromedp.Do(tabCtx,

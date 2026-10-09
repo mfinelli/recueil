@@ -349,7 +349,7 @@ func backoff(attempts int32) time.Duration {
 // global Readability constructor), and runs parseScript against the
 // resulting DOM.
 func (r *Runner) render(ctx context.Context, htmlData []byte) (*article, error) {
-	tabCtx, url, cleanup := r.sidecar.NewTab(htmlData, renderTimeout)
+	tabCtx, url, cleanup := r.sidecar.NewTab(ctx, htmlData, renderTimeout)
 	defer cleanup()
 
 	err := chromedp.Do(tabCtx,

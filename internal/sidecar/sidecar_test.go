@@ -21,6 +21,7 @@
 package sidecar_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -64,14 +65,12 @@ func TestSidecar_NewTab_ServesHTMLBackToTheSidecar(t *testing.T) {
 	html := []byte(`<!doctype html><html><head><title>Sidecar Test</title></head>` +
 		`<body><h1 id="marker">hello from the render server</h1></body></html>`)
 
-	tabCtx, url, cleanup := s.NewTab(html, 30*time.Second)
+	tabCtx, url, cleanup := s.NewTab(context.Background(), html, 30*time.Second)
 	defer cleanup()
 
-	var text string
-	require.NoError(t, chromedp.Run(tabCtx,
-		chromedp.Navigate(url),
-		chromedp.Text("#marker", &text, chromedp.NodeVisible),
-	))
+	require.NoError(t, chromedp.Do(tabCtx, chromedp.Navigate(url)))
+	text, err := chromedp.Run(tabCtx, chromedp.Text("#marker", chromedp.NodeVisible))
+	require.NoError(t, err)
 	assert.Equal(t, "hello from the render server", text)
 }
 
@@ -83,10 +82,10 @@ func TestSidecar_NewTab_CleanupRemovesTheRegisteredHTML(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
-	tabCtx, url, cleanup := s.NewTab([]byte("<html><body>gone soon</body></html>"), 30*time.Second)
+	tabCtx, url, cleanup := s.NewTab(context.Background(), []byte("<html><body>gone soon</body></html>"), 30*time.Second)
 	cleanup() // before ever navigating -- simulates a render that never actually fetched
 
-	err = chromedp.Run(tabCtx, chromedp.Navigate(url))
+	err = chromedp.Do(tabCtx, chromedp.Navigate(url))
 	// The tab's own context was cancelled by cleanup too, so this should
 	// fail one way or another (context cancellation, or a 404 from the
 	// render server if the request somehow still got through before
