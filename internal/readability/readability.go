@@ -349,15 +349,20 @@ func backoff(attempts int32) time.Duration {
 // global Readability constructor), and runs parseScript against the
 // resulting DOM.
 func (r *Runner) render(ctx context.Context, htmlData []byte) (*article, error) {
-	tabCtx, url, cleanup := r.sidecar.NewTab(htmlData, renderTimeout)
+	tabCtx, url, cleanup := r.sidecar.NewTab(ctx, htmlData, renderTimeout)
 	defer cleanup()
 
-	var art *article
-	err := chromedp.Run(tabCtx,
+	err := chromedp.Do(tabCtx,
 		chromedp.Navigate(url),
-		chromedp.Evaluate(r.source, nil),
-		chromedp.Evaluate(parseScript, &art),
+		chromedp.Evaluate[chromedp.Void](r.source),
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// A null result from parseScript decodes to a nil *article (without an
+	// error) in chromedp >= 0.20, which the check below catches.
+	art, err := chromedp.Run(tabCtx, chromedp.Evaluate[*article](parseScript))
 	if err != nil {
 		return nil, err
 	}

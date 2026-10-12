@@ -63,6 +63,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/remote"
 )
 
 // sidecarPingTimeout bounds New's one-shot startup reachability check --
@@ -73,7 +74,7 @@ const sidecarPingTimeout = 5 * time.Second
 type Params struct {
 	// SidecarURL is the agent's own outbound address for the shared
 	// headless-Chrome sidecar (config's sidecar_url) -- an
-	// http(s) base URL, not a raw ws:// one: chromedp.NewRemoteAllocator
+	// http(s) base URL, not a raw ws:// one: remote.NewAllocator
 	// fetches /json/version itself and swaps in the real
 	// webSocketDebuggerUrl, so this package never has to.
 	SidecarURL string
@@ -159,7 +160,7 @@ func New(p *Params) (*Sidecar, error) {
 	// ctx a caller might pass to NewTab: this connection is meant to
 	// outlive any single render, same lifetime as the Sidecar itself,
 	// torn down only by an explicit Close.
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), p.SidecarURL)
+	allocCtx, allocCancel := remote.NewAllocator(context.Background(), p.SidecarURL)
 	s.allocCtx = allocCtx
 	s.allocCancel = allocCancel
 
@@ -197,23 +198,32 @@ func (s *Sidecar) Close() error {
 // NewTab registers htmlData as servable, opens a fresh chromedp tab (a
 // child of the shared allocator context, bounded by timeout), and hands
 // back that tab's context together with the URL it'll need to
-// chromedp.Navigate to in order to load it. Callers own their entire
-// action sequence from there -- this deliberately never calls
-// chromedp.Run itself; see the package doc for why.
+// chromedp.Navigate to in order to load it.
+//
+// The tab can't be parented on ctx itself -- chromedp finds its allocator
+// through the parent context's values, and the shared allocator
+// intentionally outlives any one caller -- so ctx is instead watched on the
+// side: if it's canceled before cleanup runs, the tab is torn down
+// immediately rather than running out its timeout.
+//
+// Callers own their entire action sequence from there and so this function
+// never calls chromedp.Run itself.
 //
 // cleanup releases both the tab and the registered HTML, and must be
 // called exactly once (typically via defer) regardless of whether the
 // render that follows succeeds -- a stuck/never-fetched render (the
 // sidecar crashing mid-request, say) would otherwise leak the HTML
 // registration for as long as the Sidecar itself lives.
-func (s *Sidecar) NewTab(htmlData []byte, timeout time.Duration) (tabCtx context.Context, url string, cleanup func()) {
+func (s *Sidecar) NewTab(ctx context.Context, htmlData []byte, timeout time.Duration) (tabCtx context.Context, url string, cleanup func()) {
 	token, unregister := s.registerHTML(htmlData)
 
 	tabCtx, cancelTab := chromedp.NewContext(s.allocCtx)
 	tabCtx, cancelTimeout := context.WithTimeout(tabCtx, timeout)
+	stopWatch := context.AfterFunc(ctx, cancelTab)
 
 	url = fmt.Sprintf("%s/%s", s.baseURL(), token)
 	cleanup = func() {
+		stopWatch()
 		cancelTimeout()
 		cancelTab()
 		unregister()
