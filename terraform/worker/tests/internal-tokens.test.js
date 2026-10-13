@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { handleListTokens, handleRevokeToken } from "../index.js";
 import { sha256Hex } from "./test-helpers.js";
