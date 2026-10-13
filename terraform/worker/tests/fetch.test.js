@@ -16,17 +16,17 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { SELF } from "cloudflare:test";
+import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
 describe("fetch (router)", () => {
   it("returns 404 for an unknown path", async () => {
-    const response = await SELF.fetch("https://example.com/nope");
+    const response = await exports.default.fetch("https://example.com/nope");
     expect(response.status).toBe(404);
   });
 
   it("returns 404 for the mirror path with the wrong method", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/users/mirror",
       {
         method: "GET",
@@ -36,7 +36,7 @@ describe("fetch (router)", () => {
   });
 
   it("routes POST /pair to handlePair (400 on empty body confirms it was reached, not 404'd)", async () => {
-    const response = await SELF.fetch("https://example.com/pair", {
+    const response = await exports.default.fetch("https://example.com/pair", {
       method: "POST",
       body: JSON.stringify({}),
     });
@@ -44,14 +44,14 @@ describe("fetch (router)", () => {
   });
 
   it("returns 404 for GET /pair (wrong method for this route)", async () => {
-    const response = await SELF.fetch("https://example.com/pair", {
+    const response = await exports.default.fetch("https://example.com/pair", {
       method: "GET",
     });
     expect(response.status).toBe(404);
   });
 
   it("routes POST /queue to handleEnqueue (401 with no auth confirms it was reached)", async () => {
-    const response = await SELF.fetch("https://example.com/queue", {
+    const response = await exports.default.fetch("https://example.com/queue", {
       method: "POST",
       body: JSON.stringify({ id: "x", url: "https://example.com" }),
     });
@@ -59,16 +59,19 @@ describe("fetch (router)", () => {
   });
 
   it("routes GET /queue to handleListQueue (401 with no auth confirms it was reached)", async () => {
-    const response = await SELF.fetch("https://example.com/queue", {
+    const response = await exports.default.fetch("https://example.com/queue", {
       method: "GET",
     });
     expect(response.status).toBe(401);
   });
 
   it("routes GET /archived-pages to handleListArchivedPages (401 with no auth confirms it was reached)", async () => {
-    const response = await SELF.fetch("https://example.com/archived-pages", {
-      method: "GET",
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/archived-pages",
+      {
+        method: "GET",
+      },
+    );
     expect(response.status).toBe(401);
   });
 
@@ -79,7 +82,7 @@ describe("fetch (router)", () => {
     // row gets updated. This just confirms the regex matches the shape at
     // all (doesn't fall through to 404) for an id containing characters
     // that could plausibly break a naive path match.
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/queue/some-uuid-like-id-123/claim",
       { method: "POST" },
     );
@@ -87,14 +90,17 @@ describe("fetch (router)", () => {
   });
 
   it("does not match /queue/claim (missing the id segment) as a claim route", async () => {
-    const response = await SELF.fetch("https://example.com/queue/claim", {
-      method: "POST",
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/queue/claim",
+      {
+        method: "POST",
+      },
+    );
     expect(response.status).toBe(404);
   });
 
   it("does not match a claim path with an extra trailing segment", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/queue/some-id/claim/extra",
       { method: "POST" },
     );
@@ -102,15 +108,18 @@ describe("fetch (router)", () => {
   });
 
   it("routes GET /internal/tokens to handleListTokens (400 with no user_id confirms it was reached)", async () => {
-    const response = await SELF.fetch("https://example.com/internal/tokens", {
-      method: "GET",
-      headers: { "X-Service-Key": "test-service-secret" },
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/internal/tokens",
+      {
+        method: "GET",
+        headers: { "X-Service-Key": "test-service-secret" },
+      },
+    );
     expect(response.status).toBe(400);
   });
 
   it("routes DELETE /internal/tokens/:id, extracting the id from the path correctly", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/tokens/123",
       {
         method: "DELETE",
@@ -123,15 +132,18 @@ describe("fetch (router)", () => {
   });
 
   it("returns 404 for DELETE /internal/tokens (missing the id segment)", async () => {
-    const response = await SELF.fetch("https://example.com/internal/tokens", {
-      method: "DELETE",
-      headers: { "X-Service-Key": "test-service-secret" },
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/internal/tokens",
+      {
+        method: "DELETE",
+        headers: { "X-Service-Key": "test-service-secret" },
+      },
+    );
     expect(response.status).toBe(404);
   });
 
   it("routes POST /captures/upload-urls to handleGetUploadUrls (401 with no auth confirms it was reached)", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/captures/upload-urls",
       { method: "POST", body: JSON.stringify({ capture_id: "x" }) },
     );
@@ -139,15 +151,18 @@ describe("fetch (router)", () => {
   });
 
   it("routes POST /captures/complete to handleCompleteDirectCapture (401 with no auth confirms it was reached)", async () => {
-    const response = await SELF.fetch("https://example.com/captures/complete", {
-      method: "POST",
-      body: JSON.stringify({ capture_id: "x" }),
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/captures/complete",
+      {
+        method: "POST",
+        body: JSON.stringify({ capture_id: "x" }),
+      },
+    );
     expect(response.status).toBe(401);
   });
 
   it("routes POST /queue/:id/complete, extracting the id from the path correctly", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/queue/some-id/complete",
       { method: "POST" },
     );
@@ -157,14 +172,17 @@ describe("fetch (router)", () => {
   });
 
   it("does not match /queue/complete (missing the id segment) as a complete route", async () => {
-    const response = await SELF.fetch("https://example.com/queue/complete", {
-      method: "POST",
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/queue/complete",
+      {
+        method: "POST",
+      },
+    );
     expect(response.status).toBe(404);
   });
 
   it("routes POST /queue/:id/fail, extracting the id from the path correctly", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/queue/some-id/fail",
       { method: "POST" },
     );
@@ -172,14 +190,17 @@ describe("fetch (router)", () => {
   });
 
   it("does not match /queue/fail (missing the id segment) as a fail route", async () => {
-    const response = await SELF.fetch("https://example.com/queue/fail", {
-      method: "POST",
-    });
+    const response = await exports.default.fetch(
+      "https://example.com/queue/fail",
+      {
+        method: "POST",
+      },
+    );
     expect(response.status).toBe(404);
   });
 
   it("routes POST /internal/pending-captures to handleClaimPendingCaptures", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/pending-captures",
       { method: "POST" },
     );
@@ -191,14 +212,14 @@ describe("fetch (router)", () => {
   // Same path, different verb, different operation: GET is the dashboard's
   // read-only per-user listing, not a non-claiming variant of the POST.
   it("routes GET /internal/pending-captures to handleListPendingCaptures", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/pending-captures",
     );
     expect(response.status).toBe(401);
   });
 
   it("routes POST /internal/pending-captures/cleanup to handleCleanupPendingCaptures", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/pending-captures/cleanup",
       { method: "POST" },
     );
@@ -206,7 +227,7 @@ describe("fetch (router)", () => {
   });
 
   it("routes POST /internal/pending-captures/:id/fetched, extracting the id from the path correctly", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/pending-captures/some-id/fetched",
       { method: "POST" },
     );
@@ -214,7 +235,7 @@ describe("fetch (router)", () => {
   });
 
   it("does not match /internal/pending-captures/fetched (missing the id segment) as a fetched route", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/pending-captures/fetched",
       { method: "POST" },
     );
@@ -222,14 +243,14 @@ describe("fetch (router)", () => {
   });
 
   it("routes GET /internal/archived-pages/last-sync to handleGetArchivedPagesLastSync", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/archived-pages/last-sync",
     );
     expect(response.status).toBe(401);
   });
 
   it("routes POST /internal/archived-pages/mirror to handleMirrorArchivedPages", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/archived-pages/mirror",
       { method: "POST" },
     );
@@ -237,14 +258,14 @@ describe("fetch (router)", () => {
   });
 
   it("routes GET /internal/archived-pages/page-ids to handleListArchivedPageIDs", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/archived-pages/page-ids",
     );
     expect(response.status).toBe(401);
   });
 
   it("routes POST /internal/archived-pages/delete to handleDeleteArchivedPages", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/archived-pages/delete",
       { method: "POST" },
     );
@@ -252,7 +273,7 @@ describe("fetch (router)", () => {
   });
 
   it("routes POST /internal/queue-items to handleServiceEnqueue (401 with no auth confirms it was reached)", async () => {
-    const response = await SELF.fetch(
+    const response = await exports.default.fetch(
       "https://example.com/internal/queue-items",
       { method: "POST", body: JSON.stringify({}) },
     );
