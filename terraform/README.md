@@ -41,8 +41,8 @@ via `content_file`, so editing this file directly _is_ the deploy; the next
 it, as-is.
 
 Tests live at `worker/tests/**`, run as the `worker` named project in the root
-`vitest.config.js` (real Miniflare D1 via `@cloudflare/vitest-pool-workers`) —
-not a separate suite:
+`vitest.config.js` (real Miniflare D1 via `@cloudflare/vitest-plugin`) — not a
+separate suite:
 
 ```sh
 pnpm run test                          # everything, worker included
