@@ -79,6 +79,9 @@ export default defineConfig(async () => {
           },
           test: {
             name: "dashboard",
+            // Create the jsdom environment once per worker rather than
+            // once per file, while still isolating each test file.
+            pool: "vmThreads",
             environment: "jsdom",
             include: ["src/**/*.test.ts"],
           },
