@@ -1,5 +1,10 @@
 ---
 minimumReleaseAge: 10080 # 1 week
+minimumReleaseAgeExclude:
+  - "@cloudflare/vitest-plugin"
+  - miniflare@5.20261006.1-alpha
+  - wrangler@4.149.0
+
 nodeLinker: hoisted
 
 allowBuilds:

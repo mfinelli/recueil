@@ -54,7 +54,8 @@ git archive HEAD | tar -x -C "${bname}"
 cp -r dist "${bname}"
 cp -r vendor "${bname}"
 cp -r node_modules "${bname}"
-cp -r extension/node_modules "${bname}/extension"
+[[ -d extension/node_modules ]] && cp -r extension/node_modules \
+  "${bname}/extension"
 [[ -d terraform/worker/node_modules ]] && cp -r terraform/worker/node_modules \
   "${bname}/terraform/worker"
 [[ -d www/node_modules ]] && cp -r www/node_modules "${bname}/www"
