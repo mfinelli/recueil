@@ -44,6 +44,7 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
@@ -75,6 +76,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.EnableLinks {
+		if err := linkicons.New(cfg.LinksDir).Check(); err != nil {
+			return err
+		}
 	}
 
 	logger := httplog.NewLogger("recueil", httplog.Options{

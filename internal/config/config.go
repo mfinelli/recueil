@@ -29,7 +29,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -52,6 +55,13 @@ type Config struct {
 	// to hide the Links screen; it doesn't affect the schema, since the
 	// migrations that add links run regardless.
 	EnableLinks bool `mapstructure:"enable_links"`
+
+	// LinksDir is the root directory link favicons are stored under.
+	// Required while EnableLinks is true, and it must be
+	// its own directory, not inside ArchiveDir (or the other way around):
+	// `recueil gc`'s sweep of ArchiveDir treats every file it doesn't
+	// recognize as garbage, link favicons included.
+	LinksDir string `mapstructure:"links_dir"`
 
 	// PairingTokenKey is a base64-encoded 32-byte AES-256 key, used to
 	// reversibly encrypt/decrypt each account's pairing token for storage
@@ -274,10 +284,54 @@ func Load() (Config, error) {
 	if cfg.R2AccessKeySecret == "" {
 		missing = append(missing, "r2_access_key_secret")
 	}
+	if cfg.EnableLinks && cfg.LinksDir == "" {
+		missing = append(missing, "links_dir")
+	}
 	if len(missing) > 0 {
-		return cfg, fmt.Errorf("missing required config values: %v",
-			missing)
+		msg := fmt.Sprintf("missing required config values: %v", missing)
+		if cfg.EnableLinks && cfg.LinksDir == "" {
+			msg += " (links_dir is required while enable_links is true: " +
+				"set it to a directory outside archive_dir, or set " +
+				"enable_links = false to turn links off)"
+		}
+		return cfg, errors.New(msg)
+	}
+
+	if cfg.EnableLinks {
+		if err := checkLinksDirSeparate(cfg.ArchiveDir, cfg.LinksDir); err != nil {
+			return cfg, err
+		}
 	}
 
 	return cfg, nil
+}
+
+// checkLinksDirSeparate rejects a links_dir that is archive_dir, inside it, or
+// that contains it. Paths are compared as cleaned absolute paths; symlinks
+// aren't resolved, since that would mean touching the filesystem from config
+// loading.
+func checkLinksDirSeparate(archiveDir, linksDir string) error {
+	archiveAbs, err := filepath.Abs(archiveDir)
+	if err != nil {
+		return fmt.Errorf("resolving archive_dir: %w", err)
+	}
+	linksAbs, err := filepath.Abs(linksDir)
+	if err != nil {
+		return fmt.Errorf("resolving links_dir: %w", err)
+	}
+	if isWithin(archiveAbs, linksAbs) || isWithin(linksAbs, archiveAbs) {
+		return fmt.Errorf("links_dir (%s) and archive_dir (%s) must be separate "+
+			"directories, neither inside the other: gc would treat one's files "+
+			"as garbage when sweeping the other", linksDir, archiveDir)
+	}
+	return nil
+}
+
+// isWithin reports whether path is dir itself or somewhere beneath it.
+func isWithin(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

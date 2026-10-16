@@ -34,6 +34,15 @@
 // stays a pure database operation with no partial-failure state spanning
 // two systems.)
 //
+// # Two stores
+//
+// There are two independent sweeps. Run covers the captures archive
+// (archive_dir); RunLinks covers the link favicon store (links_dir, see
+// internal/linkicons), which is a separate root with a separate live set. They
+// stay separate because the archive's sweep treats anything it doesn't
+// recognize under its own root as garbage, which is exactly why link favicons
+// can't live there (config refuses a links_dir that overlaps archive_dir).
+//
 // # Two things this collects
 //
 // Orphaned *files*, as above, and empty *directories*:
@@ -76,6 +85,7 @@ package gc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -135,6 +145,10 @@ type Options struct {
 type RunnerParams struct {
 	Queries *db.Queries
 	Store   *archive.Store
+
+	// LinkStore is the link favicon store RunLinks sweeps. Nil when links are
+	// turned off, in which case RunLinks returns ErrNoLinkStore.
+	LinkStore *archive.Store
 	// Logger receives one warning per file this run failed to remove
 	// (permissions, a concurrent modification, etc.) -- never fatal to
 	// the run itself, same "log and keep going" philosophy
@@ -147,9 +161,10 @@ type RunnerParams struct {
 // however many times the caller likes -- Run has no internal state of its
 // own between calls).
 type Runner struct {
-	queries *db.Queries
-	store   *archive.Store
-	logger  *slog.Logger
+	queries   *db.Queries
+	store     *archive.Store
+	linkStore *archive.Store
+	logger    *slog.Logger
 }
 
 func NewRunner(p RunnerParams) *Runner {
@@ -157,7 +172,7 @@ func NewRunner(p RunnerParams) *Runner {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Runner{queries: p.Queries, store: p.Store, logger: logger}
+	return &Runner{queries: p.Queries, store: p.Store, linkStore: p.LinkStore, logger: logger}
 }
 
 // Result summarizes one Run.
@@ -229,6 +244,41 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Result, error) {
 	if err != nil {
 		return result, fmt.Errorf("gc: listing referenced archive paths: %w", err)
 	}
+
+	return r.sweep(ctx, r.store, paths, opts)
+}
+
+// ErrNoLinkStore is returned by RunLinks when the Runner was built without a
+// link favicon store (links turned off).
+var ErrNoLinkStore = errors.New("gc: no link favicon store configured")
+
+// RunLinks is Run's counterpart for the link favicon store: the same sweep,
+// with the same safety rails, against the root RunnerParams.LinkStore points
+// at and the live set of every links.favicon_path. The two stores are swept
+// independently (separate scans, separate orphan fractions, and separate
+// Results) so a surprising number of orphans in one doesn't suppresses or
+// excuses the other.
+func (r *Runner) RunLinks(ctx context.Context, opts Options) (Result, error) {
+	result := Result{DryRun: opts.DryRun}
+	if r.linkStore == nil {
+		return result, ErrNoLinkStore
+	}
+
+	paths, err := r.queries.ListReferencedLinkFaviconPaths(ctx)
+	if err != nil {
+		return result, fmt.Errorf("gc: listing referenced link favicon paths: %w", err)
+	}
+
+	return r.sweep(ctx, r.linkStore, paths, opts)
+}
+
+// sweep is the shared body of Run and RunLinks: walk store, and remove
+// whatever isn't in paths (the live set) and isn't too recently written to
+// judge.
+func (r *Runner) sweep(ctx context.Context, store *archive.Store, paths []string, opts Options) (Result, error) {
+	result := Result{DryRun: opts.DryRun}
+	var err error
+
 	live := make(map[string]struct{}, len(paths))
 	for _, p := range paths {
 		live[p] = struct{}{}
@@ -237,7 +287,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Result, error) {
 	cutoff := time.Now().Add(-recentThreshold)
 
 	var orphans []orphan
-	err = r.store.Walk(func(relPath string, sizeBytes int64, modTime time.Time) error {
+	err = store.Walk(func(relPath string, sizeBytes int64, modTime time.Time) error {
 		result.FilesScanned++
 		if _, ok := live[relPath]; ok {
 			return nil
@@ -254,7 +304,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Result, error) {
 	}
 
 	var emptyDirs []string
-	err = r.store.WalkEmptyDirs(func(relPath string, modTime time.Time) error {
+	err = store.WalkEmptyDirs(func(relPath string, modTime time.Time) error {
 		if modTime.After(cutoff) {
 			// Almost certainly a capture directory NewCapture just
 			// minted for an ingestion still in flight.
@@ -292,7 +342,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Result, error) {
 		if opts.DryRun {
 			continue
 		}
-		if err := r.store.Remove(o.relPath); err != nil {
+		if err := store.Remove(o.relPath); err != nil {
 			r.logger.WarnContext(ctx, "gc: failed to remove orphaned file", "path", o.relPath, "error", err)
 			result.RemoveErrors++
 			// Correct the two tallies above: this one wasn't actually
@@ -316,7 +366,7 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Result, error) {
 		// may already have pruned the directory that held it, and a
 		// concurrent NewCapture may have claimed another -- so neither
 		// should show up as a removal error an operator has to explain.
-		removed, err := r.store.RemoveEmptyDir(relPath)
+		removed, err := store.RemoveEmptyDir(relPath)
 		if err != nil {
 			r.logger.WarnContext(ctx, "gc: failed to remove empty directory", "path", relPath, "error", err)
 			result.RemoveErrors++

@@ -31,6 +31,7 @@ for any of them:
 | `cloudflare_d1_database_id` | A Terraform output.                                                                                                 |
 | `cloudflare_api_token`      | The same Cloudflare API token used for the Terraform provider config.                                               |
 | `archive_dir`               | Root directory captures are stored under.                                                                           |
+| `links_dir`                 | Root directory link favicons are stored under. Required while `enable_links` is on; must not overlap `archive_dir`. |
 | `r2_account_id`             | Same value as `cloudflare_account_id`.                                                                              |
 | `r2_bucket_name`            | A Terraform output.                                                                                                 |
 | `r2_access_key_id`          | The manually-provisioned [R2 API credential](@/docs/operators/deploying-recueil.md#r2-api-credentials).             |

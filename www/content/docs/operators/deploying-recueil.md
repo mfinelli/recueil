@@ -156,12 +156,14 @@ services:
       CLOUDFLARE_API_TOKEN:
         "<your Cloudflare API token, same as the provider config>"
       ARCHIVE_DIR: /data/archive
+      LINKS_DIR: /data/links
       R2_ACCOUNT_ID: "<your account_id, same as the module input>"
       R2_BUCKET_NAME: "<from terraform output>"
       R2_ACCESS_KEY_ID: "<the R2 API credential from above>"
       R2_ACCESS_KEY_SECRET: "<the R2 API credential from above>"
     volumes:
       - ./data/archive:/data/archive
+      - ./data/links:/data/links
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/info"]
       interval: 10s
@@ -185,7 +187,16 @@ services:
       SIDECAR_RENDER_HOST: "agent"
     volumes:
       - ./data/archive:/data/archive
+      - ./data/links:/data/links
 ```
+
+`LINKS_DIR` is where favicons for links (bookmark-only entries) are stored. It's
+deliberately a separate directory from `ARCHIVE_DIR` — neither can be inside the
+other — and, like the archive, should be a bind mount so it survives the
+container being recreated. Links are on by default; if you don't want them, set
+`ENABLE_LINKS: "false"` and leave `LINKS_DIR` and its volume out. The Terraform
+module's `enable_links` should match. With links on, `server` and `agent` refuse
+to start if `LINKS_DIR` isn't an existing, writable directory.
 
 Every setting here can also come from a TOML file instead of environment
 variables — mount it into the container and point `server`/`agent` at it with

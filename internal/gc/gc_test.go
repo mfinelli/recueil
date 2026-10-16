@@ -26,6 +26,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -33,6 +35,7 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/dbtest"
 	"github.com/mfinelli/recueil/internal/gc"
+	"github.com/mfinelli/recueil/internal/linkicons"
 )
 
 // backdate pushes relPath's modification time an hour into the past, past
@@ -388,4 +391,228 @@ func TestRunner_Run_EmptyEverything(t *testing.T) {
 	assert.Zero(t, result.BytesReclaimed)
 	assert.Zero(t, result.EmptyDirsRemoved)
 	assert.Zero(t, result.RemoveErrors)
+}
+
+// linkWithFavicon writes data as a favicon into links and creates a link row
+// pointing at it, backdating the file past gc's recentThreshold.
+func linkWithFavicon(t *testing.T, pool *pgxpool.Pool, links *linkicons.Store, root string, userID int64, url string, data []byte) (db.Link, linkicons.Favicon) {
+	t.Helper()
+	fav, err := links.Write(data, "png")
+	require.NoError(t, err)
+	backdate(t, root, fav.Path)
+	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{
+		UserID:           userID,
+		RawUrl:           url,
+		NormalizedUrl:    url,
+		FaviconPath:      pgtype.Text{String: fav.Path, Valid: true},
+		FaviconSizeBytes: pgtype.Int4{Int32: fav.SizeBytes, Valid: true},
+		FaviconHash:      pgtype.Text{String: fav.Hash, Valid: true},
+	})
+	require.NoError(t, err)
+	return link, fav
+}
+
+func TestRunner_RunLinks_RemovesOrphanedFaviconsButKeepsReferenced(t *testing.T) {
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+	user := dbtest.CreateUser(t, pool, "member")
+
+	_, kept := linkWithFavicon(t, pool, links, root, user.ID, "https://example.com/gc-link-kept", []byte("referenced icon"))
+	orphan, err := links.Write([]byte("nobody points here"), "png")
+	require.NoError(t, err)
+	backdate(t, root, orphan.Path)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(context.Background(), gc.Options{})
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, result.FilesScanned)
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.Equal(t, int64(orphan.SizeBytes), result.BytesReclaimed)
+	assert.NoFileExists(t, filepath.Join(root, orphan.Path))
+	assert.FileExists(t, filepath.Join(root, kept.Path))
+}
+
+// Same property as for captures: identical bytes on two links are two
+// independent files, so deleting one link can't take the other's favicon with
+// it.
+func TestRunner_RunLinks_IdenticalFaviconsDoNotShareAFile(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+	q := db.New(pool)
+	user := dbtest.CreateUser(t, pool, "member")
+	identical := []byte("the same icon on both links")
+
+	a, favA := linkWithFavicon(t, pool, links, root, user.ID, "https://example.com/gc-identical-a", identical)
+	_, favB := linkWithFavicon(t, pool, links, root, user.ID, "https://example.com/gc-identical-b", identical)
+	require.NotEqual(t, favA.Path, favB.Path, "each link owns its own copy")
+
+	_, err := q.DeleteLink(ctx, db.DeleteLinkParams{ID: a.ID, UserID: user.ID})
+	require.NoError(t, err)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: q, Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(ctx, gc.Options{})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.NoFileExists(t, filepath.Join(root, favA.Path))
+	assert.FileExists(t, filepath.Join(root, favB.Path))
+}
+
+func TestRunner_RunLinks_ReplacedFaviconIsReclaimed(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+	user := dbtest.CreateUser(t, pool, "member")
+
+	_, oldFav := linkWithFavicon(t, pool, links, root, user.ID, "https://example.com/gc-replaced", []byte("old icon"))
+	_, newFav := linkWithFavicon(t, pool, links, root, user.ID, "https://example.com/gc-replaced", []byte("new icon"))
+	require.NotEqual(t, oldFav.Path, newFav.Path)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(ctx, gc.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.NoFileExists(t, filepath.Join(root, oldFav.Path))
+	assert.FileExists(t, filepath.Join(root, newFav.Path))
+}
+
+// A site that stopped serving a favicon: the refreshed row no longer points at
+// the old file, so the next sweep reclaims it.
+func TestRunner_RunLinks_ClearedFaviconIsReclaimed(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+	user := dbtest.CreateUser(t, pool, "member")
+	url := "https://example.com/gc-cleared"
+
+	_, fav := linkWithFavicon(t, pool, links, root, user.ID, url, []byte("it used to have one"))
+	_, err := db.New(pool).UpsertLink(ctx, db.UpsertLinkParams{UserID: user.ID, RawUrl: url, NormalizedUrl: url})
+	require.NoError(t, err)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(ctx, gc.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.NoFileExists(t, filepath.Join(root, fav.Path))
+}
+
+func TestRunner_RunLinks_PrunesEmptyFaviconDirectories(t *testing.T) {
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+
+	// What a favicon write that failed after minting its directory leaves.
+	relDir, err := links.Archive().NewCapture()
+	require.NoError(t, err)
+	backdate(t, root, relDir)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(context.Background(), gc.Options{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.EmptyDirsRemoved)
+	assert.NoDirExists(t, filepath.Join(root, relDir))
+}
+
+func TestRunner_RunLinks_LeavesRecentlyWrittenFaviconsAlone(t *testing.T) {
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+
+	// Not backdated: an ingestion that has written the file but not yet
+	// committed the row.
+	fav, err := links.Write([]byte("in flight"), "png")
+	require.NoError(t, err)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(context.Background(), gc.Options{})
+	require.NoError(t, err)
+	assert.Zero(t, result.FilesRemoved)
+	assert.Equal(t, 1, result.FilesSkippedRecent)
+	assert.FileExists(t, filepath.Join(root, fav.Path))
+}
+
+func TestRunner_RunLinks_DryRunReportsButDoesNotDelete(t *testing.T) {
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+	orphan, err := links.Write([]byte("orphan"), "png")
+	require.NoError(t, err)
+	backdate(t, root, orphan.Path)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(context.Background(), gc.Options{DryRun: true})
+	require.NoError(t, err)
+	assert.True(t, result.DryRun)
+	assert.Equal(t, 1, result.FilesRemoved)
+	assert.FileExists(t, filepath.Join(root, orphan.Path))
+}
+
+func TestRunner_RunLinks_RefusesWhenOrphanFractionExceedsThreshold(t *testing.T) {
+	pool := dbtest.Setup(t)
+	root := t.TempDir()
+	links := linkicons.New(root)
+	for i := range 120 {
+		fav, err := links.Write([]byte(fmt.Sprintf("orphan-%d", i)), "png")
+		require.NoError(t, err)
+		backdate(t, root, fav.Path)
+	}
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	_, err := runner.RunLinks(context.Background(), gc.Options{})
+	var tooMany *gc.TooManyOrphansError
+	require.ErrorAs(t, err, &tooMany)
+	assert.Equal(t, 120, tooMany.Orphans)
+
+	result, err := runner.RunLinks(context.Background(), gc.Options{Force: true})
+	require.NoError(t, err)
+	assert.Equal(t, 120, result.FilesRemoved)
+}
+
+// The two sweeps are independent: each only ever looks at its own root and its
+// own live set, so a file in one store is never garbage to the other.
+func TestRunner_TheTwoSweepsNeverTouchEachOthersStore(t *testing.T) {
+	ctx := context.Background()
+	pool := dbtest.Setup(t)
+	archiveRoot := t.TempDir()
+	linksRoot := t.TempDir()
+	archiveStore := archive.New(archiveRoot)
+	links := linkicons.New(linksRoot)
+
+	archiveOrphan, _ := writeOrphan(t, archiveStore, archiveRoot, []byte("archive orphan"))
+	linkOrphan, err := links.Write([]byte("link orphan"), "png")
+	require.NoError(t, err)
+	backdate(t, linksRoot, linkOrphan.Path)
+
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archiveStore, LinkStore: links.Archive()})
+
+	_, err = runner.Run(ctx, gc.Options{})
+	require.NoError(t, err)
+	assert.NoFileExists(t, filepath.Join(archiveRoot, archiveOrphan))
+	assert.FileExists(t, filepath.Join(linksRoot, linkOrphan.Path), "Run must not sweep the link store")
+
+	_, err = runner.RunLinks(ctx, gc.Options{})
+	require.NoError(t, err)
+	assert.NoFileExists(t, filepath.Join(linksRoot, linkOrphan.Path))
+}
+
+func TestRunner_RunLinks_WithoutALinkStoreIsAnError(t *testing.T) {
+	pool := dbtest.Setup(t)
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir())})
+	_, err := runner.RunLinks(context.Background(), gc.Options{})
+	assert.ErrorIs(t, err, gc.ErrNoLinkStore)
+}
+
+func TestRunner_RunLinks_EmptyStore(t *testing.T) {
+	pool := dbtest.Setup(t)
+	links := linkicons.New(filepath.Join(t.TempDir(), "not-created-yet"))
+	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})
+	result, err := runner.RunLinks(context.Background(), gc.Options{})
+	require.NoError(t, err)
+	assert.Zero(t, result.FilesScanned)
 }

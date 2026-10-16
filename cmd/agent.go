@@ -37,6 +37,7 @@ import (
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/ingest"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
@@ -74,6 +75,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.EnableLinks {
+		if err := linkicons.New(cfg.LinksDir).Check(); err != nil {
+			return err
+		}
 	}
 
 	logger := httplog.NewLogger("recueil-agent", httplog.Options{

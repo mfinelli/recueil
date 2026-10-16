@@ -638,6 +638,15 @@ wherever one exists.
   created before anything is written into it and would otherwise accumulate
   indefinitely.
 
+- **A second pass sweeps the link favicon store (§17e).** `recueil gc` runs the
+  captures pass and then the links pass in one command (`Runner.Run`, then
+  `Runner.RunLinks`; `--skip-captures`/`--skip-links` run just one, and the
+  links pass skips itself when links are off). They share one sweep
+  implementation but are otherwise independent: each has its own root, its own
+  live set (`ListReferencedLinkFaviconPaths` for links), its own recency floor
+  and orphan-fraction refusal, and its own report. If a pass stops (the refusal,
+  or an error), the command stops before the next pass starts.
+
 - **Backup is entirely the operator's responsibility** — see §14. The
   application itself performs no automated backup.
 - **Database choice: Postgres, not SQLite**, despite this being a personal
@@ -2212,7 +2221,7 @@ Instead, backup is documented as the operator's responsibility.
 
 ### What must be backed up
 
-Two things, together, on the same schedule:
+Two things (three, with links enabled), together, on the same schedule:
 
 1. **The Postgres database** — via `pg_dump` or equivalent. Note that copying
    Postgres's raw data directory while the container is running is **not** safe
@@ -2220,6 +2229,8 @@ Two things, together, on the same schedule:
    Postgres's on-disk format) is required, not a raw file copy.
 2. **The local archive directory** (zstd-compressed HTML + thumbnails) — a plain
    directory copy/sync is fine here, since these are static files once written.
+3. **The link favicon directory** (§17e), when links are enabled — the same kind
+   of plain directory copy.
 
 Both bind-mount to the host filesystem in the example `compose.yaml`/README
 config (`./data/postgres`, `./data/archive`), not named Docker volumes: the
@@ -2481,23 +2492,48 @@ practice.
 ### 17e. Link favicon store
 
 Link favicons live in **their own store, separate from the captures archive**
-(§4), under their own configured directory and their own **bind mount**, which
-is required whenever the feature is enabled (§17f), which is the default.
+(§4): its own root (`links_dir`, implemented in `internal/linkicons`) and its
+own **bind mount**, required whenever the feature is enabled (§17f), which is
+the default.
 
-The reason is `recueil gc` (§4): it treats every file under the archive root
-that Postgres doesn't reference as garbage. Link favicons must not live where it
-can reach them, and keeping them outside the archive root means even an old
-`recueil gc` binary is safe regardless of upgrade ordering.
+The reason is `recueil gc` (§4): its sweep of the archive root treats every file
+Postgres doesn't reference as garbage, so link favicons must not live where it
+can reach them. Config enforces this: **`links_dir` may not be `archive_dir`,
+inside it, or contain it** (compared as cleaned absolute paths; symlinks aren't
+resolved), and `recueil` refuses to start otherwise. Keeping the store outside
+the archive root also means an old `recueil gc` binary can't touch it,
+regardless of upgrade ordering.
 
-- Same compress-by-extension rule as §3g (SVG zstd'd, PNG/ICO stored raw) and
-  the same closed `svg | png | ico` extension set.
-- Backup (§14) gains a third item to back up, on the same schedule as the other
-  two, when links are enabled.
-- If the feature is on and the store directory is missing or unwritable, the
-  backend **fails loudly at startup** rather than silently dropping favicons. It
-  can't tell whether the path is a real bind mount or a directory inside the
-  container, so the operator docs must say so explicitly.
-- How orphaned link favicons get reclaimed is an open question (§17m).
+**Same layout as the archive.** Within its root the store is laid out exactly as
+the archive is (§4): every saved favicon gets its own sharded, UUIDv7-named
+directory (`{id[32:34]}/{id[34:36]}/{id}/`, minted by
+`archive.Store.NewCapture`, whose name is only historical) holding one
+plain-named file, `favicon.{ext}`. Nothing is shared between links, even for
+byte-for-byte identical icons: favicons are a few KB, so deduplicating them
+isn't worth a second storage model (a content-addressed layout was considered
+and rejected here for the same reason it was for captures, §4). A re-save of a
+link writes a new directory, and the old favicon, no longer referenced by the
+row, is left for gc.
+
+- **Format.** Same compress-by-extension rule as §3g (SVG zstd'd, PNG/ICO stored
+  raw) and the same closed `svg | png | ico` extension set; `Write` rejects
+  anything else and empty data. `links.favicon_size_bytes` is the on-disk size
+  and `links.favicon_hash` the SHA-256 of the original bytes, as on captures.
+- **Startup check.** With links enabled, `server` and `agent` call
+  `linkicons.Store.Check` before doing anything else: `links_dir` must exist, be
+  a directory and be writable, or the process exits with an error that names
+  both fixes (provide the directory, or set `enable_links = false`). It can't
+  tell a real bind mount from a directory inside the container's own filesystem,
+  which loses its contents when the container is recreated, so the operator docs
+  say so explicitly.
+- **Reclaiming.** The second `recueil gc` pass (§4) sweeps this store against
+  `ListReferencedLinkFaviconPaths`, with the same recency floor, orphan-fraction
+  refusal, empty-directory pruning and `--dry-run`/`--force` as the first. It
+  reclaims a deleted link's favicon, one a re-save replaced, one a re-save
+  cleared because the site stopped serving a favicon (§17b), and the empty
+  directory left by a write that failed partway.
+- **Backup (§14)** gains a third item, on the same schedule as the other two,
+  when links are enabled.
 
 ### 17f. Feature flag
 
@@ -2516,8 +2552,9 @@ release notes for v2 should call this out.
   (§17k) aren't registered, and `GET /api/capture-config` reports
   `links_enabled: false` so the dashboard hides the Links nav item. This is the
   same shape as `enable_open_registration` and `ai_base_url`. **Landed:** the
-  `enable_links` config key and the `links_enabled` field on
-  `GET /api/capture-config`; the gating itself lands with each piece it gates.
+  `enable_links` config key, `links_dir` (§17e) and the `links_enabled` field on
+  `GET /api/capture-config`; the rest of the gating lands with each piece it
+  gates.
 - **The extension can't read backend config** — it only talks to the Worker
   (§2). So the Worker has a matching switch: Terraform's `enable_links` variable
   (default `true`) becomes a `LINKS_ENABLED` plain-text binding, and a
@@ -2663,10 +2700,6 @@ Housekeeping that should not be forgotten:
 - The inline-favicon size threshold, above which the R2 fallback is used (§17c).
 - Whether `source_capture_id`-style transient idempotency (§3c) is needed for
   links at all (§17c).
-- How orphaned link favicons are reclaimed: a link-store pass in `recueil gc`
-  with its own live set and the same safety rails, or synchronous deletion with
-  the row, given the files are tiny.
-- The config key for the link store (proposed `links_dir`).
 - Where Wayback state lives for pages (a column on `pages` versus a separate
   table covering both entities), and the exact Wayback API behavior (§17i).
 - Browser bookmark import as an onboarding path, and collections as subfolders

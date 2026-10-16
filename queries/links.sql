@@ -72,3 +72,10 @@ RETURNING *;
 -- this user's". The link's favicon file is deliberately left for gc, the same
 -- way DeletePage leaves a page's files.
 DELETE FROM links WHERE id = $1 AND user_id = $2;
+
+-- name: ListReferencedLinkFaviconPaths :many
+-- The live set for the link favicon store's gc pass: every root-relative path
+-- some link still points at. Anything the sweep finds under the link store's
+-- root that isn't in this set gets removed -- a deleted link's favicon, or one
+-- a re-save has replaced or cleared.
+SELECT favicon_path::text AS path FROM links WHERE favicon_path IS NOT NULL;

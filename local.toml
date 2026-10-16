@@ -6,7 +6,9 @@ cloudflare_d1_database_id = "todo"
 # this is for local dev only so we don't care that it's exposed
 pairing_token_key = "tjIb2S5xDH0OxKqg3TJvcoqZqjVcqGrSzHXioqsm57I="
 cloudflare_api_token = "todo"
-archive_dir = "tmp"
+archive_dir = "tmp/archive"
+# must be separate from archive_dir (neither inside the other)
+links_dir = "tmp/links"
 r2_account_id = "todo"
 r2_bucket_name = "todo"
 r2_access_key_id = "todo"
