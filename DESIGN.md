@@ -2521,13 +2521,12 @@ any parseable URL, so neither would stop a row being ingested, and what a link
 may point at is the extension's call. `saved_at` must be an ISO-8601 timestamp
 and is stored normalized to UTC: ingestion parses it as RFC 3339 and nothing
 marks a row that keeps failing, so a malformed one would be retried forever, and
-the claim order needs timestamps that sort as time. (The capture routes don't
-check `captured_at` at all today; they're brought up to the same check in a
-separate change.) `title` may be any string or none, stored as given, and an
-empty one becomes NULL at ingestion, as it does for captures; only a defensive
-4096-character cut applies (nothing specifies a title length, and real ones run
-to a few hundred characters), and a longer title is cut rather than refusing a
-cosmetic field's save.
+the claim order needs timestamps that sort as time. (The two capture completion
+routes make the same check on `captured_at`.) `title` may be any string or none,
+stored as given, and an empty one becomes NULL at ingestion, as it does for
+captures; only a defensive 4096-character cut applies (nothing specifies a title
+length, and real ones run to a few hundred characters), and a longer title is
+cut rather than refusing a cosmetic field's save.
 
 **Favicon transport.** A favicon travels **inline in the save request**, as
 `favicon_ext` plus base64 `favicon_data`, up to **128 KB** of raw bytes; larger

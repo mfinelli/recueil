@@ -1691,6 +1691,10 @@ export async function handleGetUploadUrls(request, env, ctx) {
  * the caller declares *whether* it uploaded a favicon and in what format,
  * but never the key itself.
  *
+ * captured_at must be an ISO-8601 timestamp and is stored normalized to UTC
+ * (see normalizeIsoTimestamp): the backend parses it as RFC 3339, and a row it
+ * can't parse is retried forever, so a malformed one is refused here instead.
+ *
  * @param {Request} request
  * @param {Env} env
  * @param {ExecutionContext} ctx
@@ -1713,12 +1717,8 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
   }
   const { capture_id, captured_at, favicon_ext } =
     /** @type {Record<string, unknown>} */ (body);
-  if (
-    typeof capture_id !== "string" ||
-    capture_id === "" ||
-    typeof captured_at !== "string" ||
-    captured_at === ""
-  ) {
+  const capturedAt = normalizeIsoTimestamp(captured_at);
+  if (typeof capture_id !== "string" || capture_id === "" || !capturedAt) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
   if (
@@ -1783,7 +1783,7 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
         queueItem.url,
         r2KeyHtml,
         r2KeyFavicon,
-        captured_at,
+        capturedAt,
       ),
       env.DB.prepare(
         "UPDATE queue_items SET status = 'captured' WHERE id = ?",
@@ -1840,13 +1840,13 @@ export async function handleCompleteDirectCapture(request, env, ctx) {
   }
   const { capture_id, url, captured_at, favicon_ext } =
     /** @type {Record<string, unknown>} */ (body);
+  const capturedAt = normalizeIsoTimestamp(captured_at);
   if (
     typeof capture_id !== "string" ||
     capture_id === "" ||
     typeof url !== "string" ||
     url === "" ||
-    typeof captured_at !== "string" ||
-    captured_at === ""
+    !capturedAt
   ) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
@@ -1879,7 +1879,7 @@ export async function handleCompleteDirectCapture(request, env, ctx) {
          (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at)
        VALUES (?, ?, NULL, ?, ?, ?, ?)`,
     )
-      .bind(capture_id, auth.userId, url, r2KeyHtml, r2KeyFavicon, captured_at)
+      .bind(capture_id, auth.userId, url, r2KeyHtml, r2KeyFavicon, capturedAt)
       .run();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
