@@ -384,6 +384,10 @@ have no equivalent of Postgres's advisory lock to safely coordinate two
 processes starting at once. `agent`'s earliest cycles simply retry until
 `server` catches up.
 
+The worker cycle also ingests saved links (§17c) when links are enabled, right
+after capture ingestion; a failure there fails the cycle's heartbeat like any
+other, except for a Worker that predates links, which is not a failure.
+
 Two tickers, split by destination: `agent_worker_poll_interval_seconds`
 (default 1800) for everything talking to the Cloudflare Worker, and
 `agent_local_poll_interval_seconds` (default 300) for everything touching only
@@ -2571,14 +2575,47 @@ that stops two agents ingesting one row. The claim is ordered **oldest-saved
 first** (`saved_at`, then `created_at`), so when the same URL is saved twice
 before a poll, the later save is processed last and is the one that sticks.
 
-One retry hazard remains, in the R2 path only, so it's rare squared (a favicon
-over the cap plus a crash between deleting its R2 object and setting the fetched
-flag): the retry finds the row declares an R2 favicon whose object is gone.
-Ingestion must treat that as "already consumed", refreshing the link's other
-fields and **leaving its favicon as it is**, rather than clearing it the way a
-save with no favicon legitimately does (§17b). The first attempt's favicon
-directory is simply the one the row already points at; a retry that did write a
-second one orphans it for `gc`.
+**Backend ingestion** (`ingest.LinkIngester`, run by the agent's worker cycle
+(§3e) right after capture ingestion, and only with links on). It claims a batch
+and, for each link in saved order: parses `saved_at`, normalizes the URL with
+the same pipeline pages use, gets the favicon onto disk, upserts the link,
+deletes the favicon's R2 object if it had one (best-effort, as for a capture's
+favicon), and only then sets the fetched flag, the same ordering as captures and
+for the same reason. It's one statement and no transaction, because a link is
+one row with no follow-on jobs. A failure on one link is logged and leaves it
+unfetched to be claimed again, without stopping the batch. The pending row's
+`saved_at` is used only to order the claim and is not written into the link: the
+row's own `created_at` and `updated_at` are ingest time (`NOW()`), as for pages
+and captures, because `updated_at` is the mirror's incremental-sync checkpoint
+(§8, §17j) and a device's clock has no place in it (a link ingested late, from a
+retry or a device whose clock runs behind, would otherwise get a timestamp older
+than the checkpoint and never be mirrored).
+
+What the upsert does to the link's favicon depends on what the pending row
+declared, which is what lets a refresh be both faithful and safe:
+
+- **No favicon declared** (the device saw none): the favicon columns are cleared
+  (§17b). The site stopped serving one.
+- **Declared and stored**: the columns are set to the new favicon.
+- **Declared but couldn't be stored**, for any reason (the R2 object is gone,
+  the bytes aren't valid, the disk write failed): everything else is refreshed
+  but **the existing favicon is left exactly as it is**
+  (`UpsertLinkKeepingFavicon`), and a brand-new link simply has none. That is a
+  failure on our side, not the site's, and it must not turn into losing a
+  favicon the link already had.
+
+The third case is also what handles the one retry hazard, which is in the R2
+path only and so rare squared (a favicon over the cap plus a crash between
+deleting its R2 object and setting the fetched flag): the retry finds the row
+declares an R2 favicon whose object is gone, and the favicon the first attempt
+stored stays. With an inline favicon the retry has the bytes again, so it's a
+plain refresh. A retry that does write a second favicon directory orphans the
+first for `gc`.
+
+A Worker that doesn't have the pending-links routes yet (it predates links, or
+hasn't been redeployed since) answers `404`; the agent logs a warning each cycle
+and carries on rather than failing, and the cleanup sweep skips it quietly. The
+Worker and backend are deployed separately, so either may be first (§17g).
 
 ### 17d. Queue: no `kind`
 
@@ -2711,9 +2748,10 @@ This ships after v1, so existing setups must not break.
 - The backend applies D1 migrations at startup (§5b) while the Worker deploys
   separately through Terraform, so either can go first: new D1 tables are unused
   until something writes to them, and new Worker endpoints are unused until an
-  extension calls them. A backend upgraded before the Worker simply sees no
-  pending links; a Worker upgraded before the backend only exposes `GET /config`
-  until the extension is too.
+  extension calls them. A backend upgraded before the Worker gets a `404` on the
+  pending-links routes, logs a warning each cycle and carries on (no failed
+  heartbeat), so it simply sees no pending links; a Worker upgraded before the
+  backend only exposes `GET /config` until the extension is too.
 - An old extension ignores the new button and keeps working. An old extension
   that claims a queue item meant to become a link just does a full capture,
   which §17d already accepts.

@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -40,6 +41,7 @@ import (
 	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
+	"github.com/mfinelli/recueil/internal/pendinglinks"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/r2"
 	"github.com/mfinelli/recueil/internal/readability"
@@ -135,6 +137,23 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Logger:   logger.Logger,
 	})
 
+	// The links counterparts of the ingester and its Worker client, only with
+	// links turned on (the link store was checked above): with the flag off
+	// there is nothing to claim, so the cycle simply doesn't ask.
+	var linkWorkerClient *pendinglinks.Client
+	var linkIngester *ingest.LinkIngester
+	if cfg.EnableLinks {
+		linkWorkerClient = pendinglinks.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+		linkIngester = ingest.NewLinkIngester(ingest.LinkParams{
+			Queries:  queries,
+			Worker:   linkWorkerClient,
+			R2:       r2Client,
+			Store:    linkicons.New(cfg.LinksDir),
+			Pipeline: pipeline,
+			Logger:   logger.Logger,
+		})
+	}
+
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	syncer := mirror.NewSyncer(mirror.SyncerParams{
 		Queries: queries,
@@ -217,12 +236,14 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		workerInterval, localInterval)
 
 	worker := &workerCycle{
-		ingester:   ingester,
-		syncer:     syncer,
-		worker:     workerClient,
-		queueItems: queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret),
-		queries:    queries,
-		logger:     logger.Logger,
+		ingester:     ingester,
+		linkIngester: linkIngester,
+		syncer:       syncer,
+		worker:       workerClient,
+		linkWorker:   linkWorkerClient,
+		queueItems:   queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret),
+		queries:      queries,
+		logger:       logger.Logger,
 	}
 
 	// Run one cycle of each immediately on startup, rather than waiting
@@ -300,12 +321,16 @@ const (
 // deliberate: it's only ever called from the agent's single select loop,
 // synchronously, so successive cycles can never overlap.
 type workerCycle struct {
-	ingester   *ingest.Ingester
-	syncer     *mirror.Syncer
-	worker     *pendingcaptures.Client
-	queueItems *queueitems.Client
-	queries    *db.Queries
-	logger     *slog.Logger
+	ingester *ingest.Ingester
+	// linkIngester and linkWorker are nil when links are turned off, in which
+	// case the cycle neither ingests nor sweeps links.
+	linkIngester *ingest.LinkIngester
+	syncer       *mirror.Syncer
+	worker       *pendingcaptures.Client
+	linkWorker   *pendinglinks.Client
+	queueItems   *queueitems.Client
+	queries      *db.Queries
+	logger       *slog.Logger
 
 	// lastCleanup is the zero Time until the first sweep, which is what
 	// makes a freshly-started agent sweep on its very first cycle.
@@ -332,6 +357,12 @@ func (w *workerCycle) run(ctx context.Context) {
 		w.logger.ErrorContext(ctx, "agent: ingestion cycle failed", "error", err)
 		ok = false
 	}
+	if w.linkIngester != nil {
+		if err := w.linkIngester.RunOnce(ctx); err != nil {
+			w.logger.ErrorContext(ctx, "agent: link ingestion cycle failed", "error", err)
+			ok = false
+		}
+	}
 	if err := w.syncer.SyncOnce(ctx); err != nil {
 		w.logger.ErrorContext(ctx, "agent: mirror sync cycle failed", "error", err)
 		ok = false
@@ -350,8 +381,9 @@ func (w *workerCycle) run(ctx context.Context) {
 	}
 }
 
-// runCleanup sweeps both D1 tables that accumulate terminal rows. Each is
-// independent -- one failing doesn't skip the other, since there's no
+// runCleanup sweeps the D1 tables that accumulate terminal rows (pending
+// captures, pending links when links are on, and captured queue items). Each
+// is independent -- one failing doesn't skip the others, since there's no
 // ordering between them and no reason a Worker error on one implies
 // anything about the other.
 func (w *workerCycle) runCleanup(ctx context.Context) {
@@ -359,6 +391,17 @@ func (w *workerCycle) runCleanup(ctx context.Context) {
 		w.logger.ErrorContext(ctx, "agent: pending-captures cleanup failed", "error", err)
 	} else if deleted > 0 {
 		w.logger.InfoContext(ctx, "agent: swept ingested pending captures", "deleted", deleted)
+	}
+
+	// Skipped quietly for a Worker that predates links: it has nothing to sweep,
+	// and the ingestion cycle already says so every time it runs.
+	if w.linkWorker != nil {
+		deleted, err := w.linkWorker.CleanupPendingLinks(ctx)
+		if err != nil && !errors.Is(err, pendinglinks.ErrWorkerWithoutLinks) {
+			w.logger.ErrorContext(ctx, "agent: pending-links cleanup failed", "error", err)
+		} else if err == nil && deleted > 0 {
+			w.logger.InfoContext(ctx, "agent: swept ingested pending links", "deleted", deleted)
+		}
 	}
 
 	if deleted, err := w.queueItems.Cleanup(ctx); err != nil {

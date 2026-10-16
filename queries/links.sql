@@ -79,3 +79,19 @@ DELETE FROM links WHERE id = $1 AND user_id = $2;
 -- root that isn't in this set gets removed -- a deleted link's favicon, or one
 -- a re-save has replaced or cleared.
 SELECT favicon_path::text AS path FROM links WHERE favicon_path IS NOT NULL;
+
+-- name: UpsertLinkKeepingFavicon :one
+-- UpsertLink for a save that declared a favicon the backend then couldn't
+-- store (the R2 object was already gone on a retry, or the disk write failed):
+-- everything else is refreshed, but the favicon columns are left exactly as
+-- they are, and a brand-new row simply has none. The faithful rule (a save
+-- with no favicon clears the old one) is for a site that stopped serving one;
+-- this is a transient failure on our side, and it must not turn into losing a
+-- favicon the link already had.
+INSERT INTO links (user_id, raw_url, normalized_url, title)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (user_id, normalized_url) DO UPDATE
+SET raw_url = EXCLUDED.raw_url,
+    title = EXCLUDED.title,
+    updated_at = NOW()
+RETURNING *;
