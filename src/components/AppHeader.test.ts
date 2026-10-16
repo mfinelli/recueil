@@ -54,6 +54,28 @@ afterEach(() => {
 beforeEach(() => {
   pushMock.mockClear();
   session.user = null;
+  session.linksEnabled = false;
+});
+
+describe("AppHeader: the Links nav item", () => {
+  it("is absent while links are off", () => {
+    session.linksEnabled = false;
+    render(AppHeader);
+    expect(screen.queryByRole("link", { name: "Links" })).toBeNull();
+  });
+
+  it("appears right after Library when links are on, pointing at /links", () => {
+    session.linksEnabled = true;
+    render(AppHeader);
+
+    const labels = screen
+      .getAllByRole("link")
+      .map((el) => el.textContent?.trim());
+    expect(labels.indexOf("Links")).toBe(labels.indexOf("Library") + 1);
+    expect(
+      screen.getByRole("link", { name: "Links" }).getAttribute("href"),
+    ).toBe("#/links");
+  });
 });
 
 describe("AppHeader", () => {

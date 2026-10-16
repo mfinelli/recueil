@@ -36,6 +36,28 @@ export interface PageListResponse {
   total: number;
 }
 
+// A link: a bookmark-only entry, saved without being archived. Not to be
+// confused with a page-to-page link (PageLink-shaped responses on a page's
+// `links`), which relates two archived pages. matching_page_id is the same-URL
+// hint: the id of the user's archived page with this link's normalized_url,
+// if there is one.
+export interface Link {
+  id: number;
+  raw_url: string;
+  normalized_url: string;
+  title: string | null;
+  favicon_path: string | null;
+  notes: string | null;
+  matching_page_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkListResponse {
+  links: Link[];
+  total: number;
+}
+
 export interface CaptureSummary {
   id: number;
   source: string;
@@ -361,6 +383,9 @@ export interface CaptureConfig {
   // file client-side, rather than only finding out after a slow upload
   // that the server was always going to reject it.
   manual_upload_max_bytes: number;
+  // Whether the links feature is on or not. Drives the Links
+  // nav item and route; session.svelte.ts reads it once at bootstrap.
+  links_enabled: boolean;
 }
 
 // POST /api/manual-upload -- multipart/form-data (not JSON) so this

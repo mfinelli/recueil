@@ -2760,15 +2760,74 @@ This ships after v1, so existing setups must not break.
 
 ### 17h. Dashboard
 
-- **A dedicated Links page**, not mixed into Library. Links have no thumbnail,
-  so they can only be shown as a **list** — there is no grid view for them.
-  Favicon fallback is the existing `Globe` treatment (DESIGN_SYSTEM.md). The nav
-  item is hidden when the flag is off.
-- **Same-URL hint.** If a link and a page share a `normalized_url`, each side
-  shows a hint pointing at the other. This is a read-time join on
-  `normalized_url`, not a stored relationship, so there is nothing to keep
-  consistent. There's no conflict in having both; the user deletes whichever
-  they don't want.
+The screens below were mocked up and agreed before building, and are built in
+stages; each says what has landed.
+
+- **Nav.** "Links" sits after Library and is hidden when links are off.
+  `session.linksEnabled` is read once at bootstrap from
+  `GET /api/capture-config`'s `links_enabled`; the `/links` route is guarded the
+  same way and redirects to the library when the feature is off. **Landed.**
+- **The Links page (`/links`)** is list-only, with no grid and no view toggle,
+  since a link has no thumbnail. It lists newest saved first (`created_at`)
+  under Library's own search box (matching title, URL and notes) and pagination.
+  **Landed.** A row (`LinkList.svelte`, not `PageList`) shows the favicon (the
+  `Globe` fallback when there's none), the title (the normalized URL when there
+  is none), the normalized URL in mono, the saved date and a trailing
+  external-link icon. **The row opens the link's own detail screen; the trailing
+  icon opens the saved URL in a new tab** (`target="_blank" rel="noreferrer"`).
+  They are sibling links, since anchors can't nest: the row is a two-column grid
+  with the row's link (favicon, title, URL, date) in the first column and the
+  icon button in the second, and the whole row takes the hover background.
+- **Open `raw_url`, not `normalized_url`.** Normalization drops the fragment
+  (§9), which breaks hash-routed apps, so what a link opens (here and on the
+  detail screen) is the URL as saved; rows show the normalized one. The bookmark
+  mirror should push `raw_url` too (§17j).
+- **Row markers.** The only one is "Also archived", shown when
+  `matching_page_id` is set, on its own third line under the URL. It is a plain
+  indicator (`role="img"` labelled "This URL is also archived as a page"), not a
+  link, because it can't nest inside the row link; the detail screen carries the
+  real link. No Wayback state appears in rows. **Landed.**
+- **Link detail (`/links/:id`)** mirrors the page detail minus captures,
+  recapture, AI tags, linked pages and versions: a back link, the title with a
+  pencil (hint: "Saving this link again from your browser replaces the title."),
+  a source row (`raw_url` and an external-link icon), the same-URL callout,
+  Tags, Collections, Notes, the Internet Archive block (stage 3) and an actions
+  row with Delete link only. No mirror-exclusion toggle (§17m). **Planned.**
+- **Same-URL hint.** A one-line callout under the source row on both detail
+  screens: "This URL is also archived as a page: {title}" and "This URL is also
+  saved as a link: {title}". It is a read-time join on `normalized_url`, not a
+  stored relationship, so there is nothing to keep consistent, and having both
+  is no conflict: the user deletes whichever they don't want. Page detail reads
+  `matching_link_id`. **Planned.**
+- **Adding a link by hand.** An "Add link" button in the toolbar opens a modal
+  copied from the manual-upload one: URL (required), title (optional) and
+  favicon (optional, `.svg`/`.png`/`.ico`), with the note that recueil never
+  visits the page itself, so a title and icon are only there if given. It needs
+  its own backend route that bypasses the Worker, like
+  `POST /api/manual-upload`, which supersedes §17c's "not a supported shape" for
+  a link added without a desktop visit; that text is rewritten when this lands.
+  **Planned.**
+- **Tags and collections** show a one-line count above the page list rather than
+  a second list: "{n} links have this tag." or "{n} links in this collection."
+  with a "View links" link, only when n > 0 and the feature is on (the
+  collection count is direct links only, like its page list). It opens
+  `/links?tag={slug}` or `/links?collection={id}`, where the Links page shows a
+  "Filtered by tag/collection" pill with a clear button. A tag used only by
+  links keeps "No pages have this tag yet." with the count line above it. This
+  needs link counts on the tag and collection detail responses and
+  `tag`/`collection` filters on `GET /api/links`, and the delete-confirmation
+  copy ("removed from every page that has it") has to say "page or link".
+  **Planned.**
+- **Wayback** (stage 3, §17i) gets an "Internet Archive" block directly above
+  the actions row on both detail screens. Never submitted: "Not submitted to the
+  Wayback Machine.", a "Check for existing snapshots" link and a "Submit to
+  Wayback Machine" button. Submitted: "Submitted to the Wayback Machine", the
+  last-submitted date-time, a "View snapshots" link and a "Submit again" button.
+  Both links go to the calendar of snapshots for the submitted URL; no snapshot
+  URL is stored for display, and the privacy line (archive.org fetches the URL
+  itself, as a logged-out visitor, and the URL is shared with a third party)
+  stays. The calendar link's shape (`web.archive.org/web/*/<url>`) is
+  unverified; check it with the rest of §17i. **Planned.**
 - **The API** (`internal/httpapi/links.go`), all under `/api/links` and routed
   only with the flag on (with it off every one of them 404s): `GET /api/links`
   (newest saved first, paginated like `GET /api/pages`; `?q=` is a
@@ -2791,14 +2850,6 @@ This ships after v1, so existing setups must not break.
   relationship routes, and the two must stay distinct in routes, labels and
   docs. Listing a tag's or a collection's links (`/tags/{slug}/links`,
   `/collections/{id}/links`) waits for the undecided UX below.
-- **Wayback.** The Links page and page detail show when an entry was last
-  submitted (§17i).
-- **Undecided: how links appear on the tags and collections pages.** Those pages
-  are built around grid/list views of pages, and links can't be shown in a grid,
-  so mixing them in may not work. Options include a separate "Links" section on
-  each page, a count with a link through to a filtered Links page, or links only
-  on the Links page. The decision is deferred until it can be mocked up to find
-  the right shape (§17m).
 
 ### 17i. Wayback Machine submission
 
@@ -2883,8 +2934,6 @@ Housekeeping that should not be forgotten:
 
 ### 17m. Open questions
 
-- How links appear on the tags and collections pages (§17h) — mock up before
-  deciding.
 - Whether tags and collections really are shared tables with pages (§17b), or
   links get their own.
 - Whether links get a per-entry mirror exclusion like

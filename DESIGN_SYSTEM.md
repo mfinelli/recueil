@@ -146,10 +146,10 @@ does an exact match against the element's `href`. For a nav item whose section
 has drill-down routes (e.g. Library → `/pages/:id`, Collections →
 `/collections/*`), pass an explicit `path` regex so the link stays active on
 those nested routes too — see `AppHeader.svelte`'s
-`libraryActive`/`collectionsActive`/`tagsActive` for the pattern. The active
-class itself needs `:global(.active)` in scoped component styles, since the
-class is added by the action at runtime and Svelte's scoped-CSS analysis can't
-otherwise see it's used.
+`libraryActive`/`collectionsActive`/`tagsActive`/`linksActive` for the pattern.
+The active class itself needs `:global(.active)` in scoped component styles,
+since the class is added by the action at runtime and Svelte's scoped-CSS
+analysis can't otherwise see it's used.
 
 ### Mobile disclosure (nav collapse)
 
@@ -199,6 +199,8 @@ Two independent rules, not one:
   `faviconLoadFailed` and `thumbnailLoadFailed` as two separate `SvelteSet`s for
   exactly this reason.
 
+`LinkList.svelte` applies the favicon half of this (a link has no thumbnail).
+
 Fallback content: a small bordered `Globe` icon for a missing/broken favicon
 (list and grid both), the title's first letter in the display serif for a
 missing/broken thumbnail (grid only) — both are "this represents a generic page"
@@ -222,6 +224,21 @@ itself fails to load, both buttons default to showing rather than silently
 disappearing, since a missing capability is worse than an
 occasionally-unnecessary one. Reach for this same fail-open shape for any future
 "hide when redundant" control gated on a second, independent fetch.
+
+### A row with two destinations (`LinkList.svelte`)
+
+A link's row opens its detail screen, but the saved URL itself is one click away
+on a trailing icon button. Anchors can't nest, so these are siblings: the `li`
+is a two-column grid (`1fr auto`) with the row's link in the first column
+(favicon, title, URL and date, laid out as `PageList`'s list rows are) and an
+`icon-btn` link in the second. The `li` takes the hover background, so the two
+read as one row. Anything inside the row that would otherwise need to be its own
+link (the "Also archived" marker, which points at the matching page) is a plain
+indicator on its own third line, with `role="img"` and an `aria-label` that says
+what it means in full ("This URL is also archived as a page"), and the real link
+lives on the detail screen. The icon link needs an accessible name that says
+where it goes ("Open {title} in a new tab"), since the glyph alone doesn't, and
+it opens with `target="_blank" rel="noreferrer"`.
 
 ### A `title` attribute alone isn't enough for a meaningful icon
 

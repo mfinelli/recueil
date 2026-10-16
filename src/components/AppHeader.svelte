@@ -24,8 +24,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   // Mobile nav is a disclosure, not a second breakpoint-specific markup
   // tree -- same links, same DOM, just toggled visibility so there's one
-  // source of truth for the six routes rather than a duplicated mobile
-  // menu to keep in sync.
+  // source of truth for the routes rather than a duplicated mobile menu
+  // to keep in sync.
   let navOpen = $state(false);
 
   function closeNav() {
@@ -45,6 +45,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // such nested routes, so the default (element's own href, exact match)
   // is already correct for them.
   const libraryActive = { path: /^\/($|pages\/|captures\/)/ };
+  // Links, likewise, has a drill-down (a link's own detail screen).
+  const linksActive = { path: /^\/links(\/.*)?$/ };
   const collectionsActive = { path: /^\/collections(\/.*)?$/ };
   const tagsActive = { path: /^\/tags(\/.*)?$/ };
 </script>
@@ -72,6 +74,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       <a href="/" use:link use:active={libraryActive} onclick={closeNav}
         >{m.nav_library()}</a
       >
+      {#if session.linksEnabled}
+        <a href="/links" use:link use:active={linksActive} onclick={closeNav}
+          >{m.nav_links()}</a
+        >
+      {/if}
       <a
         href="/collections"
         use:link
