@@ -62,7 +62,10 @@ describe("GET /config", () => {
       testCtx,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ links_enabled: true });
+    expect(await res.json()).toEqual({
+      links_enabled: true,
+      favicon_inline_max_bytes: 131072,
+    });
   });
 
   it('reports links_enabled false when the binding is "false"', async () => {
@@ -73,7 +76,10 @@ describe("GET /config", () => {
       testCtx,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ links_enabled: false });
+    expect(await res.json()).toEqual({
+      links_enabled: false,
+      favicon_inline_max_bytes: 131072,
+    });
   });
 
   it("treats an unset binding as off, not on", async () => {
@@ -86,7 +92,10 @@ describe("GET /config", () => {
       testCtx,
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ links_enabled: false });
+    expect(await res.json()).toEqual({
+      links_enabled: false,
+      favicon_inline_max_bytes: 131072,
+    });
   });
 
   it("returns 401 without a bearer token", async () => {

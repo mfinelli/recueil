@@ -1351,6 +1351,13 @@ commits.
   Surfacing and retrying persistently-failing rows needs an `attempts`/`error`
   column and something equivalent to `POST /queue/:id/fail` — not built yet.
 
+`pending_links` (§17c) has the same three: an atomic claim
+(`POST /internal/pending-links`), the fetched flag, and a cleanup sweep, with
+the same one-hour stale-claim window and 72-hour retention. The claim is ordered
+oldest-saved first, and its batches are smaller because a row can carry an
+inline favicon. Unlike the `pending_captures` ones, these routes are not gated
+by the links flag (§17f).
+
 ### Bookmark-list mirror (backend → D1 → the browser's native bookmarks)
 
 - Separately from the queue, the extension syncs everything already archived
@@ -2082,6 +2089,41 @@ CREATE INDEX idx_pending_captures_user_id ON pending_captures(user_id);
 CREATE INDEX idx_pending_captures_queue_item_id ON pending_captures(queue_item_id);
 CREATE INDEX idx_pending_captures_fetched_by_backend ON pending_captures(fetched_by_backend);
 
+-- Links saved by a device (§17), awaiting backend pickup: pending_captures'
+-- counterpart, with the same client-generated id and atomic claim. No HTML,
+-- only a title and a favicon, which arrives one of two ways: inline up to the
+-- Worker's cap (parked here as base64 in favicon_data), or through R2 (only
+-- its key, in r2_key_favicon, whose extension carries the format). favicon_ext
+-- is set either way, with exactly one of the two -- the CHECKs say so. Marking
+-- a row fetched clears all three. saved_at is normalized to UTC ISO-8601, so
+-- the backend's oldest-saved-first claim is chronological.
+CREATE TABLE pending_links (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  queue_item_id TEXT REFERENCES queue_items(id),  -- nullable: a direct save
+  url TEXT NOT NULL,
+  title TEXT,
+  favicon_ext TEXT,
+  favicon_data TEXT,
+  r2_key_favicon TEXT,
+  saved_at TEXT NOT NULL,
+  fetched_by_backend INTEGER NOT NULL DEFAULT 0,
+  claimed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (favicon_ext IS NULL OR favicon_ext IN ('svg', 'png', 'ico')),
+  CHECK (
+    (favicon_ext IS NULL
+      AND favicon_data IS NULL AND r2_key_favicon IS NULL)
+    OR
+    (favicon_ext IS NOT NULL
+      AND (favicon_data IS NULL) <> (r2_key_favicon IS NULL))
+  )
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX idx_pending_links_user_id ON pending_links(user_id);
+CREATE INDEX idx_pending_links_queue_item_id ON pending_links(queue_item_id);
+CREATE INDEX idx_pending_links_fetched_by_backend ON pending_links(fetched_by_backend);
+
 -- Bookmark-list mirror, kept in sync by the backend's scheduled sync
 -- job (internal/mirror.Syncer -- see §8 for the full design), not pushed
 -- on individual mutations. Pulled by the extension on its own coarse/
@@ -2440,24 +2482,104 @@ browser is not a supported shape, since there would be nothing to take the title
 or favicon from.
 
 **Transport** follows the existing pattern in §3/§8, since the extension only
-ever talks to the Worker: a bearer-token Worker endpoint writes a row to a new
-D1 table (`pending_links`, client-generated UUID id, same idempotency reasoning
-as §3c), the backend polls for it on the agent's Worker ticker (§3e), ingests it
-into Postgres, writes the favicon to the link store (§17e), flags the row as
-fetched, and a cleanup sweep removes old fetched rows the way
-`pending_captures`' does (§8). Favicon selection, the "no image processing" rule
-and "best-effort, never fails the save" (§3g) apply unchanged.
+ever talks to the Worker. A bearer-token `POST /links` writes a row to a new D1
+table, `pending_links` (§10), whose client-generated UUID id makes a retried
+save a recognizable no-op (`204`, checked before the queue item's status, as in
+the capture completions). The backend claims rows on the agent's Worker ticker
+(§3e), ingests them into Postgres, writes the favicon to the link store (§17e),
+flags the row fetched, and a cleanup sweep removes old fetched rows (72 hours,
+only `fetched_by_backend = 1`), all the way `pending_captures`' does (§8).
+Favicon selection, the "no image processing" rule and "best-effort, never fails
+the save" (§3g) apply unchanged.
 
-**Favicon transport.** A favicon is a few KB, so it travels **inline in the
-Worker request** up to a size threshold, and **falls back to the R2
-presigned-upload path** captures use (§3g) when it's larger. The common case is
-then one Worker request instead of three (the Worker's request count matters on
-Cloudflare's free tier), while an unusually large icon still can't blow past the
-Worker's request limits. The threshold is settled with the Worker piece.
+The Worker endpoints:
 
-Ingestion should be idempotent by construction (upsert on
-`(user_id, normalized_url)`), which may make §3c's transient `source_capture_id`
-key unnecessary for links — settle this during implementation.
+- **`POST /links`** (device): the direct save, for a page the user is already on
+  (the counterpart of `POST /captures/complete`). Body: `link_id`, `url`,
+  `saved_at`, and optionally `title` and a favicon (below).
+- **`POST /queue/:id/complete-link`** (device): the same save for a claimed
+  queue item (the counterpart of `POST /queue/:id/complete`, §17d). The body is
+  the direct save's minus `url`, which comes from the queue item.
+- **`POST /links/upload-urls`** (device): a presigned R2 `PUT` for a favicon too
+  large to send inline, the favicon half of `POST /captures/upload-urls` with
+  the same checksum binding and stateless signing. The key,
+  `pending-links/{user_id}/{link_id}/favicon.{ext}`, is always recomputed by the
+  Worker, never taken from a client, and its prefix keeps these objects apart
+  from captures' `pending/`.
+- **`POST /internal/pending-links`**,
+  **`POST /internal/pending-links/:id/fetched`** and
+  **`POST /internal/pending-links/cleanup`** (backend, service secret): the
+  atomic claim, the fetched flag, and the sweep, each the counterpart of the
+  `pending_captures` one. A claim returns smaller batches (default 25, cap 100)
+  because a row can carry an inline favicon.
+
+**Validation at the door.** Only what would otherwise leave a row the backend
+can never ingest, plus what the capture routes already check. `url` (direct
+save) must parse as an absolute URL, exactly the check `POST /queue` makes: no
+scheme restriction and no length cap, since the ingestion pipeline normalizes
+any parseable URL, so neither would stop a row being ingested, and what a link
+may point at is the extension's call. `saved_at` must be an ISO-8601 timestamp
+and is stored normalized to UTC: ingestion parses it as RFC 3339 and nothing
+marks a row that keeps failing, so a malformed one would be retried forever, and
+the claim order needs timestamps that sort as time. (The capture routes don't
+check `captured_at` at all today; they're brought up to the same check in a
+separate change.) `title` may be any string or none, stored as given, and an
+empty one becomes NULL at ingestion, as it does for captures; only a defensive
+4096-character cut applies (nothing specifies a title length, and real ones run
+to a few hundred characters), and a longer title is cut rather than refusing a
+cosmetic field's save.
+
+**Favicon transport.** A favicon travels **inline in the save request**, as
+`favicon_ext` plus base64 `favicon_data`, up to **128 KB** of raw bytes; larger
+ones go to R2 through `/links/upload-urls`, after which the save carries only
+`favicon_ext` and the Worker records the recomputed key. A favicon is small, but
+not "a few KB": on one real instance they average about 18 KB, and a legacy
+multi-resolution `.ico` can be several times that, so the cap is generous rather
+than tight. The common case is one Worker request instead of the capture flow's
+two (the upload-URLs call and the completion), which matters on Cloudflare's
+free tier. Cloudflare's own ceilings are nowhere near the cap (a D1 row may be 2
+MB, base64 included; a request body 100 MB); the cap exists to bound what's
+parked in a D1 row and parsed inside a request's CPU budget. Nothing is ever
+dropped for being large; it just takes the R2 path, as a capture's favicon
+always does. An inline favicon over the cap gets a `413` naming the R2 route,
+and a request whose declared body is far larger than any inline favicon is
+refused before it's parsed. In `pending_links` the inline bytes live in
+`favicon_data` and an R2 favicon's key in `r2_key_favicon`, exactly one of them
+alongside `favicon_ext`, which the schema's `CHECK`s enforce; marking a row
+fetched clears all three, since the backend has the favicon on disk by then.
+
+**The cap lives in one place, the Worker, and devices learn it from
+`GET /config`** (`favicon_inline_max_bytes`, alongside `links_enabled`, §17f).
+Changing it is a Worker change either way, but the extension never carries its
+own copy to keep in step: Workers and extensions upgrade on different schedules
+(`terraform apply` versus a browser store), and a stale extension is harmless,
+because the Worker enforces its own cap and the extension treats a `413` as "use
+R2", which works at any size. The extension caches the config (§17f). If the
+Worker can't be reached it shows the normal "can't reach the server" error,
+since the save would fail too, and there is no default cap compiled into the
+extension for it to fall back on; a stale cached value is used until a refresh
+succeeds.
+
+**No `source_capture_id` equivalent.** On captures it makes the append-only
+`captures` insert idempotent across a retry (a crash after the Postgres commit
+but before the D1 fetched flag would otherwise insert a duplicate version, and
+the R2 object a retry needs is already gone) and survives the rare id collision
+(§3c). A link has neither problem: ingestion upserts on
+`(user_id, normalized_url)`, so a retry just refreshes the same row, and no two
+links can collide. What links keep from the capture design is the other two
+pieces: the client UUID as the primary key, and the atomic claim (`claimed_at`)
+that stops two agents ingesting one row. The claim is ordered **oldest-saved
+first** (`saved_at`, then `created_at`), so when the same URL is saved twice
+before a poll, the later save is processed last and is the one that sticks.
+
+One retry hazard remains, in the R2 path only, so it's rare squared (a favicon
+over the cap plus a crash between deleting its R2 object and setting the fetched
+flag): the retry finds the row declares an R2 favicon whose object is gone.
+Ingestion must treat that as "already consumed", refreshing the link's other
+fields and **leaving its favicon as it is**, rather than clearing it the way a
+save with no favicon legitimately does (§17b). The first attempt's favicon
+directory is simply the one the row already points at; a retry that did write a
+second one orphans it for `gc`.
 
 ### 17d. Queue: no `kind`
 
@@ -2467,13 +2589,19 @@ could only ever be a hint — nothing stops the user from taking either action o
 any queued URL anyway. Choosing wrong is self-correcting: queue the URL again
 and delete the unwanted entry.
 
-What is required is **completion**. The link save takes the same optional
-`queueItemId` that `captureTab`/`captureActiveTab` already take (the
-`tabId -> queueItemId` map, §3i), and its completion endpoint marks the queue
-item `captured`, exactly as `POST /queue/:id/complete` does for a capture —
-otherwise the item stays pending and keeps getting re-offered. `pending_links`
-carries a nullable `queue_item_id` for this, mirroring
-`pending_captures.queue_item_id` (§10).
+What is required is **completion**, and it mirrors the two capture routes. A
+link saved from a queued item goes to **`POST /queue/:id/complete-link`**: the
+extension passes the item's id (it already tracks `tabId -> queueItemId`, §3i)
+and the Worker marks the item `captured` in the same batch as the insert, with
+the same `404`/`410`/`409` answers `POST /queue/:id/complete` gives (the item
+must exist for this user, not already be captured or failed, and be claimed by
+this very device) — otherwise the item stays pending and keeps getting
+re-offered. A link saved from a page the user is already on goes to
+**`POST /links`** (§17c), with no queue item. **As for a queued capture, the URL
+is the queue item's, read from D1, not the body's.** That keeps a page and a
+link saved from the same queue item under the same normalized URL even when the
+URL redirects, which the same-URL hint and the re-queue way of promoting or
+demoting (below) both rely on.
 
 Accepted consequences:
 
@@ -2509,11 +2637,11 @@ the archive is (§4): every saved favicon gets its own sharded, UUIDv7-named
 directory (`{id[32:34]}/{id[34:36]}/{id}/`, minted by
 `archive.Store.NewCapture`, whose name is only historical) holding one
 plain-named file, `favicon.{ext}`. Nothing is shared between links, even for
-byte-for-byte identical icons: favicons are a few KB, so deduplicating them
-isn't worth a second storage model (a content-addressed layout was considered
-and rejected here for the same reason it was for captures, §4). A re-save of a
-link writes a new directory, and the old favicon, no longer referenced by the
-row, is left for gc.
+byte-for-byte identical icons: favicons are small (tens of KB, not megabytes),
+so deduplicating them isn't worth a second storage model (a content-addressed
+layout was considered and rejected here for the same reason it was for captures,
+§4). A re-save of a link writes a new directory, and the old favicon, no longer
+referenced by the row, is left for gc.
 
 - **Format.** Same compress-by-extension rule as §3g (SVG zstd'd, PNG/ICO stored
   raw) and the same closed `svg | png | ico` extension set; `Write` rejects
@@ -2558,16 +2686,21 @@ release notes for v2 should call this out.
 - **The extension can't read backend config** — it only talks to the Worker
   (§2). So the Worker has a matching switch: Terraform's `enable_links` variable
   (default `true`) becomes a `LINKS_ENABLED` plain-text binding, and a
-  bearer-authenticated `GET /config` returns `{"links_enabled": <bool>}`, which
-  the extension reads to show or hide "save as link". Only the exact string
-  `"true"` counts as enabled, so a Worker deployed without the binding reads as
-  off rather than as a feature the backend might not be ingesting. This makes
-  **two flags that must agree**; the operator docs say so. The extension side
-  lands with the extension action (§17c). **The extension must cache this
-  config** for a while (and reuse the last known value if the Worker is
-  unreachable) rather than call `GET /config` on every popup open or capture, to
-  stay comfortably within Cloudflare's free tier; the exact lifetime and refresh
-  trigger are settled with that piece.
+  bearer-authenticated `GET /config` returns `links_enabled` (and
+  `favicon_inline_max_bytes`, §17c), which the extension reads to show or hide
+  "save as link". Only the exact string `"true"` counts as enabled, so a Worker
+  deployed without the binding reads as off rather than as a feature the backend
+  might not be ingesting. This makes **two flags that must agree**; the operator
+  docs say so. The extension side lands with the extension action (§17c). **The
+  extension must cache this config** for a while (and reuse the last known value
+  if the Worker is unreachable) rather than call `GET /config` on every popup
+  open or capture, to stay comfortably within Cloudflare's free tier; the exact
+  lifetime and refresh trigger are settled with that piece. The Worker side of
+  the switch gates only what a **device** can do: `POST /links` and
+  `POST /links/upload-urls` are `404` while it's off. The backend-facing
+  `/internal/pending-links` routes are never gated, so a backend and Worker
+  whose flags disagree degrade quietly (the claim just returns nothing) instead
+  of the agent logging an error on every poll.
 
 ### 17g. Rollout compatibility
 
@@ -2697,9 +2830,6 @@ Housekeeping that should not be forgotten:
   links get their own.
 - Whether links get a per-entry mirror exclusion like
   `pages.excluded_from_mirror`.
-- The inline-favicon size threshold, above which the R2 fallback is used (§17c).
-- Whether `source_capture_id`-style transient idempotency (§3c) is needed for
-  links at all (§17c).
 - Where Wayback state lives for pages (a column on `pages` versus a separate
   table covering both entities), and the exact Wayback API behavior (§17i).
 - Browser bookmark import as an onboarding path, and collections as subfolders
