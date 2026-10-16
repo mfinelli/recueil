@@ -199,6 +199,20 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Delete("/pages/{id}/collections/{collectionId}", s.RemovePageFromCollection)
 			r.Post("/pages/{id}/links", s.AddPageLink)
 			r.Delete("/pages/{id}/links/{linkPageId}", s.RemovePageLink)
+
+			// Links (bookmark-only entries): only routed with the
+			// feature on, so with it off every one of these 404s.
+			if s.EnableLinks {
+				r.Get("/links", s.ListLinks)
+				r.Get("/links/{id}", s.GetLink)
+				r.Patch("/links/{id}", s.PatchLink)
+				r.Delete("/links/{id}", s.DeleteLink)
+				r.Get("/links/{id}/favicon", s.GetLinkFavicon)
+				r.Post("/links/{id}/tags", s.AddLinkTag)
+				r.Delete("/links/{id}/tags/{tagId}", s.RemoveLinkTag)
+				r.Post("/links/{id}/collections", s.AddLinkToCollection)
+				r.Delete("/links/{id}/collections/{collectionId}", s.RemoveLinkFromCollection)
+			}
 		})
 
 		r.Group(func(r chi.Router) {

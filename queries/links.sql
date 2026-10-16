@@ -52,12 +52,57 @@ SELECT * FROM links WHERE user_id = $1 AND normalized_url = $2;
 -- Most recently saved first (created_at, not updated_at: re-saving an existing
 -- link refreshes it in place rather than moving it to the top). id breaks
 -- ties so paging is stable. COUNT(*) OVER() rides along for pagination, same
--- as ListPages.
-SELECT links.*, COUNT(*) OVER() AS total_count
+-- as ListPages. matching_page_id is the same-URL hint (an archived page with
+-- this link's normalized_url, if any), joined in here so a list needs no
+-- query per row; pages are unique per (user_id, normalized_url), so the join
+-- never multiplies a row. (A LEFT JOIN rather than a scalar subquery so sqlc
+-- types the column as nullable.)
+SELECT links.*,
+  pages.id AS matching_page_id,
+  COUNT(*) OVER() AS total_count
 FROM links
-WHERE user_id = sqlc.arg(user_id)
-ORDER BY created_at DESC, id DESC
+LEFT JOIN pages
+  ON pages.user_id = links.user_id
+  AND pages.normalized_url = links.normalized_url
+WHERE links.user_id = sqlc.arg(user_id)
+ORDER BY links.created_at DESC, links.id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: SearchLinks :many
+-- ListLinks restricted to links whose title, URL (raw or normalized) or notes
+-- contain the pattern, case-insensitively. The caller builds the pattern
+-- (already wrapped in %...% and with LIKE's own metacharacters escaped with a
+-- backslash, Postgres's default ILIKE escape). A link has no body text, so
+-- there's no full-text search to run, only this substring match; same ordering,
+-- pagination and matching_page_id as ListLinks.
+SELECT links.*,
+  pages.id AS matching_page_id,
+  COUNT(*) OVER() AS total_count
+FROM links
+LEFT JOIN pages
+  ON pages.user_id = links.user_id
+  AND pages.normalized_url = links.normalized_url
+WHERE links.user_id = sqlc.arg(user_id)
+  AND (links.title ILIKE sqlc.arg(pattern)
+    OR links.raw_url ILIKE sqlc.arg(pattern)
+    OR links.normalized_url ILIKE sqlc.arg(pattern)
+    OR links.notes ILIKE sqlc.arg(pattern))
+ORDER BY links.created_at DESC, links.id DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: GetPageIDByNormalizedURL :one
+-- The same-URL hint for a single link: the id of the user's archived page with
+-- this normalized_url, if there is one (pgx.ErrNoRows if not).
+SELECT id FROM pages WHERE user_id = $1 AND normalized_url = $2;
+
+-- name: SetLinkTitle :one
+-- A direct overwrite, not a separate title_override column, exactly as
+-- SetPageTitle: links.title is whatever the extension last saw in the live tab,
+-- and the next save of this link replaces whatever is set here.
+-- updated_at moves so the bookmark mirror picks the edit up.
+UPDATE links SET title = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
 
 -- name: SetLinkNotes :one
 -- An empty value is meaningful (clearing a note is a normal action), same as

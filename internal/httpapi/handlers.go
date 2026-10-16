@@ -40,6 +40,7 @@ import (
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
@@ -87,15 +88,19 @@ type Server struct {
 	// GetCaptureConfig to report so the dashboard can hide the Links
 	// screen when the feature is off.
 	EnableLinks bool
+
+	// LinkStore is the link favicon store the favicon route reads from; nil
+	// when links are off.
+	LinkStore *linkicons.Store
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64, enableLinks bool) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64, enableLinks bool, linkStore *linkicons.Store) *Server {
 	return &Server{
 		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
 		ReadabilityVersion: readabilityVersion, AIModel: aiModel, WorkerURL: workerURL,
 		Pipeline: pipeline, ManualUploadMaxBytes: manualUploadMaxBytes,
-		EnableLinks: enableLinks,
+		EnableLinks: enableLinks, LinkStore: linkStore,
 	}
 }
 
@@ -1403,6 +1408,11 @@ type pageDetailResponse struct {
 	Tags        []pageTagResponse        `json:"tags"`
 	Collections []pageCollectionResponse `json:"collections"`
 	Links       []pageLinkResponse       `json:"links"`
+
+	// MatchingLinkID is the same-URL hint: the id of the user's link (a
+	// bookmark-only entry, not one of Links above, which are related
+	// pages) with this page's normalized URL. Always null with links off.
+	MatchingLinkID *int64 `json:"matching_link_id"`
 }
 
 // GET /api/pages/{id}: page detail plus full capture (version) history
@@ -1459,6 +1469,19 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
 		Links:        []pageLinkResponse{},
+	}
+	if s.EnableLinks {
+		link, err := s.Queries.GetLinkByNormalizedURL(ctx, db.GetLinkByNormalizedURLParams{
+			UserID: user.ID, NormalizedUrl: page.NormalizedUrl,
+		})
+		switch {
+		case err == nil:
+			resp.MatchingLinkID = &link.ID
+		case !errors.Is(err, pgx.ErrNoRows):
+			log.Printf("warning: failed to look up the link matching page %d: %v", page.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	for i := range captures {
 		c := &captures[i]

@@ -123,6 +123,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	queueItemsClient := queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	pendingCapturesClient := pendingcaptures.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
+
+	// Only with links on; nil otherwise, and nothing then routes to it.
+	var linkStore *linkicons.Store
+	if cfg.EnableLinks {
+		linkStore = linkicons.New(cfg.LinksDir)
+	}
 	// AI enrichment is toggled off entirely via an empty AIBaseURL --
 	// cfg.AIModel itself has no such "unset" meaning of its own (a
 	// stale/leftover value there with AIBaseURL empty shouldn't be
@@ -143,7 +149,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	pipeline := urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes, cfg.EnableLinks)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes, cfg.EnableLinks, linkStore)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

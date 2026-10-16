@@ -2769,6 +2769,28 @@ This ships after v1, so existing setups must not break.
   `normalized_url`, not a stored relationship, so there is nothing to keep
   consistent. There's no conflict in having both; the user deletes whichever
   they don't want.
+- **The API** (`internal/httpapi/links.go`), all under `/api/links` and routed
+  only with the flag on (with it off every one of them 404s): `GET /api/links`
+  (newest saved first, paginated like `GET /api/pages`; `?q=` is a
+  case-insensitive substring match over title, raw and normalized URL and notes,
+  since a link has no body text to run full-text search on, with LIKE's own
+  wildcards escaped so `100%` means `100%`; every row carries
+  `matching_page_id`), `GET /api/links/{id}` (adds its tags and collections),
+  `PATCH /api/links/{id}`, `DELETE /api/links/{id}`,
+  `GET /api/links/{id}/favicon`, and `POST`/`DELETE` under `/tags` and
+  `/collections`, which follow the page equivalents exactly (the same tag and
+  collection rows, the same slug rules and the same 400/404/409 answers).
+  **`PATCH` sets the title and/or notes**, as for pages. A title is a plain
+  overwrite with no record that it was edited: the next save of the link
+  replaces it with whatever the tab says (§17b), the way a recapture replaces a
+  page's, and that is deliberate. An empty title is refused. The favicon isn't
+  editable. **`DELETE` is a pure database operation**, as for pages: the favicon
+  file is left for `gc` (§17e). The page detail response gains
+  `matching_link_id`, the other half of the same-URL hint (always null with
+  links off). These are unrelated to `/api/pages/{id}/links`, the page-to-page
+  relationship routes, and the two must stay distinct in routes, labels and
+  docs. Listing a tag's or a collection's links (`/tags/{slug}/links`,
+  `/collections/{id}/links`) waits for the undecided UX below.
 - **Wayback.** The Links page and page detail show when an entry was last
   submitted (§17i).
 - **Undecided: how links appear on the tags and collections pages.** Those pages
