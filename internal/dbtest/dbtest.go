@@ -177,6 +177,22 @@ func CreatePage(t *testing.T, pool *pgxpool.Pool, userID int64, normalizedURL st
 	return page
 }
 
+// CreateLink inserts a link for userID via the real UpsertLink query (the same
+// get-or-create ingestion itself will use), with normalizedURL doubling as the
+// raw URL. No separate cleanup: cascades away with the owning user via
+// CreateUser's cleanup.
+func CreateLink(t *testing.T, pool *pgxpool.Pool, userID int64, normalizedURL string) db.Link {
+	t.Helper()
+	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{
+		UserID:        userID,
+		RawUrl:        normalizedURL,
+		NormalizedUrl: normalizedURL,
+		Title:         pgtype.Text{String: "Test Link", Valid: true},
+	})
+	require.NoError(t, err)
+	return link
+}
+
 // CreateCapture inserts a capture for pageID via the real
 // InsertCaptureIdempotent query, then re-fetches the full row (that query
 // only returns the columns ingestion itself needs, not reader_text/etc.,

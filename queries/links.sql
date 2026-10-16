@@ -1,0 +1,74 @@
+/*
+ * recueil: self-hosted webpage bookmarker and archiver
+ * Copyright © 2026 Mario Finelli
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+-- name: UpsertLink :one
+-- Get-or-create a link by (user_id, normalized_url). Unlike a page there is no
+-- version history: saving the same URL again refreshes the one row, and the
+-- refresh is faithful to what the extension just saw in the live tab. raw_url,
+-- title and the three favicon columns are all replaced by the new values,
+-- including with NULL -- a site that has stopped serving a favicon (or a
+-- title) shouldn't keep showing the old one, the same way pages.favicon_path
+-- follows the latest capture. The favicon columns always move together. When
+-- the favicon_path changes (or goes NULL), the old file is simply no longer
+-- referenced and is left for gc to reclaim. notes are the user's own and are
+-- never touched by a save.
+INSERT INTO links (user_id, raw_url, normalized_url, title, favicon_path, favicon_size_bytes, favicon_hash)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (user_id, normalized_url) DO UPDATE
+SET raw_url = EXCLUDED.raw_url,
+    title = EXCLUDED.title,
+    favicon_path = EXCLUDED.favicon_path,
+    favicon_size_bytes = EXCLUDED.favicon_size_bytes,
+    favicon_hash = EXCLUDED.favicon_hash,
+    updated_at = NOW()
+RETURNING *;
+
+-- name: GetLinkByIDForUser :one
+-- Scoped by user_id so a caller can't fetch another user's link by guessing
+-- an id.
+SELECT * FROM links WHERE id = $1 AND user_id = $2;
+
+-- name: GetLinkByNormalizedURL :one
+-- Backs the same-URL hint between a link and an archived page, and lookups by
+-- URL generally.
+SELECT * FROM links WHERE user_id = $1 AND normalized_url = $2;
+
+-- name: ListLinks :many
+-- Most recently saved first (created_at, not updated_at: re-saving an existing
+-- link refreshes it in place rather than moving it to the top). id breaks
+-- ties so paging is stable. COUNT(*) OVER() rides along for pagination, same
+-- as ListPages.
+SELECT links.*, COUNT(*) OVER() AS total_count
+FROM links
+WHERE user_id = sqlc.arg(user_id)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
+
+-- name: SetLinkNotes :one
+-- An empty value is meaningful (clearing a note is a normal action), same as
+-- SetPageNotes.
+UPDATE links SET notes = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
+-- name: DeleteLink :execrows
+-- Cascades to link_tags and link_collections via the schema's own ON DELETE
+-- CASCADE. execrows so the caller can tell "deleted" from "didn't exist / wasn't
+-- this user's". The link's favicon file is deliberately left for gc, the same
+-- way DeletePage leaves a page's files.
+DELETE FROM links WHERE id = $1 AND user_id = $2;

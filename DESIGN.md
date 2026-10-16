@@ -1818,6 +1818,55 @@ CREATE INDEX idx_page_links_page_id_b ON page_links(page_id_b);  -- the
                                       -- efficiently; this covers the other
                                       -- half of the bidirectional OR query
 
+-- Links (§17): bookmark-only entries, their own entity rather than pages
+-- with zero captures. Not to be confused with page_links above, which are
+-- page-to-page relationships. raw_url is what was open in the tab (what the
+-- dashboard opens); normalized_url is the same urlnorm output pages use, and
+-- is what de-duplicates a link and lets the dashboard notice the same URL is
+-- also an archived page. title and the favicon come from the extension's
+-- live tab (the backend never fetches them), so all of them are nullable. The
+-- favicon's size and hash are columns here, on the link, because a link has no
+-- sub-entity (captures, for a page) to carry them: favicon_size_bytes is the
+-- on-disk size, favicon_hash the SHA-256 of the original bytes, as on
+-- captures. A re-save of the same normalized_url refreshes the one row (no
+-- version history).
+-- No separate idx_links_user_id: the unique constraint's index already
+-- serves WHERE user_id = X.
+CREATE TABLE links (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  raw_url TEXT NOT NULL,
+  normalized_url TEXT NOT NULL,
+  title TEXT,
+  favicon_path TEXT,
+  favicon_size_bytes INTEGER,
+  favicon_hash TEXT,
+  notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, normalized_url)
+);
+
+-- Tags and collections are the same rows pages use; only the membership
+-- tables are separate. No source column, unlike page_tags: a link has no body
+-- text for the AI job to read, so every link tag is manual. No user_id on
+-- either, same as page_tags/page_collections.
+CREATE TABLE link_tags (
+  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (link_id, tag_id)
+);
+CREATE INDEX idx_link_tags_tag_id ON link_tags(tag_id);
+
+CREATE TABLE link_collections (
+  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (link_id, collection_id)
+);
+CREATE INDEX idx_link_collections_collection_id
+  ON link_collections(collection_id);
+
 -- Decoupled from captures so a capture remains fully valid/browsable
 -- with zero AI enrichment ever having run. ai_summary/ai_model live on
 -- captures directly (above), not here — a nullable column already gives
@@ -2327,38 +2376,25 @@ sees no change in any existing behavior.
 **Naming.** "Links" in code, API, docs and UI. "Bookmark" already means the
 archived-pages mirror (§3j, §8), and reusing it would be confusing.
 
-**Data model sketch** (the shape is agreed; exact columns and constraint names
-are settled in the migration):
+**Data model.** The `links`, `link_tags` and `link_collections` tables are in
+§10 (migration `00014_create_links.sql`). A link has `raw_url`, `normalized_url`
+(unique per user, from the same urlnorm pipeline as pages, §9), a nullable
+`title` supplied by the extension (§17c), a favicon (`favicon_path`,
+`favicon_size_bytes`, `favicon_hash`, all nullable; they live on the link
+because it has no sub-entity like a page's captures to carry them), and nullable
+`notes`. Saving the same normalized URL again refreshes that one row, faithfully
+to what the extension just saw in the live tab: `raw_url`, `title` and the three
+favicon columns all take the new values, including `NULL`. A site that has
+stopped serving a favicon (or a title) doesn't keep showing the old one, the
+same way `pages.favicon_path` follows the latest capture; the old favicon file
+is simply no longer referenced, and gc reclaims it (§17e). The favicon columns
+always move together. `notes` are the user's own and `created_at` is the first
+save; a re-save touches neither. The queries (`queries/links.sql`,
+`link_tags.sql`, `link_collections.sql`) mirror the page equivalents.
 
-```sql
--- Postgres
-CREATE TABLE links (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  raw_url TEXT NOT NULL,
-  normalized_url TEXT NOT NULL,      -- same urlnorm pipeline as pages (§9)
-  title TEXT,                        -- client-supplied (§17c); nullable
-  favicon_path TEXT,                 -- link favicon store (§17e)
-  favicon_size_bytes INTEGER,
-  favicon_hash TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (user_id, normalized_url)   -- see "Open questions"
-);
-
-CREATE TABLE link_tags (
-  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
-  tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  PRIMARY KEY (link_id, tag_id)
-);
-
-CREATE TABLE link_collections (
-  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
-  collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-  added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (link_id, collection_id)
-);
-```
+**Not to be confused with `page_links`**, which already exists (§10) and holds
+explicit page-to-page relationships. The two are unrelated; keep the distinction
+clear in UI labels, API route names and MCP tool descriptions.
 
 - **Tags and collections are shared with pages** (working assumption, to be
   confirmed when the UX is mocked up, §17h): the existing `tags`/`collections`
@@ -2369,7 +2405,7 @@ CREATE TABLE link_collections (
 - **No jobs.** A link has no HTML, so there is no screenshot, readability or AI
   job, no `reader_text`, and no AI tags (`source` on `page_tags` has no
   equivalent here — every link tag is manual). Search over links is over title
-  and URL only.
+  and URL (and notes).
 - **No versions.** A link is one row, not a page-with-history.
 - Wayback submission state is covered in §17i.
 
@@ -2400,6 +2436,13 @@ into Postgres, writes the favicon to the link store (§17e), flags the row as
 fetched, and a cleanup sweep removes old fetched rows the way
 `pending_captures`' does (§8). Favicon selection, the "no image processing" rule
 and "best-effort, never fails the save" (§3g) apply unchanged.
+
+**Favicon transport.** A favicon is a few KB, so it travels **inline in the
+Worker request** up to a size threshold, and **falls back to the R2
+presigned-upload path** captures use (§3g) when it's larger. The common case is
+then one Worker request instead of three (the Worker's request count matters on
+Cloudflare's free tier), while an unusually large icon still can't blow past the
+Worker's request limits. The threshold is settled with the Worker piece.
 
 Ingestion should be idempotent by construction (upsert on
 `(user_id, normalized_url)`), which may make §3c's transient `source_capture_id`
@@ -2483,7 +2526,11 @@ release notes for v2 should call this out.
   `"true"` counts as enabled, so a Worker deployed without the binding reads as
   off rather than as a feature the backend might not be ingesting. This makes
   **two flags that must agree**; the operator docs say so. The extension side
-  lands with the extension action (§17c).
+  lands with the extension action (§17c). **The extension must cache this
+  config** for a while (and reuse the last known value if the Worker is
+  unreachable) rather than call `GET /config` on every popup open or capture, to
+  stay comfortably within Cloudflare's free tier; the exact lifetime and refresh
+  trigger are settled with that piece.
 
 ### 17g. Rollout compatibility
 
@@ -2611,12 +2658,9 @@ Housekeeping that should not be forgotten:
   deciding.
 - Whether tags and collections really are shared tables with pages (§17b), or
   links get their own.
-- Whether a note field exists on links (pages have `notes`), and whether links
-  get a per-entry mirror exclusion.
-- `UNIQUE (user_id, normalized_url)` on `links`, i.e. re-saving an existing link
-  updates it rather than creating a second row — assumed, not confirmed.
-- Favicon transport: through R2 with a presigned URL as in §3g, or inline in the
-  Worker request, since a favicon is tiny.
+- Whether links get a per-entry mirror exclusion like
+  `pages.excluded_from_mirror`.
+- The inline-favicon size threshold, above which the R2 fallback is used (§17c).
 - Whether `source_capture_id`-style transient idempotency (§3c) is needed for
   links at all (§17c).
 - How orphaned link favicons are reclaimed: a link-store pass in `recueil gc`
