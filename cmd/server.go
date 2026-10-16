@@ -137,7 +137,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	pipeline := urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes, cfg.EnableLinks)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

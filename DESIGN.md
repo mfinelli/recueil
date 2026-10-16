@@ -2439,7 +2439,7 @@ practice.
 
 Link favicons live in **their own store, separate from the captures archive**
 (§4), under their own configured directory and their own **bind mount**, which
-is only required when the feature is enabled (§17f).
+is required whenever the feature is enabled (§17f), which is the default.
 
 The reason is `recueil gc` (§4): it treats every file under the archive root
 that Postgres doesn't reference as garbage. Link favicons must not live where it
@@ -2458,25 +2458,32 @@ can reach them, and keeping them outside the archive root means even an old
 
 ### 17f. Feature flag
 
-The feature is **off by default**. Opting in means turning it on and updating
-`compose.yaml` to provide the new bind mount (§17e).
+The feature ships with v2 and is **on by default** (`enable_links`, default
+`true`), so a deployment that doesn't want it turns it off. Enabling it also
+needs a new bind mount for the link favicon store (§17e); the backend fails at
+startup, with an error that names both fixes (provide the store directory, or
+set `enable_links = false`), if the flag is on and the store isn't usable. The
+release notes for v2 should call this out.
 
 - **Migrations run unconditionally.** Postgres and D1 migrations are all
-  additive (§17g), so enabling the flag later needs no migration step, and a
-  deployment's schema doesn't depend on the flag.
+  additive (§17g), so the schema doesn't depend on the flag and turning it on
+  later needs no migration step.
 - **The backend gates behavior, not schema.** With the flag off: link routes
   404, the agent does no link ingestion or Wayback work, the MCP link tools
-  (§17k) aren't registered, and `GET /api/capture-config` reports the flag so
-  the dashboard hides the Links nav item. This is the same shape as
-  `ENABLE_OPEN_REGISTRATION` and `ai_base_url`.
+  (§17k) aren't registered, and `GET /api/capture-config` reports
+  `links_enabled: false` so the dashboard hides the Links nav item. This is the
+  same shape as `enable_open_registration` and `ai_base_url`. **Landed:** the
+  `enable_links` config key and the `links_enabled` field on
+  `GET /api/capture-config`; the gating itself lands with each piece it gates.
 - **The extension can't read backend config** — it only talks to the Worker
-  (§2). So the Worker needs a matching switch (a Terraform variable surfaced in
-  a Worker response the extension already reads) to show or hide the "save as
-  link" button. Without it, a device could submit links to a deployment that
-  isn't ingesting them and they would pile up in D1. This makes **two flags that
-  must agree**; the operator docs must say so.
-- The flag's exact name and the Worker-side mechanism are settled at
-  implementation time.
+  (§2). So the Worker has a matching switch: Terraform's `enable_links` variable
+  (default `true`) becomes a `LINKS_ENABLED` plain-text binding, and a
+  bearer-authenticated `GET /config` returns `{"links_enabled": <bool>}`, which
+  the extension reads to show or hide "save as link". Only the exact string
+  `"true"` counts as enabled, so a Worker deployed without the binding reads as
+  off rather than as a feature the backend might not be ingesting. This makes
+  **two flags that must agree**; the operator docs say so. The extension side
+  lands with the extension action (§17c).
 
 ### 17g. Rollout compatibility
 
@@ -2487,8 +2494,10 @@ This ships after v1, so existing setups must not break.
   table needs a data migration.
 - The backend applies D1 migrations at startup (§5b) while the Worker deploys
   separately through Terraform, so either can go first: new D1 tables are unused
-  until the flag is on, and new Worker endpoints are unused until an extension
-  calls them.
+  until something writes to them, and new Worker endpoints are unused until an
+  extension calls them. A backend upgraded before the Worker simply sees no
+  pending links; a Worker upgraded before the backend only exposes `GET /config`
+  until the extension is too.
 - An old extension ignores the new button and keeps working. An old extension
   that claims a queue item meant to become a link just does a full capture,
   which §17d already accepts.
@@ -2613,8 +2622,7 @@ Housekeeping that should not be forgotten:
 - How orphaned link favicons are reclaimed: a link-store pass in `recueil gc`
   with its own live set and the same safety rails, or synchronous deletion with
   the row, given the files are tiny.
-- The flag's name, the config key for the link store, and the Worker-side switch
-  (§17f).
+- The config key for the link store (proposed `links_dir`).
 - Where Wayback state lives for pages (a column on `pages` versus a separate
   table covering both entities), and the exact Wayback API behavior (§17i).
 - Browser bookmark import as an onboarding path, and collections as subfolders

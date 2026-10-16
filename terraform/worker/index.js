@@ -67,6 +67,9 @@
  * @property {string} R2_BUCKET_NAME
  * @property {string} R2_ACCESS_KEY_ID
  * @property {string} R2_ACCESS_KEY_SECRET
+ * @property {string} LINKS_ENABLED "true" when the links feature is on
+ *   (terraform's var.enable_links); anything else, including unset, means
+ *   off. See handleGetConfig.
  */
 
 /**
@@ -424,6 +427,9 @@ export default {
     const claimMatch = pathname.match(/^\/queue\/([^/]+)\/claim$/);
     if (method === "POST" && claimMatch) {
       return handleClaimQueueItem(request, env, ctx, claimMatch[1]);
+    }
+    if (method === "GET" && pathname === "/config") {
+      return handleGetConfig(request, env, ctx);
     }
     if (method === "GET" && pathname === "/archived-pages") {
       return handleListArchivedPages(request, env, ctx);
@@ -838,6 +844,31 @@ export async function handleListArchivedPages(request, env, ctx) {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * GET /config: the deployment's feature switches, for a paired device to read.
+ * The extension only ever talks to the Worker, so it can't learn from the
+ * backend's config whether the links feature is on. Only the exact string
+ * "true" counts as enabled, so a deployment that never set the binding at all
+ * reads as off rather than as a feature the backend might not be ingesting.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleGetConfig(request, env, ctx) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  return new Response(
+    JSON.stringify({ links_enabled: env.LINKS_ENABLED === "true" }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
 }
 
 /**

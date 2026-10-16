@@ -54,12 +54,14 @@ output "d1_database_id" {
 }
 ```
 
-Two other variables that aren't shown above but both default to `true`:
+Three other variables that aren't shown above but all default to `true`:
 `enable_browser_integrity_check_bypass` provisions a narrow WAF rule that skips
 Cloudflare's Browser Integrity Check for recueil's non-browser clients (the CLI,
 the backend itself) — harmless to leave on even if your zone doesn't have BIC
 enabled. `enable_pwa` deploys the share-sheet PWA's static assets alongside the
-Worker; turn it off if you don't want that client available.
+Worker; turn it off if you don't want that client available. `enable_links`
+controls whether the browser extension offers saving a page as a link, and
+should match the backend's `enable_links` setting.
 
 ### R2 API credentials
 

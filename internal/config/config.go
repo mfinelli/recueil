@@ -46,6 +46,13 @@ type Config struct {
 	// first admin.
 	EnableOpenRegistration bool `mapstructure:"enable_open_registration"`
 
+	// EnableLinks gates the links feature: bookmark-only entries for
+	// pages that can't be archived. Defaults to true. Turning it off
+	// leaves every link route unregistered and tells the dashboard
+	// to hide the Links screen; it doesn't affect the schema, since the
+	// migrations that add links run regardless.
+	EnableLinks bool `mapstructure:"enable_links"`
+
 	// PairingTokenKey is a base64-encoded 32-byte AES-256 key, used to
 	// reversibly encrypt/decrypt each account's pairing token for storage
 	// in Postgres. Operator-generated (e.g. `openssl rand -base64 32`);
@@ -207,6 +214,7 @@ func init() {
 	viper.SetDefault("listen_addr", ":8080")
 	viper.SetDefault("session_cookie_secure", true)
 	viper.SetDefault("enable_open_registration", false)
+	viper.SetDefault("enable_links", true)
 	viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
 	viper.SetDefault("agent_local_poll_interval_seconds", 300)
 	viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")

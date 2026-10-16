@@ -91,6 +91,17 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, 3, cfg.ScreenshotWorkerConcurrency)
 				assert.Equal(t, 3, cfg.ScreenshotMaxAttempts)
 				assert.Equal(t, int64(100<<20), cfg.ManualUploadMaxBytes)
+				assert.True(t, cfg.EnableLinks, "links default to on")
+			},
+		},
+		{
+			name: "enable_links can be turned off",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("enable_links", false)
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.EnableLinks)
 			},
 		},
 		{
@@ -162,6 +173,7 @@ func TestLoad(t *testing.T) {
 			viper.Reset()
 			viper.SetDefault("listen_addr", ":8080")
 			viper.SetDefault("session_cookie_secure", true)
+			viper.SetDefault("enable_links", true)
 			viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
 			viper.SetDefault("agent_local_poll_interval_seconds", 300)
 			viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")
