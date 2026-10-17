@@ -25,9 +25,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 
+// router is replaced by a plain object so a test can choose the page's query
+// string ("tag=rust") before rendering; push is captured for clearing a filter.
 vi.mock("svelte-spa-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("svelte-spa-router")>();
-  return { ...actual, push: vi.fn() };
+  return { ...actual, push: vi.fn(), router: { querystring: "" } };
 });
 
 vi.stubGlobal(
@@ -40,15 +42,21 @@ vi.mock("../lib/api", async (importOriginal) => {
   return { ...actual, apiJSON: vi.fn() };
 });
 
+import { push, router } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
-import type { Link } from "../lib/types";
+import type { Link, LinkListResponse } from "../lib/types";
 import Links from "./Links.svelte";
 
 const apiJSONMock = vi.mocked(apiJSON);
 
+const pushMock = vi.mocked(push);
+const mockedRouter = router as unknown as { querystring: string };
+
 afterEach(() => {
   cleanup();
   apiJSONMock.mockReset();
+  pushMock.mockClear();
+  mockedRouter.querystring = "";
   vi.useRealTimers();
 });
 
@@ -65,9 +73,14 @@ const exampleLink: Link = {
   updated_at: "2026-05-01T12:00:00Z",
 };
 
-function mockLoad(links: Link[] = [], total = links.length) {
+function mockLoad(
+  links: Link[] = [],
+  total = links.length,
+  extra: Partial<LinkListResponse> = {},
+) {
   apiJSONMock.mockImplementation((path: string) => {
-    if (path.startsWith("/links?")) return Promise.resolve({ links, total });
+    if (path.startsWith("/links?"))
+      return Promise.resolve({ links, total, ...extra });
     throw new Error(`unexpected apiJSON call: ${path}`);
   });
 }
@@ -249,5 +262,96 @@ describe("Links", () => {
       await screen.findByText("No links saved yet.");
       expect(screen.queryByRole("button", { name: /Next/ })).toBeNull();
     });
+  });
+});
+
+describe("Links: filtering by tag or collection", () => {
+  it("asks for the tag in the URL, and says so with a pill naming it", async () => {
+    mockedRouter.querystring = "tag=rust";
+    mockLoad([exampleLink], 1, { tag: { id: 4, name: "Rust", slug: "rust" } });
+    render(Links);
+
+    expect(await screen.findByText("An example video")).toBeTruthy();
+    expect(apiJSONMock).toHaveBeenCalledWith(
+      "/links?limit=50&offset=0&tag=rust",
+    );
+    expect(screen.getByText("Filtered by tag")).toBeTruthy();
+    expect(screen.getByText("Rust")).toBeTruthy();
+  });
+
+  it("asks for the collection in the URL, and names it", async () => {
+    mockedRouter.querystring = "collection=12";
+    mockLoad([exampleLink], 1, {
+      collection: { id: 12, name: "Reading list", parent_id: null },
+    });
+    render(Links);
+
+    expect(await screen.findByText("An example video")).toBeTruthy();
+    expect(apiJSONMock).toHaveBeenCalledWith(
+      "/links?limit=50&offset=0&collection=12",
+    );
+    expect(screen.getByText("Filtered by collection")).toBeTruthy();
+    expect(screen.getByText("Reading list")).toBeTruthy();
+  });
+
+  it("has no pill without a filter", async () => {
+    mockLoad([exampleLink]);
+    render(Links);
+    await screen.findByText("An example video");
+    expect(screen.queryByText(/Filtered by/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Clear filter" })).toBeNull();
+  });
+
+  it("clears the filter by going back to the unfiltered list", async () => {
+    mockedRouter.querystring = "tag=rust";
+    mockLoad([exampleLink], 1, { tag: { id: 4, name: "Rust", slug: "rust" } });
+    render(Links);
+    await screen.findByText("Rust");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Clear filter" }));
+
+    expect(pushMock).toHaveBeenCalledWith("/links");
+  });
+
+  it("keeps the filter when searching and paginating", async () => {
+    mockedRouter.querystring = "tag=rust";
+    mockLoad(
+      Array.from({ length: 50 }, (_, i) => ({
+        ...exampleLink,
+        id: i + 1,
+        title: `Link ${i + 1}`,
+      })),
+      120,
+      { tag: { id: 4, name: "Rust", slug: "rust" } },
+    );
+    render(Links);
+    await screen.findByText("Link 1");
+
+    await fireEvent.click(screen.getByRole("button", { name: /Next/ }));
+    await screen.findByText("51–100 of 120");
+    expect(apiJSONMock).toHaveBeenLastCalledWith(
+      "/links?limit=50&offset=50&tag=rust",
+    );
+  });
+
+  it("shows a filter-specific empty message, without the add-one hint", async () => {
+    mockedRouter.querystring = "tag=rust";
+    mockLoad([], 0, { tag: { id: 4, name: "Rust", slug: "rust" } });
+    render(Links);
+
+    expect(await screen.findByText("No links here yet.")).toBeTruthy();
+    expect(screen.queryByText(/Save as link/)).toBeNull();
+    expect(screen.queryByText("No links saved yet.")).toBeNull();
+    // The pill still says what is empty, and can be cleared.
+    expect(screen.getByRole("button", { name: "Clear filter" })).toBeTruthy();
+  });
+
+  it("shows the server's error, and no pill, for a tag that doesn't exist", async () => {
+    mockedRouter.querystring = "tag=gone";
+    apiJSONMock.mockRejectedValue(new ApiError(404, "tag not found"));
+    render(Links);
+
+    expect(await screen.findByText("tag not found")).toBeTruthy();
+    expect(screen.queryByText(/Filtered by/)).toBeNull();
   });
 });

@@ -239,7 +239,7 @@ describe("Tags", () => {
     );
 
     expect(confirmMock).toHaveBeenCalledWith(
-      'Delete "recipes"? It will be removed from every page that has it.',
+      'Delete "recipes"? It will be removed from every page or link that has it.',
     );
     expect(apiJSONMock).toHaveBeenCalledWith("/tags/1", { method: "DELETE" });
     expect(await screen.findByText("No tags yet.")).toBeTruthy();

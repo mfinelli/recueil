@@ -25,8 +25,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import Plus from "@lucide/svelte/icons/plus";
+  import X from "@lucide/svelte/icons/x";
+  import { push, router } from "svelte-spa-router";
   import { apiJSON, ApiError } from "../lib/api";
-  import type { Link, LinkListResponse } from "../lib/types";
+  import type {
+    Link,
+    LinkListResponse,
+    PageCollection,
+    Tag,
+  } from "../lib/types";
   import AppHeader from "../components/AppHeader.svelte";
   import LinkList from "../components/LinkList.svelte";
   import AddLinkModal from "../components/AddLinkModal.svelte";
@@ -43,6 +50,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let searchDebounce: ReturnType<typeof setTimeout> | undefined;
   let showAddModal = $state(false);
 
+  // The filter comes from the URL, not component state, so "View links" on a tag
+  // or collection screen is a plain link and the filtered view can be bookmarked
+  // or reloaded: /links?tag=rust, /links?collection=12. What it was filtered by
+  // (the tag's or collection's name, for the pill) comes back in the response.
+  const urlParams = $derived(new URLSearchParams(router.querystring ?? ""));
+  const tagParam = $derived(urlParams.get("tag") ?? "");
+  const collectionParam = $derived(urlParams.get("collection") ?? "");
+  let filterTag = $state<Tag | null>(null);
+  let filterCollection = $state<PageCollection | null>(null);
+
+  // Changing the filter starts again from the first page (a new filter reached
+  // by back/forward navigation, say, mustn't keep the old filter's offset).
+  let previousFilterKey: string | undefined;
+  $effect.pre(() => {
+    const key = `${tagParam}|${collectionParam}`;
+    if (previousFilterKey !== undefined && previousFilterKey !== key) {
+      offset = 0;
+    }
+    previousFilterKey = key;
+  });
+
   async function load() {
     loading = true;
     error = null;
@@ -56,11 +84,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         offset: String(offset),
       });
       if (query) params.set("q", query);
+      if (tagParam) params.set("tag", tagParam);
+      if (collectionParam) params.set("collection", collectionParam);
       const res = await apiJSON<LinkListResponse>(
         `/links?${params.toString()}`,
       );
       links = res.links;
       total = res.total;
+      filterTag = res.tag ?? null;
+      filterCollection = res.collection ?? null;
     } catch (err) {
       error = err instanceof ApiError ? err.message : m.links_load_error();
     } finally {
@@ -79,6 +111,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       query = value;
       offset = 0;
     }, 300);
+  }
+
+  function clearFilter() {
+    offset = 0;
+    push("/links");
   }
 
   function nextPage() {
@@ -112,6 +149,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     </button>
   </div>
 
+  {#if (tagParam && filterTag) || (collectionParam && filterCollection)}
+    <div class="filter-row">
+      <span
+        >{tagParam
+          ? m.links_filtered_by_tag()
+          : m.links_filtered_by_collection()}</span
+      >
+      <span class="filter-pill">
+        {tagParam ? filterTag?.name : filterCollection?.name}
+        <button
+          type="button"
+          class="clear-filter"
+          aria-label={m.links_clear_filter()}
+          onclick={clearFilter}
+        >
+          <X size={11} />
+        </button>
+      </span>
+    </div>
+  {/if}
+
   {#if loading}
     <p class="status-text">{m.common_loading()}</p>
   {:else if error}
@@ -124,8 +182,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {links}
       emptyMessage={query
         ? m.links_no_search_results()
-        : m.links_nothing_saved()}
-      emptyHint={query ? undefined : m.links_nothing_saved_hint()}
+        : tagParam || collectionParam
+          ? m.links_nothing_in_filter()
+          : m.links_nothing_saved()}
+      emptyHint={query || tagParam || collectionParam
+        ? undefined
+        : m.links_nothing_saved_hint()}
     />
   {/if}
 
@@ -207,6 +269,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:focus-visible {
       @include mix.focus-ring;
     }
+  }
+
+  // "Filtered by tag [rust x]", tucked up under the toolbar it qualifies.
+  .filter-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: -0.75rem 0 1.25rem;
+    font-size: 0.8125rem;
+    color: var(--ink-muted);
+  }
+
+  .filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.2rem 0.35rem 0.2rem 0.7rem;
+    border-radius: 999px;
+    background: var(--paper-raised);
+    border: 1px solid color-mix(in srgb, var(--brass) 45%, var(--rule));
+    color: var(--ink);
+    font-size: 0.78rem;
+  }
+
+  .clear-filter {
+    @include comp.icon-btn(1.1rem, rgba(0, 0, 0, 0.05));
   }
 
   .status-text {

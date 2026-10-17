@@ -240,6 +240,17 @@ lives on the detail screen. The icon link needs an accessible name that says
 where it goes ("Open {title} in a new tab"), since the glyph alone doesn't, and
 it opens with `target="_blank" rel="noreferrer"`.
 
+### A pointer line, and a filter pill (`LinkCountLine.svelte`, the Links page)
+
+A tag's or collection's links aren't a second list on its screen (the page lists
+are built around grid and list views of pages, and a link has no thumbnail).
+They're one muted line under the heading, `Link` icon, "{n} links have this
+tag." and an underlined "View links", which shows only when the count is above
+zero so a tag with no links looks exactly as it always did. "View links" opens
+the Links page filtered by it, and that page says so with a "Filtered by tag"
+row tucked up under the toolbar: the filter's name in a pill with a brass-tinted
+border (the same tint as an AI tag's) and a small clear button.
+
 ### The same-URL callout (`SameUrlHint.svelte`)
 
 A page and a link can share a normalized URL, and each detail screen says so in

@@ -71,6 +71,10 @@ export interface LinkDetail extends Link {
 export interface LinkListResponse {
   links: Link[];
   total: number;
+  // Present only when the list was filtered by ?tag= / ?collection=, naming what
+  // it was filtered by.
+  tag?: Tag;
+  collection?: PageCollection;
 }
 
 export interface CaptureSummary {
@@ -174,6 +178,9 @@ export interface TagListResponse {
 export interface TagPagesResponse {
   tag: Tag;
   pages: Page[];
+  // How many links carry the tag, for the "{n} links have this tag" line.
+  // Always 0 with links off.
+  link_count: number;
 }
 
 // POST /api/pages/{id}/tags' response -- same shape as Tag; kept as its
@@ -208,6 +215,9 @@ export interface CollectionListResponse {
 // GET /api/collections, so it would be redundant here.
 export interface CollectionPagesResponse {
   pages: Page[];
+  // How many links are directly in the collection (not its sub-collections'),
+  // for the "{n} links in this collection" line. Always 0 with links off.
+  link_count: number;
 }
 
 export interface TextSearchConfigsResponse {

@@ -41,6 +41,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 import { apiJSON, ApiError } from "../lib/api";
+import { session } from "../lib/session.svelte";
 import type { Collection, Page } from "../lib/types";
 import CollectionDetail from "./CollectionDetail.svelte";
 
@@ -94,13 +95,17 @@ const examplePage: Page = {
 function mockLoad(
   collections: Collection[],
   pagesByCollectionId: Record<number, Page[]> = {},
+  linkCountByCollectionId: Record<number, number> = {},
 ) {
   apiJSONMock.mockImplementation((path: string) => {
     if (path === "/collections") return Promise.resolve({ collections });
     const match = /^\/collections\/(\d+)\/pages$/.exec(path);
     if (match) {
       const id = Number(match[1]);
-      return Promise.resolve({ pages: pagesByCollectionId[id] ?? [] });
+      return Promise.resolve({
+        pages: pagesByCollectionId[id] ?? [],
+        link_count: linkCountByCollectionId[id] ?? 0,
+      });
     }
     throw new Error(`unexpected apiJSON call: ${path}`);
   });
@@ -227,5 +232,64 @@ describe("CollectionDetail", () => {
       name: /All collections/,
     })) as HTMLAnchorElement;
     expect(back.getAttribute("href")).toBe("#/collections");
+  });
+});
+
+describe("CollectionDetail: the links line", () => {
+  afterEach(() => {
+    session.linksEnabled = false;
+  });
+
+  it("says how many links are directly in the collection, with a link to them by id", async () => {
+    session.linksEnabled = true;
+    mockLoad([cooking, recipes], { 2: [examplePage] }, { 2: 4 });
+    render(CollectionDetail, { params: { wild: "cooking/recipes" } });
+
+    expect(await screen.findByText("4 links in this collection.")).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "View links" }).getAttribute("href"),
+    ).toBe("#/links?collection=2");
+  });
+
+  it("sits between the description and the sub-collections", async () => {
+    session.linksEnabled = true;
+    mockLoad([cooking, recipes], {}, { 1: 2 });
+    render(CollectionDetail, { params: { wild: "cooking" } });
+
+    const line = await screen.findByText("2 links in this collection.");
+    const description = screen.getByText("Recipes and kitchen notes.");
+    const sub = screen.getByText("Sub-collections");
+    expect(
+      description.compareDocumentPosition(line) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      line.compareDocumentPosition(sub) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("uses the singular for one link", async () => {
+    session.linksEnabled = true;
+    mockLoad([cooking], {}, { 1: 1 });
+    render(CollectionDetail, { params: { wild: "cooking" } });
+    expect(await screen.findByText("1 link in this collection.")).toBeTruthy();
+  });
+
+  it("is absent with no links, or with links off", async () => {
+    session.linksEnabled = true;
+    mockLoad([cooking], {}, { 1: 0 });
+    const { unmount } = render(CollectionDetail, {
+      params: { wild: "cooking" },
+    });
+    await screen.findByRole("heading", { name: "Cooking" });
+    expect(screen.queryByRole("link", { name: "View links" })).toBeNull();
+    unmount();
+    cleanup();
+
+    session.linksEnabled = false;
+    mockLoad([cooking], {}, { 1: 5 });
+    render(CollectionDetail, { params: { wild: "cooking" } });
+    await screen.findByRole("heading", { name: "Cooking" });
+    expect(screen.queryByRole("link", { name: "View links" })).toBeNull();
   });
 });

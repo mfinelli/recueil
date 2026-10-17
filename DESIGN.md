@@ -2838,11 +2838,12 @@ stages; each says what has landed.
   collection count is direct links only, like its page list). It opens
   `/links?tag={slug}` or `/links?collection={id}`, where the Links page shows a
   "Filtered by tag/collection" pill with a clear button. A tag used only by
-  links keeps "No pages have this tag yet." with the count line above it. This
-  needs link counts on the tag and collection detail responses and
-  `tag`/`collection` filters on `GET /api/links`, and the delete-confirmation
-  copy ("removed from every page that has it") has to say "page or link".
-  **Planned.**
+  links keeps "No pages have this tag yet." with the count line above it
+  (`LinkCountLine.svelte`; the filter reads `router.querystring`, so a filtered
+  view can be bookmarked or reloaded, and the pill's name comes back in the
+  response). The delete confirmations say "page or link" (tags) and "pages and
+  links are kept" (collections), since deleting either only removes the
+  membership. **Landed.**
 - **Wayback** (stage 3, §17i) gets an "Internet Archive" block directly above
   the actions row on both detail screens. Never submitted: "Not submitted to the
   Wayback Machine.", a "Check for existing snapshots" link and a "Submit to
