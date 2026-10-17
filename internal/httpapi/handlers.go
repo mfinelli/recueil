@@ -1411,8 +1411,11 @@ type pageDetailResponse struct {
 
 	// MatchingLinkID is the same-URL hint: the id of the user's link (a
 	// bookmark-only entry, not one of Links above, which are related
-	// pages) with this page's normalized URL. Always null with links off.
-	MatchingLinkID *int64 `json:"matching_link_id"`
+	// pages) with this page's normalized URL, and MatchingLinkTitle that
+	// link's title (null if it has none), so the callout can name it without
+	// fetching the link. Both are always null if links are off.
+	MatchingLinkID    *int64  `json:"matching_link_id"`
+	MatchingLinkTitle *string `json:"matching_link_title"`
 }
 
 // GET /api/pages/{id}: page detail plus full capture (version) history
@@ -1477,6 +1480,7 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case err == nil:
 			resp.MatchingLinkID = &link.ID
+			resp.MatchingLinkTitle = textOrNil(link.Title)
 		case !errors.Is(err, pgx.ErrNoRows):
 			log.Printf("warning: failed to look up the link matching page %d: %v", page.ID, err)
 			writeError(w, http.StatusInternalServerError, "internal error")

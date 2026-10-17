@@ -157,10 +157,15 @@ func (s *Server) ListLinks(w http.ResponseWriter, r *http.Request) {
 // linkDetailResponse embeds linkResponse so its fields flatten into the same
 // top-level JSON object as "tags" and "collections", as pageDetailResponse
 // does. Tags carry no source: every link tag is a manual one.
+//
+// MatchingPageTitle is the matching page's title (null if there's no matching
+// page, or the page has none), so the detail screen's same-URL callout can name
+// it without fetching the page. A list row doesn't need it and doesn't carry it.
 type linkDetailResponse struct {
 	linkResponse
-	Tags        []tagResponse            `json:"tags"`
-	Collections []pageCollectionResponse `json:"collections"`
+	MatchingPageTitle *string                  `json:"matching_page_title"`
+	Tags              []tagResponse            `json:"tags"`
+	Collections       []pageCollectionResponse `json:"collections"`
 }
 
 // parseLinkID reads {id} from the URL, writing the 400 itself on failure.
@@ -189,10 +194,10 @@ func (s *Server) linkForUser(w http.ResponseWriter, r *http.Request, id, userID 
 	return link, true
 }
 
-// matchingPageID is the same-URL hint for one link: the id of the user's
-// archived page with the same normalized URL, nil if there isn't one.
-func (s *Server) matchingPageID(r *http.Request, userID int64, normalizedURL string) (*int64, error) {
-	id, err := s.Queries.GetPageIDByNormalizedURL(r.Context(), db.GetPageIDByNormalizedURLParams{
+// matchingPage is the same-URL hint for one link: the user's archived page with
+// the same normalized URL (its id and title), nil if there isn't one.
+func (s *Server) matchingPage(r *http.Request, userID int64, normalizedURL string) (*db.GetPageRefByNormalizedURLRow, error) {
+	ref, err := s.Queries.GetPageRefByNormalizedURL(r.Context(), db.GetPageRefByNormalizedURLParams{
 		UserID: userID, NormalizedUrl: normalizedURL,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -201,7 +206,7 @@ func (s *Server) matchingPageID(r *http.Request, userID int64, normalizedURL str
 	if err != nil {
 		return nil, err
 	}
-	return &id, nil
+	return &ref, nil
 }
 
 // GET /api/links/{id}: one link, with its tags, collections and same-URL hint.
@@ -221,7 +226,7 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 
-	pageID, err := s.matchingPageID(r, user.ID, link.NormalizedUrl)
+	page, err := s.matchingPage(r, user.ID, link.NormalizedUrl)
 	if err != nil {
 		log.Printf("warning: failed to look up the page matching link %d: %v", link.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -240,10 +245,17 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var pageID *int64
+	var pageTitle *string
+	if page != nil {
+		pageID = &page.ID
+		pageTitle = textOrNil(page.Title)
+	}
 	resp := linkDetailResponse{
-		linkResponse: linkResponseFromLink(&link, pageID),
-		Tags:         []tagResponse{},
-		Collections:  []pageCollectionResponse{},
+		linkResponse:      linkResponseFromLink(&link, pageID),
+		MatchingPageTitle: pageTitle,
+		Tags:              []tagResponse{},
+		Collections:       []pageCollectionResponse{},
 	}
 	for _, t := range tags {
 		resp.Tags = append(resp.Tags, tagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug})

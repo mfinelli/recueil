@@ -2846,10 +2846,14 @@ stages; each says what has landed.
   editable. **`DELETE` is a pure database operation**, as for pages: the favicon
   file is left for `gc` (§17e). The page detail response gains
   `matching_link_id`, the other half of the same-URL hint (always null with
-  links off). These are unrelated to `/api/pages/{id}/links`, the page-to-page
-  relationship routes, and the two must stay distinct in routes, labels and
-  docs. Listing a tag's or a collection's links (`/tags/{slug}/links`,
-  `/collections/{id}/links`) waits for the undecided UX below.
+  links off). Each detail response also carries the other entity's title
+  (`matching_page_title` on a link, `matching_link_title` on a page, null when
+  it has none), so the same-URL callout can name it without a second request;
+  list rows carry only the id. These are unrelated to `/api/pages/{id}/links`,
+  the page-to-page relationship routes, and the two must stay distinct in
+  routes, labels and docs. Listing a tag's or a collection's links
+  (`/tags/{slug}/links`, `/collections/{id}/links`) waits for the undecided UX
+  below.
 
 ### 17i. Wayback Machine submission
 

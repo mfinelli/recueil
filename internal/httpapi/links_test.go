@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/httplog/v2"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -100,7 +101,8 @@ type linkListBody struct {
 
 type linkDetailBody struct {
 	linkBody
-	Tags []struct {
+	MatchingPageTitle *string `json:"matching_page_title"`
+	Tags              []struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 		Slug string `json:"slug"`
@@ -279,11 +281,30 @@ func TestGetLink(t *testing.T) {
 		assert.Equal(t, "Detail", *got.Title)
 		require.NotNil(t, got.MatchingPageID)
 		assert.Equal(t, page.ID, *got.MatchingPageID)
+		require.NotNil(t, got.MatchingPageTitle)
+		assert.Equal(t, "Test Page", *got.MatchingPageTitle, "the callout names the page")
 		require.Len(t, got.Tags, 1)
 		assert.Equal(t, "video", got.Tags[0].Name)
 		require.Len(t, got.Collections, 1)
 		assert.Equal(t, "Watch", got.Collections[0].Name)
 		assert.Nil(t, got.Collections[0].ParentID)
+	})
+
+	t.Run("a matching page with no title has a null title, not an empty one", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		page, err := q.UpsertPage(context.Background(), db.UpsertPageParams{
+			UserID: user.ID, NormalizedUrl: "https://example.com/untitled-page",
+			LatestCaptureAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
+		})
+		require.NoError(t, err)
+		link := saveLink(t, pool, user.ID, "https://example.com/untitled-page", "Titled link")
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/links/%d", link.ID), sessionCookieFor(t, pool, &user))
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		got := decodeBody[linkDetailBody](t, resp)
+		require.NotNil(t, got.MatchingPageID)
+		assert.Equal(t, page.ID, *got.MatchingPageID)
+		assert.Nil(t, got.MatchingPageTitle)
 	})
 
 	t.Run("a link with nothing attached has empty arrays, not null", func(t *testing.T) {
@@ -296,6 +317,7 @@ func TestGetLink(t *testing.T) {
 		assert.Contains(t, string(body), `"collections":[]`)
 		assert.Contains(t, string(body), `"title":null`)
 		assert.Contains(t, string(body), `"matching_page_id":null`)
+		assert.Contains(t, string(body), `"matching_page_title":null`)
 	})
 
 	t.Run("404s a link that isn't the caller's, or doesn't exist", func(t *testing.T) {
@@ -725,7 +747,8 @@ func TestPageDetail_MatchingLinkID(t *testing.T) {
 	pool := dbtest.Setup(t)
 
 	type pageDetail struct {
-		MatchingLinkID *int64 `json:"matching_link_id"`
+		MatchingLinkID    *int64  `json:"matching_link_id"`
+		MatchingLinkTitle *string `json:"matching_link_title"`
 	}
 
 	t.Run("points at the link with the same normalized URL", func(t *testing.T) {
@@ -739,6 +762,22 @@ func TestPageDetail_MatchingLinkID(t *testing.T) {
 		got := decodeBody[pageDetail](t, resp)
 		require.NotNil(t, got.MatchingLinkID)
 		assert.Equal(t, link.ID, *got.MatchingLinkID)
+		require.NotNil(t, got.MatchingLinkTitle)
+		assert.Equal(t, "Both", *got.MatchingLinkTitle, "the callout names the link")
+	})
+
+	t.Run("a matching link with no title has a null title", func(t *testing.T) {
+		server, _ := newLinksTestServer(t, pool, true)
+		user := dbtest.CreateUser(t, pool, "member")
+		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/untitled-link")
+		link := saveLink(t, pool, user.ID, "https://example.com/untitled-link", "")
+
+		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), sessionCookieFor(t, pool, &user))
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		got := decodeBody[pageDetail](t, resp)
+		require.NotNil(t, got.MatchingLinkID)
+		assert.Equal(t, link.ID, *got.MatchingLinkID)
+		assert.Nil(t, got.MatchingLinkTitle)
 	})
 
 	t.Run("is null without a matching link, or when the link is another user's", func(t *testing.T) {
@@ -750,7 +789,9 @@ func TestPageDetail_MatchingLinkID(t *testing.T) {
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), sessionCookieFor(t, pool, &user))
 		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Nil(t, decodeBody[pageDetail](t, resp).MatchingLinkID)
+		got := decodeBody[pageDetail](t, resp)
+		assert.Nil(t, got.MatchingLinkID)
+		assert.Nil(t, got.MatchingLinkTitle)
 	})
 
 	t.Run("is always null with links off, even if a link row exists", func(t *testing.T) {
@@ -761,7 +802,9 @@ func TestPageDetail_MatchingLinkID(t *testing.T) {
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", page.ID), sessionCookieFor(t, pool, &user))
 		require.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Nil(t, decodeBody[pageDetail](t, resp).MatchingLinkID)
+		got := decodeBody[pageDetail](t, resp)
+		assert.Nil(t, got.MatchingLinkID)
+		assert.Nil(t, got.MatchingLinkTitle)
 	})
 }
 

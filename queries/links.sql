@@ -90,10 +90,12 @@ WHERE links.user_id = sqlc.arg(user_id)
 ORDER BY links.created_at DESC, links.id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
--- name: GetPageIDByNormalizedURL :one
--- The same-URL hint for a single link: the id of the user's archived page with
--- this normalized_url, if there is one (pgx.ErrNoRows if not).
-SELECT id FROM pages WHERE user_id = $1 AND normalized_url = $2;
+-- name: GetPageRefByNormalizedURL :one
+-- The same-URL hint for a single link: the id and title of the user's archived
+-- page with this normalized_url, if there is one (pgx.ErrNoRows if not). The
+-- title rides along so the link's detail screen can name the page in its
+-- callout without a second request.
+SELECT id, title FROM pages WHERE user_id = $1 AND normalized_url = $2;
 
 -- name: SetLinkTitle :one
 -- A direct overwrite, not a separate title_override column, exactly as
