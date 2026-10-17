@@ -183,7 +183,7 @@ func CreatePage(t *testing.T, pool *pgxpool.Pool, userID int64, normalizedURL st
 // CreateUser's cleanup.
 func CreateLink(t *testing.T, pool *pgxpool.Pool, userID int64, normalizedURL string) db.Link {
 	t.Helper()
-	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{
+	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
 		UserID:        userID,
 		RawUrl:        normalizedURL,
 		NormalizedUrl: normalizedURL,

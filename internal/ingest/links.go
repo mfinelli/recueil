@@ -32,6 +32,15 @@ import (
 	"github.com/mfinelli/recueil/internal/urlnorm"
 )
 
+// The values of links.source (and the API's "source" field): where a link's
+// current title and favicon came from. Everything LinkIngester ingests was read
+// from a live browser tab by the extension; a link typed into the dashboard's
+// Add link form is "manual" (see internal/httpapi).
+const (
+	LinkSourceExtension = "extension"
+	LinkSourceManual    = "manual"
+)
+
 // defaultLinkBatchLimit bounds how many links one LinkIngester.RunOnce call
 // processes -- the Worker's POST /internal/pending-links default, which is
 // smaller than the captures one because a row can carry an inline favicon.
@@ -165,6 +174,7 @@ func (l *LinkIngester) processOne(ctx context.Context, pl *pendinglinks.PendingL
 		// turn a transient failure into losing data. (A save that declared
 		// none, below, is the legitimate way a favicon goes away.)
 		_, err = l.queries.UpsertLinkKeepingFavicon(ctx, db.UpsertLinkKeepingFaviconParams{
+			Source:        LinkSourceExtension,
 			UserID:        pl.UserID,
 			RawUrl:        pl.URL,
 			NormalizedUrl: normalizedURL,
@@ -175,6 +185,7 @@ func (l *LinkIngester) processOne(ctx context.Context, pl *pendinglinks.PendingL
 		// a site that stopped serving a favicon stops showing the old one.
 		present := outcome == faviconStored
 		_, err = l.queries.UpsertLink(ctx, db.UpsertLinkParams{
+			Source:           LinkSourceExtension,
 			UserID:           pl.UserID,
 			RawUrl:           pl.URL,
 			NormalizedUrl:    normalizedURL,

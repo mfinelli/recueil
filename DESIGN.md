@@ -1862,8 +1862,10 @@ CREATE TABLE links (
   favicon_size_bytes INTEGER,
   favicon_hash TEXT,
   notes TEXT,
+  source TEXT NOT NULL DEFAULT 'extension',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT links_source_check CHECK (source IN ('extension', 'manual')),
   UNIQUE (user_id, normalized_url)
 );
 
@@ -2438,16 +2440,22 @@ archived-pages mirror (§3j, §8), and reusing it would be confusing.
 (unique per user, from the same urlnorm pipeline as pages, §9), a nullable
 `title` supplied by the extension (§17c), a favicon (`favicon_path`,
 `favicon_size_bytes`, `favicon_hash`, all nullable; they live on the link
-because it has no sub-entity like a page's captures to carry them), and nullable
-`notes`. Saving the same normalized URL again refreshes that one row, faithfully
-to what the extension just saw in the live tab: `raw_url`, `title` and the three
-favicon columns all take the new values, including `NULL`. A site that has
-stopped serving a favicon (or a title) doesn't keep showing the old one, the
-same way `pages.favicon_path` follows the latest capture; the old favicon file
-is simply no longer referenced, and gc reclaims it (§17e). The favicon columns
-always move together. `notes` are the user's own and `created_at` is the first
-save; a re-save touches neither. The queries (`queries/links.sql`,
-`link_tags.sql`, `link_collections.sql`) mirror the page equivalents.
+because it has no sub-entity like a page's captures to carry them), nullable
+`notes`, and a `source`: where the current title and favicon came from, as
+`captures.source` is for a capture, `extension` (read from a live browser tab)
+or `manual` (typed into the Add link form, §17h; not `manual_upload` as on
+captures, since nothing is uploaded). Saving the same normalized URL again
+refreshes that one row, faithfully to what the extension just saw in the live
+tab: `raw_url`, `title` and the three favicon columns all take the new values,
+including `NULL`. A site that has stopped serving a favicon (or a title) doesn't
+keep showing the old one, the same way `pages.favicon_path` follows the latest
+capture; the old favicon file is simply no longer referenced, and gc reclaims it
+(§17e). The favicon columns always move together, and `source` follows the
+latest save too, so a manually added link saved again from the browser becomes
+an `extension` link (its title and favicon now come from the tab). `notes` are
+the user's own and `created_at` is the first save; a re-save touches neither.
+The queries (`queries/links.sql`, `link_tags.sql`, `link_collections.sql`)
+mirror the page equivalents.
 
 **Not to be confused with `page_links`**, which already exists (§10) and holds
 explicit page-to-page relationships. The two are unrelated; keep the distinction
@@ -2481,9 +2489,9 @@ dashboard falls back to the URL and the existing `Globe` icon.
 
 **Adding from a phone, Shortcut or CLI** is unchanged: those only enqueue a URL
 (§8), and the user later picks, in the desktop extension, whether to capture it
-or save it as a link (§17d). A link added without ever visiting it in a desktop
-browser is not a supported shape, since there would be nothing to take the title
-or favicon from.
+or save it as a link (§17d). A link can also be added by hand in the dashboard
+(§17h), with a title and favicon typed or picked there; that route talks to the
+backend directly, and recueil still never fetches a title or favicon itself.
 
 **Transport** follows the existing pattern in §3/§8, since the extension only
 ever talks to the Worker. A bearer-token `POST /links` writes a row to a new D1
@@ -2803,11 +2811,24 @@ stages; each says what has landed.
 - **Adding a link by hand.** An "Add link" button in the toolbar opens a modal
   copied from the manual-upload one: URL (required), title (optional) and
   favicon (optional, `.svg`/`.png`/`.ico`), with the note that recueil never
-  visits the page itself, so a title and icon are only there if given. It needs
-  its own backend route that bypasses the Worker, like
-  `POST /api/manual-upload`, which supersedes §17c's "not a supported shape" for
-  a link added without a desktop visit; that text is rewritten when this lands.
-  **Planned.**
+  visits the page itself, so a title and icon are only there if given. On
+  success it goes to the new link's screen, as an upload goes to the page. **The
+  route is `POST /api/links`**, JSON, in the ordinary `/api` group: unlike
+  `POST /api/manual-upload`, which takes a whole archived page and so needs its
+  own multipart mount and a far larger limit, a favicon is small enough to
+  travel as base64 (`favicon_ext` plus `favicon_data`, the extension's own two
+  fields) within that group's 1 MiB limit, capped at 512 KB raw (a `413` beyond
+  that), several times any real favicon. (A multipart `POST /api/links` would
+  also have shadowed the group's `GET /api/links`.) It normalizes the URL with
+  the same pipeline, stores the title as given (blank is none, cut at 4096
+  characters) and the favicon in the link store (best-effort, as for manual
+  upload), fetches nothing, and records `source = manual`. **It is
+  create-only:** a URL that's already a link is a `409` carrying the existing
+  link's id and changes nothing, because an extension save refreshes a link (and
+  clears a missing title or favicon: the site has none) but here "none given"
+  means "I didn't provide one", and a refresh would silently wipe the existing
+  link's. A page with the same URL is no conflict. **API landed; the modal is
+  planned.** The detail screen will label a manual link "added manually".
 - **Tags and collections** show a one-line count above the page list rather than
   a second list: "{n} links have this tag." or "{n} links in this collection."
   with a "View links" link, only when n > 0 and the feature is on (the
@@ -2835,7 +2856,8 @@ stages; each says what has landed.
   case-insensitive substring match over title, raw and normalized URL and notes,
   since a link has no body text to run full-text search on, with LIKE's own
   wildcards escaped so `100%` means `100%`; every row carries
-  `matching_page_id`), `GET /api/links/{id}` (adds its tags and collections),
+  `matching_page_id`), `POST /api/links` (add by hand, below),
+  `GET /api/links/{id}` (adds its tags and collections),
   `PATCH /api/links/{id}`, `DELETE /api/links/{id}`,
   `GET /api/links/{id}/favicon`, and `POST`/`DELETE` under `/tags` and
   `/collections`, which follow the page equivalents exactly (the same tag and

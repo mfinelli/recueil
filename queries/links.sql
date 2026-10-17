@@ -26,16 +26,30 @@
 -- follows the latest capture. The favicon columns always move together. When
 -- the favicon_path changes (or goes NULL), the old file is simply no longer
 -- referenced and is left for gc to reclaim. notes are the user's own and are
--- never touched by a save.
-INSERT INTO links (user_id, raw_url, normalized_url, title, favicon_path, favicon_size_bytes, favicon_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+-- never touched by a save. source follows the latest save too (it says where
+-- the current title and favicon came from).
+INSERT INTO links (user_id, raw_url, normalized_url, title, favicon_path, favicon_size_bytes, favicon_hash, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 ON CONFLICT (user_id, normalized_url) DO UPDATE
 SET raw_url = EXCLUDED.raw_url,
     title = EXCLUDED.title,
     favicon_path = EXCLUDED.favicon_path,
     favicon_size_bytes = EXCLUDED.favicon_size_bytes,
     favicon_hash = EXCLUDED.favicon_hash,
+    source = EXCLUDED.source,
     updated_at = NOW()
+RETURNING *;
+
+-- name: CreateLinkIfAbsent :one
+-- The create-only counterpart of UpsertLink, for adding a link by hand: if the
+-- user already has a link for this normalized_url nothing is written and no row
+-- comes back (pgx.ErrNoRows), so the caller can refuse with a 409 instead of
+-- overwriting what's there. An extension save refreshes an existing link; a
+-- manual add must not, because "no title or favicon given" there means "I
+-- didn't provide one", not "the site has none", and a refresh would wipe them.
+INSERT INTO links (user_id, raw_url, normalized_url, title, favicon_path, favicon_size_bytes, favicon_hash, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (user_id, normalized_url) DO NOTHING
 RETURNING *;
 
 -- name: GetLinkByIDForUser :one
@@ -135,10 +149,11 @@ SELECT favicon_path::text AS path FROM links WHERE favicon_path IS NOT NULL;
 -- with no favicon clears the old one) is for a site that stopped serving one;
 -- this is a transient failure on our side, and it must not turn into losing a
 -- favicon the link already had.
-INSERT INTO links (user_id, raw_url, normalized_url, title)
-VALUES ($1, $2, $3, $4)
+INSERT INTO links (user_id, raw_url, normalized_url, title, source)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (user_id, normalized_url) DO UPDATE
 SET raw_url = EXCLUDED.raw_url,
     title = EXCLUDED.title,
+    source = EXCLUDED.source,
     updated_at = NOW()
 RETURNING *;

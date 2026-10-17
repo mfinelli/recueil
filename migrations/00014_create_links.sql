@@ -27,6 +27,16 @@
 -- title and the favicon are supplied by the extension from the live tab so
 -- they must be nullable.
 --
+-- source is where the link's current title and favicon came from, as
+-- captures.source is for a capture: 'extension' (read from a live browser tab,
+-- the only thing that ever completes a saved link from a device) or 'manual'
+-- (typed into the dashboard's Add link form). Because a re-save refreshes the
+-- one row, it's the source of the LATEST save: a manually added link saved
+-- again from the browser becomes 'extension', since its title and favicon now
+-- come from the tab. (Adding a URL by hand that already exists is refused, not
+-- a refresh, so a manual save never overwrites anything.) Not 'manual_upload'
+-- as on captures: nothing is uploaded here.
+--
 -- The unique constraint's index already serves "WHERE user_id = X", so
 -- unlike pages there is no separate idx_links_user_id.
 CREATE TABLE links (
@@ -39,9 +49,11 @@ CREATE TABLE links (
   favicon_size_bytes INTEGER,
   favicon_hash TEXT,
   notes TEXT,
+  source TEXT NOT NULL DEFAULT 'extension',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT links_pkey PRIMARY KEY (id),
+  CONSTRAINT links_source_check CHECK (source IN ('extension', 'manual')),
   CONSTRAINT links_user_id_fkey FOREIGN KEY (user_id)
     REFERENCES users(id) ON DELETE CASCADE,
   CONSTRAINT links_user_id_normalized_url_key UNIQUE (user_id, normalized_url)

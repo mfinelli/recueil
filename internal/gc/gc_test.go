@@ -400,7 +400,7 @@ func linkWithFavicon(t *testing.T, pool *pgxpool.Pool, links *linkicons.Store, r
 	fav, err := links.Write(data, "png")
 	require.NoError(t, err)
 	backdate(t, root, fav.Path)
-	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{
+	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
 		UserID:           userID,
 		RawUrl:           url,
 		NormalizedUrl:    url,
@@ -492,7 +492,7 @@ func TestRunner_RunLinks_ClearedFaviconIsReclaimed(t *testing.T) {
 	url := "https://example.com/gc-cleared"
 
 	_, fav := linkWithFavicon(t, pool, links, root, user.ID, url, []byte("it used to have one"))
-	_, err := db.New(pool).UpsertLink(ctx, db.UpsertLinkParams{UserID: user.ID, RawUrl: url, NormalizedUrl: url})
+	_, err := db.New(pool).UpsertLink(ctx, db.UpsertLinkParams{Source: "extension", UserID: user.ID, RawUrl: url, NormalizedUrl: url})
 	require.NoError(t, err)
 
 	runner := gc.NewRunner(gc.RunnerParams{Queries: db.New(pool), Store: archive.New(t.TempDir()), LinkStore: links.Archive()})

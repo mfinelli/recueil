@@ -49,12 +49,15 @@ import (
 // normalized URL, if there is one. Always null on a response that came from a
 // write rather than a read of the full row's context.
 type linkResponse struct {
-	ID             int64     `json:"id"`
-	RawURL         string    `json:"raw_url"`
-	NormalizedURL  string    `json:"normalized_url"`
-	Title          *string   `json:"title"`
-	FaviconPath    *string   `json:"favicon_path"`
-	Notes          *string   `json:"notes"`
+	ID            int64   `json:"id"`
+	RawURL        string  `json:"raw_url"`
+	NormalizedURL string  `json:"normalized_url"`
+	Title         *string `json:"title"`
+	FaviconPath   *string `json:"favicon_path"`
+	Notes         *string `json:"notes"`
+	// Source is where the link's current title and favicon came from:
+	// "extension" or "manual" (ingest.LinkSource*), as a capture's source is.
+	Source         string    `json:"source"`
 	MatchingPageID *int64    `json:"matching_page_id"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
@@ -63,7 +66,7 @@ type linkResponse struct {
 func linkResponseFromLink(l *db.Link, matchingPageID *int64) linkResponse {
 	return linkResponse{
 		ID: l.ID, RawURL: l.RawUrl, NormalizedURL: l.NormalizedUrl,
-		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes),
+		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source,
 		MatchingPageID: int8OrNil(pgtype.Int8{Int64: derefInt64(matchingPageID), Valid: matchingPageID != nil}),
 		CreatedAt:      l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time,
 	}
@@ -72,7 +75,7 @@ func linkResponseFromLink(l *db.Link, matchingPageID *int64) linkResponse {
 func linkResponseFromListRow(l *db.ListLinksRow) linkResponse {
 	return linkResponse{
 		ID: l.ID, RawURL: l.RawUrl, NormalizedURL: l.NormalizedUrl,
-		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes),
+		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source,
 		MatchingPageID: int8OrNil(l.MatchingPageID),
 		CreatedAt:      l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time,
 	}
@@ -81,7 +84,7 @@ func linkResponseFromListRow(l *db.ListLinksRow) linkResponse {
 func linkResponseFromSearchRow(l *db.SearchLinksRow) linkResponse {
 	return linkResponse{
 		ID: l.ID, RawURL: l.RawUrl, NormalizedURL: l.NormalizedUrl,
-		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes),
+		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source,
 		MatchingPageID: int8OrNil(l.MatchingPageID),
 		CreatedAt:      l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time,
 	}

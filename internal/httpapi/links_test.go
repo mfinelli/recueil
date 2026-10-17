@@ -91,6 +91,7 @@ type linkBody struct {
 	Title          *string `json:"title"`
 	FaviconPath    *string `json:"favicon_path"`
 	Notes          *string `json:"notes"`
+	Source         string  `json:"source"`
 	MatchingPageID *int64  `json:"matching_page_id"`
 }
 
@@ -116,7 +117,7 @@ type linkDetailBody struct {
 
 func saveLink(t *testing.T, pool *pgxpool.Pool, userID int64, url, title string) db.Link {
 	t.Helper()
-	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{
+	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
 		UserID: userID, RawUrl: url, NormalizedUrl: url,
 		Title: pgtype.Text{String: title, Valid: title != ""},
 	})
@@ -451,7 +452,7 @@ func TestDeleteLink(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		fav, err := store.Write([]byte("icon"), "png")
 		require.NoError(t, err)
-		link, err := q.UpsertLink(context.Background(), db.UpsertLinkParams{
+		link, err := q.UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
 			UserID: user.ID, RawUrl: "https://example.com/doomed", NormalizedUrl: "https://example.com/doomed",
 			FaviconPath: pgtype.Text{String: fav.Path, Valid: true},
 		})
@@ -502,7 +503,7 @@ func TestGetLinkFavicon(t *testing.T) {
 	withFavicon := func(t *testing.T, userID int64, url, ext string, data []byte) db.Link {
 		fav, err := store.Write(data, ext)
 		require.NoError(t, err)
-		link, err := q.UpsertLink(context.Background(), db.UpsertLinkParams{
+		link, err := q.UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
 			UserID: userID, RawUrl: url, NormalizedUrl: url,
 			FaviconPath: pgtype.Text{String: fav.Path, Valid: true},
 		})
@@ -817,6 +818,7 @@ func TestLinksRoutes_AreNotRoutedWithLinksOff(t *testing.T) {
 
 	for _, tc := range []struct{ method, path string }{
 		{http.MethodGet, "/api/links"},
+		{http.MethodPost, "/api/links"},
 		{http.MethodGet, fmt.Sprintf("/api/links/%d", link.ID)},
 		{http.MethodPatch, fmt.Sprintf("/api/links/%d", link.ID)},
 		{http.MethodDelete, fmt.Sprintf("/api/links/%d", link.ID)},

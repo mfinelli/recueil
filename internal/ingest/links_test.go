@@ -171,6 +171,7 @@ func TestLinkIngester_RunOnce_InlineFavicon(t *testing.T) {
 	l := e.link("https://example.com/page?id=42")
 	assert.Equal(t, e.user.ID, l.UserID)
 	assert.Equal(t, "https://example.com/page?utm_source=newsletter&id=42", l.RawUrl, "raw_url is what was open in the tab")
+	assert.Equal(t, "extension", l.Source, "everything a device saves was read from a browser tab")
 	assert.Equal(t, "  An Example  ", l.Title.String, "the title is stored as the device sent it")
 	assert.Equal(t, sha256Hex(icon), l.FaviconHash.String)
 	assert.Equal(t, int32(len(icon)), l.FaviconSizeBytes.Int32)
@@ -618,4 +619,38 @@ func TestLinkIngester_RunOnce_AFaviconBodyThatFailsMidReadStillSavesTheLink(t *t
 
 	assert.False(t, e.link("https://example.com/reset").FaviconPath.Valid)
 	assert.Equal(t, []string{"link-1"}, e.worker.fetched)
+}
+
+// A link typed into the dashboard has a source of "manual"; saving it again
+// from the browser replaces its title and favicon with what the tab says, so
+// from then on that is where they came from.
+func TestLinkIngester_RunOnce_AnExtensionSaveOfAManualLinkBecomesAnExtensionLink(t *testing.T) {
+	e := newLinkEnv(t)
+	url := "https://example.com/manual-then-extension"
+	manual, err := e.queries.CreateLinkIfAbsent(context.Background(), db.CreateLinkIfAbsentParams{
+		UserID: e.user.ID, RawUrl: url, NormalizedUrl: url,
+		Title: pgtype.Text{String: "Typed by hand", Valid: true}, Source: ingest.LinkSourceManual,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "manual", manual.Source)
+
+	e.worker.pending = []pendinglinks.PendingLink{
+		{ID: "link-1", UserID: e.user.ID, URL: url, Title: strp("From the tab"), SavedAt: "2026-07-12T12:00:00.000Z"},
+	}
+	require.NoError(t, e.run())
+
+	l := e.link(url)
+	assert.Equal(t, manual.ID, l.ID)
+	assert.Equal(t, "extension", l.Source)
+	assert.Equal(t, "From the tab", l.Title.String)
+}
+
+func TestLinkIngester_RunOnce_AFailedFaviconKeepsTheLinkAnExtensionLink(t *testing.T) {
+	e := newLinkEnv(t)
+	e.worker.pending = []pendinglinks.PendingLink{{
+		ID: "link-1", UserID: e.user.ID, URL: "https://example.com/keep-source", SavedAt: "2026-07-12T12:00:00.000Z",
+		FaviconExt: strp("png"), R2KeyFavicon: strp("pending-links/1/link-1/favicon.png"),
+	}}
+	require.NoError(t, e.run())
+	assert.Equal(t, "extension", e.link("https://example.com/keep-source").Source)
 }
