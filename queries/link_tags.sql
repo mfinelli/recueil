@@ -40,3 +40,9 @@ FROM link_tags
 JOIN links ON links.id = link_tags.link_id
 WHERE link_tags.tag_id = $1
 ORDER BY links.created_at DESC, links.id DESC;
+
+-- name: CountTagLinks :one
+-- How many links carry a given tag, for the tag screen's "{n} links have this
+-- tag" line. The caller has already checked the tag belongs to the user, and
+-- tags are per-user, so every link_tags row for it is theirs.
+SELECT COUNT(*) FROM link_tags WHERE tag_id = $1;

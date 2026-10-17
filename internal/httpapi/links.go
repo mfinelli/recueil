@@ -97,9 +97,14 @@ func derefInt64(p *int64) int64 {
 	return *p
 }
 
+// linkListResponse is a page of links. Tag and Collection are present only when
+// the list was filtered by them (GET /api/links?tag=&collection=), naming what it
+// was filtered by so the dashboard can say so without another request.
 type linkListResponse struct {
-	Links []linkResponse `json:"links"`
-	Total int64          `json:"total"`
+	Links      []linkResponse          `json:"links"`
+	Total      int64                   `json:"total"`
+	Tag        *tagResponse            `json:"tag,omitempty"`
+	Collection *pageCollectionResponse `json:"collection,omitempty"`
 }
 
 // escapeLike escapes the three characters that mean something to LIKE/ILIKE
@@ -125,11 +130,53 @@ func (s *Server) ListLinks(w http.ResponseWriter, r *http.Request) {
 
 	resp := linkListResponse{Links: []linkResponse{}}
 
+	// ?tag= (a slug) and ?collection= (an id) narrow the list; each must be the
+	// caller's own, or it's a 404, as GET /api/tags/{slug}/pages and
+	// /api/collections/{id}/pages are. Combined with ?q= and with each other they
+	// all apply at once.
+	var tagID, collectionID pgtype.Int8
+	if slug := r.URL.Query().Get("tag"); slug != "" {
+		tag, err := s.Queries.GetTagBySlug(ctx, db.GetTagBySlugParams{Slug: slug, UserID: user.ID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "tag not found")
+			return
+		}
+		if err != nil {
+			log.Printf("warning: failed to look up tag %q for user %d: %v", slug, user.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		tagID = pgtype.Int8{Int64: tag.ID, Valid: true}
+		resp.Tag = &tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug}
+	}
+	if raw := r.URL.Query().Get("collection"); raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid collection id")
+			return
+		}
+		collection, err := s.Queries.GetCollectionByID(ctx, db.GetCollectionByIDParams{ID: id, UserID: user.ID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "collection not found")
+			return
+		}
+		if err != nil {
+			log.Printf("warning: failed to look up collection %d for user %d: %v", id, user.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		collectionID = pgtype.Int8{Int64: collection.ID, Valid: true}
+		resp.Collection = &pageCollectionResponse{
+			ID: collection.ID, Name: collection.Name, ParentID: int8OrNil(collection.ParentID),
+		}
+	}
+
 	if q := strings.TrimSpace(r.URL.Query().Get("q")); q != "" {
 		rows, err := s.Queries.SearchLinks(ctx, db.SearchLinksParams{
 			UserID:  user.ID,
 			Pattern: pgtype.Text{String: "%" + escapeLike(q) + "%", Valid: true},
-			Limit:   limit, Offset: offset,
+			TagID:   tagID, CollectionID: collectionID,
+			Limit: limit, Offset: offset,
 		})
 		if err != nil {
 			log.Printf("warning: failed to search links for user %d: %v", user.ID, err)
@@ -144,7 +191,9 @@ func (s *Server) ListLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.Queries.ListLinks(ctx, db.ListLinksParams{UserID: user.ID, Limit: limit, Offset: offset})
+	rows, err := s.Queries.ListLinks(ctx, db.ListLinksParams{
+		UserID: user.ID, TagID: tagID, CollectionID: collectionID, Limit: limit, Offset: offset,
+	})
 	if err != nil {
 		log.Printf("warning: failed to list links for user %d: %v", user.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")

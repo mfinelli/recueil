@@ -2877,9 +2877,14 @@ stages; each says what has landed.
   it has none), so the same-URL callout can name it without a second request;
   list rows carry only the id. These are unrelated to `/api/pages/{id}/links`,
   the page-to-page relationship routes, and the two must stay distinct in
-  routes, labels and docs. Listing a tag's or a collection's links
-  (`/tags/{slug}/links`, `/collections/{id}/links`) waits for the undecided UX
-  below.
+  routes, labels and docs. A tag's or a collection's links are listed by
+  filtering rather than by their own routes: `GET /api/links` also takes `?tag=`
+  (a slug) and `?collection=` (an id, direct links only, like a collection's
+  page list), each of which must be the caller's own (a `404` otherwise) and
+  which apply together with `?q=` and with each other, and the response then
+  names what it was filtered by (`tag`, `collection`). The tag and collection
+  page lists (`GET /api/tags/{slug}/pages`, `GET /api/collections/{id}/pages`)
+  gain `link_count` for their count line (always 0 with links off).
 
 ### 17i. Wayback Machine submission
 

@@ -2393,14 +2393,26 @@ func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
+	// How many links carry the tag, for the screen's "{n} links have this
+	// tag" line. Always 0 with links off.
+	var linkCount int64
+	if s.EnableLinks {
+		linkCount, err = s.Queries.CountTagLinks(ctx, tag.ID)
+		if err != nil {
+			log.Printf("warning: failed to count links for tag %d: %v", tag.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
 	// Includes the tag itself, not just its pages -- the caller (the
 	// TagDetail dashboard screen) needs the tag's name for its own
 	// heading and has no other endpoint that would give it that
 	// alongside the pages in one round trip. GetTagByID's own result is
 	// already in hand from the existence check above, so this is free.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tag":   tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
-		"pages": resp,
+		"tag":        tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
+		"pages":      resp,
+		"link_count": linkCount,
 	})
 }
 
@@ -2666,7 +2678,26 @@ func (s *Server) ListCollectionPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
+	// How many links are directly in the collection (not its sub-collections',
+	// like its pages), for the screen's "{n} links in this collection" line.
+	// Always 0 with links off.
+	var linkCount int64
+	if s.EnableLinks {
+		linkCount, err = s.Queries.CountCollectionLinks(ctx, id)
+		if err != nil {
+			log.Printf("warning: failed to count links for collection %d: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, collectionPagesResponse{Pages: resp, LinkCount: linkCount})
+}
+
+// collectionPagesResponse is GET /api/collections/{id}/pages: the pages directly
+// in a collection, and how many links are.
+type collectionPagesResponse struct {
+	Pages     []pageResponse `json:"pages"`
+	LinkCount int64          `json:"link_count"`
 }
 
 type addPageToCollectionRequest struct {

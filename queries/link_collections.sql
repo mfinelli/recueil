@@ -42,3 +42,10 @@ FROM link_collections
 JOIN links ON links.id = link_collections.link_id
 WHERE link_collections.collection_id = $1
 ORDER BY links.created_at DESC, links.id DESC;
+
+-- name: CountCollectionLinks :one
+-- How many links are directly in a given collection (not its sub-collections,
+-- like ListCollectionLinks and the collection's page list), for the collection
+-- screen's "{n} links in this collection" line. The caller has already checked
+-- the collection belongs to the user.
+SELECT COUNT(*) FROM link_collections WHERE collection_id = $1;

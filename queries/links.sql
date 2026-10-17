@@ -66,7 +66,11 @@ SELECT * FROM links WHERE user_id = $1 AND normalized_url = $2;
 -- Most recently saved first (created_at, not updated_at: re-saving an existing
 -- link refreshes it in place rather than moving it to the top). id breaks
 -- ties so paging is stable. COUNT(*) OVER() rides along for pagination, same
--- as ListPages. matching_page_id is the same-URL hint (an archived page with
+-- as ListPages. tag_id and collection_id, when set, narrow the list to links
+-- carrying that tag / directly in that collection (a collection's own links, not
+-- its sub-collections', like its page list); both together are ANDed, and the
+-- caller has already checked they belong to the user. matching_page_id is the
+-- same-URL hint (an archived page with
 -- this link's normalized_url, if any), joined in here so a list needs no
 -- query per row; pages are unique per (user_id, normalized_url), so the join
 -- never multiplies a row. (A LEFT JOIN rather than a scalar subquery so sqlc
@@ -79,6 +83,14 @@ LEFT JOIN pages
   ON pages.user_id = links.user_id
   AND pages.normalized_url = links.normalized_url
 WHERE links.user_id = sqlc.arg(user_id)
+  AND (sqlc.narg(tag_id)::bigint IS NULL
+    OR EXISTS (SELECT 1 FROM link_tags
+      WHERE link_tags.link_id = links.id
+        AND link_tags.tag_id = sqlc.narg(tag_id)::bigint))
+  AND (sqlc.narg(collection_id)::bigint IS NULL
+    OR EXISTS (SELECT 1 FROM link_collections
+      WHERE link_collections.link_id = links.id
+        AND link_collections.collection_id = sqlc.narg(collection_id)::bigint))
 ORDER BY links.created_at DESC, links.id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
@@ -101,6 +113,14 @@ WHERE links.user_id = sqlc.arg(user_id)
     OR links.raw_url ILIKE sqlc.arg(pattern)
     OR links.normalized_url ILIKE sqlc.arg(pattern)
     OR links.notes ILIKE sqlc.arg(pattern))
+  AND (sqlc.narg(tag_id)::bigint IS NULL
+    OR EXISTS (SELECT 1 FROM link_tags
+      WHERE link_tags.link_id = links.id
+        AND link_tags.tag_id = sqlc.narg(tag_id)::bigint))
+  AND (sqlc.narg(collection_id)::bigint IS NULL
+    OR EXISTS (SELECT 1 FROM link_collections
+      WHERE link_collections.link_id = links.id
+        AND link_collections.collection_id = sqlc.narg(collection_id)::bigint))
 ORDER BY links.created_at DESC, links.id DESC
 LIMIT sqlc.arg('limit') OFFSET sqlc.arg('offset');
 
