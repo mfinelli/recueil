@@ -37,6 +37,7 @@ const exampleLink: Link = {
   title: "An example video",
   favicon_path: "ab/cd/id/favicon.png",
   notes: null,
+  source: "extension",
   matching_page_id: null,
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",

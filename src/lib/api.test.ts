@@ -146,6 +146,38 @@ describe("apiJSON", () => {
       message: "Bad Gateway",
     });
   });
+
+  it("keeps the parsed error body as details, for errors that carry more than a message", async () => {
+    mockFetchOnce(
+      new Response(
+        JSON.stringify({
+          error: "this URL is already saved as a link",
+          link_id: 7,
+        }),
+        { status: 409 },
+      ),
+    );
+
+    const err = await apiJSON("/links", { method: "POST", body: {} }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).message).toBe(
+      "this URL is already saved as a link",
+    );
+    expect((err as ApiError).details).toEqual({
+      error: "this URL is already saved as a link",
+      link_id: 7,
+    });
+  });
+
+  it("has null details when the error body isn't a JSON object", async () => {
+    for (const body of ["<html>nope</html>", "[1,2]", '"just a string"']) {
+      mockFetchOnce(new Response(body, { status: 500, statusText: "Oops" }));
+      const err = (await apiJSON("/x").catch((e: unknown) => e)) as ApiError;
+      expect(err.details).toBeNull();
+    }
+  });
 });
 
 describe("uploadManualCapture", () => {

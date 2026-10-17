@@ -34,8 +34,8 @@ import (
 	"github.com/mfinelli/recueil/internal/ingest"
 )
 
-// Adding a link by hand: the dashboard's Add link form, the counterpart of 
-// POST /api/manual-upload for pages. Recueil never visits a page itself, so 
+// Adding a link by hand: the dashboard's Add link form, the counterpart of
+// POST /api/manual-upload for pages. Recueil never visits a page itself, so
 // a link added this way has only what the person typed: a URL, and optionally
 // a title and a favicon file.
 

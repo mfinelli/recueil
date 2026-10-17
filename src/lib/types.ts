@@ -48,6 +48,11 @@ export interface Link {
   title: string | null;
   favicon_path: string | null;
   notes: string | null;
+  // Where the link's current title and favicon came from, as a capture's source
+  // is: "extension" (read from a browser tab) or "manual" (typed into the Add
+  // link form). Follows the latest save, so a manual link saved again from the
+  // browser becomes "extension".
+  source: "extension" | "manual";
   matching_page_id: number | null;
   created_at: string;
   updated_at: string;

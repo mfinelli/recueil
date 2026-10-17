@@ -59,6 +59,7 @@ const exampleLink: Link = {
   title: "An example video",
   favicon_path: null,
   notes: null,
+  source: "extension",
   matching_page_id: null,
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",
@@ -93,6 +94,18 @@ describe("Links", () => {
     );
     expect(screen.getByLabelText("Search")).toBeTruthy();
     expect(screen.getByPlaceholderText("Search your links…")).toBeTruthy();
+  });
+
+  it("opens the Add link form from the toolbar, beside the search box", async () => {
+    mockLoad([exampleLink]);
+    render(Links);
+    await screen.findByText("An example video");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Add link" }));
+
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Add a link" })).toBeTruthy();
   });
 
   it("has no view toggle: a link has no thumbnail, so there is only a list", async () => {

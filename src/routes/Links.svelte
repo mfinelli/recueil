@@ -24,10 +24,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
+  import Plus from "@lucide/svelte/icons/plus";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Link, LinkListResponse } from "../lib/types";
   import AppHeader from "../components/AppHeader.svelte";
   import LinkList from "../components/LinkList.svelte";
+  import AddLinkModal from "../components/AddLinkModal.svelte";
   import { m } from "../paraglide/messages";
 
   const PAGE_SIZE = 50;
@@ -39,6 +41,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let loading = $state(true);
   let error = $state<string | null>(null);
   let searchDebounce: ReturnType<typeof setTimeout> | undefined;
+  let showAddModal = $state(false);
 
   async function load() {
     loading = true;
@@ -103,6 +106,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         aria-label={m.library_search_label()}
       />
     </div>
+    <button type="button" onclick={() => (showAddModal = true)}>
+      <Plus size={14} />
+      {m.links_add_button()}
+    </button>
   </div>
 
   {#if loading}
@@ -142,6 +149,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     </div>
   {/if}
 </main>
+
+<AddLinkModal bind:open={showAddModal} />
 
 <style lang="scss">
   @use "../styles/typography" as type;

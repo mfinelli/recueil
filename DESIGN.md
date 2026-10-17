@@ -2827,8 +2827,11 @@ stages; each says what has landed.
   link's id and changes nothing, because an extension save refreshes a link (and
   clears a missing title or favicon: the site has none) but here "none given"
   means "I didn't provide one", and a refresh would silently wipe the existing
-  link's. A page with the same URL is no conflict. **API landed; the modal is
-  planned.** The detail screen will label a manual link "added manually".
+  link's. A page with the same URL is no conflict. On a `409` the form says so
+  and offers to open the existing link. The detail screen labels a manual link
+  "added manually" beside its source URL (a link saved from the browser says
+  nothing), the way a capture's "manual upload" label does; the word avoids
+  "upload", since nothing is uploaded. **Landed.**
 - **Tags and collections** show a one-line count above the page list rather than
   a second list: "{n} links have this tag." or "{n} links in this collection."
   with a "View links" link, only when n > 0 and the feature is on (the

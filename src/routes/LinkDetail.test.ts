@@ -91,6 +91,7 @@ const baseLink: LinkDetail = {
   title: "An example video",
   favicon_path: null,
   notes: null,
+  source: "extension",
   matching_page_id: null,
   matching_page_title: null,
   created_at: "2026-05-01T12:00:00Z",
@@ -203,6 +204,18 @@ describe("LinkDetail", () => {
       await screen.findByRole("heading", { name: "An example video" });
       await fireEvent.error(container.querySelector(".favicon") as Element);
       expect(container.querySelector(".favicon")).toBeNull();
+    });
+
+    it("says a manually added link was added manually, and a browser-saved one says nothing", async () => {
+      const { unmount } = render42({ link: { ...baseLink, source: "manual" } });
+      await screen.findByRole("heading", { name: "An example video" });
+      expect(screen.getByText("added manually")).toBeTruthy();
+      unmount();
+      cleanup();
+
+      render42();
+      await screen.findByRole("heading", { name: "An example video" });
+      expect(screen.queryByText("added manually")).toBeNull();
     });
 
     it("has none of a page's captures, recapture, AI, linked-pages or mirror controls", async () => {

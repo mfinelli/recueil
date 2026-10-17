@@ -387,6 +387,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         target="_blank"
         rel="noreferrer">{detail.raw_url}<ExternalLink size={12} /></a
       >
+      {#if detail.source === "manual"}
+        <span class="source-note">{m.linkdetail_added_manually()}</span>
+      {/if}
     </div>
 
     {#if detail.matching_page_id !== null}
@@ -722,6 +725,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:focus-visible {
       @include mix.focus-ring;
     }
+  }
+
+  // Where the title and favicon came from, when it isn't a browser tab: the
+  // same small mono, muted treatment as a capture's "manual upload" label.
+  .source-note {
+    @include type.data-mono;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
   }
 
   section {
