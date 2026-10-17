@@ -53,6 +53,16 @@ export interface Link {
   updated_at: string;
 }
 
+// GET /api/links/{id}: the link plus its tags (no source, unlike a page's: every
+// link tag is a manual one) and collections, flattened into one object like
+// PageDetail. matching_page_title is the title of the page matching
+// matching_page_id (null if there's none, or it has none).
+export interface LinkDetail extends Link {
+  matching_page_title: string | null;
+  tags: Tag[];
+  collections: PageCollection[];
+}
+
 export interface LinkListResponse {
   links: Link[];
   total: number;
@@ -133,6 +143,12 @@ export interface PageDetail extends Page {
   tags: PageTag[];
   collections: PageCollection[];
   links: PageLink[];
+  // The same-URL hint: the user's link (a bookmark-only entry, not one of
+  // `links` above, which are related pages) with this page's normalized URL,
+  // and its title (null if it has none). Both null when there's no such link,
+  // and always with links off.
+  matching_link_id: number | null;
+  matching_link_title: string | null;
 }
 
 // GET /api/tags' item shape -- also what the rename/delete-adjacent

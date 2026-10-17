@@ -2792,13 +2792,14 @@ stages; each says what has landed.
   pencil (hint: "Saving this link again from your browser replaces the title."),
   a source row (`raw_url` and an external-link icon), the same-URL callout,
   Tags, Collections, Notes, the Internet Archive block (stage 3) and an actions
-  row with Delete link only. No mirror-exclusion toggle (§17m). **Planned.**
+  row with Delete link only. No mirror-exclusion toggle (§17m). **Landed.**
 - **Same-URL hint.** A one-line callout under the source row on both detail
   screens: "This URL is also archived as a page: {title}" and "This URL is also
   saved as a link: {title}". It is a read-time join on `normalized_url`, not a
   stored relationship, so there is nothing to keep consistent, and having both
   is no conflict: the user deletes whichever they don't want. Page detail reads
-  `matching_link_id`. **Planned.**
+  `matching_link_id`, and both screens get the other entity's title from the
+  same response (`SameUrlHint.svelte`, shared). **Landed.**
 - **Adding a link by hand.** An "Add link" button in the toolbar opens a modal
   copied from the manual-upload one: URL (required), title (optional) and
   favicon (optional, `.svg`/`.png`/`.ico`), with the note that recueil never

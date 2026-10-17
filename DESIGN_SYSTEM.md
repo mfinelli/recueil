@@ -240,6 +240,17 @@ lives on the detail screen. The icon link needs an accessible name that says
 where it goes ("Open {title} in a new tab"), since the glyph alone doesn't, and
 it opens with `target="_blank" rel="noreferrer"`.
 
+### The same-URL callout (`SameUrlHint.svelte`)
+
+A page and a link can share a normalized URL, and each detail screen says so in
+one muted line on a `--paper-raised` card under the source row, naming the other
+and linking to it ("This URL is also archived as a page: {title}" on a link's
+screen with the `Archive` icon, "This URL is also saved as a link: {title}" on a
+page's with `Link`). It's one shared component so the two stay identical. The
+title comes in the same API response as the id, and falls back to the URL when
+the other entity has none. In a list row the same fact is only a small non-link
+marker, since a link can't nest in the row's own link.
+
 ### A `title` attribute alone isn't enough for a meaningful icon
 
 `Devices`' per-device type icon (Puzzle/Terminal/Zap/AppWindow, one of four

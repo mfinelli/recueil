@@ -57,6 +57,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     collectionNamePath as namePathIn,
   } from "../lib/collections";
   import AppHeader from "../components/AppHeader.svelte";
+  import SameUrlHint from "../components/SameUrlHint.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -616,6 +617,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         rel="noreferrer">{page.normalized_url}<ExternalLink size={12} /></a
       >
     </div>
+
+    {#if page.matching_link_id !== null}
+      <SameUrlHint
+        kind="link"
+        id={page.matching_link_id}
+        title={page.matching_link_title ?? page.normalized_url}
+      />
+    {/if}
 
     {#if actionError}
       <p class="status error" role="alert">

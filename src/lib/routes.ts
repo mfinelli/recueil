@@ -38,6 +38,7 @@ import Login from "../routes/Login.svelte";
 import Register from "../routes/Register.svelte";
 import Library from "../routes/Library.svelte";
 import Links from "../routes/Links.svelte";
+import LinkDetail from "../routes/LinkDetail.svelte";
 import PageDetail from "../routes/PageDetail.svelte";
 import Collections from "../routes/Collections.svelte";
 import CollectionDetail from "../routes/CollectionDetail.svelte";
@@ -122,6 +123,13 @@ const routes: RouteDefinition = new Map([
   [
     "/links",
     wrap({ component: Links, conditions: [requireAuth, requireLinksEnabled] }),
+  ],
+  [
+    "/links/:id",
+    wrap({
+      component: LinkDetail,
+      conditions: [requireAuth, requireLinksEnabled],
+    }),
   ],
   ["/pages/:id", wrap({ component: PageDetail, conditions: [requireAuth] })],
   ["/collections", wrap({ component: Collections, conditions: [requireAuth] })],
