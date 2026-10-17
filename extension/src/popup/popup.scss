@@ -150,6 +150,31 @@ form > button[type="submit"]:hover,
   margin: 22px 0 30px;
 }
 
+/* "Save as link": deliberately an ordinary text link, not a second button --
+   the lesser, occasional action under the one the popup is opened for. */
+.save-link {
+  display: block;
+  margin-top: 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+
+  &:hover {
+    color: var(--accent);
+  }
+
+  &[hidden] {
+    display: none;
+  }
+
+  &[aria-disabled="true"] {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+}
+
 #capture-status,
 #queue-status {
   margin-top: 20px;

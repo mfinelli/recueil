@@ -55,7 +55,38 @@ export async function setConfig(config) {
 }
 
 export async function clearConfig() {
+  // The feature cache belongs to the instance this config paired with, so it
+  // goes with it.
   await browser.storage.local.remove(STORAGE_KEY);
+  await browser.storage.local.remove(LINK_FEATURE_CACHE_KEY);
+}
+
+const LINK_FEATURE_CACHE_KEY = "recueil:link-features";
+
+/**
+ * What the Worker's GET /config last said about the links feature, cached
+ * so the popup and every save don't each cost a Worker request just to
+ * learn whether a feature is on.
+ * @typedef {Object} LinkFeatureCache
+ * @property {string} workerBaseURL - the instance this was fetched from; a
+ *   cache from another instance (the device re-paired elsewhere) is ignored
+ * @property {boolean} linksEnabled
+ * @property {number} faviconInlineMaxBytes - the largest favicon the Worker
+ *   accepts inline; anything larger goes through R2
+ * @property {string} fetchedAt - ISO timestamp of the last successful fetch
+ */
+
+/** @returns {Promise<LinkFeatureCache|null>} */
+export async function getLinkFeatureCache() {
+  const stored = await browser.storage.local.get(LINK_FEATURE_CACHE_KEY);
+  return /** @type {LinkFeatureCache|null} */ (
+    stored[LINK_FEATURE_CACHE_KEY] ?? null
+  );
+}
+
+/** @param {LinkFeatureCache} cache */
+export async function setLinkFeatureCache(cache) {
+  await browser.storage.local.set({ [LINK_FEATURE_CACHE_KEY]: cache });
 }
 
 // A separate key from STORAGE_KEY above, this is in-progress form state

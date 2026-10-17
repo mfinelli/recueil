@@ -35,6 +35,8 @@ import {
   PAIR_DEVICE,
   GET_AUTH_STATE,
   CAPTURE_ACTIVE_TAB,
+  SAVE_ACTIVE_TAB_AS_LINK,
+  GET_LINKS_ENABLED,
   UNPAIR_DEVICE,
   GET_QUEUE_LIST,
   REFRESH_QUEUE_LIST,
@@ -271,6 +273,29 @@ function renderPairedView({ workerBaseURL, deviceName }) {
     handleCaptureClick(captureButton),
   );
   captureBlock.append(captureButton);
+
+  // "Save as link": a plain link under the prominent capture button, not a
+  // second button -- saving a link is the lesser, occasional action (for what
+  // can't be archived well), and shouldn't compete with the one the popup is
+  // opened for. Hidden until the background confirms links are on for this
+  // instance (a cached answer, so this is almost always instant), and it shares
+  // the capture button's status line below, since only one runs at a time.
+  const saveLink = document.createElement("a");
+  saveLink.href = "#";
+  saveLink.className = "save-link";
+  saveLink.hidden = true;
+  saveLink.textContent = t("saveAsLinkLink");
+  saveLink.addEventListener("click", (event) => {
+    event.preventDefault();
+    handleSaveLinkClick(captureButton, saveLink);
+  });
+  captureBlock.append(saveLink);
+  browser.runtime
+    .sendMessage({ type: GET_LINKS_ENABLED })
+    .then((enabled) => {
+      saveLink.hidden = enabled !== true;
+    })
+    .catch(() => {});
 
   const status = document.createElement("div");
   status.id = "capture-status";
@@ -542,7 +567,11 @@ async function handleCaptureClick(captureButton) {
   const status = /** @type {HTMLElement} */ (
     document.getElementById("capture-status")
   );
+  // Only one of capture and save-as-link runs at a time: the other is held off
+  // while this one is in flight.
+  const saveLink = document.querySelector(".save-link");
   captureButton.disabled = true;
+  saveLink?.setAttribute("aria-disabled", "true");
   status.className = "status status--pending";
   status.textContent = t("capturing");
 
@@ -555,6 +584,39 @@ async function handleCaptureClick(captureButton) {
     status.textContent = error instanceof Error ? error.message : String(error);
   } finally {
     captureButton.disabled = false;
+    saveLink?.removeAttribute("aria-disabled");
+  }
+}
+
+/**
+ * @param {HTMLButtonElement} captureButton
+ * @param {HTMLAnchorElement} saveLink
+ */
+async function handleSaveLinkClick(captureButton, saveLink) {
+  // A link, not a button, so it has no disabled state of its own: this is the
+  // guard against a second click (or a click during a capture) doing a second
+  // save.
+  if (saveLink.getAttribute("aria-disabled") === "true") {
+    return;
+  }
+  const status = /** @type {HTMLElement} */ (
+    document.getElementById("capture-status")
+  );
+  captureButton.disabled = true;
+  saveLink.setAttribute("aria-disabled", "true");
+  status.className = "status status--pending";
+  status.textContent = t("savingLink");
+
+  try {
+    await browser.runtime.sendMessage({ type: SAVE_ACTIVE_TAB_AS_LINK });
+    status.className = "status status--success";
+    status.textContent = t("linkSaved");
+  } catch (error) {
+    status.className = "status status--error";
+    status.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    captureButton.disabled = false;
+    saveLink.removeAttribute("aria-disabled");
   }
 }
 

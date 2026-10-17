@@ -35,6 +35,11 @@ import { registerFrameTreeRelay } from "./frame-tree-relay.js";
 import { pair, getAuthState, unpair } from "./auth.js";
 import { captureActiveTab, runCaptureInject } from "./capture.js";
 import {
+  saveActiveTabAsLink,
+  getLinksEnabled,
+  refreshLinkFeatures,
+} from "./link.js";
+import {
   refreshQueueList,
   registerQueueRefreshAlarm,
   claimQueueItem,
@@ -61,6 +66,8 @@ import {
   GET_BOOKMARK_SYNC_STATE,
   ENABLE_BOOKMARK_SYNC,
   DISABLE_BOOKMARK_SYNC,
+  SAVE_ACTIVE_TAB_AS_LINK,
+  GET_LINKS_ENABLED,
 } from "../common/messages.js";
 
 registerFetchRelay();
@@ -81,6 +88,9 @@ registerBookmarkSyncAlarm();
 browser.runtime.onStartup.addListener(() => {
   refreshQueueList().catch(() => {});
   syncBookmarks().catch(() => {});
+  // Once per browser start, so the day-long cache of the Worker's links config
+  // never leaves a switched feature unnoticed for long (see link-config.js).
+  refreshLinkFeatures().catch(() => {});
 });
 browser.runtime.onInstalled.addListener(() => {
   refreshQueueList().catch(() => {});
@@ -148,6 +158,10 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
       return enableBookmarkSync();
     case DISABLE_BOOKMARK_SYNC:
       return disableBookmarkSync();
+    case SAVE_ACTIVE_TAB_AS_LINK:
+      return saveActiveTabAsLink();
+    case GET_LINKS_ENABLED:
+      return getLinksEnabled();
     default:
       return undefined;
   }
@@ -167,6 +181,7 @@ globalThis.__recueilPair = pair;
 globalThis.__recueilUnpair = unpair;
 globalThis.__recueilAuthState = getAuthState;
 globalThis.__recueilCapture = captureActiveTab;
+globalThis.__recueilSaveLink = saveActiveTabAsLink;
 globalThis.__recueilRefreshQueue = refreshQueueList;
 globalThis.__recueilClaimQueueItem = claimQueueItem;
 

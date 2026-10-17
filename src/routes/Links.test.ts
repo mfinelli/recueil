@@ -27,9 +27,24 @@ import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 
 // router is replaced by a plain object so a test can choose the page's query
 // string ("tag=rust") before rendering; push is captured for clearing a filter.
+//
+// The object needs more than querystring: svelte-spa-router's entry file IS
+// Router.svelte, and its `active` action (which AppHeader uses, so it runs in
+// every test here) imports `router` from that same module and reads
+// router.loc.location in an effect. Replacing `router` replaces that import too,
+// so without a `loc` the effect throws an uncaught TypeError that fails the run
+// even though every test passes.
 vi.mock("svelte-spa-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("svelte-spa-router")>();
-  return { ...actual, push: vi.fn(), router: { querystring: "" } };
+  return {
+    ...actual,
+    push: vi.fn(),
+    router: {
+      querystring: "",
+      location: "/links",
+      loc: { location: "/links", querystring: "" },
+    },
+  };
 });
 
 vi.stubGlobal(

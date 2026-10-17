@@ -75,6 +75,22 @@
     "message": "Saved",
     "description": "Capture button status after a successful capture."
   },
+  "saveAsLinkLink": {
+    "message": "Save as link",
+    "description": "Plain link under the capture button that saves the current tab as a link (its URL, title and icon) instead of archiving it."
+  },
+  "savingLink": {
+    "message": "Saving link…",
+    "description": "Status while a link save is in progress."
+  },
+  "linkSaved": {
+    "message": "Link saved",
+    "description": "Status after a link was saved successfully."
+  },
+  "linksDisabledError": {
+    "message": "recueil: saving links is turned off on this instance",
+    "description": "Error when a link save is attempted but the recueil instance has the links feature disabled."
+  },
   "unpairLink": {
     "message": "Forget this device",
     "description": "Link that unpairs this device from the recueil instance."

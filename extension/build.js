@@ -125,6 +125,10 @@ async function buildAll() {
       outfile: "capture-inject.js",
     });
     await buildBundle(browser, {
+      entry: "./src/capture-inject/link-entry.js",
+      outfile: "link-inject.js",
+    });
+    await buildBundle(browser, {
       entry: "./src/popup/popup.js",
       outfile: "popup.js",
     });

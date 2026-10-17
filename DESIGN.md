@@ -458,11 +458,11 @@ pipeline so deferred for now (§16).
 **Capture is a two-step injection.** `scripting.executeScript` first loads the
 capture bundle as a file (a `func`-injected function can't import anything
 itself, so the bundle has to land as a global first), then a second call invokes
-it and returns the result. Background, the capture bundle, and the popup are
-three separate esbuild entry points — different contexts (service worker,
-content-script world, extension page) loading at different times, so bundling
-them together would mean the largest thing in the build (`single-file-core`)
-parses on every service-worker wake for no benefit.
+it and returns the result. Background, the capture bundle, the popup and a small
+link bundle (§17c) are separate esbuild entry points — different contexts
+(service worker, content-script world, extension page) loading at different
+times, so bundling them together would mean the largest thing in the build
+(`single-file-core`) parses on every service-worker wake for no benefit.
 
 **Resource fetching tries the page's own `fetch()` first, relaying through the
 background only on failure.** A background-context fetch bypasses a page's CORS
@@ -2625,6 +2625,40 @@ hasn't been redeployed since) answers `404`; the agent logs a warning each cycle
 and carries on rather than failing, and the cleanup sweep skips it quietly. The
 Worker and backend are deployed separately, so either may be first (§17g).
 
+**The extension** (`background/link.js`, `link-config.js`,
+`capture-inject/link-entry.js`). "Save as link" is **a plain text link under the
+capture button in the popup, not a second button**: the lesser, occasional
+action, which shouldn't compete with the one the popup is opened for. It is
+hidden until the background confirms links are on for this instance, and shares
+the capture button's status line (only one of the two runs at a time). Saving
+injects a small bundle of its own (`link-inject.js`: just the title and the same
+`selectFavicon` a capture uses, through the same fetch relay, with none of
+`single-file-core`) into the top frame only, then sends the save: `POST /links`
+for a direct save, or `POST /queue/:id/complete-link` for a tab opened by a
+claimed queue item (which is then forgotten and closed, exactly as for a queued
+capture; a failed save keeps the claim). If the page can't be injected into
+(`chrome://`, a store page), the link is still saved, with the title the browser
+already has and no favicon: a link to a page we can't read is still a link.
+
+**The Worker's config is cached.** `GET /config` (`links_enabled`,
+`favicon_inline_max_bytes`) is read lazily and cached for a day, keyed by the
+instance and cleared on unpair: it is a setting turned on once and left alone,
+so opening the popup costs at most one Worker request a day per device (the free
+tier is a real constraint). What a day of staleness could cost is covered
+without shortening it: the cache is refreshed on every browser start, so a
+feature switched on shows up at the next start, and a save the Worker refuses
+with a `404` (it `404`s every link route while the feature is off) forces a
+refresh and, if links are now off, reports that clearly instead of a raw error
+(a `404` that isn't about the feature, such as a queue item that no longer
+exists, is rethrown as it is). If the Worker can't be reached, a stale cached
+answer is used rather than failing, except for a rejected token, which is never
+papered over; with nothing cached the error propagates, and there is no default
+cap compiled into the extension, since the cap lives in the Worker alone. A
+Worker that predates links (no `/config`, a `404`) means links aren't available,
+and that answer is cached too. A favicon over the cached cap goes through R2,
+and a `413` from the Worker on an inline favicon (its cap changed since this was
+cached) refreshes the cache and takes the R2 route, which works at any size.
+
 ### 17d. Queue: no `kind`
 
 `queue_items` gets **no new `kind` column**. The user already knows whether they
@@ -2738,10 +2772,10 @@ release notes for v2 should call this out.
   docs say so. The extension side lands with the extension action (§17c). **The
   extension must cache this config** for a while (and reuse the last known value
   if the Worker is unreachable) rather than call `GET /config` on every popup
-  open or capture, to stay comfortably within Cloudflare's free tier; the exact
-  lifetime and refresh trigger are settled with that piece. The Worker side of
-  the switch gates only what a **device** can do: `POST /links` and
-  `POST /links/upload-urls` are `404` while it's off. The backend-facing
+  open or capture, to stay comfortably within Cloudflare's free tier (settled in
+  §17c: a day, refreshed on browser start and when a save is refused). The
+  Worker side of the switch gates only what a **device** can do: `POST /links`
+  and `POST /links/upload-urls` are `404` while it's off. The backend-facing
   `/internal/pending-links` routes are never gated, so a backend and Worker
   whose flags disagree degrade quietly (the claim just returns nothing) instead
   of the agent logging an error on every poll.
@@ -2953,7 +2987,8 @@ Wayback), but it touches the schema, Worker, extension, backend, dashboard,
 mirror and docs at once, so it should be built in stages. A reasonable order:
 
 1. Tables and migrations, the flag, the favicon store, Worker endpoints, backend
-   ingestion, the extension action, the dashboard Links page, and the MCP tools.
+   ingestion, the extension action, the dashboard Links page, and the MCP tools
+   (all but the MCP tools have landed).
 2. Browser bookmark sync (§17j).
 3. Wayback submission (§17i), for links and pages together.
 
