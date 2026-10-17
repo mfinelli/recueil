@@ -36,6 +36,47 @@ export interface PageListResponse {
   total: number;
 }
 
+// A link: a bookmark-only entry, saved without being archived. Not to be
+// confused with a page-to-page link (PageLink-shaped responses on a page's
+// `links`), which relates two archived pages. matching_page_id is the same-URL
+// hint: the id of the user's archived page with this link's normalized_url,
+// if there is one.
+export interface Link {
+  id: number;
+  raw_url: string;
+  normalized_url: string;
+  title: string | null;
+  favicon_path: string | null;
+  notes: string | null;
+  // Where the link's current title and favicon came from, as a capture's source
+  // is: "extension" (read from a browser tab) or "manual" (typed into the Add
+  // link form). Follows the latest save, so a manual link saved again from the
+  // browser becomes "extension".
+  source: "extension" | "manual";
+  matching_page_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// GET /api/links/{id}: the link plus its tags (no source, unlike a page's: every
+// link tag is a manual one) and collections, flattened into one object like
+// PageDetail. matching_page_title is the title of the page matching
+// matching_page_id (null if there's none, or it has none).
+export interface LinkDetail extends Link {
+  matching_page_title: string | null;
+  tags: Tag[];
+  collections: PageCollection[];
+}
+
+export interface LinkListResponse {
+  links: Link[];
+  total: number;
+  // Present only when the list was filtered by ?tag= / ?collection=, naming what
+  // it was filtered by.
+  tag?: Tag;
+  collection?: PageCollection;
+}
+
 export interface CaptureSummary {
   id: number;
   source: string;
@@ -111,6 +152,12 @@ export interface PageDetail extends Page {
   tags: PageTag[];
   collections: PageCollection[];
   links: PageLink[];
+  // The same-URL hint: the user's link (a bookmark-only entry, not one of
+  // `links` above, which are related pages) with this page's normalized URL,
+  // and its title (null if it has none). Both null when there's no such link,
+  // and always with links off.
+  matching_link_id: number | null;
+  matching_link_title: string | null;
 }
 
 // GET /api/tags' item shape -- also what the rename/delete-adjacent
@@ -131,6 +178,9 @@ export interface TagListResponse {
 export interface TagPagesResponse {
   tag: Tag;
   pages: Page[];
+  // How many links carry the tag, for the "{n} links have this tag" line.
+  // Always 0 with links off.
+  link_count: number;
 }
 
 // POST /api/pages/{id}/tags' response -- same shape as Tag; kept as its
@@ -165,6 +215,9 @@ export interface CollectionListResponse {
 // GET /api/collections, so it would be redundant here.
 export interface CollectionPagesResponse {
   pages: Page[];
+  // How many links are directly in the collection (not its sub-collections'),
+  // for the "{n} links in this collection" line. Always 0 with links off.
+  link_count: number;
 }
 
 export interface TextSearchConfigsResponse {
@@ -361,6 +414,9 @@ export interface CaptureConfig {
   // file client-side, rather than only finding out after a slow upload
   // that the server was always going to reject it.
   manual_upload_max_bytes: number;
+  // Whether the links feature is on or not. Drives the Links
+  // nav item and route; session.svelte.ts reads it once at bootstrap.
+  links_enabled: boolean;
 }
 
 // POST /api/manual-upload -- multipart/form-data (not JSON) so this

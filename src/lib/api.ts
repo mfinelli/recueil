@@ -27,10 +27,20 @@ const API_BASE = "/api";
 /** Matches internal/httpapi's writeError: {"error": "..."} */
 export class ApiError extends Error {
   status: number;
+  // The parsed JSON error body, when there was one, for the few errors that
+  // carry more than a message -- e.g. the 409 for adding a URL that's already
+  // a link, which names the existing link. null for a body that wasn't a JSON
+  // object.
+  details: Record<string, unknown> | null;
 
-  constructor(status: number, message: string) {
+  constructor(
+    status: number,
+    message: string,
+    details: Record<string, unknown> | null = null,
+  ) {
     super(message);
     this.status = status;
+    this.details = details;
     this.name = "ApiError";
   }
 }
@@ -71,8 +81,12 @@ export async function apiJSON<T>(
   const res = await apiFetch(path, options);
   if (!res.ok) {
     let message = res.statusText;
+    let details: Record<string, unknown> | null = null;
     try {
       const body: unknown = await res.json();
+      if (body && typeof body === "object" && !Array.isArray(body)) {
+        details = body as Record<string, unknown>;
+      }
       if (
         body &&
         typeof body === "object" &&
@@ -86,7 +100,7 @@ export async function apiJSON<T>(
       // back to statusText rather than let the parse failure mask the
       // real HTTP error.
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, details);
   }
   if (res.status === 204) {
     return undefined as T;

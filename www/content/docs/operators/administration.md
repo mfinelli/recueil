@@ -45,14 +45,20 @@ doesn't crash the process; it's logged and tried again next tick.
 ## gc
 
 ```
-recueil gc [--dry-run] [--force]
+recueil gc [--dry-run] [--force] [--skip-captures] [--skip-links]
 ```
 
-Reclaims disk space left behind by deleted pages and captures. Deleting a page
-or capture is a pure database operation — the on-disk HTML/thumbnail/favicon
+Reclaims disk space left behind by deleted pages, captures and links. Deleting
+one of them is a pure database operation — the on-disk HTML/thumbnail/favicon
 files are left in place rather than deleted inline — so `gc` is the sweep that
 actually removes them, along with any capture directory left empty by an
 ingestion that failed partway through.
+
+It makes two passes in a single run: the captures archive (`archive_dir`), then
+the link favicon store (`links_dir`). Each pass has its own safety checks and
+its own report, and if one stops, the command stops before the next begins.
+`--skip-captures` and `--skip-links` run only the other pass; the link pass is
+skipped on its own when links are turned off.
 
 Two safety behaviors worth knowing about:
 
@@ -63,7 +69,7 @@ Two safety behaviors worth knowing about:
   without deleting anything and just reports what it found — that's far more
   likely to mean something's wrong with the sweep itself than that the archive
   is genuinely half garbage. `--force` proceeds anyway, for the rare case that's
-  actually expected.
+  actually expected. `--force` applies to each pass.
 
 Safe to run repeatedly; run with `--dry-run` first if you want to see what it
 would remove without actually removing anything.

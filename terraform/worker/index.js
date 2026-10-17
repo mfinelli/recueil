@@ -67,6 +67,9 @@
  * @property {string} R2_BUCKET_NAME
  * @property {string} R2_ACCESS_KEY_ID
  * @property {string} R2_ACCESS_KEY_SECRET
+ * @property {string} LINKS_ENABLED "true" when the links feature is on
+ *   (terraform's var.enable_links); anything else, including unset, means
+ *   off. See handleGetConfig.
  */
 
 /**
@@ -425,6 +428,9 @@ export default {
     if (method === "POST" && claimMatch) {
       return handleClaimQueueItem(request, env, ctx, claimMatch[1]);
     }
+    if (method === "GET" && pathname === "/config") {
+      return handleGetConfig(request, env, ctx);
+    }
     if (method === "GET" && pathname === "/archived-pages") {
       return handleListArchivedPages(request, env, ctx);
     }
@@ -458,6 +464,35 @@ export default {
       pathname === "/internal/pending-captures/cleanup"
     ) {
       return handleCleanupPendingCaptures(request, env);
+    }
+    if (method === "POST" && pathname === "/internal/pending-links") {
+      return handleClaimPendingLinks(request, env);
+    }
+    if (method === "POST" && pathname === "/internal/pending-links/cleanup") {
+      return handleCleanupPendingLinks(request, env);
+    }
+    const linkFetchedMatch = pathname.match(
+      /^\/internal\/pending-links\/([^/]+)\/fetched$/,
+    );
+    if (method === "POST" && linkFetchedMatch) {
+      return handleMarkPendingLinkFetched(request, env, linkFetchedMatch[1]);
+    }
+    if (method === "POST" && pathname === "/links/upload-urls") {
+      return handleGetLinkUploadUrls(request, env, ctx);
+    }
+    if (method === "POST" && pathname === "/links") {
+      return handleSaveLink(request, env, ctx);
+    }
+    const completeLinkMatch = pathname.match(
+      /^\/queue\/([^/]+)\/complete-link$/,
+    );
+    if (method === "POST" && completeLinkMatch) {
+      return handleCompleteQueueItemAsLink(
+        request,
+        env,
+        ctx,
+        completeLinkMatch[1],
+      );
     }
     if (method === "POST" && pathname === "/captures/upload-urls") {
       return handleGetUploadUrls(request, env, ctx);
@@ -841,6 +876,48 @@ export async function handleListArchivedPages(request, env, ctx) {
 }
 
 /**
+ * Whether the links feature is on for this deployment: only the exact string
+ * "true" counts (see Env.LINKS_ENABLED and handleGetConfig).
+ *
+ * @param {Env} env
+ * @returns {boolean}
+ */
+function linksEnabled(env) {
+  return env.LINKS_ENABLED === "true";
+}
+
+/**
+ * GET /config: the deployment's feature switches, for a paired device to read.
+ * The extension only ever talks to the Worker, so it can't learn from the
+ * backend's config whether the links feature is on. Only the exact string
+ * "true" counts as enabled, so a deployment that never set the binding at all
+ * reads as off rather than as a feature the backend might not be ingesting.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleGetConfig(request, env, ctx) {
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  return new Response(
+    JSON.stringify({
+      links_enabled: linksEnabled(env),
+      // The largest favicon a device may send inline in a link save; anything
+      // bigger goes through R2. The Worker is the one place this lives, so a
+      // device never has to agree with it from its own copy.
+      favicon_inline_max_bytes: LINK_FAVICON_INLINE_MAX_BYTES,
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+}
+
+/**
  * GET /internal/tokens?user_id=: lists a user's paired devices. Called by
  * the backend on the dashboard's behalf
  *
@@ -1219,6 +1296,155 @@ export async function handleCleanupPendingCaptures(request, env) {
   });
 }
 
+// Link saves can carry an inline favicon of up to ~170KB of base64, so a claimed
+// batch is smaller than the capture batch (whose rows are tiny) to keep one
+// poll's response a sensible size.
+const DEFAULT_PENDING_LINKS_LIMIT = 25;
+const MAX_PENDING_LINKS_LIMIT = 100;
+
+/**
+ * POST /internal/pending-links?limit=: the links counterpart to
+ * handleClaimPendingCaptures, and the same in every way that matters --
+ * service-secret gated, cross-user, an atomic UPDATE ... RETURNING claim
+ * rather than a plain read (so two agents can't both ingest a row), and a
+ * claim older than PENDING_CAPTURE_CLAIM_TIMEOUT_MINUTES treated as abandoned.
+ *
+ * Oldest-SAVED first, not oldest-inserted: a link save is an upsert on the
+ * backend, so when the same URL is saved twice before one poll, the later save
+ * has to be processed last for it to be the one that wins. saved_at is
+ * normalized to UTC ISO-8601 on the way in, so ordering by it is ordering by
+ * time. RETURNING doesn't promise the subquery's order, so the batch is sorted
+ * here before it's handed back.
+ *
+ * Deliberately NOT gated on LINKS_ENABLED, unlike the device-facing link
+ * routes: with the feature off no device can save a link, so this simply
+ * returns nothing, whereas a 404 would make a backend whose own flag disagrees
+ * log an error on every poll.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleClaimPendingLinks(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const limitParam = url.searchParams.get("limit");
+  let limit = DEFAULT_PENDING_LINKS_LIMIT;
+  if (limitParam !== null) {
+    const parsed = Number(limitParam);
+    if (
+      !Number.isInteger(parsed) ||
+      parsed < 1 ||
+      parsed > MAX_PENDING_LINKS_LIMIT
+    ) {
+      return new Response("Invalid limit", { status: 400 });
+    }
+    limit = parsed;
+  }
+
+  const { results } = await env.DB.prepare(
+    `UPDATE pending_links
+     SET claimed_at = CURRENT_TIMESTAMP
+     WHERE id IN (
+       SELECT id FROM pending_links
+       WHERE fetched_by_backend = 0
+         AND (claimed_at IS NULL OR claimed_at < datetime('now', ?))
+       ORDER BY saved_at ASC, created_at ASC
+       LIMIT ?
+     )
+     RETURNING id, user_id, queue_item_id, url, title, favicon_ext,
+               favicon_data, r2_key_favicon, saved_at, claimed_at, created_at`,
+  )
+    .bind(`-${PENDING_CAPTURE_CLAIM_TIMEOUT_MINUTES} minutes`, limit)
+    .all();
+
+  const rows = /** @type {Array<Record<string, string>>} */ (results);
+  rows.sort(
+    (a, b) =>
+      a.saved_at.localeCompare(b.saved_at) ||
+      a.created_at.localeCompare(b.created_at),
+  );
+
+  return new Response(JSON.stringify({ pending_links: rows }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * POST /internal/pending-links/:id/fetched: marks a pending_links row as
+ * pulled and ingested, called only after the backend has durably written the
+ * link (and its favicon, if any) and deleted the favicon's R2 object. A crash
+ * before this call just means the row shows up in the next poll, which is safe
+ * because link ingestion is an upsert on (user_id, normalized_url): a retry
+ * refreshes the same row rather than adding one.
+ *
+ * Also drops the favicon payload from the row (the inline bytes, or the R2
+ * key): the backend has it on disk by now, and keeping up to ~170KB of base64
+ * per row through the retention window would serve nothing.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {string} linkId
+ * @returns {Promise<Response>}
+ */
+export async function handleMarkPendingLinkFetched(request, env, linkId) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const result = await env.DB.prepare(
+    `UPDATE pending_links
+     SET fetched_by_backend = 1,
+         favicon_ext = NULL, favicon_data = NULL, r2_key_favicon = NULL
+     WHERE id = ?`,
+  )
+    .bind(linkId)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return new Response("Not Found", { status: 404 });
+  }
+  return new Response(null, { status: 204 });
+}
+
+/**
+ * POST /internal/pending-links/cleanup: deletes pending_links rows the backend
+ * finished ingesting long enough ago that nothing will look at them again --
+ * handleCleanupPendingCaptures' own reasoning and retention, applied to this
+ * table. Only fetched rows are ever deleted; one still at 0 is waiting or
+ * failing, and is kept rather than risk discarding the only record of a link
+ * that never landed.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleCleanupPendingLinks(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const result = await env.DB.prepare(
+    `DELETE FROM pending_links
+     WHERE fetched_by_backend = 1
+       AND claimed_at < datetime('now', ?)`,
+  )
+    .bind(`-${CAPTURED_RETENTION_HOURS} hours`)
+    .run();
+
+  return new Response(JSON.stringify({ deleted: result.meta.changes }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 // How long a presigned upload URL remains valid. Comfortably more than
 // enough time for a device to PUT a large inlined-HTML capture over a slow
 // connection, without leaving signed URLs usable indefinitely.
@@ -1465,6 +1691,10 @@ export async function handleGetUploadUrls(request, env, ctx) {
  * the caller declares *whether* it uploaded a favicon and in what format,
  * but never the key itself.
  *
+ * captured_at must be an ISO-8601 timestamp and is stored normalized to UTC
+ * (see normalizeIsoTimestamp): the backend parses it as RFC 3339, and a row it
+ * can't parse is retried forever, so a malformed one is refused here instead.
+ *
  * @param {Request} request
  * @param {Env} env
  * @param {ExecutionContext} ctx
@@ -1487,12 +1717,8 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
   }
   const { capture_id, captured_at, favicon_ext } =
     /** @type {Record<string, unknown>} */ (body);
-  if (
-    typeof capture_id !== "string" ||
-    capture_id === "" ||
-    typeof captured_at !== "string" ||
-    captured_at === ""
-  ) {
+  const capturedAt = normalizeIsoTimestamp(captured_at);
+  if (typeof capture_id !== "string" || capture_id === "" || !capturedAt) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
   if (
@@ -1557,7 +1783,7 @@ export async function handleCompleteQueueItem(request, env, ctx, itemId) {
         queueItem.url,
         r2KeyHtml,
         r2KeyFavicon,
-        captured_at,
+        capturedAt,
       ),
       env.DB.prepare(
         "UPDATE queue_items SET status = 'captured' WHERE id = ?",
@@ -1614,13 +1840,13 @@ export async function handleCompleteDirectCapture(request, env, ctx) {
   }
   const { capture_id, url, captured_at, favicon_ext } =
     /** @type {Record<string, unknown>} */ (body);
+  const capturedAt = normalizeIsoTimestamp(captured_at);
   if (
     typeof capture_id !== "string" ||
     capture_id === "" ||
     typeof url !== "string" ||
     url === "" ||
-    typeof captured_at !== "string" ||
-    captured_at === ""
+    !capturedAt
   ) {
     return new Response("Missing or invalid fields", { status: 400 });
   }
@@ -1653,7 +1879,7 @@ export async function handleCompleteDirectCapture(request, env, ctx) {
          (id, user_id, queue_item_id, url, r2_key_html, r2_key_favicon, captured_at)
        VALUES (?, ?, NULL, ?, ?, ?, ?)`,
     )
-      .bind(capture_id, auth.userId, url, r2KeyHtml, r2KeyFavicon, captured_at)
+      .bind(capture_id, auth.userId, url, r2KeyHtml, r2KeyFavicon, capturedAt)
       .run();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1668,6 +1894,486 @@ export async function handleCompleteDirectCapture(request, env, ctx) {
     }),
     { status: 201, headers: { "Content-Type": "application/json" } },
   );
+}
+
+// The largest favicon, in raw bytes, a device may send inline in a link save
+// (POST /links, POST /queue/:id/complete-link). Over this it goes to R2 through
+// /links/upload-urls, exactly as a capture's favicon does -- the cap exists to
+// bound what's parked in a D1 row and parsed within a request's CPU budget, not
+// because a bigger favicon is worth refusing, so nothing is ever dropped for
+// being large. Reported to devices by GET /config; this constant is the only
+// place the number lives.
+//
+// Cloudflare's ceilings are nowhere near: a D1 row (inline base64 included)
+// may be 2MB, a request body 100MB. 128KB of favicon is ~171KB of base64, and
+// real favicons are mostly well under it.
+export const LINK_FAVICON_INLINE_MAX_BYTES = 128 * 1024;
+
+// What a link save will even read: the inline favicon's base64 form plus
+// generous room for the URL, title and the rest of the JSON. A larger declared
+// body is refused before it's parsed, since parsing is what costs CPU. This is
+// also what bounds the free-text fields.
+const LINK_SAVE_MAX_BODY_BYTES =
+  Math.ceil(LINK_FAVICON_INLINE_MAX_BYTES / 3) * 4 + 16 * 1024;
+
+// A defensive ceiling on a link's title, in UTF-16 code units. Nothing
+// specifies a maximum title length and real ones run to a few hundred
+// characters, so this is generous; it exists only so a pathological page can't
+// bloat a row. A longer title is cut, not refused: it's cosmetic, and not worth
+// failing a save over.
+const LINK_TITLE_MAX_LENGTH = 4096;
+
+// Standard (not URL-safe) base64, as btoa/atob and the extension produce.
+const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+// A plausible ISO-8601 timestamp: Date.parse alone accepts all sorts of
+// strings ("1", "March") that would sort wrongly once normalized.
+const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T/;
+
+/**
+ * The byte length base64 text decodes to, or null if it isn't well-formed
+ * standard base64. Computed from the text rather than by decoding it, so an
+ * over-large favicon is refused without being turned into bytes first.
+ *
+ * @param {string} text
+ * @returns {number | null}
+ */
+function base64DecodedLength(text) {
+  if (
+    text.length === 0 ||
+    text.length % 4 !== 0 ||
+    !BASE64_PATTERN.test(text)
+  ) {
+    return null;
+  }
+  const padding = text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0;
+  return (text.length / 4) * 3 - padding;
+}
+
+/**
+ * Whether text parses as an absolute URL -- exactly the check handleEnqueue
+ * makes, and no more: no scheme restriction, no length cap. (The ingestion
+ * pipeline normalizes any parseable URL, so neither would keep a row from
+ * being ingested; what a link may point at is the extension's business.)
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isParseableUrl(text) {
+  try {
+    new URL(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validates an ISO-8601 timestamp and returns it normalized to UTC
+ * ("2026-07-12T12:00:00.000Z"), or null if it isn't one. Normalizing matters
+ * because the claim queries order by these strings: two instants are only in
+ * lexical order if they're written in the same zone and precision. The
+ * backend's RFC 3339 parse also accepts the result, so a row with a malformed
+ * timestamp -- which nothing marks as failing, and which would be retried
+ * forever -- can't get in.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function normalizeIsoTimestamp(value) {
+  if (typeof value !== "string" || !ISO_TIMESTAMP_PATTERN.test(value)) {
+    return null;
+  }
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : new Date(time).toISOString();
+}
+
+/**
+ * Cuts a title to LINK_TITLE_MAX_LENGTH, without leaving half of a surrogate
+ * pair (an emoji, say) dangling at the end.
+ *
+ * @param {string} title
+ * @returns {string}
+ */
+function truncateTitle(title) {
+  if (title.length <= LINK_TITLE_MAX_LENGTH) return title;
+  let cut = title.slice(0, LINK_TITLE_MAX_LENGTH);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  return cut;
+}
+
+/**
+ * The deterministic R2 key for a link's favicon when it travels through R2,
+ * recomputed by the Worker rather than ever taken from a client (the posture
+ * captureObjectKey/faviconObjectKey already have). The extension is in the key
+ * so the backend recovers the format from it. A separate prefix from captures'
+ * "pending/" keeps the two kinds of object apart in the bucket.
+ *
+ * @param {number} userId
+ * @param {string} linkId
+ * @param {string} ext - one of FAVICON_EXTENSIONS; validated by the caller
+ * @returns {string}
+ */
+function linkFaviconObjectKey(userId, linkId, ext) {
+  return `pending-links/${userId}/${linkId}/favicon.${ext}`;
+}
+
+/**
+ * @typedef {Object} LinkSaveFields
+ * @property {string} linkId
+ * @property {string | null} url - the body's url; null when the route takes it
+ *   from a queue item instead (see handleCompleteQueueItemAsLink)
+ * @property {string} savedAt - normalized to UTC ISO-8601
+ * @property {string | null} title
+ * @property {string | null} faviconExt
+ * @property {string | null} faviconData - base64, when the favicon is inline
+ */
+
+/**
+ * The shared front half of both link-save routes: the feature gate,
+ * authentication, the body-size refusal, and every field of the body that
+ * doesn't depend on which route it is. Returns the error Response to send, or
+ * the authenticated device and the validated fields.
+ *
+ * The favicon rides one of two ways, both optional together:
+ *   - favicon_ext + favicon_data (base64): inline, up to
+ *     LINK_FAVICON_INLINE_MAX_BYTES decoded. Over that, 413, and the device
+ *     falls back to the R2 route (see handleGetLinkUploadUrls).
+ *   - favicon_ext alone: the device already PUT it to the presigned R2 URL;
+ *     the key is recomputed later, never trusted from the request.
+ * favicon_data without favicon_ext is malformed, not "no favicon".
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @param {{ readUrl: boolean }} options - whether the body carries the url
+ * @returns {Promise<Response | { auth: { userId: number, tokenId: number }, fields: LinkSaveFields }>}
+ */
+async function readLinkSaveRequest(request, env, ctx, { readUrl }) {
+  // 404 while links are off, before even asking who is calling: with the
+  // feature disabled the route doesn't exist, rather than answering a device
+  // the backend isn't prepared to serve.
+  if (!linksEnabled(env)) return new Response("Not Found", { status: 404 });
+
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  // Refused before it's read: parsing a body is what costs CPU, and nothing
+  // legitimate exceeds this (a larger favicon uses the R2 route).
+  const declaredLength = Number(request.headers.get("Content-Length") ?? 0);
+  if (declaredLength > LINK_SAVE_MAX_BODY_BYTES) {
+    return new Response(
+      "Request too large: send a favicon this size through /links/upload-urls",
+      { status: 413 },
+    );
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { link_id, url, title, saved_at, favicon_ext, favicon_data } =
+    /** @type {Record<string, unknown>} */ (body);
+
+  const invalid = () =>
+    new Response("Missing or invalid fields", { status: 400 });
+
+  if (typeof link_id !== "string" || link_id === "") return invalid();
+  if (readUrl && (typeof url !== "string" || !isParseableUrl(url))) {
+    return invalid();
+  }
+  const savedAt = normalizeIsoTimestamp(saved_at);
+  if (savedAt === null) return invalid();
+  if (title !== undefined && title !== null && typeof title !== "string") {
+    return invalid();
+  }
+  if (
+    favicon_ext !== undefined &&
+    favicon_ext !== null &&
+    (typeof favicon_ext !== "string" || !FAVICON_EXTENSIONS.has(favicon_ext))
+  ) {
+    return invalid();
+  }
+  const hasFaviconExt = favicon_ext !== undefined && favicon_ext !== null;
+  const hasFaviconData = favicon_data !== undefined && favicon_data !== null;
+  if (hasFaviconData && (typeof favicon_data !== "string" || !hasFaviconExt)) {
+    return invalid();
+  }
+  if (hasFaviconData) {
+    const data = /** @type {string} */ (favicon_data);
+    // Cheap length test first, so an over-large payload is never
+    // pattern-matched.
+    const tooLarge = () =>
+      new Response("Favicon too large to send inline: use /links/upload-urls", {
+        status: 413,
+      });
+    if (data.length > Math.ceil(LINK_FAVICON_INLINE_MAX_BYTES / 3) * 4) {
+      return tooLarge();
+    }
+    const decodedLength = base64DecodedLength(data);
+    if (decodedLength === null) return invalid();
+    if (decodedLength > LINK_FAVICON_INLINE_MAX_BYTES) return tooLarge();
+  }
+
+  return {
+    auth,
+    fields: {
+      linkId: link_id,
+      url: readUrl ? /** @type {string} */ (url) : null,
+      savedAt,
+      title: typeof title === "string" ? truncateTitle(title) : null,
+      faviconExt: hasFaviconExt ? /** @type {string} */ (favicon_ext) : null,
+      faviconData: hasFaviconData ? /** @type {string} */ (favicon_data) : null,
+    },
+  };
+}
+
+/**
+ * The shared back half: writes the pending_links row, and, for a queue item, in
+ * the same batch flips it to 'captured'. An R2 favicon's key is recomputed here
+ * from the authenticated user and the link id.
+ *
+ * @param {Env} env
+ * @param {{ userId: number }} auth
+ * @param {LinkSaveFields} fields
+ * @param {string} url - the URL to record
+ * @param {string | null} queueItemId
+ * @returns {Promise<Response>}
+ */
+async function insertPendingLink(env, auth, fields, url, queueItemId) {
+  const r2KeyFavicon =
+    fields.faviconExt !== null && fields.faviconData === null
+      ? linkFaviconObjectKey(auth.userId, fields.linkId, fields.faviconExt)
+      : null;
+
+  const insert = env.DB.prepare(
+    `INSERT INTO pending_links
+       (id, user_id, queue_item_id, url, title, favicon_ext, favicon_data,
+        r2_key_favicon, saved_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    fields.linkId,
+    auth.userId,
+    queueItemId,
+    url,
+    fields.title,
+    fields.faviconExt,
+    fields.faviconData,
+    r2KeyFavicon,
+    fields.savedAt,
+  );
+
+  try {
+    if (queueItemId !== null) {
+      await env.DB.batch([
+        insert,
+        env.DB.prepare(
+          "UPDATE queue_items SET status = 'captured' WHERE id = ?",
+        ).bind(queueItemId),
+      ]);
+    } else {
+      await insert.run();
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return new Response(`D1 error: ${message}`, { status: 500 });
+  }
+
+  return new Response(
+    JSON.stringify({ id: fields.linkId, r2_key_favicon: r2KeyFavicon }),
+    { status: 201, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /links/upload-urls: issues a presigned R2 PUT URL for a link's favicon
+ * that was too large to send inline (see LINK_FAVICON_INLINE_MAX_BYTES) --
+ * handleGetUploadUrls' favicon half, on its own, with the same checksum
+ * binding and the same stateless signing (no D1 access; link_id is
+ * client-generated, so nothing needs reserving first).
+ *
+ * 404 while links are off: with the feature disabled the route doesn't exist,
+ * rather than answering a device the backend isn't prepared to serve.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleGetLinkUploadUrls(request, env, ctx) {
+  if (!linksEnabled(env)) return new Response("Not Found", { status: 404 });
+
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  if (
+    !env.R2_ACCOUNT_ID ||
+    !env.R2_BUCKET_NAME ||
+    !env.R2_ACCESS_KEY_ID ||
+    !env.R2_ACCESS_KEY_SECRET
+  ) {
+    return new Response("R2 credentials not configured", { status: 500 });
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { link_id, favicon_ext, content_sha256_favicon } =
+    /** @type {Record<string, unknown>} */ (body);
+  if (
+    typeof link_id !== "string" ||
+    link_id === "" ||
+    typeof favicon_ext !== "string" ||
+    !FAVICON_EXTENSIONS.has(favicon_ext) ||
+    typeof content_sha256_favicon !== "string" ||
+    !HEX_SHA256_PATTERN.test(content_sha256_favicon)
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  const key = linkFaviconObjectKey(auth.userId, link_id, favicon_ext);
+  const checksumBase64 = hexToBase64(content_sha256_favicon);
+
+  const uploadUrl = await presignR2Url({
+    accountId: env.R2_ACCOUNT_ID,
+    bucketName: env.R2_BUCKET_NAME,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_ACCESS_KEY_SECRET,
+    method: /** @type {"PUT"} */ ("PUT"),
+    expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
+    key,
+    checksumSha256Base64: checksumBase64,
+  });
+
+  return new Response(
+    JSON.stringify({
+      link_id,
+      upload_url_favicon: uploadUrl,
+      r2_key_favicon: key,
+      expires_in_seconds: UPLOAD_URL_EXPIRY_SECONDS,
+      required_headers_favicon: { "x-amz-checksum-sha256": checksumBase64 },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /links: the direct-save counterpart to handleCompleteQueueItemAsLink,
+ * and, like POST /captures/complete, for a page the user is already on, never
+ * enqueued -- so the caller supplies the URL (the live tab's) and there is no
+ * queue item to transition. Writes a pending_links row for the backend to
+ * pick up. The body: link_id, url, saved_at, and optionally title, favicon_ext
+ * and favicon_data (see readLinkSaveRequest for the two favicon routes).
+ *
+ * Idempotency is the same shape as the capture completions: link_id is the
+ * client-generated primary key, and a retry that finds the row already
+ * recorded is a 204.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleSaveLink(request, env, ctx) {
+  const read = await readLinkSaveRequest(request, env, ctx, { readUrl: true });
+  if (read instanceof Response) return read;
+  const { auth, fields } = read;
+
+  const existing = await env.DB.prepare(
+    "SELECT id FROM pending_links WHERE id = ?",
+  )
+    .bind(fields.linkId)
+    .first();
+  if (existing) {
+    // Already recorded by an earlier attempt -- nothing left to do.
+    return new Response(null, { status: 204 });
+  }
+
+  return insertPendingLink(
+    env,
+    auth,
+    fields,
+    /** @type {string} */ (fields.url),
+    null,
+  );
+}
+
+/**
+ * POST /queue/:id/complete-link: the link counterpart to
+ * handleCompleteQueueItem -- a claimed queue item, resolved by saving a link
+ * for it instead of a capture. Same shape and same answers: the item must exist
+ * for this user (404), must not already be captured or failed (410), and must be
+ * claimed by this very device (409); the pending_links row and the item's move
+ * to 'captured' are one batch; and a retry that finds the row already recorded
+ * is a 204, checked before the item's status for the same reason as there (the
+ * first attempt may have already flipped it).
+ *
+ * The URL is the queue item's, read from D1, never the body's -- exactly as for
+ * a queued capture. That keeps a page and a link saved from the same queue item
+ * under the same URL even when it redirects, which is what the same-URL hint
+ * and the re-queue way of promoting or demoting rely on. The body is the same
+ * as handleSaveLink's minus url.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @param {string} itemId
+ * @returns {Promise<Response>}
+ */
+export async function handleCompleteQueueItemAsLink(request, env, ctx, itemId) {
+  const read = await readLinkSaveRequest(request, env, ctx, { readUrl: false });
+  if (read instanceof Response) return read;
+  const { auth, fields } = read;
+
+  const existing = await env.DB.prepare(
+    "SELECT id FROM pending_links WHERE id = ?",
+  )
+    .bind(fields.linkId)
+    .first();
+  if (existing) {
+    // Already recorded by an earlier attempt -- nothing left to do.
+    return new Response(null, { status: 204 });
+  }
+
+  const queueItem = /** @type {{
+    url: string,
+    status: string,
+    claimed_by_token_id: number | null,
+  } | null} */ (
+    await env.DB.prepare(
+      "SELECT url, status, claimed_by_token_id FROM queue_items WHERE id = ? AND user_id = ?",
+    )
+      .bind(itemId, auth.userId)
+      .first()
+  );
+  if (!queueItem) {
+    return new Response("Not Found", { status: 404 });
+  }
+  if (queueItem.status === "captured" || queueItem.status === "failed") {
+    return new Response("Item already processed", { status: 410 });
+  }
+  if (
+    queueItem.status !== "claimed" ||
+    queueItem.claimed_by_token_id !== auth.tokenId
+  ) {
+    return new Response("Item not claimed by this device", { status: 409 });
+  }
+
+  return insertPendingLink(env, auth, fields, queueItem.url, itemId);
 }
 
 /**

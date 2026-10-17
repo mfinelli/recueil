@@ -95,6 +95,11 @@ resource "cloudflare_workers_script" "worker" {
     },
     {
       type = "plain_text"
+      name = "LINKS_ENABLED"
+      text = var.enable_links ? "true" : "false"
+    },
+    {
+      type = "plain_text"
       name = "R2_BUCKET_NAME"
       text = cloudflare_r2_bucket.capture_buffer.name
     },

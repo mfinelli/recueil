@@ -36,6 +36,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import PageList from "../components/PageList.svelte";
+  import LinkCountLine from "../components/LinkCountLine.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type {
     Collection,
@@ -50,6 +51,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let matched = $state<Collection[]>([]);
   let children = $state<Collection[]>([]);
   let pages = $state<Page[]>([]);
+  let linkCount = $state(0);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let notFound = $state(false);
@@ -96,6 +98,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         `/collections/${target.id}/pages`,
       );
       pages = pagesRes.pages;
+      linkCount = pagesRes.link_count;
     } catch (err) {
       error =
         err instanceof ApiError ? err.message : m.collectiondetail_load_error();
@@ -157,6 +160,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#if target.description}
       <p class="description">{target.description}</p>
     {/if}
+
+    <LinkCountLine
+      count={linkCount}
+      kind="collection"
+      href={`/links?collection=${target.id}`}
+    />
 
     {#if children.length > 0}
       <section class="subcollections">

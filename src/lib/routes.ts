@@ -37,6 +37,8 @@ import Setup from "../routes/Setup.svelte";
 import Login from "../routes/Login.svelte";
 import Register from "../routes/Register.svelte";
 import Library from "../routes/Library.svelte";
+import Links from "../routes/Links.svelte";
+import LinkDetail from "../routes/LinkDetail.svelte";
 import PageDetail from "../routes/PageDetail.svelte";
 import Collections from "../routes/Collections.svelte";
 import CollectionDetail from "../routes/CollectionDetail.svelte";
@@ -97,6 +99,19 @@ export const requireAuth: RoutePrecondition = () => {
   return true;
 };
 
+// The one condition unique to the links screens, used after requireAuth in
+// the route's conditions (svelte-spa-router stops at the first failing one):
+// with the feature off they aren't real screens regardless of session state --
+// send them to the library rather than letting the route mount and its own
+// requests fail with a 404.
+export const requireLinksEnabled: RoutePrecondition = () => {
+  if (!session.linksEnabled) {
+    push("/");
+    return false;
+  }
+  return true;
+};
+
 const routes: RouteDefinition = new Map([
   ["/setup", wrap({ component: Setup, conditions: [requireSetup] })],
   ["/login", wrap({ component: Login, conditions: [requireGuest] })],
@@ -105,6 +120,17 @@ const routes: RouteDefinition = new Map([
     wrap({ component: Register, conditions: [requireOpenRegistration] }),
   ],
   ["/", wrap({ component: Library, conditions: [requireAuth] })],
+  [
+    "/links",
+    wrap({ component: Links, conditions: [requireAuth, requireLinksEnabled] }),
+  ],
+  [
+    "/links/:id",
+    wrap({
+      component: LinkDetail,
+      conditions: [requireAuth, requireLinksEnabled],
+    }),
+  ],
   ["/pages/:id", wrap({ component: PageDetail, conditions: [requireAuth] })],
   ["/collections", wrap({ component: Collections, conditions: [requireAuth] })],
   [

@@ -16,12 +16,12 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Bundles "am I logged in", "does this instance need first-run setup", and
-// "is open registration enabled" into one module: all three are read
-// together, once, at app bootstrap, to decide which of Setup/Login/Register/
-// the real app to show first -- splitting them into separate single-purpose
-// stores would just mean coordinating multiple async reads instead of one
-// for that one shared use.
+// Bundles "am I logged in", "does this instance need first-run setup",
+// "is open registration enabled" and "is the links feature on" into one
+// module: all of them are read together, once, at app bootstrap, to decide
+// which of Setup/Login/Register/ the real app to show first -- splitting them
+// into separate single-purpose stores would just mean coordinating multiple
+// async reads instead of one for that one shared use.
 import { apiFetch, apiJSON } from "./api";
 import { setCachedLanguage } from "./locale";
 
@@ -35,6 +35,11 @@ class SessionState {
   user = $state<CurrentUser | null>(null);
   needsSetup = $state(false);
   openRegistration = $state(false);
+  // Whether the links feature is on (GET /capture-config's links_enabled).
+  // False until the bootstrap read says otherwise, and for a guest, whose
+  // 401 there leaves it false -- the nav item and route it gates only exist
+  // for a signed-in user anyway.
+  linksEnabled = $state(false);
   // null means "automatic". Read once by App.svelte after sessionReady;
   // nothing else in the app needs to read this reactively, so it's a plain
   // field here rather than anything more elaborate.
@@ -82,9 +87,9 @@ export const session = new SessionState();
 // assume session.user/needsSetup already reflect reality by the time it
 // runs, with no per-route "have we checked yet" bookkeeping of its own.
 //
-// GET /auth/me, GET /setup-status, and GET /settings all run in parallel,
-// not sequentially -- three independent reads with nothing for one to gate
-// another on. /settings feeds locale.ts's cache (see its own comment) so
+// GET /auth/me, GET /setup-status, GET /settings and GET /capture-config all
+// run in parallel, not sequentially -- four independent reads with nothing
+// for one to gate another on. /settings feeds locale.ts's cache so
 // Paraglide's custom-userSettings strategy already has an answer by the
 // time App.svelte mounts the Router and any component calls an m.*()
 // message function, and populates session.theme for App.svelte's
@@ -103,11 +108,13 @@ export const session = new SessionState();
 // stranded on App.svelte's loading state with no way to recover short of
 // a manual reload.
 async function bootstrap(): Promise<void> {
-  const [meResult, statusResult, settingsResult] = await Promise.allSettled([
-    apiFetch("/auth/me"),
-    apiFetch("/setup-status"),
-    apiFetch("/settings"),
-  ]);
+  const [meResult, statusResult, settingsResult, configResult] =
+    await Promise.allSettled([
+      apiFetch("/auth/me"),
+      apiFetch("/setup-status"),
+      apiFetch("/settings"),
+      apiFetch("/capture-config"),
+    ]);
 
   if (meResult.status === "fulfilled" && meResult.value.ok) {
     session.user = (await meResult.value.json()) as CurrentUser;
@@ -127,6 +134,14 @@ async function bootstrap(): Promise<void> {
     };
     setCachedLanguage(body.language);
     session.theme = body.theme;
+  }
+  // Like /settings, a guest gets a 401 here, which is expected rather than a
+  // failure: linksEnabled just stays false.
+  if (configResult.status === "fulfilled" && configResult.value.ok) {
+    const body = (await configResult.value.json()) as {
+      links_enabled?: boolean;
+    };
+    session.linksEnabled = body.links_enabled === true;
   }
 }
 

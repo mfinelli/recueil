@@ -40,6 +40,7 @@ import (
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
@@ -82,14 +83,24 @@ type Server struct {
 	// message, rather than only finding out after a slow upload that the
 	// server was always going to reject it.
 	ManualUploadMaxBytes int64
+
+	// EnableLinks is config.Config.EnableLinks, threaded through for
+	// GetCaptureConfig to report so the dashboard can hide the Links
+	// screen when the feature is off.
+	EnableLinks bool
+
+	// LinkStore is the link favicon store the favicon route reads from; nil
+	// when links are off.
+	LinkStore *linkicons.Store
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64, enableLinks bool, linkStore *linkicons.Store) *Server {
 	return &Server{
 		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
 		ReadabilityVersion: readabilityVersion, AIModel: aiModel, WorkerURL: workerURL,
 		Pipeline: pipeline, ManualUploadMaxBytes: manualUploadMaxBytes,
+		EnableLinks: enableLinks, LinkStore: linkStore,
 	}
 }
 
@@ -1397,6 +1408,14 @@ type pageDetailResponse struct {
 	Tags        []pageTagResponse        `json:"tags"`
 	Collections []pageCollectionResponse `json:"collections"`
 	Links       []pageLinkResponse       `json:"links"`
+
+	// MatchingLinkID is the same-URL hint: the id of the user's link (a
+	// bookmark-only entry, not one of Links above, which are related
+	// pages) with this page's normalized URL, and MatchingLinkTitle that
+	// link's title (null if it has none), so the callout can name it without
+	// fetching the link. Both are always null if links are off.
+	MatchingLinkID    *int64  `json:"matching_link_id"`
+	MatchingLinkTitle *string `json:"matching_link_title"`
 }
 
 // GET /api/pages/{id}: page detail plus full capture (version) history
@@ -1453,6 +1472,20 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
 		Links:        []pageLinkResponse{},
+	}
+	if s.EnableLinks {
+		link, err := s.Queries.GetLinkByNormalizedURL(ctx, db.GetLinkByNormalizedURLParams{
+			UserID: user.ID, NormalizedUrl: page.NormalizedUrl,
+		})
+		switch {
+		case err == nil:
+			resp.MatchingLinkID = &link.ID
+			resp.MatchingLinkTitle = textOrNil(link.Title)
+		case !errors.Is(err, pgx.ErrNoRows):
+			log.Printf("warning: failed to look up the link matching page %d: %v", page.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 	for i := range captures {
 		c := &captures[i]
@@ -1976,6 +2009,7 @@ type captureConfigResponse struct {
 	ReadabilityVersion   *string `json:"readability_version"`
 	AIModel              *string `json:"ai_model"`
 	ManualUploadMaxBytes int64   `json:"manual_upload_max_bytes"`
+	LinksEnabled         bool    `json:"links_enabled"`
 }
 
 // GET /api/capture-config: this running agent's currently configured
@@ -1986,12 +2020,14 @@ type captureConfigResponse struct {
 // configured" (or AI enrichment disabled entirely) and is reported as null,
 // not "". Also reports manual_upload_max_bytes, so the manual-upload form
 // can reject an oversized file client-side rather than only after a slow
-// upload.
+// upload, and links_enabled, so the dashboard can hide the Links screen when
+// the feature is turned off.
 func (s *Server) GetCaptureConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, captureConfigResponse{
 		ReadabilityVersion:   stringOrNil(s.ReadabilityVersion),
 		AIModel:              stringOrNil(s.AIModel),
 		ManualUploadMaxBytes: s.ManualUploadMaxBytes,
+		LinksEnabled:         s.EnableLinks,
 	})
 }
 
@@ -2357,14 +2393,26 @@ func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
+	// How many links carry the tag, for the screen's "{n} links have this
+	// tag" line. Always 0 with links off.
+	var linkCount int64
+	if s.EnableLinks {
+		linkCount, err = s.Queries.CountTagLinks(ctx, tag.ID)
+		if err != nil {
+			log.Printf("warning: failed to count links for tag %d: %v", tag.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
 	// Includes the tag itself, not just its pages -- the caller (the
 	// TagDetail dashboard screen) needs the tag's name for its own
 	// heading and has no other endpoint that would give it that
 	// alongside the pages in one round trip. GetTagByID's own result is
 	// already in hand from the existence check above, so this is free.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tag":   tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
-		"pages": resp,
+		"tag":        tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
+		"pages":      resp,
+		"link_count": linkCount,
 	})
 }
 
@@ -2630,7 +2678,26 @@ func (s *Server) ListCollectionPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
+	// How many links are directly in the collection (not its sub-collections',
+	// like its pages), for the screen's "{n} links in this collection" line.
+	// Always 0 with links off.
+	var linkCount int64
+	if s.EnableLinks {
+		linkCount, err = s.Queries.CountCollectionLinks(ctx, id)
+		if err != nil {
+			log.Printf("warning: failed to count links for collection %d: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, collectionPagesResponse{Pages: resp, LinkCount: linkCount})
+}
+
+// collectionPagesResponse is GET /api/collections/{id}/pages: the pages directly
+// in a collection, and how many links are.
+type collectionPagesResponse struct {
+	Pages     []pageResponse `json:"pages"`
+	LinkCount int64          `json:"link_count"`
 }
 
 type addPageToCollectionRequest struct {

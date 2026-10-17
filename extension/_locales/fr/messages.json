@@ -75,6 +75,22 @@
     "message": "Enregistré",
     "description": "Capture button status after a successful capture."
   },
+  "saveAsLinkLink": {
+    "message": "Enregistrer comme lien",
+    "description": "Plain link under the capture button that saves the current tab as a link (its URL, title and icon) instead of archiving it."
+  },
+  "savingLink": {
+    "message": "Enregistrement du lien…",
+    "description": "Status while a link save is in progress."
+  },
+  "linkSaved": {
+    "message": "Lien enregistré",
+    "description": "Status after a link was saved successfully."
+  },
+  "linksDisabledError": {
+    "message": "recueil : l'enregistrement de liens est désactivé sur cette instance",
+    "description": "Error when a link save is attempted but the recueil instance has the links feature disabled."
+  },
   "unpairLink": {
     "message": "Oublier cet appareil",
     "description": "Link that unpairs this device from the recueil instance."

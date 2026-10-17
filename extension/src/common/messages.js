@@ -98,3 +98,14 @@ export const ENABLE_BOOKMARK_SYNC = "recueil:enable-bookmark-sync";
 // (folder teardown, clearing the enabled flag, relinquishing the
 // permission) -- also called directly from unpair, not just this message.
 export const DISABLE_BOOKMARK_SYNC = "recueil:disable-bookmark-sync";
+
+// Popup -> background: save the active tab as a link (title and favicon only,
+// no archived HTML) instead of capturing it. Resolves with the saved link's id
+// and title; rejects with a descriptive Error, as CAPTURE_ACTIVE_TAB does.
+export const SAVE_ACTIVE_TAB_AS_LINK = "recueil:save-active-tab-as-link";
+
+// Popup -> background: is the links feature on for this instance? Resolves with
+// a boolean, from a cache refreshed at most daily; false when unpaired, when
+// the Worker has links off or predates them, or when it can't be asked and
+// nothing is cached.
+export const GET_LINKS_ENABLED = "recueil:get-links-enabled";

@@ -183,6 +183,8 @@ const basePage: PageDetail = {
   tags: [{ id: 1, name: "reading", slug: "reading", source: "manual" }],
   collections: [{ id: 5, name: "Articles", parent_id: null }],
   links: [],
+  matching_link_id: null,
+  matching_link_title: null,
 };
 
 type LoadOptions = {
@@ -1111,5 +1113,42 @@ describe("PageDetail", () => {
 
     expect(screen.getByText(/manual upload/)).toBeTruthy();
     expect(screen.getByText(/2\.0 KB/)).toBeTruthy();
+  });
+});
+
+describe("PageDetail: the same-URL hint", () => {
+  it("names the link with the same URL and links to it", async () => {
+    render42({
+      page: {
+        ...basePage,
+        matching_link_id: 9,
+        matching_link_title: "The saved link",
+      },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(screen.getByText(/This URL is also saved as a link:/)).toBeTruthy();
+    const anchor = screen.getByRole("link", { name: "The saved link" });
+    expect(anchor.getAttribute("href")).toBe("#/links/9");
+  });
+
+  it("falls back to the URL when the link has no title", async () => {
+    render42({
+      page: { ...basePage, matching_link_id: 9, matching_link_title: null },
+    });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    expect(
+      screen
+        .getByText(/This URL is also saved as a link:/)
+        .querySelector("a")
+        ?.textContent?.trim(),
+    ).toBe("example.com/article");
+  });
+
+  it("is absent when no link has the same URL", async () => {
+    render42();
+    await screen.findByRole("heading", { name: "An example article" });
+    expect(screen.queryByText(/also saved as a link/)).toBeNull();
   });
 });

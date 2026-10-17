@@ -631,6 +631,106 @@ describe("handleCompleteQueueItem", () => {
     expect(response.status).toBe(400);
   });
 
+  it.each([
+    ["a captured_at that isn't a timestamp", "yesterday"],
+    ["a bare-number captured_at", "1"],
+    [
+      "a captured_at that looks like a timestamp but isn't",
+      "2026-13-45T99:99:99Z",
+    ],
+  ])(
+    "rejects %s, writing nothing and leaving the item claimed",
+    async (name, capturedAt) => {
+      const slug = name.replace(/\W+/g, "-");
+      const { userId, tokenId } = await seedUserAndToken(
+        `rcl_live_complete-badts-${slug}`,
+      );
+      const itemId = `complete-badts-${slug}`;
+      await seedQueueItem(
+        itemId,
+        userId,
+        "https://example.com/badts",
+        "claimed",
+        tokenId,
+      );
+
+      const response = await handleCompleteQueueItem(
+        authedRequest(
+          "POST",
+          `/queue/${itemId}/complete`,
+          `rcl_live_complete-badts-${slug}`,
+          { capture_id: `capture-badts-${slug}`, captured_at: capturedAt },
+        ),
+        env,
+        testCtx,
+        itemId,
+      );
+      expect(response.status).toBe(400);
+
+      const row = await env.DB.prepare(
+        "SELECT id FROM pending_captures WHERE id = ?",
+      )
+        .bind(`capture-badts-${slug}`)
+        .first();
+      expect(row).toBeNull();
+      const item = await env.DB.prepare(
+        "SELECT status FROM queue_items WHERE id = ?",
+      )
+        .bind(itemId)
+        .first();
+      expect(item.status).toBe("claimed");
+    },
+  );
+
+  it.each([
+    [
+      "an offset timestamp",
+      "2026-07-12T14:00:00+02:00",
+      "2026-07-12T12:00:00.000Z",
+    ],
+    [
+      "one without milliseconds",
+      "2026-07-12T12:00:00Z",
+      "2026-07-12T12:00:00.000Z",
+    ],
+  ])(
+    "stores captured_at normalized to UTC: %s",
+    async (name, input, expected) => {
+      const slug = name.replace(/\W+/g, "-");
+      const { userId, tokenId } = await seedUserAndToken(
+        `rcl_live_complete-normts-${slug}`,
+      );
+      const itemId = `complete-normts-${slug}`;
+      await seedQueueItem(
+        itemId,
+        userId,
+        "https://example.com/normts",
+        "claimed",
+        tokenId,
+      );
+
+      const response = await handleCompleteQueueItem(
+        authedRequest(
+          "POST",
+          `/queue/${itemId}/complete`,
+          `rcl_live_complete-normts-${slug}`,
+          { capture_id: `capture-normts-${slug}`, captured_at: input },
+        ),
+        env,
+        testCtx,
+        itemId,
+      );
+      expect(response.status).toBe(201);
+
+      const row = await env.DB.prepare(
+        "SELECT captured_at FROM pending_captures WHERE id = ?",
+      )
+        .bind(`capture-normts-${slug}`)
+        .first();
+      expect(row.captured_at).toBe(expected);
+    },
+  );
+
   it("records a deterministic r2_key_favicon when favicon_ext is declared", async () => {
     const { userId, tokenId } = await seedUserAndToken(
       "rcl_live_complete-favicon",
@@ -890,6 +990,73 @@ describe("handleCompleteDirectCapture", () => {
     );
     expect(response.status).toBe(400);
   });
+
+  it.each([
+    ["a captured_at that isn't a timestamp", "yesterday"],
+    ["a bare-number captured_at", "1"],
+    [
+      "a captured_at that looks like a timestamp but isn't",
+      "2026-13-45T99:99:99Z",
+    ],
+  ])("rejects %s, writing nothing", async (name, capturedAt) => {
+    const slug = name.replace(/\W+/g, "-");
+    const rawToken = `rcl_live_direct-badts-${slug}`;
+    await seedUserAndToken(rawToken);
+    const response = await handleCompleteDirectCapture(
+      authedRequest("POST", "/captures/complete", rawToken, {
+        capture_id: `direct-badts-${slug}`,
+        url: "https://example.com/badts",
+        captured_at: capturedAt,
+      }),
+      env,
+      testCtx,
+    );
+    expect(response.status).toBe(400);
+
+    const row = await env.DB.prepare(
+      "SELECT id FROM pending_captures WHERE id = ?",
+    )
+      .bind(`direct-badts-${slug}`)
+      .first();
+    expect(row).toBeNull();
+  });
+
+  it.each([
+    [
+      "an offset timestamp",
+      "2026-07-12T14:00:00+02:00",
+      "2026-07-12T12:00:00.000Z",
+    ],
+    [
+      "one without milliseconds",
+      "2026-07-12T12:00:00Z",
+      "2026-07-12T12:00:00.000Z",
+    ],
+  ])(
+    "stores captured_at normalized to UTC: %s",
+    async (name, input, expected) => {
+      const slug = name.replace(/\W+/g, "-");
+      const rawToken = `rcl_live_direct-normts-${slug}`;
+      await seedUserAndToken(rawToken);
+      const response = await handleCompleteDirectCapture(
+        authedRequest("POST", "/captures/complete", rawToken, {
+          capture_id: `direct-normts-${slug}`,
+          url: "https://example.com/normts",
+          captured_at: input,
+        }),
+        env,
+        testCtx,
+      );
+      expect(response.status).toBe(201);
+
+      const row = await env.DB.prepare(
+        "SELECT captured_at FROM pending_captures WHERE id = ?",
+      )
+        .bind(`direct-normts-${slug}`)
+        .first();
+      expect(row.captured_at).toBe(expected);
+    },
+  );
 });
 
 describe("handleFailQueueItem", () => {

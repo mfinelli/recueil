@@ -68,6 +68,8 @@ func init() {
 		"cloudflare_d1_database_id",
 		"cloudflare_api_token",
 		"archive_dir",
+		"enable_links",
+		"links_dir",
 		"r2_account_id",
 		"r2_bucket_name",
 		"r2_access_key_id",

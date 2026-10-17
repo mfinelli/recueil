@@ -31,6 +31,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import AppHeader from "../components/AppHeader.svelte";
   import PageList from "../components/PageList.svelte";
+  import LinkCountLine from "../components/LinkCountLine.svelte";
   import { apiJSON, ApiError } from "../lib/api";
   import type { Tag, TagPagesResponse, Page } from "../lib/types";
   import { m } from "../paraglide/messages";
@@ -39,6 +40,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   let tag = $state<Tag | null>(null);
   let pages = $state<Page[]>([]);
+  let linkCount = $state(0);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
@@ -49,6 +51,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       const res = await apiJSON<TagPagesResponse>(`/tags/${slug}/pages`);
       tag = res.tag;
       pages = res.pages;
+      linkCount = res.link_count;
     } catch (err) {
       error = err instanceof ApiError ? err.message : m.tagdetail_load_error();
     } finally {
@@ -77,6 +80,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     </div>
   {:else}
     <h1>{tag?.name}</h1>
+    <LinkCountLine
+      count={linkCount}
+      kind="tag"
+      href={`/links?tag=${encodeURIComponent(tag?.slug ?? "")}`}
+    />
     <PageList {pages} emptyMessage={m.tagdetail_no_pages()} />
   {/if}
 </main>

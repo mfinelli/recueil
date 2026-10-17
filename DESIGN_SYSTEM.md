@@ -146,10 +146,10 @@ does an exact match against the element's `href`. For a nav item whose section
 has drill-down routes (e.g. Library → `/pages/:id`, Collections →
 `/collections/*`), pass an explicit `path` regex so the link stays active on
 those nested routes too — see `AppHeader.svelte`'s
-`libraryActive`/`collectionsActive`/`tagsActive` for the pattern. The active
-class itself needs `:global(.active)` in scoped component styles, since the
-class is added by the action at runtime and Svelte's scoped-CSS analysis can't
-otherwise see it's used.
+`libraryActive`/`collectionsActive`/`tagsActive`/`linksActive` for the pattern.
+The active class itself needs `:global(.active)` in scoped component styles,
+since the class is added by the action at runtime and Svelte's scoped-CSS
+analysis can't otherwise see it's used.
 
 ### Mobile disclosure (nav collapse)
 
@@ -199,6 +199,8 @@ Two independent rules, not one:
   `faviconLoadFailed` and `thumbnailLoadFailed` as two separate `SvelteSet`s for
   exactly this reason.
 
+`LinkList.svelte` applies the favicon half of this (a link has no thumbnail).
+
 Fallback content: a small bordered `Globe` icon for a missing/broken favicon
 (list and grid both), the title's first letter in the display serif for a
 missing/broken thumbnail (grid only) — both are "this represents a generic page"
@@ -222,6 +224,43 @@ itself fails to load, both buttons default to showing rather than silently
 disappearing, since a missing capability is worse than an
 occasionally-unnecessary one. Reach for this same fail-open shape for any future
 "hide when redundant" control gated on a second, independent fetch.
+
+### A row with two destinations (`LinkList.svelte`)
+
+A link's row opens its detail screen, but the saved URL itself is one click away
+on a trailing icon button. Anchors can't nest, so these are siblings: the `li`
+is a two-column grid (`1fr auto`) with the row's link in the first column
+(favicon, title, URL and date, laid out as `PageList`'s list rows are) and an
+`icon-btn` link in the second. The `li` takes the hover background, so the two
+read as one row. Anything inside the row that would otherwise need to be its own
+link (the "Also archived" marker, which points at the matching page) is a plain
+indicator on its own third line, with `role="img"` and an `aria-label` that says
+what it means in full ("This URL is also archived as a page"), and the real link
+lives on the detail screen. The icon link needs an accessible name that says
+where it goes ("Open {title} in a new tab"), since the glyph alone doesn't, and
+it opens with `target="_blank" rel="noreferrer"`.
+
+### A pointer line, and a filter pill (`LinkCountLine.svelte`, the Links page)
+
+A tag's or collection's links aren't a second list on its screen (the page lists
+are built around grid and list views of pages, and a link has no thumbnail).
+They're one muted line under the heading, `Link` icon, "{n} links have this
+tag." and an underlined "View links", which shows only when the count is above
+zero so a tag with no links looks exactly as it always did. "View links" opens
+the Links page filtered by it, and that page says so with a "Filtered by tag"
+row tucked up under the toolbar: the filter's name in a pill with a brass-tinted
+border (the same tint as an AI tag's) and a small clear button.
+
+### The same-URL callout (`SameUrlHint.svelte`)
+
+A page and a link can share a normalized URL, and each detail screen says so in
+one muted line on a `--paper-raised` card under the source row, naming the other
+and linking to it ("This URL is also archived as a page: {title}" on a link's
+screen with the `Archive` icon, "This URL is also saved as a link: {title}" on a
+page's with `Link`). It's one shared component so the two stay identical. The
+title comes in the same API response as the id, and falls back to the URL when
+the other entity has none. In a list row the same fact is only a small non-link
+marker, since a link can't nest in the row's own link.
 
 ### A `title` attribute alone isn't enough for a meaningful icon
 

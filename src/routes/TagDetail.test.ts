@@ -40,6 +40,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 });
 
 import { apiJSON, ApiError } from "../lib/api";
+import { session } from "../lib/session.svelte";
 import type { Page, Tag } from "../lib/types";
 import TagDetail from "./TagDetail.svelte";
 
@@ -64,10 +65,10 @@ const examplePage: Page = {
   updated_at: "2026-05-01T12:00:00Z",
 };
 
-function mockLoad(tag: Tag, pages: Page[] = []) {
+function mockLoad(tag: Tag, pages: Page[] = [], linkCount = 0) {
   apiJSONMock.mockImplementation((path: string) => {
     if (path === `/tags/${tag.slug}/pages`)
-      return Promise.resolve({ tag, pages });
+      return Promise.resolve({ tag, pages, link_count: linkCount });
     throw new Error(`unexpected apiJSON call: ${path}`);
   });
 }
@@ -128,5 +129,80 @@ describe("TagDetail", () => {
       name: /All tags/,
     })) as HTMLAnchorElement;
     expect(back.getAttribute("href")).toBe("#/tags");
+  });
+});
+
+describe("TagDetail: the links line", () => {
+  afterEach(() => {
+    session.linksEnabled = false;
+  });
+
+  it("says how many links have the tag, above the page list, with a link to them", async () => {
+    session.linksEnabled = true;
+    mockLoad(recipesTag, [examplePage], 3);
+    render(TagDetail, { params: { slug: "recipes" } });
+
+    expect(await screen.findByText("3 links have this tag.")).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "View links" }).getAttribute("href"),
+    ).toBe("#/links?tag=recipes");
+
+    // Above the list, below the heading.
+    const line = screen.getByText("3 links have this tag.");
+    const heading = screen.getByRole("heading", { name: "recipes" });
+    const page = screen.getByText("Lasagna recipe");
+    expect(
+      heading.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      line.compareDocumentPosition(page) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("uses the singular for one link", async () => {
+    session.linksEnabled = true;
+    mockLoad(recipesTag, [examplePage], 1);
+    render(TagDetail, { params: { slug: "recipes" } });
+    expect(await screen.findByText("1 link has this tag.")).toBeTruthy();
+  });
+
+  it("is absent when no link has the tag, so the screen looks as it always did", async () => {
+    session.linksEnabled = true;
+    mockLoad(recipesTag, [examplePage], 0);
+    render(TagDetail, { params: { slug: "recipes" } });
+    await screen.findByText("Lasagna recipe");
+    expect(screen.queryByRole("link", { name: "View links" })).toBeNull();
+    expect(screen.queryByText(/links? ha(s|ve) this tag/)).toBeNull();
+  });
+
+  it("is absent with links off, whatever the count", async () => {
+    session.linksEnabled = false;
+    mockLoad(recipesTag, [examplePage], 3);
+    render(TagDetail, { params: { slug: "recipes" } });
+    await screen.findByText("Lasagna recipe");
+    expect(screen.queryByText(/links have this tag/)).toBeNull();
+  });
+
+  it("a tag used only by links keeps its no-pages message, with the links line above it", async () => {
+    session.linksEnabled = true;
+    mockLoad(recipesTag, [], 2);
+    render(TagDetail, { params: { slug: "recipes" } });
+
+    const empty = await screen.findByText("No pages have this tag yet.");
+    const line = screen.getByText("2 links have this tag.");
+    expect(
+      line.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("encodes the slug in the filter link", async () => {
+    session.linksEnabled = true;
+    mockLoad({ id: 2, name: "a b", slug: "a b" }, [], 1);
+    render(TagDetail, { params: { slug: "a b" } });
+    expect(
+      (await screen.findByRole("link", { name: "View links" })).getAttribute(
+        "href",
+      ),
+    ).toBe("#/links?tag=a%20b");
   });
 });

@@ -31,17 +31,20 @@ import (
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/gc"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 )
 
 var (
-	gcDryRun bool
-	gcForce  bool
+	gcDryRun       bool
+	gcForce        bool
+	gcSkipCaptures bool
+	gcSkipLinks    bool
 )
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
-	Short: "Reclaim disk space orphaned by deleted pages/captures",
+	Short: "Reclaim disk space orphaned by deleted pages, captures and links",
 	Long: `Removes archive files no longer referenced by any page or capture.
 
 DELETE /api/pages/{id} and DELETE /api/captures/{id} both deliberately leave
@@ -50,6 +53,11 @@ pure database operation with no partial-failure state spanning both Postgres
 and the filesystem. This command is the sweep that reclaims them. It also
 prunes capture directories left containing nothing at all, which happens when
 an ingestion fails after creating its directory but before writing into it.
+
+Link favicons live in their own store (links_dir) and get their own second
+pass once the first has finished: DELETE /api/links/{id}, and saving a link
+again with a different (or no) favicon, likewise leave the old favicon file in
+place for this sweep to reclaim.
 
 Anything modified in the last 15 minutes is left alone regardless, since an
 in-flight capture writes to disk before committing to Postgres and is
@@ -60,6 +68,13 @@ without deleting anything and reports what it found -- that pattern is far
 more likely to mean something is wrong with the sweep than that the archive is
 genuinely half garbage. Use --force when it really is expected.
 
+Each pass has its own safety checks and its own report, and a pass that stops
+(for example on the half-unreferenced check above) stops the whole command
+before the next one starts.
+
+Use --skip-captures or --skip-links to run only one of the two; the link pass
+is skipped on its own when links are turned off.
+
 Safe to run repeatedly; run with --dry-run first to see what would be
 removed without touching disk.`,
 	Args: cobra.NoArgs,
@@ -68,18 +83,29 @@ removed without touching disk.`,
 
 func init() {
 	gcCmd.Flags().BoolVar(&gcDryRun, "dry-run", false, "report what would be removed without deleting anything")
-	gcCmd.Flags().BoolVar(&gcForce, "force", false, "proceed even if more than half of the scanned files are unreferenced")
+	gcCmd.Flags().BoolVar(&gcForce, "force", false, "proceed even if more than half of the scanned files are unreferenced (applies to each pass)")
+	gcCmd.Flags().BoolVar(&gcSkipCaptures, "skip-captures", false, "skip the captures archive pass and only sweep link favicons")
+	gcCmd.Flags().BoolVar(&gcSkipLinks, "skip-links", false, "skip the link favicon pass and only sweep the captures archive")
 	rootCmd.AddCommand(gcCmd)
 }
 
 func runGC(cmd *cobra.Command, args []string) error {
+	if gcSkipCaptures && gcSkipLinks {
+		return errors.New("--skip-captures and --skip-links together leave nothing to do")
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	ctx := cmd.Context()
+	sweepCaptures := !gcSkipCaptures
+	sweepLinks := !gcSkipLinks && cfg.EnableLinks
+	if !sweepCaptures && !sweepLinks {
+		return errors.New("--skip-captures was given and links are turned off (enable_links = false): nothing to do")
+	}
 
+	ctx := cmd.Context()
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return fmt.Errorf("connecting to postgres: %w", err)
@@ -99,51 +125,77 @@ func runGC(cmd *cobra.Command, args []string) error {
 	}
 
 	queries := db.New(pool)
-	store := archive.New(cfg.ArchiveDir)
-	runner := gc.NewRunner(gc.RunnerParams{Queries: queries, Store: store})
+	params := gc.RunnerParams{Queries: queries, Store: archive.New(cfg.ArchiveDir)}
+	if sweepLinks {
+		params.LinkStore = linkicons.New(cfg.LinksDir).Archive()
+	}
+	runner := gc.NewRunner(params)
 
 	if gcDryRun {
 		log.Println("recueil gc: dry run -- nothing will actually be deleted")
 	}
+	opts := gc.Options{DryRun: gcDryRun, Force: gcForce}
 
-	result, err := runner.Run(ctx, gc.Options{DryRun: gcDryRun, Force: gcForce})
-	if err != nil {
-		// TooManyOrphansError already explains itself in full, including
-		// what to do about it -- wrapping it in "running gc: ..." would
-		// just prefix noise onto an already-actionable message.
-		if _, ok := errors.AsType[*gc.TooManyOrphansError](err); ok {
-			return err
+	if sweepCaptures {
+		result, err := runner.Run(ctx, opts)
+		if err != nil {
+			return gcError(err)
 		}
-		return fmt.Errorf("running gc: %w", err)
+		reportGC("recueil gc", result)
 	}
 
+	if sweepLinks {
+		result, err := runner.RunLinks(ctx, opts)
+		if err != nil {
+			return gcError(err)
+		}
+		reportGC("recueil gc (links)", result)
+	} else if !gcSkipLinks {
+		log.Println("recueil gc: links are turned off (enable_links = false), skipping the link favicon pass")
+	}
+
+	return nil
+}
+
+// gcError passes a TooManyOrphansError through as it is -- it already explains
+// itself in full, including what to do about it, so wrapping it in "running
+// gc: ..." would just prefix noise onto an already-actionable message.
+func gcError(err error) error {
+	if _, ok := errors.AsType[*gc.TooManyOrphansError](err); ok {
+		return err
+	}
+	return fmt.Errorf("running gc: %w", err)
+}
+
+// reportGC logs one pass's Result. prefix is "recueil gc" for the captures
+// pass (unchanged from before there was a second pass) and "recueil gc
+// (links)" for the link favicon pass.
+func reportGC(prefix string, result gc.Result) {
 	verb := "removed"
 	if gcDryRun {
 		verb = "would remove"
 	}
-	log.Printf("recueil gc: scanned %d files, %s %d orphaned files, %s %.2f MB",
-		result.FilesScanned, verb, result.FilesRemoved, verbNoun(gcDryRun), float64(result.BytesReclaimed)/(1024*1024))
+	log.Printf("%s: scanned %d files, %s %d orphaned files, %s %.2f MB",
+		prefix, result.FilesScanned, verb, result.FilesRemoved, verbNoun(gcDryRun), float64(result.BytesReclaimed)/(1024*1024))
 	if result.EmptyDirsRemoved > 0 {
-		log.Printf("recueil gc: %s %d empty directories", verb, result.EmptyDirsRemoved)
+		log.Printf("%s: %s %d empty directories", prefix, verb, result.EmptyDirsRemoved)
 	}
 	if result.FilesSkippedRecent > 0 {
-		log.Printf("recueil gc: left %d unreferenced but recently-modified files alone (in-flight captures) -- they are judged on the next run",
-			result.FilesSkippedRecent)
+		log.Printf("%s: left %d unreferenced but recently-modified files alone (in-flight captures) -- they are judged on the next run",
+			prefix, result.FilesSkippedRecent)
 	}
 	// Only reachable here with --dry-run or --force: without either, a
 	// tripped check returns an error above and never gets this far.
 	if result.SafetyCheckTripped {
 		if gcDryRun {
-			log.Println("recueil gc: over half of the scanned files are unreferenced -- a real run would stop here; use --force if that is expected")
+			log.Printf("%s: over half of the scanned files are unreferenced -- a real run would stop here; use --force if that is expected", prefix)
 		} else {
-			log.Println("recueil gc: over half of the scanned files were unreferenced -- proceeded anyway because --force was given")
+			log.Printf("%s: over half of the scanned files were unreferenced -- proceeded anyway because --force was given", prefix)
 		}
 	}
 	if result.RemoveErrors > 0 {
-		log.Printf("recueil gc: %d files failed to remove -- see warnings above", result.RemoveErrors)
+		log.Printf("%s: %d files failed to remove -- see warnings above", prefix, result.RemoveErrors)
 	}
-
-	return nil
 }
 
 // verbNoun avoids an awkward "removed/would remove ... reclaimed/would

@@ -54,6 +54,8 @@ const {
   setBookmarkSyncEnabled,
   getBookmarksFolderId,
   setBookmarksFolderId,
+  getLinkFeatureCache,
+  setLinkFeatureCache,
 } = await import("../src/common/storage.js");
 
 beforeEach(() => {
@@ -199,5 +201,39 @@ describe("bookmark sync state", () => {
     expect(await getBookmarksFolderId()).toBe("folder-1");
     await setBookmarksFolderId(null);
     expect(await getBookmarksFolderId()).toBeNull();
+  });
+});
+
+describe("link feature cache", () => {
+  const cache = {
+    workerBaseURL: "https://recueil.example.com",
+    linksEnabled: true,
+    faviconInlineMaxBytes: 131072,
+    fetchedAt: "2026-10-17T12:00:00.000Z",
+  };
+
+  it("is null before anything has been cached", async () => {
+    expect(await getLinkFeatureCache()).toBeNull();
+  });
+
+  it("round-trips what was stored", async () => {
+    await setLinkFeatureCache(cache);
+    expect(await getLinkFeatureCache()).toEqual(cache);
+  });
+
+  it("is cleared along with the pairing config, since it belongs to that instance", async () => {
+    await setConfig({
+      workerBaseURL: "https://recueil.example.com",
+      token: "t",
+      deviceId: 1,
+      deviceName: "d",
+      deviceType: "extension",
+    });
+    await setLinkFeatureCache(cache);
+
+    await clearConfig();
+
+    expect(await getConfig()).toBeNull();
+    expect(await getLinkFeatureCache()).toBeNull();
   });
 });
