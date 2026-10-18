@@ -227,7 +227,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 	// auth (api_tokens bearer tokens, not the dashboard's session
 	// cookies) and its own request framing (JSON-RPC over Streamable
 	// HTTP, not this package's REST conventions).
-	r.Handle("/mcp", auth.RequireAPIToken(q)(mcpapi.NewHandler(q, build.Version)))
+	r.Handle("/mcp", auth.RequireAPIToken(q)(mcpapi.NewHandler(q, build.Version, s.EnableLinks)))
 
 	// POST /api/manual-upload is also not registered inside the
 	// r.Route("/api", ...) block above because that block's

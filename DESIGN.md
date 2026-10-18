@@ -2317,9 +2317,9 @@ should be backed up in the same job/window.
 
 ## 15. MCP Server
 
-Read-only access to a user's archive for local MCP clients. Intentionally scoped
-to only answering questions about the archive, not manipulating it — no write
-tools right now and none are planned.
+Read-only access to a user's archive (and, with links on, their saved links) for
+local MCP clients. Intentionally scoped to only answering questions about the
+archive, not manipulating it — no write tools right now and none are planned.
 
 **Transport and reachability.** Streamable HTTP, mounted at `POST /mcp` on the
 existing backend HTTP server (`internal/httpapi.NewRouter`) — reachable wherever
@@ -2364,6 +2364,30 @@ build.
   a caller could name a `page_id` it owns and a `capture_id` belonging to a
   _different_ one of its own pages and get back metadata from one page paired
   with content from another.
+
+**Link tools** (§17), registered only when the links feature is on
+(`mcpapi.NewHandler`'s `enableLinks`; with it off a client never sees them),
+read-only like the rest, and in `internal/mcpapi/links.go`:
+
+- `search_links(query?, tag_slug?, collection_id?, limit?)` — wraps
+  `SearchLinks` (a case-insensitive substring match over title, URL and notes,
+  with LIKE's wildcards escaped; a link has no body text to full-text search)
+  or, with no query, `ListLinks`, newest saved first. `tag_slug` and
+  `collection_id` narrow it the way they do `GET /api/links`: each is checked
+  against the caller's own first (a normal error result otherwise, as
+  `list_pages_by_tag` does), and a collection means its direct links only. One
+  tool rather than a `list_recent` and a `list_links_by_tag` and so on, since
+  each of those would be this one with a filter, and every tool a model is shown
+  costs context.
+- `get_link(link_id)` — a link's title, URL (as saved, not normalized), notes,
+  tags and collections by name, and save time.
+
+Both return **`page_id`** when the same URL is also an archived page (the
+same-URL hint, §17h): a link has no content of its own, so that is how a model
+gets from "I saved this" to the page's full text, by passing it to `get_page`.
+The existing tag and collection tools need no link versions, because tags and
+collections are shared with pages (§17b) and the link tools take them as
+filters.
 
 **`limit` handling.** `SearchPages`/`ListPages` already take `limit`/`offset`
 and return `total_count` via a window function — reused as-is, default 20,
@@ -2966,19 +2990,16 @@ folder:
 
 ### 17k. MCP
 
-Link support lands **with the feature**, not later, so it ships complete. It
-stays read-only (§15's "no write tools" is unchanged) and scoped to the
-authenticated user like every other tool.
-
-- The link tools are **registered only when the flag is on** (§17f).
-- Proposed tools: `search_links(query, limit?)` and `get_link(link_id)`. Whether
-  the existing tag and collection tools (`list_pages_by_tag`,
-  `list_pages_by_collection`) also return links, or get link-specific siblings,
-  depends on the §17h decision.
-- A link carries no body text, so its value to a model is title, URL, tags and
-  collections. `get_link` should include the matching `page_id` when the same
-  `normalized_url` is also archived, so a model can follow it to the full text.
-- `limit` handling matches §15 (default 20, cap 100).
+Link support landed **with the feature**, so it ships complete. It stays
+read-only (§15's "no write tools" is unchanged) and scoped to the authenticated
+user like every other tool, and the link tools are **registered only when the
+flag is on** (§17f). The tools, `search_links` and `get_link`, are described in
+§15. The decision worth recording here: the existing tag and collection tools
+got no link versions, since tags and collections are shared with pages (§17b)
+and `search_links` takes them as filters. A link carries no body text, so its
+value to a model is title, URL, notes, tags and collections, and `page_id` (when
+the same URL is also an archived page) is the way on to the full text via
+`get_page`. `limit` handling matches §15 (default 20, cap 100).
 
 ### 17l. Implementation order and housekeeping
 
@@ -2988,7 +3009,7 @@ mirror and docs at once, so it should be built in stages. A reasonable order:
 
 1. Tables and migrations, the flag, the favicon store, Worker endpoints, backend
    ingestion, the extension action, the dashboard Links page, and the MCP tools
-   (all but the MCP tools have landed).
+   (all landed).
 2. Browser bookmark sync (§17j).
 3. Wayback submission (§17i), for links and pages together.
 
