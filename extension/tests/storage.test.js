@@ -56,6 +56,10 @@ const {
   setBookmarksFolderId,
   getLinkFeatureCache,
   setLinkFeatureCache,
+  isLinkBookmarkSyncEnabled,
+  setLinkBookmarkSyncEnabled,
+  getLinkBookmarksFolderId,
+  setLinkBookmarksFolderId,
 } = await import("../src/common/storage.js");
 
 beforeEach(() => {
@@ -235,5 +239,28 @@ describe("link feature cache", () => {
 
     expect(await getConfig()).toBeNull();
     expect(await getLinkFeatureCache()).toBeNull();
+  });
+});
+
+describe("link bookmark sync state", () => {
+  it("is off, with no folder, by default", async () => {
+    expect(await isLinkBookmarkSyncEnabled()).toBe(false);
+    expect(await getLinkBookmarksFolderId()).toBeNull();
+  });
+
+  it("round-trips the flag and the folder id", async () => {
+    await setLinkBookmarkSyncEnabled(true);
+    await setLinkBookmarksFolderId("folder-9");
+    expect(await isLinkBookmarkSyncEnabled()).toBe(true);
+    expect(await getLinkBookmarksFolderId()).toBe("folder-9");
+  });
+
+  it("is independent of the archived-pages sync's own state", async () => {
+    await setBookmarkSyncEnabled(true);
+    await setLinkBookmarkSyncEnabled(false);
+    await setLinkBookmarksFolderId("links-folder");
+    expect(await isBookmarkSyncEnabled()).toBe(true);
+    expect(await getBookmarksFolderId()).toBeNull();
+    expect(await isLinkBookmarkSyncEnabled()).toBe(false);
   });
 });

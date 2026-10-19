@@ -46,14 +46,20 @@ import {
 } from "./queue.js";
 import {
   syncBookmarks,
+  syncAllBookmarks,
   registerBookmarkSyncAlarm,
   enableBookmarkSync,
   disableBookmarkSync,
+  enableLinkBookmarkSync,
+  disableLinkBookmarkSync,
+  syncLinkBookmarks,
+  disableAllBookmarkSyncs,
 } from "./bookmarks.js";
 import {
   getQueueCache,
   clearClaimedTab,
   isBookmarkSyncEnabled,
+  isLinkBookmarkSyncEnabled,
 } from "../common/storage.js";
 import {
   PAIR_DEVICE,
@@ -66,6 +72,9 @@ import {
   GET_BOOKMARK_SYNC_STATE,
   ENABLE_BOOKMARK_SYNC,
   DISABLE_BOOKMARK_SYNC,
+  GET_LINK_BOOKMARK_SYNC_STATE,
+  ENABLE_LINK_BOOKMARK_SYNC,
+  DISABLE_LINK_BOOKMARK_SYNC,
   SAVE_ACTIVE_TAB_AS_LINK,
   GET_LINKS_ENABLED,
 } from "../common/messages.js";
@@ -87,14 +96,14 @@ registerBookmarkSyncAlarm();
 // or the device isn't paired yet, the same as the alarm-driven call does.
 browser.runtime.onStartup.addListener(() => {
   refreshQueueList().catch(() => {});
-  syncBookmarks().catch(() => {});
+  syncAllBookmarks().catch(() => {});
   // Once per browser start, so the day-long cache of the Worker's links config
   // never leaves a switched feature unnoticed for long (see link-config.js).
   refreshLinkFeatures().catch(() => {});
 });
 browser.runtime.onInstalled.addListener(() => {
   refreshQueueList().catch(() => {});
-  syncBookmarks().catch(() => {});
+  syncAllBookmarks().catch(() => {});
 });
 
 // Tidies up storage.js's claimed-tabs tracking when a tab closes --
@@ -128,7 +137,7 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
         // succeeds. Harmless either way, and correct if that assumption
         // ever stops holding.
         refreshQueueList().catch(() => {});
-        syncBookmarks().catch(() => {});
+        syncAllBookmarks().catch(() => {});
         return config;
       });
     case GET_AUTH_STATE:
@@ -143,7 +152,7 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
       // not just relied on disableBookmarkSync's own internal
       // best-effort handling: unpairing itself must never be blocked by
       // a bookmarks-API hiccup, no matter what.
-      return disableBookmarkSync()
+      return disableAllBookmarkSyncs()
         .catch(() => {})
         .then(() => unpair());
     case GET_QUEUE_LIST:
@@ -158,6 +167,12 @@ browser.runtime.onMessage.addListener((/** @type {any} */ message) => {
       return enableBookmarkSync();
     case DISABLE_BOOKMARK_SYNC:
       return disableBookmarkSync();
+    case GET_LINK_BOOKMARK_SYNC_STATE:
+      return isLinkBookmarkSyncEnabled();
+    case ENABLE_LINK_BOOKMARK_SYNC:
+      return enableLinkBookmarkSync();
+    case DISABLE_LINK_BOOKMARK_SYNC:
+      return disableLinkBookmarkSync();
     case SAVE_ACTIVE_TAB_AS_LINK:
       return saveActiveTabAsLink();
     case GET_LINKS_ENABLED:
@@ -197,6 +212,9 @@ globalThis.__recueilClaimQueueItem = claimQueueItem;
 globalThis.__recueilEnableBookmarkSync = enableBookmarkSync;
 globalThis.__recueilSyncBookmarks = syncBookmarks;
 globalThis.__recueilDisableBookmarkSync = disableBookmarkSync;
+globalThis.__recueilEnableLinkBookmarkSync = enableLinkBookmarkSync;
+globalThis.__recueilSyncLinkBookmarks = syncLinkBookmarks;
+globalThis.__recueilDisableLinkBookmarkSync = disableLinkBookmarkSync;
 
 // Narrower than __recueilCapture above: runs only the capture-inject step
 // (no auth, no upload) against whatever tab is active, for isolating a

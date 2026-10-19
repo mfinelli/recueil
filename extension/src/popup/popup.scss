@@ -508,6 +508,12 @@ hr.rule {
   }
 }
 
-#bookmark-sync-status {
+#bookmark-sync-status,
+#link-bookmark-sync-status {
   margin-top: 6px;
+}
+
+/* The saved-links toggle sits directly under the archived-pages one. */
+.bookmark-sync-section + .bookmark-sync-section {
+  margin-top: 12px;
 }

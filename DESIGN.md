@@ -3026,6 +3026,20 @@ folder:
 - The mirrored URL is the link's `raw_url`, not its normalized one (§17h), which
   is a unique identity key per user all the same: a distinct normalized URL has
   a distinct raw URL, and the normalized one is unique.
+- **The extension** (`background/bookmarks.js`): both syncs are the same code
+  told apart by a small descriptor (folder name, endpoint, which flag and folder
+  id in storage), so the reconcile-by-URL, adopt-or-create-the-folder and
+  teardown rules of §3j apply to links unchanged. The alarm, browser start and
+  pairing run both (independently: one failing never stops the other, and each
+  is a no-op if it isn't enabled), and unpairing takes both down. In the popup
+  the links toggle sits under the archived-pages one and is shown only when the
+  instance has links on, **or when it's already enabled**, so it can still be
+  turned off after the feature is. If the instance has links off, or a Worker
+  that predates them, `GET /archived-links` answers `404`: that is no list to
+  reconcile against rather than an empty one, so the folder is left exactly as
+  it is instead of swept clean, and it reconciles again once links are back.
+  (The archived-pages sync has no such tolerance: its route has always existed.)
+  **Landed.**
 
 ### 17k. MCP
 

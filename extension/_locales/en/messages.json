@@ -131,6 +131,10 @@
     "message": "Sync archived pages to bookmarks",
     "description": "Label for the bookmark-sync toggle checkbox."
   },
+  "linkBookmarkSyncLabel": {
+    "message": "Sync saved links to bookmarks",
+    "description": "Label for the toggle that syncs saved links (not archived pages) to their own bookmarks folder. Only shown when the instance has links turned on."
+  },
   "bookmarkSyncPermissionDenied": {
     "message": "Permission was not granted.",
     "description": "Shown when the browser's bookmarks permission prompt is denied."

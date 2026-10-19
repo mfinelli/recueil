@@ -61,6 +61,15 @@
 // toggle on the backend/dashboard, which removes it from
 // GET /archived-pages entirely, not editing or deleting the bookmark
 // locally and hoping recueil respects that.
+//
+// Saved links get a second, entirely separate sync of the same shape:
+// their own opt-in, their own folder named "recueil links" -- a sibling of
+// the existing "recueil" folder. Reconciled by URL against GET
+// /archived-links. Everything above applies to it equally, with the link's
+// raw_url (the URL as saved, which is a unique key per user all the same) in
+// place of the page's normalized one. The two share this module's code, told
+// apart only by a SyncKind descriptor, and share the one `bookmarks` permission,
+// which is relinquished only when neither sync is left enabled.
 
 import browser from "webextension-polyfill";
 import {
@@ -69,16 +78,60 @@ import {
   setBookmarkSyncEnabled,
   getBookmarksFolderId,
   setBookmarksFolderId,
+  isLinkBookmarkSyncEnabled,
+  setLinkBookmarkSyncEnabled,
+  getLinkBookmarksFolderId,
+  setLinkBookmarksFolderId,
 } from "../common/storage.js";
-import { apiRequest } from "../common/api-client.js";
+import { apiRequest, ApiError } from "../common/api-client.js";
 
-const FOLDER_TITLE = "recueil";
 // An explicitly unusual, unlikely-to-collide title -- see ensureFolder's
 // doc comment for what this is actually for (discovering the real default
 // bookmarks container's id, not a real bookmark meant to persist).
 const PROBE_TITLE = "__recueil_probe__";
 const SYNC_ALARM_NAME = "recueil-bookmarks-sync";
 const SYNC_PERIOD_MINUTES = 360; // 6 hours, matching queue.js's own cadence
+
+/**
+ * What differs between the two syncs: everything else in this module is
+ * shared. Both endpoints return a list whose items have a raw_url and a title.
+ *
+ * @typedef {Object} SyncKind
+ * @property {string} folderTitle - the dedicated folder's name
+ * @property {string} endpoint - the Worker route returning what to mirror
+ * @property {"pages"|"links"} listKey - the property of the response holding it
+ * @property {boolean} tolerateMissingRoute - whether a 404 from the endpoint
+ *   means "nothing to sync from" rather than a failure (links only: the
+ *   instance has them off, or a Worker that predates them)
+ * @property {() => Promise<boolean>} isEnabled
+ * @property {(enabled: boolean) => Promise<void>} setEnabled
+ * @property {() => Promise<string|null>} getFolderId
+ * @property {(folderId: string|null) => Promise<void>} setFolderId
+ */
+
+/** @type {SyncKind} */
+const PAGES = {
+  folderTitle: "recueil",
+  endpoint: "/archived-pages",
+  listKey: "pages",
+  tolerateMissingRoute: false,
+  isEnabled: isBookmarkSyncEnabled,
+  setEnabled: setBookmarkSyncEnabled,
+  getFolderId: getBookmarksFolderId,
+  setFolderId: setBookmarksFolderId,
+};
+
+/** @type {SyncKind} */
+const LINKS = {
+  folderTitle: "recueil links",
+  endpoint: "/archived-links",
+  listKey: "links",
+  tolerateMissingRoute: true,
+  isEnabled: isLinkBookmarkSyncEnabled,
+  setEnabled: setLinkBookmarkSyncEnabled,
+  getFolderId: getLinkBookmarksFolderId,
+  setFolderId: setLinkBookmarksFolderId,
+};
 
 /**
  * Ensures the dedicated recueil bookmarks folder exists -- reusing the
@@ -92,8 +145,8 @@ const SYNC_PERIOD_MINUTES = 360; // 6 hours, matching queue.js's own cadence
  * folder rather than recognizing the one that's already there. The
  * standard this enforces: recueil will either create or adopt (outside
  * of native browser sync propagating one, which is expected and fine, not
- * something to guard against) exactly one bookmarks folder named
- * "recueil" -- never two.
+ * something to guard against) exactly one bookmarks folder of each kind's
+ * name -- never two.
  *
  * Finding the right place to look is the tricky part: Chrome and Firefox
  * use different, non-portable ids for "Other Bookmarks"/"Unfiled
@@ -105,10 +158,11 @@ const SYNC_PERIOD_MINUTES = 360; // 6 hours, matching queue.js's own cadence
  * exactly where bookmarks.create() would also put the real folder, no
  * guessing needed.
  *
+ * @param {SyncKind} kind
  * @returns {Promise<string>}
  */
-async function ensureFolder() {
-  const folderId = await getBookmarksFolderId();
+async function ensureFolder(kind) {
+  const folderId = await kind.getFolderId();
   if (folderId) {
     try {
       await browser.bookmarks.get(folderId);
@@ -134,33 +188,34 @@ async function ensureFolder() {
 
   const siblings = await browser.bookmarks.getChildren(defaultParentId);
   const existingFolder = siblings.find(
-    (node) => node.title === FOLDER_TITLE && node.url === undefined,
+    (node) => node.title === kind.folderTitle && node.url === undefined,
   );
   if (existingFolder) {
-    await setBookmarksFolderId(existingFolder.id);
+    await kind.setFolderId(existingFolder.id);
     return existingFolder.id;
   }
 
   const folder = await browser.bookmarks.create({
     parentId: defaultParentId,
-    title: FOLDER_TITLE,
+    title: kind.folderTitle,
   });
-  await setBookmarksFolderId(folder.id);
+  await kind.setFolderId(folder.id);
   return folder.id;
 }
 
 /**
- * The real reconciliation: pulls the whole current archived-pages list
- * (see terraform/worker/index.js's handleListArchivedPages for why this is a
- * full list every time, not incremental) and diffs it by URL against
+ * The real reconciliation: pulls the whole current list from the kind's
+ * endpoint (see terraform/worker/index.js's handleListArchivedPages for why
+ * this is a full list every time, not incremental) and diffs it by URL against
  * whatever's actually in the dedicated folder right now -- see file doc
  * comment for why no separate tracked-id map is needed for this. A no-op
- * entirely if bookmark sync isn't enabled or the device isn't paired --
- * safe to call from an alarm that fires regardless of either being true
- * yet.
+ * entirely if this sync isn't enabled or the device isn't paired -- safe to
+ * call from an alarm that fires regardless of either being true yet.
+ *
+ * @param {SyncKind} kind
  */
-export async function syncBookmarks() {
-  if (!(await isBookmarkSyncEnabled())) {
+async function syncKind(kind) {
+  if (!(await kind.isEnabled())) {
     return;
   }
   const config = await getConfig();
@@ -168,12 +223,28 @@ export async function syncBookmarks() {
     return;
   }
 
-  const folderId = await ensureFolder();
-  const response =
-    /** @type {{pages: Array<{page_id: number, raw_url: string, title: string|null}>}} */ (
-      await apiRequest(config, "/archived-pages")
-    );
-  const pages = response?.pages ?? [];
+  const folderId = await ensureFolder(kind);
+
+  /** @type {any} */
+  let response;
+  try {
+    response = await apiRequest(config, kind.endpoint);
+  } catch (error) {
+    // Links only: with the feature off on the instance (or a Worker that
+    // predates it) the route doesn't exist. That's no list to reconcile
+    // against, not an empty one, so the folder is left exactly as it is
+    // rather than swept clean; it reconciles again once links are back.
+    if (
+      kind.tolerateMissingRoute &&
+      error instanceof ApiError &&
+      error.status === 404
+    ) {
+      return;
+    }
+    throw error;
+  }
+  /** @type {Array<{raw_url: string, title: string|null}>} */
+  const items = response?.[kind.listKey] ?? [];
 
   const children = await browser.bookmarks.getChildren(folderId);
   /** @type {Map<string, {id: string, title: string, url?: string}>} */
@@ -184,16 +255,16 @@ export async function syncBookmarks() {
   );
   const seenUrls = new Set();
 
-  for (const page of pages) {
-    seenUrls.add(page.raw_url);
-    const title = page.title || page.raw_url;
-    const existing = childByUrl.get(page.raw_url);
+  for (const item of items) {
+    seenUrls.add(item.raw_url);
+    const title = item.title || item.raw_url;
+    const existing = childByUrl.get(item.raw_url);
 
     if (!existing) {
       await browser.bookmarks.create({
         parentId: folderId,
         title,
-        url: page.raw_url,
+        url: item.raw_url,
       });
     } else if (existing.title !== title) {
       await browser.bookmarks.update(existing.id, { title });
@@ -201,8 +272,8 @@ export async function syncBookmarks() {
   }
 
   // Anything still in the folder that's no longer in the fetched list --
-  // excluded_from_mirror flipped, or the page itself was deleted -- gets
-  // removed here, not left behind to accumulate.
+  // excluded_from_mirror flipped, or the page or link itself was deleted --
+  // gets removed here, not left behind to accumulate.
   for (const child of children) {
     if (child.url !== undefined && !seenUrls.has(child.url)) {
       await browser.bookmarks.remove(child.id).catch(() => {});
@@ -211,30 +282,32 @@ export async function syncBookmarks() {
 }
 
 /**
- * Shared teardown, used both by the popup's "disable" toggle and by unpair()
- * -- deletes the entire recueil folder (whatever's actually in it) and
+ * Teardown of one kind's folder, used both by the popup's "disable" toggles
+ * and by unpair() -- deletes the entire folder (whatever's actually in it) and
  * forgets its tracked id.
  *
  * Using a full removeTree rather than removing entries one at a time
  * isn't introducing a new risk here -- any bookmark manually placed
  * inside recueil's own folder is already unsupported and already gets
- * swept away on the very next regular sync (syncBookmarks above removes
- * anything whose URL isn't in the current archived-pages list, with no
- * special case for "but a human put this here on purpose"), not just at
- * teardown. This is the same policy applied more thoroughly, not a
- * separate tradeoff specific to disabling/unpairing.
+ * swept away on the very next regular sync (syncKind above removes
+ * anything whose URL isn't in the current list, with no special case for
+ * "but a human put this here on purpose"), not just at teardown. This is
+ * the same policy applied more thoroughly, not a separate tradeoff
+ * specific to disabling/unpairing.
+ *
+ * @param {SyncKind} kind
  */
-export async function deleteBookmarksFolderAndState() {
-  const folderId = await getBookmarksFolderId();
+async function deleteFolderAndState(kind) {
+  const folderId = await kind.getFolderId();
   if (folderId) {
     await browser.bookmarks.removeTree(folderId).catch(() => {});
   }
-  await setBookmarksFolderId(null);
+  await kind.setFolderId(null);
 }
 
 /**
- * Turns bookmark sync on and runs an immediate sync -- called by the
- * popup's toggle only *after* it has already requested and confirmed the
+ * Turns one sync on and runs an immediate sync -- called by the popup's
+ * toggle only *after* it has already requested and confirmed the
  * `bookmarks` permission itself (see popup.js: that request has to happen
  * synchronously in the toggle's own change handler, the same
  * user-gesture reasoning as pairing's own <all_urls> request, not in
@@ -243,29 +316,128 @@ export async function deleteBookmarksFolderAndState() {
  * unlike the alarm's own best-effort handling, the popup can usefully
  * show this one -- but sync is left enabled regardless; the next alarm
  * tick will just try again.
+ *
+ * @param {SyncKind} kind
  */
-export async function enableBookmarkSync() {
-  await setBookmarkSyncEnabled(true);
-  await syncBookmarks();
+async function enableSync(kind) {
+  await kind.setEnabled(true);
+  await syncKind(kind);
 }
 
 /**
- * Turns bookmark sync off: tears down the folder and its tracked state
- * (deleteBookmarksFolderAndState above), clears the enabled flag, and
- * relinquishes the `bookmarks` permission itself -- no reason to keep
- * holding a permission that isn't being used; re-enabling later just
- * requests it again. Used both by the popup's toggle and by unpair() --
- * see background/index.js for why the ordering there matters (this has
- * to run before unpair's own storage.local.clear(), not after).
- * Intentionally swallows its own failures throughout: unpairing in
- * particular must never be blocked by a bookmarks-API hiccup.
+ * The `bookmarks` permission is shared by both syncs, so turning one off only
+ * relinquishes it if the other isn't still using it. No reason to keep
+ * holding a permission that isn't being used; re-enabling later just requests
+ * it again. Intentionally swallows its own failures: unpairing in particular
+ * must never be blocked by a bookmarks-API hiccup.
  */
-export async function disableBookmarkSync() {
-  await deleteBookmarksFolderAndState();
-  await setBookmarkSyncEnabled(false);
+async function relinquishPermission() {
   await browser.permissions
     .remove({ permissions: ["bookmarks"] })
     .catch(() => {});
+}
+
+/**
+ * Turns one sync off: tears down its folder and tracked state, clears its
+ * enabled flag, and relinquishes the permission if the other sync isn't using
+ * it either.
+ *
+ * @param {SyncKind} kind
+ * @param {SyncKind} other
+ */
+async function disableSync(kind, other) {
+  await deleteFolderAndState(kind);
+  await kind.setEnabled(false);
+  if (!(await other.isEnabled())) {
+    await relinquishPermission();
+  }
+}
+
+/** See syncKind: the archived-pages sync. */
+export async function syncBookmarks() {
+  await syncKind(PAGES);
+}
+
+/** See deleteFolderAndState: the archived-pages folder. */
+export async function deleteBookmarksFolderAndState() {
+  await deleteFolderAndState(PAGES);
+}
+
+/** See enableSync: the archived-pages sync. */
+export async function enableBookmarkSync() {
+  await enableSync(PAGES);
+}
+
+/**
+ * Turns the archived-pages sync off (see disableSync). Used by the popup's
+ * toggle; unpair() uses disableAllBookmarkSyncs instead, which has to take
+ * both down.
+ */
+export async function disableBookmarkSync() {
+  await disableSync(PAGES, LINKS);
+}
+
+// -- Saved links ("recueil links" folder) --
+
+/** See syncKind: the saved-links sync. */
+export async function syncLinkBookmarks() {
+  await syncKind(LINKS);
+}
+
+/** See deleteFolderAndState: the saved-links folder. */
+export async function deleteLinkBookmarksFolderAndState() {
+  await deleteFolderAndState(LINKS);
+}
+
+/** See enableSync: the saved-links sync. */
+export async function enableLinkBookmarkSync() {
+  await enableSync(LINKS);
+}
+
+/** Turns the saved-links sync off (see disableSync). */
+export async function disableLinkBookmarkSync() {
+  await disableSync(LINKS, PAGES);
+}
+
+// -- Both --
+
+/**
+ * Runs both syncs, one after the other (not together: each may need the
+ * default-container probe, which shouldn't race itself). They're independent,
+ * so one failing never stops the other; the first error is rethrown once both
+ * have run. Each is a no-op on its own if it isn't enabled, so this is safe to
+ * call unconditionally from the alarm, startup and pairing.
+ */
+export async function syncAllBookmarks() {
+  /** @type {unknown} */
+  let firstError;
+  let failed = false;
+  for (const sync of [syncBookmarks, syncLinkBookmarks]) {
+    try {
+      await sync();
+    } catch (error) {
+      if (!failed) {
+        failed = true;
+        firstError = error;
+      }
+    }
+  }
+  if (failed) {
+    throw firstError;
+  }
+}
+
+/**
+ * Tears down both syncs and relinquishes the permission: what unpairing needs
+ * (see background/index.js for why this has to run before unpair's own
+ * storage.local.clear(), not after).
+ */
+export async function disableAllBookmarkSyncs() {
+  await deleteFolderAndState(PAGES);
+  await deleteFolderAndState(LINKS);
+  await setBookmarkSyncEnabled(false);
+  await setLinkBookmarkSyncEnabled(false);
+  await relinquishPermission();
 }
 
 /**
@@ -281,7 +453,7 @@ export function registerBookmarkSyncAlarm() {
       // Best-effort, same reasoning as queue.js's own alarm handler: a
       // failed sync (offline, instance temporarily down) isn't worth
       // surfacing anywhere, the next alarm tick just tries again.
-      syncBookmarks().catch(() => {});
+      syncAllBookmarks().catch(() => {});
     }
   });
 }

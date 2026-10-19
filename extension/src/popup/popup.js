@@ -44,6 +44,9 @@ import {
   GET_BOOKMARK_SYNC_STATE,
   ENABLE_BOOKMARK_SYNC,
   DISABLE_BOOKMARK_SYNC,
+  GET_LINK_BOOKMARK_SYNC_STATE,
+  ENABLE_LINK_BOOKMARK_SYNC,
+  DISABLE_LINK_BOOKMARK_SYNC,
 } from "../common/messages.js";
 import {
   getPairingDraft,
@@ -309,7 +312,8 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   divider.className = "rule";
   app.append(divider);
 
-  app.append(renderBookmarkSyncSection());
+  app.append(renderBookmarkSyncSection(PAGES_SYNC_CONTROL));
+  app.append(renderBookmarkSyncSection(LINKS_SYNC_CONTROL));
 
   const unpairLink = document.createElement("a");
   unpairLink.href = "#";
@@ -483,34 +487,83 @@ function showAutoDismissingSuccess(status, text) {
   }, QUEUE_SUCCESS_DISMISS_MS);
 }
 
+/**
+ * What differs between the two bookmark-sync toggles (archived pages, saved
+ * links): their label, the messages that read, enable and disable them, and --
+ * for links only -- whether the toggle is shown at all.
+ *
+ * @typedef {Object} BookmarkSyncControl
+ * @property {string} id - prefix for the element ids ("" for pages)
+ * @property {string} labelKey
+ * @property {string} getStateType
+ * @property {string} enableType
+ * @property {string} disableType
+ * @property {boolean} onlyWithLinks - shown only when the instance has links
+ *   on, or when the sync is already on (so it can still be turned off after
+ *   links are disabled)
+ */
+
+/** @type {BookmarkSyncControl} */
+const PAGES_SYNC_CONTROL = {
+  id: "",
+  labelKey: "bookmarkSyncLabel",
+  getStateType: GET_BOOKMARK_SYNC_STATE,
+  enableType: ENABLE_BOOKMARK_SYNC,
+  disableType: DISABLE_BOOKMARK_SYNC,
+  onlyWithLinks: false,
+};
+
+/** @type {BookmarkSyncControl} */
+const LINKS_SYNC_CONTROL = {
+  id: "link-",
+  labelKey: "linkBookmarkSyncLabel",
+  getStateType: GET_LINK_BOOKMARK_SYNC_STATE,
+  enableType: ENABLE_LINK_BOOKMARK_SYNC,
+  disableType: DISABLE_LINK_BOOKMARK_SYNC,
+  onlyWithLinks: true,
+};
+
 // A checkbox toggle, not a button -- reflects an actual on/off state
 // (unlike "Save this page"/"Refresh", which are one-shot actions), and
 // checkboxes are the conventional control for that.
-function renderBookmarkSyncSection() {
+/** @param {BookmarkSyncControl} control */
+function renderBookmarkSyncSection(control) {
   const section = document.createElement("div");
   section.className = "bookmark-sync-section";
 
   const label = document.createElement("label");
   const labelText = document.createElement("span");
-  labelText.textContent = t("bookmarkSyncLabel");
+  labelText.textContent = t(control.labelKey);
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
-  checkbox.id = "bookmark-sync-toggle";
+  checkbox.id = `${control.id}bookmark-sync-toggle`;
   label.append(labelText, checkbox);
 
   const status = document.createElement("div");
-  status.id = "bookmark-sync-status";
+  status.id = `${control.id}bookmark-sync-status`;
 
   section.append(label, status);
 
-  browser.runtime
-    .sendMessage({ type: GET_BOOKMARK_SYNC_STATE })
-    .then((/** @type {any} */ enabled) => {
+  if (control.onlyWithLinks) {
+    section.hidden = true;
+  }
+
+  Promise.all([
+    browser.runtime.sendMessage({ type: control.getStateType }),
+    control.onlyWithLinks
+      ? browser.runtime.sendMessage({ type: GET_LINKS_ENABLED })
+      : Promise.resolve(true),
+  ])
+    .then(([enabled, linksOn]) => {
       checkbox.checked = Boolean(enabled);
-    });
+      if (control.onlyWithLinks) {
+        section.hidden = !(linksOn === true || enabled === true);
+      }
+    })
+    .catch(() => {});
 
   checkbox.addEventListener("change", () =>
-    handleBookmarkSyncToggle(checkbox, status),
+    handleBookmarkSyncToggle(checkbox, status, control),
   );
 
   return section;
@@ -519,8 +572,9 @@ function renderBookmarkSyncSection() {
 /**
  * @param {HTMLInputElement} checkbox
  * @param {HTMLElement} status
+ * @param {BookmarkSyncControl} control
  */
-async function handleBookmarkSyncToggle(checkbox, status) {
+async function handleBookmarkSyncToggle(checkbox, status, control) {
   checkbox.disabled = true;
   status.textContent = "";
 
@@ -531,7 +585,9 @@ async function handleBookmarkSyncToggle(checkbox, status) {
       // <all_urls> request (see auth.js's doc comment) -- once this
       // crosses the runtime.sendMessage boundary into the background,
       // whether the browser still considers it "triggered by a real user
-      // action" isn't reliable to assume across Chrome and Firefox.
+      // action" isn't reliable to assume across Chrome and Firefox. Both
+      // toggles share the one permission; asking for one already held is
+      // simply granted.
       const granted = await browser.permissions.request({
         permissions: ["bookmarks"],
       });
@@ -541,13 +597,13 @@ async function handleBookmarkSyncToggle(checkbox, status) {
         status.textContent = t("bookmarkSyncPermissionDenied");
         return;
       }
-      await browser.runtime.sendMessage({ type: ENABLE_BOOKMARK_SYNC });
+      await browser.runtime.sendMessage({ type: control.enableType });
     } else {
-      await browser.runtime.sendMessage({ type: DISABLE_BOOKMARK_SYNC });
+      await browser.runtime.sendMessage({ type: control.disableType });
     }
   } catch (error) {
     // Enabling failed (the initial sync itself, most likely -- see
-    // bookmarks.js's enableBookmarkSync doc comment for why that error is
+    // bookmarks.js's enableSync doc comment for why that error is
     // allowed to propagate this far rather than being swallowed like the
     // alarm's own retries are) -- reflect that the toggle didn't actually
     // end up in the state it looks like from the checkbox alone.

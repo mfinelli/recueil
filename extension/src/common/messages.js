@@ -99,6 +99,15 @@ export const ENABLE_BOOKMARK_SYNC = "recueil:enable-bookmark-sync";
 // permission) -- also called directly from unpair, not just this message.
 export const DISABLE_BOOKMARK_SYNC = "recueil:disable-bookmark-sync";
 
+// The same three for the saved-links bookmark sync, which is a separate sync
+// with its own opt-in and its own folder: read its state, turn it on (after
+// the popup has requested the `bookmarks` permission itself, as for the
+// first), turn it off.
+export const GET_LINK_BOOKMARK_SYNC_STATE =
+  "recueil:get-link-bookmark-sync-state";
+export const ENABLE_LINK_BOOKMARK_SYNC = "recueil:enable-link-bookmark-sync";
+export const DISABLE_LINK_BOOKMARK_SYNC = "recueil:disable-link-bookmark-sync";
+
 // Popup -> background: save the active tab as a link (title and favicon only,
 // no archived HTML) instead of capturing it. Resolves with the saved link's id
 // and title; rejects with a descriptive Error, as CAPTURE_ACTIVE_TAB does.
