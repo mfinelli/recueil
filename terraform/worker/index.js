@@ -58,6 +58,10 @@
 // - GET /archived-pages: device-facing read of the same mirror, for the
 //   extension's own bookmark sync -- a full list every time, not
 //   incremental, see handleListArchivedPages's own doc comment for why
+// - GET /archived-links, and the four /internal/archived-links/* routes
+//   (last-sync, mirror, link-ids, delete): the same two halves of the same
+//   mirror for links, into archived_links. The device-facing read is 404 while
+//   links are off; the internal ones never are
 
 /**
  * @typedef {Object} Env
@@ -434,6 +438,9 @@ export default {
     if (method === "GET" && pathname === "/archived-pages") {
       return handleListArchivedPages(request, env, ctx);
     }
+    if (method === "GET" && pathname === "/archived-links") {
+      return handleListArchivedLinks(request, env, ctx);
+    }
     if (method === "GET" && pathname === "/internal/tokens") {
       return handleListTokens(request, env);
     }
@@ -519,6 +526,18 @@ export default {
     }
     if (method === "POST" && pathname === "/internal/archived-pages/delete") {
       return handleDeleteArchivedPages(request, env);
+    }
+    if (method === "GET" && pathname === "/internal/archived-links/last-sync") {
+      return handleGetArchivedLinksLastSync(request, env);
+    }
+    if (method === "POST" && pathname === "/internal/archived-links/mirror") {
+      return handleMirrorArchivedLinks(request, env);
+    }
+    if (method === "GET" && pathname === "/internal/archived-links/link-ids") {
+      return handleListArchivedLinkIDs(request, env);
+    }
+    if (method === "POST" && pathname === "/internal/archived-links/delete") {
+      return handleDeleteArchivedLinks(request, env);
     }
     if (method === "GET" && pathname === "/internal/queue-items") {
       return handleListQueueItems(request, env);
@@ -870,6 +889,46 @@ export async function handleListArchivedPages(request, env, ctx) {
     .all();
 
   return new Response(JSON.stringify({ pages: results }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * GET /archived-links: device-facing read of the link bookmark mirror
+ * (archived_links), for the extension's "recueil links" bookmark folder
+ * (background/bookmarks.js) -- handleListArchivedPages' counterpart, with the
+ * same shape of reasoning: a plain full-list read every time (no `since`), since
+ * a personal collection of links is hundreds to low thousands and the extension
+ * diffs it locally against its folder by URL, and no filtering beyond user_id,
+ * because excluded_from_mirror links are never pushed here in the first place.
+ *
+ * 404 while links are off, like the other device-facing link routes: with the
+ * feature disabled the route doesn't exist. (The backend-facing
+ * /internal/archived-links routes below are never gated; see
+ * handleClaimPendingLinks for why.)
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @param {ExecutionContext} ctx
+ * @returns {Promise<Response>}
+ */
+export async function handleListArchivedLinks(request, env, ctx) {
+  if (!linksEnabled(env)) return new Response("Not Found", { status: 404 });
+
+  const auth = await authenticateDevice(request, env, ctx);
+  if (!auth) return new Response("Unauthorized", { status: 401 });
+
+  const { results } = await env.DB.prepare(
+    `SELECT link_id, raw_url, title, updated_at
+     FROM archived_links
+     WHERE user_id = ?
+     ORDER BY link_id ASC`,
+  )
+    .bind(auth.userId)
+    .all();
+
+  return new Response(JSON.stringify({ links: results }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
@@ -2805,6 +2864,204 @@ export async function handleDeleteArchivedPages(request, env) {
   }
 
   return new Response(JSON.stringify({ deleted: page_ids.length }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * GET /internal/archived-links/last-sync: the sync checkpoint for the link
+ * bookmark mirror -- the max updated_at currently in archived_links, or null if
+ * nothing has ever been pushed. Derived from D1's own data rather than tracked
+ * separately, for the reasons handleGetArchivedPagesLastSync gives.
+ *
+ * Like the other /internal/archived-links routes, not gated by the links flag:
+ * with the feature off nothing is ever pushed, so this just says null, and a
+ * 404 would make a backend whose own flag disagrees log an error every cycle.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleGetArchivedLinksLastSync(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const row = /** @type {{ max_updated_at: string | null } | null} */ (
+    await env.DB.prepare(
+      "SELECT MAX(updated_at) AS max_updated_at FROM archived_links",
+    ).first()
+  );
+
+  return new Response(
+    JSON.stringify({ last_sync: row?.max_updated_at ?? null }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * @typedef {Object} ArchivedLinkMirrorEntry
+ * @property {number} link_id
+ * @property {number} user_id
+ * @property {string} raw_url
+ * @property {string | null} [title]
+ * @property {string} updated_at
+ */
+
+/**
+ * POST /internal/archived-links/mirror: batch upsert into archived_links, as
+ * handleMirrorArchivedPages does for pages -- dumb on purpose (the backend
+ * decides what changed and in what order), one env.DB.batch() so the whole batch
+ * lands or none of it does, and updated_at always taken verbatim from the body,
+ * never D1's own clock.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleMirrorArchivedLinks(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null || !("links" in body)) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { links } = /** @type {{ links: unknown }} */ (body);
+  if (!Array.isArray(links)) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  /** @type {ArchivedLinkMirrorEntry[]} */
+  const entries = [];
+  for (const link of links) {
+    const record = /** @type {Record<string, unknown>} */ (link);
+    if (
+      typeof link !== "object" ||
+      link === null ||
+      typeof record.link_id !== "number" ||
+      typeof record.user_id !== "number" ||
+      typeof record.raw_url !== "string" ||
+      typeof record.updated_at !== "string" ||
+      (record.title !== undefined &&
+        record.title !== null &&
+        typeof record.title !== "string")
+    ) {
+      return new Response("Missing or invalid fields", { status: 400 });
+    }
+    entries.push(/** @type {ArchivedLinkMirrorEntry} */ (link));
+  }
+
+  const statements = entries.map((link) =>
+    env.DB.prepare(
+      `INSERT INTO archived_links
+         (link_id, user_id, raw_url, title, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(link_id) DO UPDATE SET
+         user_id = excluded.user_id,
+         raw_url = excluded.raw_url,
+         title = excluded.title,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      link.link_id,
+      link.user_id,
+      link.raw_url,
+      link.title ?? null,
+      link.updated_at,
+    ),
+  );
+
+  if (statements.length > 0) {
+    await env.DB.batch(statements);
+  }
+
+  return new Response(JSON.stringify({ upserted: entries.length }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/**
+ * GET /internal/archived-links/link-ids: every link_id currently in the D1
+ * mirror, for the backend's deletion reconciliation. Dumb on purpose, as
+ * handleListArchivedPageIDs is: the Worker never compares anything itself.
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleListArchivedLinkIDs(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const { results } = await env.DB.prepare(
+    "SELECT link_id FROM archived_links",
+  ).all();
+
+  return new Response(
+    JSON.stringify({
+      link_ids: results.map(
+        (row) => /** @type {{ link_id: number }} */ (row).link_id,
+      ),
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  );
+}
+
+/**
+ * POST /internal/archived-links/delete: batch delete from archived_links by
+ * link_id -- the other half of deletion reconciliation, executing exactly the
+ * ids the backend determined no longer belong (the link was deleted, or newly
+ * excluded from the sync).
+ *
+ * @param {Request} request
+ * @param {Env} env
+ * @returns {Promise<Response>}
+ */
+export async function handleDeleteArchivedLinks(request, env) {
+  const serviceKey = request.headers.get("X-Service-Key");
+  if (!serviceKey || !env.SERVICE_SECRET || serviceKey !== env.SERVICE_SECRET) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  /** @type {unknown} */
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+  if (typeof body !== "object" || body === null || !("link_ids" in body)) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+  const { link_ids } = /** @type {{ link_ids: unknown }} */ (body);
+  if (
+    !Array.isArray(link_ids) ||
+    !link_ids.every((id) => typeof id === "number")
+  ) {
+    return new Response("Missing or invalid fields", { status: 400 });
+  }
+
+  if (link_ids.length > 0) {
+    const statements = link_ids.map((id) =>
+      env.DB.prepare("DELETE FROM archived_links WHERE link_id = ?").bind(id),
+    );
+    await env.DB.batch(statements);
+  }
+
+  return new Response(JSON.stringify({ deleted: link_ids.length }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });

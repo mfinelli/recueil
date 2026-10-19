@@ -2149,6 +2149,19 @@ CREATE TABLE archived_pages (
 ) STRICT;
 CREATE INDEX idx_archived_pages_user_id ON archived_pages(user_id);
 CREATE INDEX idx_archived_pages_updated_at ON archived_pages(updated_at);
+
+-- The links counterpart (§17j), for the extension's "recueil links" bookmark
+-- folder: pushed by the same sync job, links that are excluded_from_mirror never
+-- reaching it. No latest_capture_at, which a link has no equivalent of.
+CREATE TABLE archived_links (
+  link_id INTEGER PRIMARY KEY,      -- matches Postgres links.id
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  raw_url TEXT NOT NULL,            -- the link's raw_url, not the normalized one
+  title TEXT,
+  updated_at TEXT NOT NULL          -- links.updated_at verbatim (the checkpoint)
+) STRICT;
+CREATE INDEX idx_archived_links_user_id ON archived_links(user_id);
+CREATE INDEX idx_archived_links_updated_at ON archived_links(updated_at);
 ```
 
 `pending_captures.queue_item_id` is nullable specifically to support **direct
@@ -2978,7 +2991,16 @@ folder:
 - A new D1 table, `archived_links`, mirrors links the same way `archived_pages`
   mirrors pages: a scheduled backend job, checkpoint read from D1's
   `MAX(updated_at)`, an incremental upsert pass plus a deletion-reconciliation
-  pass.
+  pass. **Landed** (`internal/mirror`, `terraform/worker`): `Syncer.SyncOnce`
+  runs the links cycle after the pages one when links are on, and the two are
+  independent, so a failure in one never stops the other and both errors are
+  reported. The Worker side is `GET /archived-links` (device-facing, `404` while
+  links are off) and
+  `/internal/archived-links/{last-sync,mirror,link-ids,delete}`
+  (service-secret-gated, never gated by the flag, as `/internal/pending-links`
+  isn't). A Worker deployed before this backend has no such routes; the `404` is
+  logged as a warning and skipped, not failed, and links start syncing once the
+  Worker catches up.
 - The extension reconciles by URL against **its own dedicated folder**, separate
   from the archived-pages folder, **completely owned by recueil**. Sync is
   **one-way**, and any manual change in that folder is overwritten on the next

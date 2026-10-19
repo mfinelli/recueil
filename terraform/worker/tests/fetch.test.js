@@ -193,6 +193,31 @@ describe("fetch (router)", () => {
     expect(response.status).toBe(404);
   });
 
+  it("routes GET /archived-links to handleListArchivedLinks (401 with no auth confirms it was reached)", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/archived-links",
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it.each([
+    ["GET", "/internal/archived-links/last-sync"],
+    ["POST", "/internal/archived-links/mirror"],
+    ["GET", "/internal/archived-links/link-ids"],
+    ["POST", "/internal/archived-links/delete"],
+  ])(
+    "routes %s %s to its handler (401 with no service key confirms it was reached)",
+    async (method, path) => {
+      const response = await exports.default.fetch(
+        `https://example.com${path}`,
+        {
+          method,
+        },
+      );
+      expect(response.status).toBe(401);
+    },
+  );
+
   it("returns 404 for GET /links (wrong method for this route)", async () => {
     const response = await exports.default.fetch("https://example.com/links");
     expect(response.status).toBe(404);

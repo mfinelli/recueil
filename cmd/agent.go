@@ -156,8 +156,10 @@ func runAgent(cmd *cobra.Command, args []string) error {
 
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	syncer := mirror.NewSyncer(mirror.SyncerParams{
-		Queries: queries,
-		Client:  mirrorClient,
+		Queries:      queries,
+		Client:       mirrorClient,
+		LinksEnabled: cfg.EnableLinks,
+		Logger:       logger.Logger,
 	})
 
 	// The one shared headless-Chrome connection + ephemeral render

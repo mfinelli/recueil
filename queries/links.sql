@@ -184,3 +184,23 @@ SET raw_url = EXCLUDED.raw_url,
     source = EXCLUDED.source,
     updated_at = NOW()
 RETURNING *;
+
+-- name: GetLinksUpdatedSince :many
+-- Powers the D1 link bookmark mirror's incremental sync (internal/mirror), as
+-- GetPagesUpdatedSince does for pages: links changed since the last
+-- successfully-pushed checkpoint (itself read from D1's own MAX(updated_at)).
+-- A NULL since means "nothing has ever been synced". excluded_from_mirror links
+-- are never included -- one that was already synced before being excluded is
+-- removed from D1 by the deletion-reconciliation pass
+-- (GetMirrorEligibleLinkIDs), not by this query.
+SELECT * FROM links
+WHERE (sqlc.narg('since')::timestamptz IS NULL OR updated_at > sqlc.narg('since'))
+  AND NOT excluded_from_mirror
+ORDER BY updated_at ASC;
+
+-- name: GetMirrorEligibleLinkIDs :many
+-- The other half of the link mirror's deletion reconciliation: every link id
+-- Postgres currently thinks belongs in D1 (not excluded_from_mirror), diffed
+-- against the set in D1 to find what to remove, whether the link was deleted
+-- or newly excluded -- the two look identical from here.
+SELECT id FROM links WHERE NOT excluded_from_mirror;
