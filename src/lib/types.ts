@@ -53,6 +53,9 @@ export interface Link {
   // link form). Follows the latest save, so a manual link saved again from the
   // browser becomes "extension".
   source: "extension" | "manual";
+  // Opts the link out of the browser-bookmark sync: links are synced unless
+  // this is true.
+  excluded_from_mirror: boolean;
   matching_page_id: number | null;
   created_at: string;
   updated_at: string;

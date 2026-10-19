@@ -85,14 +85,15 @@ func decodeBody[T any](t *testing.T, resp *http.Response) T {
 }
 
 type linkBody struct {
-	ID             int64   `json:"id"`
-	RawURL         string  `json:"raw_url"`
-	NormalizedURL  string  `json:"normalized_url"`
-	Title          *string `json:"title"`
-	FaviconPath    *string `json:"favicon_path"`
-	Notes          *string `json:"notes"`
-	Source         string  `json:"source"`
-	MatchingPageID *int64  `json:"matching_page_id"`
+	ID                 int64   `json:"id"`
+	RawURL             string  `json:"raw_url"`
+	NormalizedURL      string  `json:"normalized_url"`
+	Title              *string `json:"title"`
+	FaviconPath        *string `json:"favicon_path"`
+	Notes              *string `json:"notes"`
+	Source             string  `json:"source"`
+	ExcludedFromMirror bool    `json:"excluded_from_mirror"`
+	MatchingPageID     *int64  `json:"matching_page_id"`
 }
 
 type linkListBody struct {
@@ -416,14 +417,62 @@ func TestPatchLink(t *testing.T) {
 		assert.Equal(t, "a note", *got.Notes)
 	})
 
-	t.Run("requires title or notes, and valid JSON", func(t *testing.T) {
+	t.Run("opts a link out of the bookmark sync and back in", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		link := saveLink(t, pool, user.ID, "https://example.com/mirror", "Mirror")
+		cookie := sessionCookieFor(t, pool, &user)
+		assert.False(t, link.ExcludedFromMirror, "links are synced unless excluded")
+
+		resp := patch(t, cookie, link.ID, `{"excluded_from_mirror":true}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.True(t, decodeBody[linkBody](t, resp).ExcludedFromMirror)
+
+		got := decodeBody[linkDetailBody](t, requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/links/%d", link.ID), cookie))
+		assert.True(t, got.ExcludedFromMirror, "the detail response reflects it")
+
+		resp = patch(t, cookie, link.ID, `{"excluded_from_mirror":false}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.False(t, decodeBody[linkBody](t, resp).ExcludedFromMirror)
+	})
+
+	t.Run("a change to the exclusion moves updated_at, which the sync's checkpoint reads", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		link := saveLink(t, pool, user.ID, "https://example.com/mirror-checkpoint", "Checkpoint")
+		cookie := sessionCookieFor(t, pool, &user)
+
+		require.Equal(t, http.StatusOK, patch(t, cookie, link.ID, `{"excluded_from_mirror":true}`).StatusCode)
+		after, err := db.New(pool).GetLinkByIDForUser(context.Background(), db.GetLinkByIDForUserParams{ID: link.ID, UserID: user.ID})
+		require.NoError(t, err)
+		assert.True(t, after.UpdatedAt.Time.After(link.UpdatedAt.Time))
+	})
+
+	t.Run("an explicit false is a real request, not the absence of one", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		link := saveLink(t, pool, user.ID, "https://example.com/mirror-false", "False")
+		resp := patch(t, sessionCookieFor(t, pool, &user), link.ID, `{"excluded_from_mirror":false}`)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("applies the exclusion together with a title or notes", func(t *testing.T) {
+		user := dbtest.CreateUser(t, pool, "member")
+		link := saveLink(t, pool, user.ID, "https://example.com/mirror-both", "Old")
+		resp := patch(t, sessionCookieFor(t, pool, &user), link.ID, `{"excluded_from_mirror":true,"title":"New","notes":"n"}`)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		after, err := db.New(pool).GetLinkByIDForUser(context.Background(), db.GetLinkByIDForUserParams{ID: link.ID, UserID: user.ID})
+		require.NoError(t, err)
+		assert.True(t, after.ExcludedFromMirror)
+		assert.Equal(t, "New", after.Title.String)
+		assert.Equal(t, "n", after.Notes.String)
+	})
+
+	t.Run("requires title, notes or excluded_from_mirror, and valid JSON", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		link := saveLink(t, pool, user.ID, "https://example.com/nothing", "Original")
 		cookie := sessionCookieFor(t, pool, &user)
 
 		assert.Equal(t, http.StatusBadRequest, patch(t, cookie, link.ID, `{}`).StatusCode)
 		assert.Equal(t, http.StatusBadRequest, patch(t, cookie, link.ID, `{"favicon_path":"x"}`).StatusCode,
-			"nothing but title and notes is editable")
+			"nothing but title, notes and excluded_from_mirror is editable")
 		assert.Equal(t, http.StatusBadRequest, patch(t, cookie, link.ID, `not json`).StatusCode)
 	})
 
@@ -435,11 +484,13 @@ func TestPatchLink(t *testing.T) {
 		cookie := sessionCookieFor(t, pool, &other)
 		assert.Equal(t, http.StatusNotFound, patch(t, cookie, link.ID, `{"notes":"hijack"}`).StatusCode)
 		assert.Equal(t, http.StatusNotFound, patch(t, cookie, link.ID, `{"title":"Hijacked"}`).StatusCode)
+		assert.Equal(t, http.StatusNotFound, patch(t, cookie, link.ID, `{"excluded_from_mirror":true}`).StatusCode)
 
 		after, err := db.New(pool).GetLinkByIDForUser(context.Background(), db.GetLinkByIDForUserParams{ID: link.ID, UserID: owner.ID})
 		require.NoError(t, err)
 		assert.False(t, after.Notes.Valid)
 		assert.Equal(t, "Theirs", after.Title.String)
+		assert.False(t, after.ExcludedFromMirror)
 	})
 }
 

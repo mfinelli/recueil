@@ -38,6 +38,7 @@ const exampleLink: Link = {
   favicon_path: "ab/cd/id/favicon.png",
   notes: null,
   source: "extension",
+  excluded_from_mirror: false,
   matching_page_id: null,
   created_at: "2026-05-01T12:00:00Z",
   updated_at: "2026-05-01T12:00:00Z",

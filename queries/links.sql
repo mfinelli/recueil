@@ -140,6 +140,13 @@ UPDATE links SET title = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
+-- name: SetLinkExcludedFromMirror :one
+-- Opts a link in or out of the browser-bookmark sync, as SetPageExcludedFromMirror
+-- does for a page. updated_at moves so the incremental sync notices the change.
+UPDATE links SET excluded_from_mirror = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
 -- name: SetLinkNotes :one
 -- An empty value is meaningful (clearing a note is a normal action), same as
 -- SetPageNotes.

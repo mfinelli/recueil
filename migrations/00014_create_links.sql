@@ -37,6 +37,9 @@
 -- a refresh, so a manual save never overwrites anything.) Not 'manual_upload'
 -- as on captures: nothing is uploaded here.
 --
+-- excluded_from_mirror opts a link out of the browser-bookmark sync, the same
+-- as pages.excluded_from_mirror.
+--
 -- The unique constraint's index already serves "WHERE user_id = X", so
 -- unlike pages there is no separate idx_links_user_id.
 CREATE TABLE links (
@@ -50,6 +53,7 @@ CREATE TABLE links (
   favicon_hash TEXT,
   notes TEXT,
   source TEXT NOT NULL DEFAULT 'extension',
+  excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT links_pkey PRIMARY KEY (id),

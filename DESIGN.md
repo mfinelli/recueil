@@ -1863,6 +1863,8 @@ CREATE TABLE links (
   favicon_hash TEXT,
   notes TEXT,
   source TEXT NOT NULL DEFAULT 'extension',
+  excluded_from_mirror BOOLEAN NOT NULL DEFAULT FALSE,  -- opt a link out of the
+                                      -- bookmark sync (§17j), as for pages
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT links_source_check CHECK (source IN ('extension', 'manual')),
@@ -2858,7 +2860,8 @@ stages; each says what has landed.
   pencil (hint: "Saving this link again from your browser replaces the title."),
   a source row (`raw_url` and an external-link icon), the same-URL callout,
   Tags, Collections, Notes, the Internet Archive block (stage 3) and an actions
-  row with Delete link only. No mirror-exclusion toggle (§17m). **Landed.**
+  row with Delete link only, and the same "Sync with my browser's bookmarks"
+  checkbox as a page's (checked unless the link is excluded, §17j). **Landed.**
 - **Same-URL hint.** A one-line callout under the source row on both detail
   screens: "This URL is also archived as a page: {title}" and "This URL is also
   saved as a link: {title}". It is a read-time join on `normalized_url`, not a
@@ -2985,8 +2988,22 @@ folder:
 - The folder starts **flat**. Mapping collections to subfolders is deferred.
 - The same URL can appear in both folders if a page and a link share it. That's
   harmless; the docs should mention it.
-- Whether links get a per-entry mirror exclusion like
-  `pages.excluded_from_mirror` is open (§17m).
+- **Per-link exclusion**, as for pages: `links.excluded_from_mirror` (default
+  `FALSE`, so links are synced unless excluded), set through
+  `PATCH /api/links/{id}` and the checkbox on the link's screen. It is purely a
+  Postgres-side filter on what the sync pushes, with no D1 column of its own;
+  setting it moves `updated_at`, and a link that was already synced and is then
+  excluded is removed by the deletion-reconciliation pass, which looks identical
+  to the link having been deleted. **The column, API and checkbox have landed;
+  the sync itself is next.**
+- **Two top-level folders.** The links folder is a sibling of the archived-pages
+  folder (named "recueil links"), not nested inside it, so enabling, disabling
+  and tearing down one never touches the other and there is no shared parent to
+  keep consistent. The optional `bookmarks` permission is shared, so it's
+  relinquished only when **both** syncs are off, and unpairing tears down both.
+- The mirrored URL is the link's `raw_url`, not its normalized one (§17h), which
+  is a unique identity key per user all the same: a distinct normalized URL has
+  a distinct raw URL, and the normalized one is unique.
 
 ### 17k. MCP
 
@@ -3028,8 +3045,6 @@ Housekeeping that should not be forgotten:
 
 - Whether tags and collections really are shared tables with pages (§17b), or
   links get their own.
-- Whether links get a per-entry mirror exclusion like
-  `pages.excluded_from_mirror`.
 - Where Wayback state lives for pages (a column on `pages` versus a separate
   table covering both entities), and the exact Wayback API behavior (§17i).
 - Browser bookmark import as an onboarding path, and collections as subfolders

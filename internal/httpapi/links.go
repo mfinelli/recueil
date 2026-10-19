@@ -57,16 +57,18 @@ type linkResponse struct {
 	Notes         *string `json:"notes"`
 	// Source is where the link's current title and favicon came from:
 	// "extension" or "manual" (ingest.LinkSource*), as a capture's source is.
-	Source         string    `json:"source"`
-	MatchingPageID *int64    `json:"matching_page_id"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Source string `json:"source"`
+	// ExcludedFromMirror opts the link out of the browser-bookmark sync.
+	ExcludedFromMirror bool      `json:"excluded_from_mirror"`
+	MatchingPageID     *int64    `json:"matching_page_id"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 func linkResponseFromLink(l *db.Link, matchingPageID *int64) linkResponse {
 	return linkResponse{
 		ID: l.ID, RawURL: l.RawUrl, NormalizedURL: l.NormalizedUrl,
-		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source,
+		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source, ExcludedFromMirror: l.ExcludedFromMirror,
 		MatchingPageID: int8OrNil(pgtype.Int8{Int64: derefInt64(matchingPageID), Valid: matchingPageID != nil}),
 		CreatedAt:      l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time,
 	}
@@ -75,7 +77,7 @@ func linkResponseFromLink(l *db.Link, matchingPageID *int64) linkResponse {
 func linkResponseFromListRow(l *db.ListLinksRow) linkResponse {
 	return linkResponse{
 		ID: l.ID, RawURL: l.RawUrl, NormalizedURL: l.NormalizedUrl,
-		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source,
+		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source, ExcludedFromMirror: l.ExcludedFromMirror,
 		MatchingPageID: int8OrNil(l.MatchingPageID),
 		CreatedAt:      l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time,
 	}
@@ -84,7 +86,7 @@ func linkResponseFromListRow(l *db.ListLinksRow) linkResponse {
 func linkResponseFromSearchRow(l *db.SearchLinksRow) linkResponse {
 	return linkResponse{
 		ID: l.ID, RawURL: l.RawUrl, NormalizedURL: l.NormalizedUrl,
-		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source,
+		Title: textOrNil(l.Title), FaviconPath: textOrNil(l.FaviconPath), Notes: textOrNil(l.Notes), Source: l.Source, ExcludedFromMirror: l.ExcludedFromMirror,
 		MatchingPageID: int8OrNil(l.MatchingPageID),
 		CreatedAt:      l.CreatedAt.Time, UpdatedAt: l.UpdatedAt.Time,
 	}
@@ -321,14 +323,18 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 }
 
 type patchLinkRequest struct {
-	Title *string `json:"title"`
-	Notes *string `json:"notes"`
+	ExcludedFromMirror *bool   `json:"excluded_from_mirror"`
+	Title              *string `json:"title"`
+	Notes              *string `json:"notes"`
 }
 
-// PATCH /api/links/{id}: sets the link's title and/or notes, the link
-// counterpart of PATCH /api/pages/{id}'s fields of the same names. At least one
-// must be provided; if both are, each is applied as its own update and the
-// response reflects whichever ran last.
+// PATCH /api/links/{id}: sets the link's title, notes and/or whether it's
+// excluded from the browser-bookmark sync, the link counterpart of
+// PATCH /api/pages/{id}'s fields of the same names. At least one must be
+// provided (pointer fields tell "not provided" from an explicit false or
+// empty); if more than one is, each is applied as its own update and the
+// response reflects whichever ran last. Excluding a link takes it out of the
+// bookmark sync on its next cycle, even if it was already synced.
 //
 // A title is a plain overwrite, with no record that it was edited: the next
 // save of the link replaces it with whatever the tab says, the same way
@@ -351,8 +357,8 @@ func (s *Server) PatchLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if req.Title == nil && req.Notes == nil {
-		writeError(w, http.StatusBadRequest, "title or notes is required")
+	if req.ExcludedFromMirror == nil && req.Title == nil && req.Notes == nil {
+		writeError(w, http.StatusBadRequest, "excluded_from_mirror, title, or notes is required")
 		return
 	}
 	var title string
@@ -366,6 +372,21 @@ func (s *Server) PatchLink(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	var link db.Link
+
+	if req.ExcludedFromMirror != nil {
+		link, err = s.Queries.SetLinkExcludedFromMirror(ctx, db.SetLinkExcludedFromMirrorParams{
+			ExcludedFromMirror: *req.ExcludedFromMirror, ID: id, UserID: user.ID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "link not found")
+			return
+		}
+		if err != nil {
+			log.Printf("warning: failed to set excluded_from_mirror on link %d: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
 
 	if req.Title != nil {
 		link, err = s.Queries.SetLinkTitle(ctx, db.SetLinkTitleParams{

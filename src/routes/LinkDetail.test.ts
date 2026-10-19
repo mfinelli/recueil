@@ -92,6 +92,7 @@ const baseLink: LinkDetail = {
   favicon_path: null,
   notes: null,
   source: "extension",
+  excluded_from_mirror: false,
   matching_page_id: null,
   matching_page_title: null,
   created_at: "2026-05-01T12:00:00Z",
@@ -218,12 +219,11 @@ describe("LinkDetail", () => {
       expect(screen.queryByText("added manually")).toBeNull();
     });
 
-    it("has none of a page's captures, recapture, AI, linked-pages or mirror controls", async () => {
+    it("has none of a page's captures, recapture, AI or linked-pages sections", async () => {
       render42();
       await screen.findByRole("heading", { name: "An example video" });
 
       for (const text of [
-        /Sync with my browser/,
         /Recapture/,
         /Captures/,
         /Linked pages/,
@@ -231,7 +231,6 @@ describe("LinkDetail", () => {
       ]) {
         expect(screen.queryByText(text), String(text)).toBeNull();
       }
-      expect(screen.queryByRole("checkbox")).toBeNull();
     });
 
     it("shows the API's error, not the page, when the link can't be loaded", async () => {
@@ -666,6 +665,73 @@ describe("LinkDetail", () => {
       expect(await screen.findByText("cannot remove")).toBeTruthy();
       expect(
         screen.getByRole("button", { name: "Remove from Watch later" }),
+      ).toBeTruthy();
+    });
+  });
+
+  describe("the bookmark-sync setting", () => {
+    it("is checked for a link that's synced, as the default is", async () => {
+      render42();
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "Sync with my browser's bookmarks",
+      });
+      expect(checkbox).toHaveProperty("checked", true);
+    });
+
+    it("is unchecked for a link that's excluded", async () => {
+      render42({ link: { ...baseLink, excluded_from_mirror: true } });
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "Sync with my browser's bookmarks",
+      });
+      expect(checkbox).toHaveProperty("checked", false);
+    });
+
+    it("excludes the link when unchecked, and syncs it again when checked", async () => {
+      render42();
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "Sync with my browser's bookmarks",
+      });
+
+      apiJSONMock.mockResolvedValueOnce(undefined);
+      await fireEvent.click(checkbox);
+      // The PATCH body is the inverse of what the checkbox shows: unchecking
+      // it means excluded.
+      expect(apiJSONMock).toHaveBeenCalledWith("/links/42", {
+        method: "PATCH",
+        body: { excluded_from_mirror: true },
+      });
+      expect(checkbox).toHaveProperty("checked", false);
+
+      apiJSONMock.mockResolvedValueOnce(undefined);
+      await fireEvent.click(checkbox);
+      await vi.waitFor(() =>
+        expect(apiJSONMock).toHaveBeenLastCalledWith("/links/42", {
+          method: "PATCH",
+          body: { excluded_from_mirror: false },
+        }),
+      );
+      await vi.waitFor(() => expect(checkbox).toHaveProperty("checked", true));
+    });
+
+    it("shows the error when the update fails", async () => {
+      render42();
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "Sync with my browser's bookmarks",
+      });
+      apiJSONMock.mockRejectedValueOnce(new ApiError(500, "update rejected"));
+      await fireEvent.click(checkbox);
+      expect(await screen.findByText("update rejected")).toBeTruthy();
+    });
+
+    it("falls back to a generic message for a non-API failure", async () => {
+      render42();
+      const checkbox = await screen.findByRole("checkbox", {
+        name: "Sync with my browser's bookmarks",
+      });
+      apiJSONMock.mockRejectedValueOnce(new Error("network down"));
+      await fireEvent.click(checkbox);
+      expect(
+        await screen.findByText("failed to update mirror setting"),
       ).toBeTruthy();
     });
   });

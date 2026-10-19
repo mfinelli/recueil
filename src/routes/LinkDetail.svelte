@@ -77,6 +77,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let notesInput = $state("");
   let savingNotes = $state(false);
   let deleting = $state(false);
+  let togglingMirror = $state(false);
   // As on PageDetail: a single one-off image beside the source URL, so a
   // missing or broken favicon just means nothing renders there.
   let faviconFailed = $state(false);
@@ -304,6 +305,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  // The checkbox is framed as the positive (synced), so its PATCH body is the
+  // inverse of what it shows -- as on PageDetail.
+  async function toggleExcludedFromMirror() {
+    if (!detail) return;
+    togglingMirror = true;
+    actionError = null;
+    const next = !detail.excluded_from_mirror;
+    try {
+      await apiJSON(`/links/${detail.id}`, {
+        method: "PATCH",
+        body: { excluded_from_mirror: next },
+      });
+      detail.excluded_from_mirror = next;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.pagedetail_mirror_error();
+    } finally {
+      togglingMirror = false;
+    }
+  }
+
   async function deleteLink() {
     if (!detail) return;
     if (!confirm(m.linkdetail_delete_confirm({ title: displayTitle(detail) })))
@@ -406,6 +428,16 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         <span>{actionError}</span>
       </p>
     {/if}
+
+    <label class="mirror-toggle">
+      <input
+        type="checkbox"
+        checked={!detail.excluded_from_mirror}
+        disabled={togglingMirror}
+        onchange={toggleExcludedFromMirror}
+      />
+      {m.pagedetail_mirror_toggle_label()}
+    </label>
 
     <section>
       <div class="block-header">
@@ -871,6 +903,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   // Delete only, so it sits at the end of the row rather than spreading apart
   // from a recapture button as on PageDetail.
+  .mirror-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.75rem;
+    font-size: 0.875rem;
+    color: var(--ink-muted);
+
+    input {
+      accent-color: var(--accent-success);
+      width: 15px;
+      height: 15px;
+    }
+  }
+
   .actions-row {
     display: flex;
     align-items: center;
