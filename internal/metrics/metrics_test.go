@@ -141,13 +141,13 @@ func TestNewRegistry_JobMetrics_AllCombinationsReportEvenAtZero(t *testing.T) {
 	reg, err := metrics.NewRegistry(q)
 	require.NoError(t, err)
 
-	// 3 job types x 4 statuses -- every combination should be present
+	// 4 job types x 4 statuses -- every combination should be present
 	// and 0, none of them silently absent, confirming collectJobCounts
 	// fills in every known combination rather than only what the query
 	// happens to return.
 	count, err := testutil.GatherAndCount(reg, "recueil_jobs_total")
 	require.NoError(t, err)
-	assert.Equal(t, 12, count)
+	assert.Equal(t, 16, count)
 }
 
 func TestNewRegistry_JobMetrics_ReflectsRealCounts(t *testing.T) {
@@ -187,6 +187,10 @@ recueil_jobs_total{job="screenshot",status="done"} 1
 recueil_jobs_total{job="screenshot",status="failed"} 1
 recueil_jobs_total{job="screenshot",status="pending"} 0
 recueil_jobs_total{job="screenshot",status="processing"} 0
+recueil_jobs_total{job="wayback",status="done"} 0
+recueil_jobs_total{job="wayback",status="failed"} 0
+recueil_jobs_total{job="wayback",status="pending"} 0
+recueil_jobs_total{job="wayback",status="processing"} 0
 `), "recueil_jobs_total"))
 }
 
@@ -328,8 +332,158 @@ recueil_captures_total 1
 recueil_storage_bytes{kind="favicon"} 30
 recueil_storage_bytes{kind="html_compressed"} 1
 recueil_storage_bytes{kind="html_uncompressed"} 1
+recueil_storage_bytes{kind="link_favicon"} 0
 recueil_storage_bytes{kind="screenshot"} 400
 `), "recueil_storage_bytes"))
+}
+
+// Wayback submissions are reported as a fourth job type, in the existing
+// vocabulary: 'succeeded' becomes 'done'.
+func TestNewRegistry_JobMetrics_Wayback(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+	user := dbtest.CreateUser(t, pool, "member")
+
+	submit := func(url, status string) {
+		t.Helper()
+		_, err := q.StartWaybackSubmission(ctx, db.StartWaybackSubmissionParams{
+			UserID: user.ID, NormalizedUrl: url, JobID: pgtype.Text{String: "job-" + url, Valid: true},
+		})
+		require.NoError(t, err)
+		_, err = pool.Exec(ctx, "UPDATE wayback_submissions SET status = $1 WHERE normalized_url = $2", status, url)
+		require.NoError(t, err)
+	}
+	submit("https://example.com/a", "succeeded")
+	submit("https://example.com/b", "succeeded")
+	submit("https://example.com/c", "failed")
+	submit("https://example.com/d", "pending")
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_jobs_total Current number of background jobs, by job type and status.
+# TYPE recueil_jobs_total gauge
+recueil_jobs_total{job="ai",status="done"} 0
+recueil_jobs_total{job="ai",status="failed"} 0
+recueil_jobs_total{job="ai",status="pending"} 0
+recueil_jobs_total{job="ai",status="processing"} 0
+recueil_jobs_total{job="readability",status="done"} 0
+recueil_jobs_total{job="readability",status="failed"} 0
+recueil_jobs_total{job="readability",status="pending"} 0
+recueil_jobs_total{job="readability",status="processing"} 0
+recueil_jobs_total{job="screenshot",status="done"} 0
+recueil_jobs_total{job="screenshot",status="failed"} 0
+recueil_jobs_total{job="screenshot",status="pending"} 0
+recueil_jobs_total{job="screenshot",status="processing"} 0
+recueil_jobs_total{job="wayback",status="done"} 2
+recueil_jobs_total{job="wayback",status="failed"} 1
+recueil_jobs_total{job="wayback",status="pending"} 1
+recueil_jobs_total{job="wayback",status="processing"} 0
+`), "recueil_jobs_total"), "succeeded reports as done; every status is emitted")
+}
+
+func TestNewRegistry_JobOldestPendingAge_Wayback(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+	user := dbtest.CreateUser(t, pool, "member")
+
+	_, err := q.StartWaybackSubmission(ctx, db.StartWaybackSubmissionParams{
+		UserID: user.ID, NormalizedUrl: "https://example.com/slow", JobID: pgtype.Text{String: "j", Valid: true},
+	})
+	require.NoError(t, err)
+	// The age counts from when the attempt was submitted.
+	_, err = pool.Exec(ctx, "UPDATE wayback_submissions SET submitted_at = NOW() - INTERVAL '600 seconds'")
+	require.NoError(t, err)
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+	families, err := reg.Gather()
+	require.NoError(t, err)
+
+	var age float64
+	var saw bool
+	for _, f := range families {
+		if f.GetName() != "recueil_job_oldest_pending_age_seconds" {
+			continue
+		}
+		for _, m := range f.Metric {
+			for _, l := range m.Label {
+				if l.GetName() == "job" && l.GetValue() == "wayback" {
+					saw, age = true, m.Gauge.GetValue()
+				}
+			}
+		}
+	}
+	require.True(t, saw, "a pending submission has an age")
+	assert.InDelta(t, 600, age, 5)
+}
+
+func TestNewRegistry_WaybackJobAbsentFromAgeWhenNothingPending(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+	user := dbtest.CreateUser(t, pool, "member")
+	_, err := q.StartWaybackSubmission(ctx, db.StartWaybackSubmissionParams{
+		UserID: user.ID, NormalizedUrl: "https://example.com/done", JobID: pgtype.Text{String: "j", Valid: true},
+	})
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, "UPDATE wayback_submissions SET status = 'succeeded'")
+	require.NoError(t, err)
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+
+	count, err := testutil.GatherAndCount(reg, "recueil_job_oldest_pending_age_seconds")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "absent, not zero, when nothing is pending")
+}
+
+func TestNewRegistry_LinkStats(t *testing.T) {
+	pool := dbtest.Setup(t)
+	dbtest.Reset(t, pool)
+	q := db.New(pool)
+	ctx := context.Background()
+	user := dbtest.CreateUser(t, pool, "member")
+
+	reg, err := metrics.NewRegistry(q)
+	require.NoError(t, err)
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_links_total Current number of saved links (bookmark-only entries), system-wide.
+# TYPE recueil_links_total gauge
+recueil_links_total 0
+`), "recueil_links_total"), "present at zero with none saved")
+
+	withIcon, err := q.UpsertLink(ctx, db.UpsertLinkParams{
+		UserID: user.ID, RawUrl: "https://example.com/a", NormalizedUrl: "https://example.com/a", Source: "extension",
+	})
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, "UPDATE links SET favicon_size_bytes = 1234 WHERE id = $1", withIcon.ID)
+	require.NoError(t, err)
+	_, err = q.UpsertLink(ctx, db.UpsertLinkParams{
+		UserID: user.ID, RawUrl: "https://example.com/b", NormalizedUrl: "https://example.com/b", Source: "manual",
+	})
+	require.NoError(t, err)
+
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_links_total Current number of saved links (bookmark-only entries), system-wide.
+# TYPE recueil_links_total gauge
+recueil_links_total 2
+`), "recueil_links_total"))
+	assert.NoError(t, testutil.GatherAndCompare(reg, strings.NewReader(`
+# HELP recueil_storage_bytes Bytes of local archive storage in use, by content kind.
+# TYPE recueil_storage_bytes gauge
+recueil_storage_bytes{kind="favicon"} 0
+recueil_storage_bytes{kind="html_compressed"} 0
+recueil_storage_bytes{kind="html_uncompressed"} 0
+recueil_storage_bytes{kind="link_favicon"} 1234
+recueil_storage_bytes{kind="screenshot"} 0
+`), "recueil_storage_bytes"), "link favicons are their own kind, apart from page favicons")
 }
 
 // TestNewRegistry_AgentHeartbeat_AbsentUntilRecorded confirms the

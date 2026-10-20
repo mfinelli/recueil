@@ -2272,6 +2272,20 @@ architectural constraint, not a build-process detail.
   of that cycle succeeding, not just the cycle running, since recording a
   heartbeat regardless of outcome would hide exactly the failure it exists to
   catch.
+- **Links and Wayback submissions are reported the same way** (§17). Wayback
+  submissions are a fourth `recueil_jobs_total` / oldest-pending-age job type
+  (`job="wayback"`), in the series' own vocabulary — a submission's `succeeded`
+  reports as `done` — and, since they are one row per URL holding its latest
+  attempt, they count URLs by state rather than every submission ever made.
+  `recueil_links_total` is the link count, and the link favicon store's
+  footprint is `recueil_storage_bytes{kind="link_favicon"}`, kept separate from
+  page favicons (its own series, from its own query, because the two stores are
+  separate). All of it is always emitted, zeros included, even with the features
+  off. Pending saved links (the extension's saves not yet ingested) live only in
+  D1, so, like pending captures, they are deliberately not reported; the
+  Postgres-only rule is why. The agent's heartbeats already cover the new work:
+  link ingestion is in the worker cycle and the Wayback sweep in the local
+  cycle, and a cycle's heartbeat is gated on every step of it succeeding.
 - **Testing convention: no mocks for anything that talks to a real dependency.**
   DB-touching code runs against a real Postgres (`internal/dbtest`); code that
   calls an external HTTP API runs against a real `httptest.Server`; the
@@ -3183,7 +3197,7 @@ Housekeeping that should not be forgotten:
 - `DESIGN_SYSTEM.md` when the Links page is built, and the README's package map
   for any new `internal/` packages.
 - `recueil gc`'s documentation if it grows a link-store pass (§17m), and
-  `internal/metrics` for any new job tables (§13a).
+  `internal/metrics` for any new job tables (§13a) (done: see below).
 
 ### 17m. Open questions
 

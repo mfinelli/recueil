@@ -26,7 +26,16 @@ SELECT 'screenshot'::text AS job, status, COUNT(*) AS count FROM screenshot_jobs
 UNION ALL
 SELECT 'readability'::text AS job, status, COUNT(*) AS count FROM readability_jobs GROUP BY status
 UNION ALL
-SELECT 'ai'::text AS job, status, COUNT(*) AS count FROM ai_jobs GROUP BY status;
+SELECT 'ai'::text AS job, status, COUNT(*) AS count FROM ai_jobs GROUP BY status
+UNION ALL
+-- Wayback submissions are reported as a job type too, but in this series' own
+-- vocabulary: their 'succeeded' is its 'done'. They are one row per URL
+-- holding its latest attempt, not a history, so 'done' is "URLs whose latest
+-- submission succeeded" rather than a running total of submissions ever made.
+SELECT 'wayback'::text AS job,
+  CASE status WHEN 'succeeded' THEN 'done' ELSE status END AS status,
+  COUNT(*) AS count
+FROM wayback_submissions GROUP BY 2;
 
 -- name: OldestPendingJobAgeSeconds :many
 -- Intentionally HAVING COUNT(*) > 0, not a plain WHERE+aggregate: without
@@ -52,4 +61,9 @@ UNION ALL
 SELECT 'ai'::text AS job,
   EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::float8 AS age_seconds
 FROM ai_jobs WHERE status = 'pending'
+HAVING COUNT(*) > 0
+UNION ALL
+SELECT 'wayback'::text AS job,
+  EXTRACT(EPOCH FROM (NOW() - MIN(submitted_at)))::float8 AS age_seconds
+FROM wayback_submissions WHERE status = 'pending'
 HAVING COUNT(*) > 0;
