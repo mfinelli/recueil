@@ -3053,8 +3053,21 @@ Checked against the current Save Page Now 2 (SPN2) documentation (updated July
 - **Identified to archive.org.** Requests carry a `User-Agent` naming the
   project and its repository, so someone at the Internet Archive who sees them
   knows where to come with questions.
-- **Landed so far:** the configuration, the table, the client and service, and
-  the agent's sweep. The API and the dashboard block are next.
+- **The API** (`internal/httpapi/wayback.go`). `POST /api/pages/{id}/wayback`
+  and `POST /api/links/{id}/wayback` start a submission of the item's normalized
+  URL and answer `202` with its state; they are routed only when a key pair is
+  configured (and, for links, links are on), so otherwise they `404`. `409`
+  while one is already in flight, and `502` with archive.org's own message if it
+  refuses the request (nothing is recorded then) or "could not reach
+  archive.org". The page and link detail responses carry a `wayback` object
+  (`status`, `submitted_at`, `last_submitted_at`, `error`), or null if the URL
+  was never submitted; it is a plain read of the stored row, shown even if the
+  keys have since been removed, and a row still pending past an hour is shown as
+  failed so the Submit button can't stay disabled when the agent has been down.
+  `GET /api/capture-config` gains `wayback_enabled` so the dashboard knows
+  whether to offer the button.
+- **Landed so far:** the configuration, the table, the client and service, the
+  agent's sweep, and the API. The dashboard block is next.
 
 **Sources** (where the facts above come from, to re-check when the API changes):
 

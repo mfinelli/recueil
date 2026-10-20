@@ -220,6 +220,10 @@ type linkDetailResponse struct {
 	MatchingPageTitle *string                  `json:"matching_page_title"`
 	Tags              []tagResponse            `json:"tags"`
 	Collections       []pageCollectionResponse `json:"collections"`
+
+	// Wayback is how this link's URL stands with the Wayback Machine;
+	// null if it has never been submitted.
+	Wayback *waybackResponse `json:"wayback"`
 }
 
 // parseLinkID reads {id} from the URL, writing the 400 itself on failure.
@@ -305,11 +309,18 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		pageID = &page.ID
 		pageTitle = textOrNil(page.Title)
 	}
+	wayback, err := s.waybackFor(ctx, user.ID, link.NormalizedUrl)
+	if err != nil {
+		log.Printf("warning: failed to look up the Wayback state of link %d: %v", link.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 	resp := linkDetailResponse{
 		linkResponse:      linkResponseFromLink(&link, pageID),
 		MatchingPageTitle: pageTitle,
 		Tags:              []tagResponse{},
 		Collections:       []pageCollectionResponse{},
+		Wayback:           wayback,
 	}
 	for _, t := range tags {
 		resp.Tags = append(resp.Tags, tagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug})

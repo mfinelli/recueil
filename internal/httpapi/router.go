@@ -213,6 +213,15 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 				r.Delete("/links/{id}/tags/{tagId}", s.RemoveLinkTag)
 				r.Post("/links/{id}/collections", s.AddLinkToCollection)
 				r.Delete("/links/{id}/collections/{collectionId}", s.RemoveLinkFromCollection)
+				if s.Wayback != nil {
+					r.Post("/links/{id}/wayback", s.SubmitLinkWayback)
+				}
+			}
+			// Wayback Machine submission: only routed when an archive.org key
+			// pair is configured. Pages and links have one each, since
+			// either can be submitted.
+			if s.Wayback != nil {
+				r.Post("/pages/{id}/wayback", s.SubmitPageWayback)
 			}
 		})
 

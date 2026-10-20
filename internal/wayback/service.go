@@ -36,6 +36,11 @@ import (
 // there is no way left to learn how it went.
 const PendingTimeout = time.Hour
 
+// TimeoutMessage is the error recorded for a submission archive.org never
+// reported on within PendingTimeout (and shown for one that is still pending past
+// it, until the agent's sweep records it).
+const TimeoutMessage = "archive.org did not report a result within an hour"
+
 // ErrInProgress is returned by Submit when a submission for the same URL is
 // already in flight, so a second click doesn't make a second capture.
 var ErrInProgress = errors.New("wayback: a submission for this URL is already in progress")
@@ -117,7 +122,7 @@ func (s *Service) Resolve(ctx context.Context, sub db.WaybackSubmission) (db.Way
 	job, err := s.api.Status(ctx, sub.JobID.String)
 	if err != nil {
 		if expired {
-			return s.fail(ctx, sub, "archive.org did not report a result within an hour")
+			return s.fail(ctx, sub, TimeoutMessage)
 		}
 		return sub, err
 	}
@@ -131,7 +136,7 @@ func (s *Service) Resolve(ctx context.Context, sub db.WaybackSubmission) (db.Way
 		return s.fail(ctx, sub, job.Message)
 	default:
 		if expired {
-			return s.fail(ctx, sub, "archive.org did not report a result within an hour")
+			return s.fail(ctx, sub, TimeoutMessage)
 		}
 		return sub, nil
 	}

@@ -46,6 +46,7 @@ import (
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/slug"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+	"github.com/mfinelli/recueil/internal/wayback"
 )
 
 type Server struct {
@@ -92,15 +93,19 @@ type Server struct {
 	// LinkStore is the link favicon store the favicon route reads from; nil
 	// when links are off.
 	LinkStore *linkicons.Store
+
+	// Wayback submits URLs to the Wayback Machine; nil unless an archive.org key
+	// pair is configured, and the submit routes only exist when it is.
+	Wayback *wayback.Service
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64, enableLinks bool, linkStore *linkicons.Store) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64, enableLinks bool, linkStore *linkicons.Store, waybackService *wayback.Service) *Server {
 	return &Server{
 		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
 		ReadabilityVersion: readabilityVersion, AIModel: aiModel, WorkerURL: workerURL,
 		Pipeline: pipeline, ManualUploadMaxBytes: manualUploadMaxBytes,
-		EnableLinks: enableLinks, LinkStore: linkStore,
+		EnableLinks: enableLinks, LinkStore: linkStore, Wayback: waybackService,
 	}
 }
 
@@ -1416,6 +1421,10 @@ type pageDetailResponse struct {
 	// fetching the link. Both are always null if links are off.
 	MatchingLinkID    *int64  `json:"matching_link_id"`
 	MatchingLinkTitle *string `json:"matching_link_title"`
+
+	// Wayback is how this page's URL stands with the Wayback Machine,
+	// null if it has never been submitted.
+	Wayback *waybackResponse `json:"wayback"`
 }
 
 // GET /api/pages/{id}: page detail plus full capture (version) history
@@ -1487,6 +1496,13 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	wayback, err := s.waybackFor(ctx, user.ID, page.NormalizedUrl)
+	if err != nil {
+		log.Printf("warning: failed to look up the Wayback state of page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp.Wayback = wayback
 	for i := range captures {
 		c := &captures[i]
 		resp.Captures = append(resp.Captures, captureSummaryResponse{
@@ -2010,6 +2026,10 @@ type captureConfigResponse struct {
 	AIModel              *string `json:"ai_model"`
 	ManualUploadMaxBytes int64   `json:"manual_upload_max_bytes"`
 	LinksEnabled         bool    `json:"links_enabled"`
+	// WaybackEnabled is whether Wayback Machine submission is configured (an
+	// archive.org key pair), so the dashboard knows whether to offer the
+	// Submit button at all.
+	WaybackEnabled bool `json:"wayback_enabled"`
 }
 
 // GET /api/capture-config: this running agent's currently configured
@@ -2028,6 +2048,7 @@ func (s *Server) GetCaptureConfig(w http.ResponseWriter, r *http.Request) {
 		AIModel:              stringOrNil(s.AIModel),
 		ManualUploadMaxBytes: s.ManualUploadMaxBytes,
 		LinksEnabled:         s.EnableLinks,
+		WaybackEnabled:       s.Wayback != nil,
 	})
 }
 

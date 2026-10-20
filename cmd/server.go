@@ -50,6 +50,7 @@ import (
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+	"github.com/mfinelli/recueil/internal/wayback"
 )
 
 var (
@@ -124,6 +125,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 	pendingCapturesClient := pendingcaptures.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
 
+	// Wayback Machine submission: on only when an archive.org key pair is
+	// configured. The server only ever starts a submission; recording how each
+	// went is the agent's job (see cmd/agent.go).
+	var waybackService *wayback.Service
+	if cfg.WaybackEnabled() {
+		waybackService = wayback.NewService(queries, wayback.NewClient(cfg.WaybackAccessKey, cfg.WaybackSecretKey), nil, nil)
+	}
+
 	// Only with links on; nil otherwise, and nothing then routes to it.
 	var linkStore *linkicons.Store
 	if cfg.EnableLinks {
@@ -149,7 +158,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	pipeline := urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes, cfg.EnableLinks, linkStore)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes, cfg.EnableLinks, linkStore, waybackService)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

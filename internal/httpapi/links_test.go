@@ -66,7 +66,7 @@ func newLinksTestServer(t *testing.T, pool *pgxpool.Pool, linksEnabled bool) (*h
 		devices.NewClient(unreachable, "test-secret"), queueitems.NewClient(unreachable, "test-secret"),
 		pendingcaptures.NewClient(unreachable, "test-secret"), bootstrap, false, testPairingKey(t), true,
 		"test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t),
-		testManualUploadMaxBytes, linksEnabled, linkStore)
+		testManualUploadMaxBytes, linksEnabled, linkStore, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)

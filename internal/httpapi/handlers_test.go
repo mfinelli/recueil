@@ -118,7 +118,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	// happy-path coverage, keep exercising the real /api/auth/register
 	// flow unchanged. TestRegisterDisabledByDefault covers the
 	// default-false gate directly against its own server.
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -145,7 +145,7 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -239,7 +239,7 @@ func TestNewRouter_DashboardSPA(t *testing.T) {
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
@@ -476,7 +476,7 @@ func TestRegisterDisabledByDefault(t *testing.T) {
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -3447,7 +3447,7 @@ func TestGetCaptureConfig(t *testing.T) {
 		// Deliberately "", "" here -- a dev build (no `make`-injected
 		// readability_version) with AI enrichment disabled entirely
 		// (cmd/server.go's own empty-AIBaseURL-means-disabled reasoning).
-		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil)
+		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 		logger := httplog.NewLogger("recueil-test")
 		logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 		r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -3495,7 +3495,7 @@ func TestGetCaptureConfig(t *testing.T) {
 			bootstrap, _, err := auth.NewBootstrapTokenHolder()
 			require.NoError(t, err)
 
-			s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, enabled, nil)
+			s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, enabled, nil, nil)
 			logger := httplog.NewLogger("recueil-test")
 			logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 			r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
