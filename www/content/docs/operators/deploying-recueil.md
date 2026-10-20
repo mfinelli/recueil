@@ -303,6 +303,11 @@ value matches your own configured limit) — otherwise nginx itself rejects an
 oversized upload with a 413 before it ever reaches `server`, which looks like
 recueil's limit misbehaving when it's actually this one. {% </callout> %}
 
+{% <callout label="Heads up"> %} This example is intentionally simple: it
+forwards everything to `server`, including `/metrics`. If you want to restrict
+access see [Metrics](@/docs/operators/metrics.md#who-can-reach-metrics) for what
+exactly is exposed and the options that you have. {% </callout> %}
+
 ## Creating your first account
 
 On first startup, if there are no accounts yet, the backend generates a one-time
