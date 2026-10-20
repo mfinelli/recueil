@@ -1,6 +1,6 @@
 +++
 title = "CLI Reference"
-weight = 5
+weight = 6
 template = "docs-page.html"
 
 [extra]

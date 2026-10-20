@@ -1,6 +1,6 @@
 +++
 title = "Wayback Machine"
-weight = 7
+weight = 8
 template = "docs-page.html"
 
 [extra]

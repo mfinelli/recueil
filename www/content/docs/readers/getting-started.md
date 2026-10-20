@@ -21,6 +21,10 @@ dek = "Install the extension, pair it with your recueil instance, and capture yo
 4. **Capture something.** Browse to any page and click the toolbar icon —
    recueil takes it from there, and it'll show up in your library shortly.
 
+{% <callout label="Tip"> %} Not everything is capable of being fully archived —
+a video or a code repository, say. For those, click **Save as link** under the
+button instead. See [Links](@/docs/readers/links.md). {% </callout> %}
+
 ## Capturing something you queued
 
 If you queued a page instead of capturing it directly — from the
