@@ -11,17 +11,19 @@ dek = "The pieces, how they fit together, and what happens when you capture a pa
 ## The pieces
 
 - **A Cloudflare Worker** — a dumb relay, not an application server. It handles
-  device pairing, the cross-device queue, and issuing short-lived presigned
-  upload URLs. It never touches your archive's actual content.
-- **D1** (Cloudflare's SQLite) — device tokens and the queue live here. Not
-  canonical data; see
+  device pairing, the cross-device queue, issuing short-lived presigned upload
+  URLs, and taking in saved links. It never touches your archive's actual
+  content.
+- **D1** (Cloudflare's SQLite) — device tokens, the queue, saved links waiting
+  to be pulled in, and the read-only copies of your pages' and links' titles and
+  URLs that the extension syncs into your bookmarks. Not canonical data; see
   [Storage & Backups](@/docs/operators/storage-and-backups.md).
 - **R2** (Cloudflare's object storage) — a temporary buffer for capture blobs in
   transit, deleted the moment your backend has pulled them.
 - **The backend** — two processes, one binary: `server` runs the dashboard and
-  its API; `agent` runs everything in the background — pulling captures in,
-  generating screenshots and readable text, optional AI enrichment. See
-  [Administration](@/docs/operators/administration.md).
+  its API; `agent` runs everything in the background — pulling captures and
+  saved links in, generating screenshots and readable text, optional AI
+  enrichment. See [Administration](@/docs/operators/administration.md).
 - **Postgres and local disk** — canonical. Everything that actually matters
   lives here, not in Cloudflare.
 - **A headless-Chrome sidecar** — renders already-captured HTML offline to
@@ -70,6 +72,28 @@ within it rather than push against the limit.
 [Manual upload](@/docs/readers/manual-upload.md) is different and skips steps
 1–4 entirely — an already-captured HTML file goes straight from the dashboard
 into `server`, without involving the Worker, D1, or R2.
+
+## A link, start to finish
+
+A [link](@/docs/readers/links.md) is a much lighter trip, because there's no
+page to archive:
+
+1. You click **Save as link** in the extension, or finish a queued item as a
+   link. The extension reads the page's title and icon from your tab and sends
+   them, with the URL, to the Worker. An icon too large to send inline goes
+   through R2 by presigned URL, like a capture.
+2. The Worker records it in D1 as a small saved link, with no blob to carry.
+3. `agent`'s Worker cycle claims the saved links, writes each icon to
+   `links_dir` (a separate directory from your archive), and commits the link to
+   Postgres, replacing the title and icon of one you'd saved before. It then
+   tells the Worker it has the link, and D1 sweeps the finished rows later.
+4. It shows up in your dashboard.
+
+Nothing in a link's trip touches the headless-Chrome sidecar. Adding a link by
+hand in the dashboard skips steps 1–3 entirely, the way manual upload does: it
+goes from the dashboard straight into `server`. Separately, `agent` keeps D1's
+read-only copies of your pages' and links' titles and URLs up to date, which is
+what the extension reads to keep your browser's bookmarks in step.
 
 ## Submitting to the Wayback Machine
 

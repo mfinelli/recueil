@@ -26,9 +26,9 @@ Runs continuously until stopped, on two independent schedules rather than one:
 
 - **Worker-facing** (`agent_worker_poll_interval_seconds`, 30 minutes by
   default): pulling completed captures in from R2/D1 into Postgres and local
-  disk, pushing the D1 bookmark-list mirror sync, and — every 12 hours,
-  piggybacked on this same cycle rather than its own — sweeping D1's terminal
-  rows older than 72 hours.
+  disk, pulling saved links in, pushing the D1 bookmark-list mirror sync for
+  pages and links, and — every 12 hours, piggybacked on this same cycle rather
+  than its own — sweeping D1's terminal rows older than 72 hours.
 - **Local-only** (`agent_local_poll_interval_seconds`, 5 minutes by default):
   the screenshot job, the readability job, AI enrichment (if configured), and
   recording how pending

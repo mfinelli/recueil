@@ -78,13 +78,15 @@ parts with their own independent build tooling.
 | `dbtest`          | The Postgres integration-test harness.                                                              |
 | `deviceapi`       | What a paired device (the CLI) uses to talk to the Worker's device-facing endpoints.                |
 | `devices`         | The backend's client for the dashboard's Manage Devices screen.                                     |
-| `gc`              | Reclaims disk space `DELETE /api/pages/{id}`/`DELETE /api/captures/{id}` deliberately leave behind. |
+| `gc`              | Reclaims disk space that deleting pages, captures, and links deliberately leaves behind, on demand. |
 | `httpapi`         | The dashboard-facing HTTP API.                                                                      |
-| `ingest`          | The ingestion pipeline: pulls completed captures in from R2/D1.                                     |
+| `ingest`          | The ingestion pipeline: pulls completed captures and saved links in from R2/D1.                     |
+| `linkicons`       | The local disk store for link favicons, kept apart from the capture archive.                        |
 | `mcpapi`          | The MCP-facing surface over a user's archive — read-only tools.                                     |
 | `metrics`         | Builds the Prometheus registry served at `/metrics`.                                                |
-| `mirror`          | Pushes backend-owned data outward to D1, via the Worker.                                            |
+| `mirror`          | Pushes backend-owned data (page and link bookmark lists) outward to D1, via the Worker.             |
 | `pendingcaptures` | The backend's client for the Worker's pending-captures endpoints.                                   |
+| `pendinglinks`    | The backend's client for the Worker's saved-links endpoints.                                        |
 | `pgmigrate`       | Applies pending Postgres schema migrations via goose.                                               |
 | `queueitems`      | The backend's client for the dashboard's Queue screen.                                              |
 | `r2`              | The backend's R2 client (distinct from the Worker's presigned-upload path).                         |
@@ -93,6 +95,7 @@ parts with their own independent build tooling.
 | `sidecar`         | Plumbing shared by every job that renders through the headless-Chrome sidecar.                      |
 | `slug`            | Generates and validates the URL-facing slugs stored on tags/collections.                            |
 | `urlnorm`         | Computes `normalized_url` for captures/pages.                                                       |
+| `wayback`         | Submits URLs to the Wayback Machine on request, and records how each submission went.               |
 
 `internal/db` (sqlc-generated query code) isn't checked in — `make` generates
 it. See [DESIGN.md](DESIGN.md) for the architecture and reasoning behind how

@@ -114,9 +114,10 @@ tar cf "$backup_dir/links.tar" -C ./data/links .
 
 **Intentionally not in this list**, since it's an easy thing to get backwards:
 R2 and D1 don't need to be backed up. R2 is a temporary upload buffer only,
-covered above. D1 holds device tokens (and the read-only bookmark-list mirror),
-not canonical data — Postgres is the source of truth for both, and D1 is rebuilt
-from it, not the other way around.
+covered above. D1 holds device tokens, saved links waiting to be pulled in, and
+the read-only bookmark-list mirrors of pages and links, not canonical data —
+Postgres is the source of truth for both, and D1 is rebuilt from it, not the
+other way around.
 
 ### Restoring
 
