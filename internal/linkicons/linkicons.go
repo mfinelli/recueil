@@ -17,9 +17,12 @@
  */
 
 // Package linkicons is the local disk store for link favicons. It's its own
-// store, with its own root and its own bind mount, separate from the captures
-// archive: `recueil gc`'s sweep of the archive treats every file it doesn't
-// recognize as garbage, so link favicons must live where it can't reach them.
+// store, with its own root and its own bind mount, kept apart from the captures
+// archive because links and captures are different entities and are better off
+// well separated: each has its own gc pass, backup and set of referenced files.
+// One consequence is that the two roots must not overlap: `recueil gc`'s sweep of
+// the archive treats every file it doesn't recognize as garbage, so link favicons
+// can't live where it can reach them.
 //
 // # Same layout as the archive
 //

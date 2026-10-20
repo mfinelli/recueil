@@ -57,8 +57,8 @@ type Config struct {
 	EnableLinks bool `mapstructure:"enable_links"`
 
 	// LinksDir is the root directory link favicons are stored under.
-	// Required while EnableLinks is true, and it must be
-	// its own directory, not inside ArchiveDir (or the other way around):
+	// Required while EnableLinks is true. Links keep their own store, apart
+	// from ArchiveDir, so the two must not overlap (neither inside the other):
 	// `recueil gc`'s sweep of ArchiveDir treats every file it doesn't
 	// recognize as garbage, link favicons included.
 	LinksDir string `mapstructure:"links_dir"`

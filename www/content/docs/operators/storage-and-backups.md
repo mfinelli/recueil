@@ -32,9 +32,10 @@ actually on disk.
 ## Link favicons
 
 Links (bookmark-only entries) have no archive of their own, only a favicon, and
-those live in a separate directory, `links_dir`, rather than alongside captures.
-The layout inside it is the same as for captures — each saved favicon gets its
-own sharded directory:
+those live in a separate directory, `links_dir`, rather than alongside captures:
+links and captures are different things, and keeping their files apart keeps
+them that way. The layout inside it is the same as for captures — each saved
+favicon gets its own sharded directory:
 
 ```
 links_dir/6a/d3/019fce71-a3bd-7ad7-b4d6-0238b3d96ad3/favicon.png

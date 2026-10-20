@@ -2774,13 +2774,18 @@ Link favicons live in **their own store, separate from the captures archive**
 own **bind mount**, required whenever the feature is enabled (§17f), which is
 the default.
 
-The reason is `recueil gc` (§4): its sweep of the archive root treats every file
-Postgres doesn't reference as garbage, so link favicons must not live where it
-can reach them. Config enforces this: **`links_dir` may not be `archive_dir`,
-inside it, or contain it** (compared as cleaned absolute paths; symlinks aren't
-resolved), and `recueil` refuses to start otherwise. Keeping the store outside
-the archive root also means an old `recueil gc` binary can't touch it,
-regardless of upgrade ordering.
+Links and captures are different entities, and a separate store keeps them well
+separated: each has its own root, bind mount, backup, `gc` pass and live set,
+and neither has to know about the other (a deployment with links off has no link
+store at all). It also avoids a practical hazard, though that alone could have
+been worked around by teaching one `recueil gc` about both kinds of file: its
+sweep of the archive root (§4) treats every file Postgres doesn't reference as
+garbage, so link favicons can't live where it can reach them. Config enforces
+the separation: **`links_dir` may not be `archive_dir`, inside it, or contain
+it** (compared as cleaned absolute paths; symlinks aren't resolved), and
+`recueil` refuses to start otherwise. Keeping the store outside the archive root
+also means an old `recueil gc` binary can't touch it, regardless of upgrade
+ordering.
 
 **Same layout as the archive.** Within its root the store is laid out exactly as
 the archive is (§4): every saved favicon gets its own sharded, UUIDv7-named
