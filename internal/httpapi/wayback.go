@@ -63,7 +63,7 @@ type waybackResponse struct {
 // recording that yet (the agent being down, say): archive.org no longer remembers
 // the job by then, so it can't succeed, and showing it as pending would leave the
 // Submit button disabled for good.
-func waybackResponseFrom(sub db.WaybackSubmission, now time.Time) waybackResponse {
+func waybackResponseFrom(sub *db.WaybackSubmission, now time.Time) waybackResponse {
 	resp := waybackResponse{
 		Status:      sub.Status,
 		SubmittedAt: sub.SubmittedAt.Time,
@@ -92,7 +92,7 @@ func (s *Server) waybackFor(ctx context.Context, userID int64, normalizedURL str
 	if err != nil {
 		return nil, err
 	}
-	resp := waybackResponseFrom(sub, time.Now())
+	resp := waybackResponseFrom(&sub, time.Now())
 	return &resp, nil
 }
 
@@ -114,7 +114,7 @@ func (s *Server) submitWayback(w http.ResponseWriter, r *http.Request, userID in
 		writeError(w, http.StatusBadGateway, "could not reach archive.org")
 		return
 	}
-	writeJSON(w, http.StatusAccepted, waybackResponseFrom(sub, time.Now()))
+	writeJSON(w, http.StatusAccepted, waybackResponseFrom(&sub, time.Now()))
 }
 
 // POST /api/links/{id}/wayback: submit a link's URL to the Wayback Machine.

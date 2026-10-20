@@ -354,6 +354,6 @@ func isWithin(dir, path string) bool {
 
 // WaybackEnabled reports whether Wayback Machine submission is configured: both
 // halves of the archive.org key pair are set (Load refuses just one).
-func (c Config) WaybackEnabled() bool {
+func (c *Config) WaybackEnabled() bool {
 	return c.WaybackAccessKey != "" && c.WaybackSecretKey != ""
 }

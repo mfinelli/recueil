@@ -149,7 +149,7 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func inlineLink(userID int64, id, url, savedAt string, ext string, data []byte) pendinglinks.PendingLink {
+func inlineLink(userID int64, id, url, savedAt, ext string, data []byte) pendinglinks.PendingLink {
 	pl := pendinglinks.PendingLink{ID: id, UserID: userID, URL: url, SavedAt: savedAt}
 	if ext != "" {
 		pl.FaviconExt = strp(ext)

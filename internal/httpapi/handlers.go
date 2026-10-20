@@ -1496,13 +1496,13 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	wayback, err := s.waybackFor(ctx, user.ID, page.NormalizedUrl)
+	waybackState, err := s.waybackFor(ctx, user.ID, page.NormalizedUrl)
 	if err != nil {
 		log.Printf("warning: failed to look up the Wayback state of page %d: %v", page.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	resp.Wayback = wayback
+	resp.Wayback = waybackState
 	for i := range captures {
 		c := &captures[i]
 		resp.Captures = append(resp.Captures, captureSummaryResponse{

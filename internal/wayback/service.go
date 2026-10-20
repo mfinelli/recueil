@@ -113,9 +113,9 @@ func (s *Service) Submit(ctx context.Context, userID int64, normalizedURL string
 // passed, after which it is failed rather than waited on forever; one whose status
 // can't be fetched right now (archive.org unreachable) is also left pending and the
 // error returned, to be tried again later, under the same time limit.
-func (s *Service) Resolve(ctx context.Context, sub db.WaybackSubmission) (db.WaybackSubmission, error) {
+func (s *Service) Resolve(ctx context.Context, sub *db.WaybackSubmission) (db.WaybackSubmission, error) {
 	if sub.Status != "pending" {
-		return sub, nil
+		return *sub, nil
 	}
 	expired := s.now().Sub(sub.SubmittedAt.Time) >= PendingTimeout
 
@@ -124,7 +124,7 @@ func (s *Service) Resolve(ctx context.Context, sub db.WaybackSubmission) (db.Way
 		if expired {
 			return s.fail(ctx, sub, TimeoutMessage)
 		}
-		return sub, err
+		return *sub, err
 	}
 
 	switch job.State {
@@ -138,11 +138,11 @@ func (s *Service) Resolve(ctx context.Context, sub db.WaybackSubmission) (db.Way
 		if expired {
 			return s.fail(ctx, sub, TimeoutMessage)
 		}
-		return sub, nil
+		return *sub, nil
 	}
 }
 
-func (s *Service) fail(ctx context.Context, sub db.WaybackSubmission, message string) (db.WaybackSubmission, error) {
+func (s *Service) fail(ctx context.Context, sub *db.WaybackSubmission, message string) (db.WaybackSubmission, error) {
 	return s.settle(ctx, sub, func() (db.WaybackSubmission, error) {
 		return s.queries.FailWaybackSubmission(ctx, db.FailWaybackSubmissionParams{
 			ID: sub.ID, JobID: sub.JobID, Error: textOf(message),
@@ -154,7 +154,7 @@ func (s *Service) fail(ctx context.Context, sub db.WaybackSubmission, message st
 // pending with the same job id, so when a newer attempt has replaced this one
 // since it was read (or a second sweep got there first) nothing is updated; the
 // current row is returned instead, which is just what the caller wanted to know.
-func (s *Service) settle(ctx context.Context, sub db.WaybackSubmission, update func() (db.WaybackSubmission, error)) (db.WaybackSubmission, error) {
+func (s *Service) settle(ctx context.Context, sub *db.WaybackSubmission, update func() (db.WaybackSubmission, error)) (db.WaybackSubmission, error) {
 	row, err := update()
 	if err == nil {
 		return row, nil
@@ -181,7 +181,8 @@ func (s *Service) SweepPending(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("wayback: listing pending submissions: %w", err)
 	}
-	for _, sub := range pending {
+	for i := range pending {
+		sub := &pending[i]
 		if _, err := s.Resolve(ctx, sub); err != nil {
 			var dbErr interface{ SQLState() string }
 			if errors.As(err, &dbErr) {

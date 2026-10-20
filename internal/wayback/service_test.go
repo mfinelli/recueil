@@ -103,7 +103,7 @@ func (e *svcEnv) get(t *testing.T, url string) db.WaybackSubmission {
 
 // backdate makes a submission look older than it is, by rewriting its
 // submitted_at, so the timeout rules can be exercised without waiting.
-func (e *svcEnv) backdate(t *testing.T, sub db.WaybackSubmission, by time.Duration) db.WaybackSubmission {
+func (e *svcEnv) backdate(t *testing.T, sub *db.WaybackSubmission, by time.Duration) db.WaybackSubmission {
 	t.Helper()
 	_, err := e.pool.Exec(e.ctx, `UPDATE wayback_submissions SET submitted_at = $2 WHERE id = $1`,
 		sub.ID, pgtype.Timestamptz{Time: e.now.Add(-by), Valid: true})
@@ -144,7 +144,7 @@ func TestService_Submit(t *testing.T) {
 		e := newSvcEnv(t)
 		first, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
-		e.backdate(t, first, wayback.PendingTimeout+time.Minute)
+		e.backdate(t, &first, wayback.PendingTimeout+time.Minute)
 
 		second, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 
@@ -159,7 +159,7 @@ func TestService_Submit(t *testing.T) {
 		first, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
 		e.api.jobs["job-1"] = wayback.Job{State: wayback.StateSuccess}
-		done, err := e.svc.Resolve(e.ctx, first)
+		done, err := e.svc.Resolve(e.ctx, &first)
 		require.NoError(t, err)
 		require.Equal(t, "succeeded", done.Status)
 
@@ -206,7 +206,7 @@ func TestService_Resolve(t *testing.T) {
 		require.NoError(t, err)
 		e.api.jobs["job-1"] = wayback.Job{State: wayback.StateSuccess, Timestamp: e.now}
 
-		got, err := e.svc.Resolve(e.ctx, sub)
+		got, err := e.svc.Resolve(e.ctx, &sub)
 
 		require.NoError(t, err)
 		assert.Equal(t, "succeeded", got.Status)
@@ -220,14 +220,14 @@ func TestService_Resolve(t *testing.T) {
 		first, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
 		e.api.jobs["job-1"] = wayback.Job{State: wayback.StateSuccess}
-		done, err := e.svc.Resolve(e.ctx, first)
+		done, err := e.svc.Resolve(e.ctx, &first)
 		require.NoError(t, err)
 
 		e.now = e.now.Add(2 * time.Hour)
 		second, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
 		e.api.jobs["job-2"] = wayback.Job{State: wayback.StateError, Message: "Couldn't resolve host."}
-		failed, err := e.svc.Resolve(e.ctx, second)
+		failed, err := e.svc.Resolve(e.ctx, &second)
 
 		require.NoError(t, err)
 		assert.Equal(t, "failed", failed.Status)
@@ -240,7 +240,7 @@ func TestService_Resolve(t *testing.T) {
 		sub, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
 
-		got, err := e.svc.Resolve(e.ctx, sub)
+		got, err := e.svc.Resolve(e.ctx, &sub)
 
 		require.NoError(t, err)
 		assert.Equal(t, "pending", got.Status)
@@ -250,9 +250,9 @@ func TestService_Resolve(t *testing.T) {
 		e := newSvcEnv(t)
 		sub, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
-		sub = e.backdate(t, sub, wayback.PendingTimeout+time.Second)
+		sub = e.backdate(t, &sub, wayback.PendingTimeout+time.Second)
 
-		got, err := e.svc.Resolve(e.ctx, sub)
+		got, err := e.svc.Resolve(e.ctx, &sub)
 
 		require.NoError(t, err)
 		assert.Equal(t, "failed", got.Status)
@@ -265,12 +265,12 @@ func TestService_Resolve(t *testing.T) {
 		require.NoError(t, err)
 		e.api.statusErr["job-1"] = errors.New("connection refused")
 
-		got, err := e.svc.Resolve(e.ctx, sub)
+		got, err := e.svc.Resolve(e.ctx, &sub)
 		assert.ErrorContains(t, err, "connection refused")
 		assert.Equal(t, "pending", got.Status)
 
-		old := e.backdate(t, sub, wayback.PendingTimeout+time.Second)
-		got, err = e.svc.Resolve(e.ctx, old)
+		old := e.backdate(t, &sub, wayback.PendingTimeout+time.Second)
+		got, err = e.svc.Resolve(e.ctx, &old)
 		require.NoError(t, err)
 		assert.Equal(t, "failed", got.Status, "no more waiting once archive.org can't remember the job anyway")
 	})
@@ -280,11 +280,11 @@ func TestService_Resolve(t *testing.T) {
 		sub, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
 		e.api.jobs["job-1"] = wayback.Job{State: wayback.StateSuccess}
-		done, err := e.svc.Resolve(e.ctx, sub)
+		done, err := e.svc.Resolve(e.ctx, &sub)
 		require.NoError(t, err)
 		e.api.statusSeen = nil
 
-		again, err := e.svc.Resolve(e.ctx, done)
+		again, err := e.svc.Resolve(e.ctx, &done)
 
 		require.NoError(t, err)
 		assert.Equal(t, done.Status, again.Status)
@@ -298,9 +298,9 @@ func TestService_Resolve(t *testing.T) {
 		e.api.jobs["job-1"] = wayback.Job{State: wayback.StateSuccess}
 
 		stale := sub // what a second resolver read before the first finished
-		first, err := e.svc.Resolve(e.ctx, sub)
+		first, err := e.svc.Resolve(e.ctx, &sub)
 		require.NoError(t, err)
-		second, err := e.svc.Resolve(e.ctx, stale)
+		second, err := e.svc.Resolve(e.ctx, &stale)
 
 		require.NoError(t, err)
 		assert.Equal(t, "succeeded", second.Status)
@@ -311,14 +311,14 @@ func TestService_Resolve(t *testing.T) {
 		e := newSvcEnv(t)
 		old, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
-		e.backdate(t, old, wayback.PendingTimeout+time.Minute)
+		e.backdate(t, &old, wayback.PendingTimeout+time.Minute)
 		newer, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
 		require.NotEqual(t, old.JobID, newer.JobID)
 
 		// A resolver that read the OLD attempt and learns its job succeeded.
 		e.api.jobs[old.JobID.String] = wayback.Job{State: wayback.StateSuccess}
-		got, err := e.svc.Resolve(e.ctx, old)
+		got, err := e.svc.Resolve(e.ctx, &old)
 
 		require.NoError(t, err)
 		assert.Equal(t, "pending", got.Status, "the newer attempt is untouched")
@@ -379,7 +379,7 @@ func TestService_SweepPending(t *testing.T) {
 		e := newSvcEnv(t)
 		sub, err := e.svc.Submit(e.ctx, e.user.ID, testURL)
 		require.NoError(t, err)
-		e.backdate(t, sub, wayback.PendingTimeout+time.Minute)
+		e.backdate(t, &sub, wayback.PendingTimeout+time.Minute)
 		e.api.statusErr[sub.JobID.String] = errors.New("unreachable")
 
 		require.NoError(t, e.svc.SweepPending(e.ctx))
