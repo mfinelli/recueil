@@ -97,6 +97,62 @@ func TestLoad(t *testing.T) {
 			},
 		},
 		{
+			name: "wayback is off by default, with neither key set",
+			setup: func() {
+				allRequiredSet()
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.WaybackEnabled())
+				assert.Empty(t, cfg.WaybackAccessKey)
+				assert.Empty(t, cfg.WaybackSecretKey)
+			},
+		},
+		{
+			name: "wayback is on when both halves of the key pair are set",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("wayback_access_key", "access")
+				viper.Set("wayback_secret_key", "secret")
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.True(t, cfg.WaybackEnabled())
+				assert.Equal(t, "access", cfg.WaybackAccessKey)
+				assert.Equal(t, "secret", cfg.WaybackSecretKey)
+			},
+		},
+		{
+			name: "wayback needs both keys: just the access key is a config error",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("wayback_access_key", "access")
+			},
+			wantErr:     true,
+			errContains: "wayback_access_key and wayback_secret_key must be set together",
+		},
+		{
+			name: "wayback needs both keys: just the secret key is a config error",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("wayback_secret_key", "secret")
+			},
+			wantErr:     true,
+			errContains: "wayback_access_key and wayback_secret_key must be set together",
+		},
+		{
+			name: "wayback is independent of links: it can be on with links off",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("enable_links", false)
+				viper.Set("links_dir", "")
+				viper.Set("wayback_access_key", "access")
+				viper.Set("wayback_secret_key", "secret")
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.EnableLinks)
+				assert.True(t, cfg.WaybackEnabled())
+			},
+		},
+		{
 			name: "missing links_dir is caught while links are enabled, and says how to fix it",
 			setup: func() {
 				allRequiredSet()

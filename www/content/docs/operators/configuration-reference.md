@@ -74,6 +74,24 @@ have no such budget to respect and can run more often.
 | `readability_worker_concurrency` | 3       | Same idea, for extracting readable text.                            |
 | `readability_max_attempts`       | 3       | Same idea, for extracting readable text.                            |
 
+## Wayback Machine submission
+
+Entirely optional — leaving both keys unset turns it off, and the dashboard then
+only offers links to the public Wayback Machine calendar for a page or link,
+with no button to submit it. Setting just one of the two is a startup error.
+
+| Setting              | Default   | What it does                                                                                                                      |
+| -------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `wayback_access_key` | _(unset)_ | The access key half of an archive.org IA-S3 key pair, for the Internet Archive's Save Page Now API. Set together with the secret. |
+| `wayback_secret_key` | _(unset)_ | The secret key half. Treat it like a password.                                                                                    |
+
+The keys belong to an archive.org account. To get them, follow the Internet
+Archive's guide,
+[Get your Internet Archive credentials](https://archive.org/developers/tutorial-get-ia-credentials.html):
+sign in (or sign up) at archive.org, open
+[archive.org/account/s3.php](https://archive.org/account/s3.php), tick the box
+and choose **Generate New Keys**.
+
 ## AI enrichment
 
 Entirely optional — leaving `ai_base_url` unset disables it, and nothing else in

@@ -159,6 +159,17 @@ type Config struct {
 	ReadabilityWorkerConcurrency int `mapstructure:"readability_worker_concurrency"`
 	ReadabilityMaxAttempts       int `mapstructure:"readability_max_attempts"`
 
+	// WaybackAccessKey and WaybackSecretKey are an archive.org account's IA-S3
+	// keys (see https://archive.org/developers/tutorial-get-ia-credentials.html),
+	// which the Save Page Now 2 API needs to submit a page and, as importantly,
+	// to report back whether the capture worked. Setting both is how
+	// Wayback submission is switched on, rather than a separate boolean
+	// that could disagree with whether the keys are filled in (the same
+	// way that AIBaseURL works for AI enrichment). Setting just one is a
+	// configuration error.
+	WaybackAccessKey string `mapstructure:"wayback_access_key"`
+	WaybackSecretKey string `mapstructure:"wayback_secret_key"`
+
 	// AIBaseURL is the OpenAI-compatible API's base URL -- e.g.
 	// "https://api.openai.com/v1", "http://ollama:11434/v1", or a
 	// llama.cpp server's own address. A single path, not a separate
@@ -287,6 +298,11 @@ func Load() (Config, error) {
 	if cfg.EnableLinks && cfg.LinksDir == "" {
 		missing = append(missing, "links_dir")
 	}
+	if (cfg.WaybackAccessKey == "") != (cfg.WaybackSecretKey == "") {
+		return cfg, errors.New("wayback_access_key and wayback_secret_key must be set together " +
+			"(Wayback submission needs both halves of an archive.org IA-S3 key pair, " +
+			"or neither to leave it off)")
+	}
 	if len(missing) > 0 {
 		msg := fmt.Sprintf("missing required config values: %v", missing)
 		if cfg.EnableLinks && cfg.LinksDir == "" {
@@ -334,4 +350,10 @@ func isWithin(dir, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// WaybackEnabled reports whether Wayback Machine submission is configured: both
+// halves of the archive.org key pair are set (Load refuses just one).
+func (c Config) WaybackEnabled() bool {
+	return c.WaybackAccessKey != "" && c.WaybackSecretKey != ""
 }

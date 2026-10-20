@@ -80,6 +80,8 @@ func init() {
 		"sidecar_render_host",
 		"readability_worker_concurrency",
 		"readability_max_attempts",
+		"wayback_access_key",
+		"wayback_secret_key",
 		"ai_base_url",
 		"ai_api_key",
 		"ai_model",

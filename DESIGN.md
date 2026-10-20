@@ -1891,6 +1891,25 @@ CREATE TABLE link_collections (
 CREATE INDEX idx_link_collections_collection_id
   ON link_collections(collection_id);
 
+-- Wayback Machine submissions (§17i): one row per user and URL, holding the state
+-- of the latest attempt. last_submitted_at is the last SUCCESSFUL attempt's
+-- submitted_at and survives a later failure.
+CREATE TABLE wayback_submissions (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  normalized_url TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'succeeded', 'failed')),
+  job_id TEXT,                      -- archive.org's SPN2 job id
+  submitted_at TIMESTAMPTZ NOT NULL,
+  last_submitted_at TIMESTAMPTZ,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (user_id, normalized_url)
+);
+CREATE INDEX idx_wayback_submissions_pending
+  ON wayback_submissions(submitted_at) WHERE status = 'pending';
+
 -- Decoupled from captures so a capture remains fully valid/browsable
 -- with zero AI enrichment ever having run. ai_summary/ai_model live on
 -- captures directly (above), not here — a nullable column already gives
@@ -2965,23 +2984,88 @@ stages; each says what has landed.
 
 Submitting to the Internet Archive's Wayback Machine is **on demand only** —
 never automatic — and applies to **links and to ordinary captured pages** both.
+Checked against the current Save Page Now 2 (SPN2) documentation (updated July
+2026), which changed several things this section originally assumed.
 
-- **Respects §1.** Archive.org does the fetching, not recueil.
-- **Tracked and shown.** The last submission time is stored and displayed on the
-  dashboard for each entry. Storing the resulting snapshot URL, if the API
-  returns one, is a proposal, not a decision.
-- **Rate limited**, globally per backend rather than per user (the limit applies
-  to the backend's outbound identity), with an **optional API key** in config.
-- **Job shape** (proposed): a `wayback_jobs` table following the existing
-  retry/backoff shape (§6, §7), surfaced on the Queue screen with the same
-  status-badge vocabulary and manual retry (§7).
-- **Privacy.** Submitting sends the URL to a third party. Archive.org fetches
-  the URL itself, so it sees only what a logged-out request would — not the
-  content the user captured from their authenticated browser — and the UI should
-  say so.
-- **Not yet verified:** the current save API, authentication requirements and
-  rate limits. Check them against Wayback's current documentation before
-  implementing; nothing here is based on a verified reading of it.
+- **Respects §1.** Archive.org does the fetching, not recueil, as a logged-out
+  visitor. It sees only what a stranger would, not what the user saw in their
+  own browser, and **the snapshot is public**. The URL is shared with a third
+  party, so the screen says so, and says not to submit URLs that carry secrets
+  in the query.
+- **A key pair is required, not optional.** SPN2 needs an archive.org account's
+  IA-S3 keys (`Authorization: LOW <access>:<secret>`); the unauthenticated route
+  is documented only with much lower limits, and the established clients dropped
+  it because a job's final outcome can't be confirmed without a key. Setting
+  `wayback_access_key` and `wayback_secret_key` (both or neither) is what turns
+  the feature on, as an empty `ai_base_url` turns AI off. Without them the
+  dashboard offers only the two public calendar links. The operator docs link to
+  Internet Archive's own instructions for generating the keys.
+- **No global rate limiter and no job queue.** The limits (7 captures a minute
+  and 30,000 a day for a keyed account, and a few captures of any one URL per
+  day: the same document gives both 5 and 10 in different places) are far above
+  what hand-pressed buttons reach, and archive.org also answers a request for a
+  URL captured within the last hour with that recent capture instead of making a
+  new one. So a refusal is just reported, in archive.org's own words, and the
+  user presses the button again. This replaces the `wayback_jobs` table and
+  Queue screen entries first proposed.
+- **State is keyed by URL, not by page or link.** One `wayback_submissions` row
+  per user and normalized URL holds the latest attempt (`pending`, `succeeded`
+  or `failed`), archive.org's job id, when it was submitted, `last_submitted_at`
+  (the last _success_, which a later failure doesn't erase) and the last error.
+  A page and a link with the same URL share it, which is right because Wayback
+  captures URLs, and it survives a page being deleted and captured again. The
+  normalized URL is what's sent. **It is per user on purpose:** keyed by URL
+  alone, one user would see that another had submitted a URL, which reveals that
+  someone else on the instance saved it. What users do share is the archive.org
+  account: every submission on an instance goes out under the operator's one key
+  pair, so archive.org's limits and its own recent-capture handling are per
+  instance, not per user. Two users submitting the same URL half an hour apart
+  should both succeed, the second being handed the first's recent capture by
+  archive.org itself, which needs no state of ours to be shared; if one is ever
+  refused, it is by one of those shared limits (a rare cost of the shared
+  account that is accepted over leaking saved URLs between users). **The
+  snapshot URL is not stored**; "View snapshots" links to the public calendar
+  (`https://web.archive.org/web/*/<url>`) instead.
+- **How a submission runs.** The request that starts one does a single quick
+  call (`POST /save`, which returns a job id at once) and records a `pending`
+  row. From then on **archive.org does the capturing itself**, whatever the
+  browser or the request is doing; what recueil needs later is only to learn how
+  it went, by asking about the job (`GET /save/status/<job id>`). That happens
+  in two places that share one function: the dashboard asks while the screen is
+  open, for a fast answer, and **the agent's regular local cycle asks about
+  every submission still pending**, so the outcome is recorded even if the user
+  closed the tab. archive.org only keeps a job's status for about an hour, so a
+  submission still pending after that is marked failed ("archive.org did not
+  report a result"). The updates are guarded by status and job id, so the two
+  askers can't clobber each other or a newer attempt. A second submission for a
+  URL is refused while one is in flight.
+- **No availability check.** The Wayback availability API would only tell the
+  dashboard whether snapshots exist, but calling it whenever a screen is viewed
+  would send the URL to archive.org without the user having asked, which is
+  exactly what "on demand only" rules out. "Check for existing snapshots" is a
+  link the user follows themselves.
+- **Identified to archive.org.** Requests carry a `User-Agent` naming the
+  project and its repository, so someone at the Internet Archive who sees them
+  knows where to come with questions.
+- **Landed so far:** the configuration, the table, the client and service, and
+  the agent's sweep. The API and the dashboard block are next.
+
+**Sources** (where the facts above come from, to re-check when the API changes):
+
+- The Save Page Now 2 public API documentation, by the Internet Archive:
+  <https://archive.org/details/spn-2-public-api-page-docs-2025-10-22>. The
+  request and status shapes, the limits (captures per minute and per day, per
+  URL per day), the hour its job statuses are kept for, and the one-hour default
+  for skipping a recent capture. The revision read carries an update date of
+  2026-07-22.
+- Getting the keys:
+  <https://archive.org/developers/tutorial-get-ia-credentials.html>, which sends
+  the user to <https://archive.org/account/s3.php>.
+- Why keys are treated as required: the `wayback-machine-archiver` project's
+  README, <https://github.com/agude/wayback-machine-archiver>, which dropped its
+  unauthenticated mode so a job's final outcome can be confirmed.
+- The availability API, <https://archive.org/help/wayback_api.php>, which is
+  deliberately not used (see above).
 
 ### 17j. Browser bookmark sync
 
@@ -3081,7 +3165,5 @@ Housekeeping that should not be forgotten:
 
 - Whether tags and collections really are shared tables with pages (§17b), or
   links get their own.
-- Where Wayback state lives for pages (a column on `pages` versus a separate
-  table covering both entities), and the exact Wayback API behavior (§17i).
 - Browser bookmark import as an onboarding path, and collections as subfolders
   (§17j) — mentioned, neither designed nor scheduled.

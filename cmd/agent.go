@@ -48,6 +48,7 @@ import (
 	"github.com/mfinelli/recueil/internal/screenshot"
 	"github.com/mfinelli/recueil/internal/sidecar"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+	"github.com/mfinelli/recueil/internal/wayback"
 )
 
 var (
@@ -232,6 +233,18 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Wayback submissions: on only when an archive.org key pair is
+	// configured (same as AI enrichment is on only when a base URL is
+	// set). What the agent does for them is resolve the ones still pending.
+	// archive.org does the capturing itself, the agent only learns how
+	// each went. This goes in the local cycle because it talks to
+	// archive.org, not the Cloudflare Worker, so there's not free-tier
+	// budget to respect.
+	var waybackService *wayback.Service
+	if cfg.WaybackEnabled() {
+		waybackService = wayback.NewService(queries, wayback.NewClient(cfg.WaybackAccessKey, cfg.WaybackSecretKey), nil, logger.Logger)
+	}
+
 	workerInterval := time.Duration(cfg.AgentWorkerPollIntervalSeconds) * time.Second
 	localInterval := time.Duration(cfg.AgentLocalPollIntervalSeconds) * time.Second
 	log.Printf("recueil agent started, worker poll interval: %s, local poll interval: %s",
@@ -252,7 +265,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	// for their first tick -- otherwise a freshly-deployed agent sits
 	// idle for a full interval before doing anything.
 	worker.run(cmd.Context())
-	runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+	runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, waybackService, logger.Logger)
 
 	workerTicker := time.NewTicker(workerInterval)
 	defer workerTicker.Stop()
@@ -276,7 +289,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			// since each is just another case in the same select.
 			worker.run(cmd.Context())
 		case <-localTicker.C:
-			runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+			runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, waybackService, logger.Logger)
 		case <-cmd.Context().Done():
 			log.Println("shutting down...")
 			return nil
@@ -425,7 +438,7 @@ func (w *workerCycle) runCleanup(ctx context.Context) {
 // Same success-gated heartbeat as workerCycle.run, for the same reason:
 // recueil_agent_last_success_seconds{cycle="local"} should mean these
 // jobs are actually running, not just that the process is up.
-func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, logger *slog.Logger) {
+func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, waybackService *wayback.Service, logger *slog.Logger) {
 	ok := true
 	if err := screenshotRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: screenshot cycle failed", "error", err)
@@ -438,6 +451,12 @@ func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *s
 	if aiRunner != nil {
 		if err := aiRunner.RunOnce(ctx); err != nil {
 			logger.ErrorContext(ctx, "agent: ai enrichment cycle failed", "error", err)
+			ok = false
+		}
+	}
+	if waybackService != nil {
+		if err := waybackService.SweepPending(ctx); err != nil {
+			logger.ErrorContext(ctx, "agent: wayback sweep failed", "error", err)
 			ok = false
 		}
 	}
