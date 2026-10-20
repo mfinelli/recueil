@@ -1538,6 +1538,34 @@ function hexToBase64(hexDigest) {
 }
 
 /**
+ * Presigns an R2 PUT for `key`, bound to the SHA-256 of the bytes the caller is
+ * about to upload (a hex digest the caller has already validated). Returns the URL
+ * and the one header the real PUT MUST carry, name and value: it's bound into the
+ * signature, and R2 separately verifies the uploaded bytes against it. The single
+ * place a capture's HTML, a capture's favicon and a link's favicon all get their
+ * upload URL.
+ *
+ * @param {Env} env
+ * @param {string} key
+ * @param {string} sha256Hex
+ * @returns {Promise<{url: string, headers: {"x-amz-checksum-sha256": string}}>}
+ */
+async function presignChecksummedPut(env, key, sha256Hex) {
+  const checksumBase64 = hexToBase64(sha256Hex);
+  const url = await presignR2Url({
+    accountId: env.R2_ACCOUNT_ID,
+    bucketName: env.R2_BUCKET_NAME,
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_ACCESS_KEY_SECRET,
+    method: /** @type {"PUT"} */ ("PUT"),
+    expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
+    key,
+    checksumSha256Base64: checksumBase64,
+  });
+  return { url, headers: { "x-amz-checksum-sha256": checksumBase64 } };
+}
+
+/**
  * Builds the deterministic R2 object key for a given user + capture, so the
  * Worker never has to trust a client-supplied key at completion time (see
  * handleCompleteQueueItem) -- the key is entirely a function of who's
@@ -1671,29 +1699,17 @@ export async function handleGetUploadUrls(request, env, ctx) {
   }
 
   const key = captureObjectKey(auth.userId, capture_id);
-  const checksumHtmlBase64 = hexToBase64(content_sha256_html);
-
-  const uploadUrlHtml = await presignR2Url({
-    accountId: env.R2_ACCOUNT_ID,
-    bucketName: env.R2_BUCKET_NAME,
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_ACCESS_KEY_SECRET,
-    method: /** @type {"PUT"} */ ("PUT"),
-    expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
-    key,
-    checksumSha256Base64: checksumHtmlBase64,
-  });
+  const html = await presignChecksummedPut(env, key, content_sha256_html);
 
   /** @type {Record<string, unknown>} */
   const responseBody = {
     capture_id,
-    upload_url_html: uploadUrlHtml,
+    upload_url_html: html.url,
     r2_key_html: key,
     expires_in_seconds: UPLOAD_URL_EXPIRY_SECONDS,
     // The caller's real PUT MUST include this exact header (name and
-    // value) or R2 will reject the request: it's bound into the
-    // signature, and R2 separately verifies the uploaded bytes against it.
-    required_headers_html: { "x-amz-checksum-sha256": checksumHtmlBase64 },
+    // value) or R2 will reject the request: see presignChecksummedPut.
+    required_headers_html: html.headers,
   };
 
   if (faviconRequested) {
@@ -1702,24 +1718,15 @@ export async function handleGetUploadUrls(request, env, ctx) {
       capture_id,
       /** @type {string} */ (favicon_ext),
     );
-    const checksumFaviconBase64 = hexToBase64(
+    const favicon = await presignChecksummedPut(
+      env,
+      faviconKey,
       /** @type {string} */ (content_sha256_favicon),
     );
 
-    responseBody.upload_url_favicon = await presignR2Url({
-      accountId: env.R2_ACCOUNT_ID,
-      bucketName: env.R2_BUCKET_NAME,
-      accessKeyId: env.R2_ACCESS_KEY_ID,
-      secretAccessKey: env.R2_ACCESS_KEY_SECRET,
-      method: /** @type {"PUT"} */ ("PUT"),
-      expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
-      key: faviconKey,
-      checksumSha256Base64: checksumFaviconBase64,
-    });
+    responseBody.upload_url_favicon = favicon.url;
     responseBody.r2_key_favicon = faviconKey;
-    responseBody.required_headers_favicon = {
-      "x-amz-checksum-sha256": checksumFaviconBase64,
-    };
+    responseBody.required_headers_favicon = favicon.headers;
   }
 
   return new Response(JSON.stringify(responseBody), {
@@ -2305,26 +2312,15 @@ export async function handleGetLinkUploadUrls(request, env, ctx) {
   }
 
   const key = linkFaviconObjectKey(auth.userId, link_id, favicon_ext);
-  const checksumBase64 = hexToBase64(content_sha256_favicon);
-
-  const uploadUrl = await presignR2Url({
-    accountId: env.R2_ACCOUNT_ID,
-    bucketName: env.R2_BUCKET_NAME,
-    accessKeyId: env.R2_ACCESS_KEY_ID,
-    secretAccessKey: env.R2_ACCESS_KEY_SECRET,
-    method: /** @type {"PUT"} */ ("PUT"),
-    expiresInSeconds: UPLOAD_URL_EXPIRY_SECONDS,
-    key,
-    checksumSha256Base64: checksumBase64,
-  });
+  const favicon = await presignChecksummedPut(env, key, content_sha256_favicon);
 
   return new Response(
     JSON.stringify({
       link_id,
-      upload_url_favicon: uploadUrl,
+      upload_url_favicon: favicon.url,
       r2_key_favicon: key,
       expires_in_seconds: UPLOAD_URL_EXPIRY_SECONDS,
-      required_headers_favicon: { "x-amz-checksum-sha256": checksumBase64 },
+      required_headers_favicon: favicon.headers,
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
