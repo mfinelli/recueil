@@ -71,6 +71,19 @@ within it rather than push against the limit.
 1–4 entirely — an already-captured HTML file goes straight from the dashboard
 into `server`, without involving the Worker, D1, or R2.
 
+## Submitting to the Wayback Machine
+
+Optional, and the only place recueil talks to a third party on a user's behalf.
+Pressing the button makes `server` send a single request straight to the
+Internet Archive's Save Page Now API and record the job it hands back; the
+Internet Archive then does the capturing itself, as a logged-out visitor. It's
+an outbound call from the backend like any other, so nothing about it needs the
+backend reachable from outside. `agent`'s local cycle later asks how each
+pending job went and records the answer, and the dashboard simply shows what's
+stored: viewing a page never contacts the Internet Archive. See
+[Deploying recueil](@/docs/operators/deploying-recueil.md#wayback-machine-submission-optional)
+for setting it up.
+
 ## Why the backend never has to be reachable from outside
 
 Every step above — enqueue, queue, capture, upload, pull — only ever depends on

@@ -26,9 +26,9 @@
 -- attempt is simply retried by hand.
 --
 -- An attempt starts 'pending' with archive.org's job id (it does the capturing
--- itself, so nothing here is "working" meanwhile) and is resolved by asking
--- archive.org how the job went: by the agent's regular sweep, or sooner by
--- the dashboard looking at it. last_submitted_at is when the latest SUCCESSFUL
+-- itself, so nothing here is "working" meanwhile) and is resolved by the agent's
+-- regular sweep asking archive.org how the job went; nothing else does, and the
+-- dashboard only reads the row. last_submitted_at is when the latest SUCCESSFUL
 -- attempt was submitted -- what the screen shows -- and survives a later failed
 -- attempt, which only changes status and error.
 CREATE TABLE wayback_submissions (

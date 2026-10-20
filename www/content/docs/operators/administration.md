@@ -30,10 +30,12 @@ Runs continuously until stopped, on two independent schedules rather than one:
   piggybacked on this same cycle rather than its own — sweeping D1's terminal
   rows older than 72 hours.
 - **Local-only** (`agent_local_poll_interval_seconds`, 5 minutes by default):
-  the screenshot job, the readability job, and AI enrichment (if configured) —
-  nothing here touches the Cloudflare Worker, so there's no free-tier budget to
-  be careful with, and this schedule can run more often than the Worker-facing
-  one.
+  the screenshot job, the readability job, AI enrichment (if configured), and
+  recording how pending
+  [Wayback Machine submissions](@/docs/operators/deploying-recueil.md#wayback-machine-submission-optional)
+  went (if configured) — nothing here touches the Cloudflare Worker, so there's
+  no free-tier budget to be careful with, and this schedule can run more often
+  than the Worker-facing one.
 
 Both run once immediately on startup rather than waiting for the first tick, so
 a freshly-deployed agent doesn't sit idle. Unlike `server`, `agent` never runs

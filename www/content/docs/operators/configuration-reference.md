@@ -92,6 +92,10 @@ sign in (or sign up) at archive.org, open
 [archive.org/account/s3.php](https://archive.org/account/s3.php), tick the box
 and choose **Generate New Keys**.
 
+How submission works, what is shared with the Internet Archive, and what to
+consider before enabling it are covered in
+[Deploying recueil](@/docs/operators/deploying-recueil.md#wayback-machine-submission-optional).
+
 ## AI enrichment
 
 Entirely optional — leaving `ai_base_url` unset disables it, and nothing else in

@@ -219,6 +219,42 @@ place of `restart: unless-stopped`. The `Dockerfile` and `compose.yaml` in the
 repository spell out exactly what needs to be true at runtime; treat them as the
 reference if you go this route.
 
+## Wayback Machine submission (optional)
+
+recueil can ask the Internet Archive to capture a page or link on a user's
+request, which gives them a second public copy that doesn't depend on your
+server. It's off unless you configure it, and it needs an archive.org account's
+keys.
+
+**Getting the keys.** Follow the Internet Archive's guide,
+[Get your Internet Archive credentials](https://archive.org/developers/tutorial-get-ia-credentials.html):
+sign in (or sign up) at archive.org, open
+[archive.org/account/s3.php](https://archive.org/account/s3.php), tick the box
+and choose **Generate New Keys**. Put them in `wayback_access_key` and
+`wayback_secret_key` (see the
+[configuration reference](@/docs/operators/configuration-reference.md#wayback-machine-submission)).
+
+**What to know before turning it on.**
+
+- **One account for everyone.** Every submission on your instance goes out under
+  the same key pair, so the Internet Archive's limits (a handful of captures a
+  minute, a few of any one URL a day) are shared by all your users. Two users
+  submitting the same URL close together are handled by the Internet Archive
+  itself, which answers a request for a URL captured in the last hour with the
+  same recent capture, but a busy moment can still hit a limit; the user sees
+  its message and tries again later. Who submitted what stays private to each
+  user.
+- **It's only ever on demand.** Nothing is sent automatically, and viewing a
+  page or link never contacts the Internet Archive.
+- **Snapshots are public**, and the URL is shared with a third party. Your users
+  are told so on the screen and in the
+  [reader documentation](@/docs/readers/wayback-submission.md), but it's worth
+  deciding whether that's acceptable for the people who use your instance.
+- **`agent` only records the outcome.** The Internet Archive does the capturing
+  itself; `agent`'s local cycle (every `agent_local_poll_interval_seconds`, 5
+  minutes by default) asks how each pending submission went and stores the
+  answer, so a result appears within a few minutes.
+
 ## Putting a reverse proxy in front
 
 Required — `server` shouldn't be exposed directly. An nginx example; the same

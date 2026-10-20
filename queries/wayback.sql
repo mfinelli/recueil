@@ -40,10 +40,11 @@ SELECT * FROM wayback_submissions WHERE status = 'pending' ORDER BY submitted_at
 
 -- name: SucceedWaybackSubmission :one
 -- The job succeeded: the attempt's submitted_at becomes the last successful
--- submission. Guarded by status and job id so that two resolvers looking at the
--- same row at once (the sweep and the dashboard), or one looking at a row a newer
--- attempt has since replaced, can't clobber each other: whichever is second finds
--- nothing to update (pgx.ErrNoRows) and leaves the row alone.
+-- submission. Guarded by status and job id so that a resolver looking at a row a
+-- newer attempt has since replaced (the user submitted again while the sweep was
+-- asking about the old job), or a second resolver looking at the same row, can't
+-- clobber it: whichever is second finds nothing to update (pgx.ErrNoRows) and
+-- leaves the row alone.
 UPDATE wayback_submissions
 SET status = 'succeeded', last_submitted_at = submitted_at, error = NULL, updated_at = NOW()
 WHERE id = $1 AND status = 'pending' AND job_id = $2

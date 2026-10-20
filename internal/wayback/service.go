@@ -52,9 +52,7 @@ type API interface {
 // There is no job queue and no retry: a submission is one request to archive.org
 // plus a row holding its job id, and a failed one is retried by the user pressing
 // the button again. What does run in the background is Resolve, called by the
-// agent's sweep (SweepPending) for every submission still pending, so the outcome
-// is recorded whether or not anyone is looking at the dashboard; the dashboard
-// calls the same function for the one it's showing, which is only quicker.
+// agent's sweep (SweepPending) for every submission still pending.
 type Service struct {
 	queries *db.Queries
 	api     API
@@ -148,9 +146,9 @@ func (s *Service) fail(ctx context.Context, sub db.WaybackSubmission, message st
 }
 
 // settle runs one of the guarded updates. They only apply to a row that is still
-// pending with the same job id, so when another resolver got there first (or a
-// newer attempt replaced this one) nothing is updated; the current row is
-// returned instead, which is just what the caller wanted to know.
+// pending with the same job id, so when a newer attempt has replaced this one
+// since it was read (or a second sweep got there first) nothing is updated; the
+// current row is returned instead, which is just what the caller wanted to know.
 func (s *Service) settle(ctx context.Context, sub db.WaybackSubmission, update func() (db.WaybackSubmission, error)) (db.WaybackSubmission, error) {
 	row, err := update()
 	if err == nil {

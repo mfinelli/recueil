@@ -3030,15 +3030,21 @@ Checked against the current Save Page Now 2 (SPN2) documentation (updated July
   call (`POST /save`, which returns a job id at once) and records a `pending`
   row. From then on **archive.org does the capturing itself**, whatever the
   browser or the request is doing; what recueil needs later is only to learn how
-  it went, by asking about the job (`GET /save/status/<job id>`). That happens
-  in two places that share one function: the dashboard asks while the screen is
-  open, for a fast answer, and **the agent's regular local cycle asks about
-  every submission still pending**, so the outcome is recorded even if the user
-  closed the tab. archive.org only keeps a job's status for about an hour, so a
-  submission still pending after that is marked failed ("archive.org did not
-  report a result"). The updates are guarded by status and job id, so the two
-  askers can't clobber each other or a newer attempt. A second submission for a
-  URL is refused while one is in flight.
+  it went (`GET /save/status/<job id>`), and **only the agent does that**: its
+  regular local cycle asks about every submission still pending and records the
+  answer, so the outcome is stored even if the user closed the tab. **The
+  dashboard never asks.** Viewing a page or link reads the stored row and never
+  contacts archive.org, and there is no polling anywhere: the Submit button is
+  disabled while a submission is pending, and the result shows up the next time
+  the screen is loaded after the agent's next cycle (a few minutes by default).
+  That is a deliberate simplification: one asker instead of two, no new polling
+  pattern in the dashboard, and for a feature used occasionally a wait of
+  minutes costs nothing. archive.org only keeps a job's status for about an
+  hour, so a submission still pending after that is failed ("archive.org did not
+  report a result"), by the sweep and, until the sweep gets there, in how the
+  screen shows it. The updates are guarded by status and job id, so asking about
+  an old job can't clobber a newer attempt. A second submission for a URL is
+  refused while one is in flight.
 - **No availability check.** The Wayback availability API would only tell the
   dashboard whether snapshots exist, but calling it whenever a screen is viewed
   would send the URL to archive.org without the user having asked, which is
