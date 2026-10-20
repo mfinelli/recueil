@@ -323,4 +323,5 @@ to sign in normally; create any further accounts with `recueil user create` (see
 Bump the image tag in your Compose file and the module ref in your Terraform
 config together, then redeploy. Database migrations — both Postgres and D1 — run
 automatically every time `recueil server` starts; there's no separate migration
-step to remember.
+step to remember. A release that needs more than that has a section in
+[Upgrade Guides](@/docs/operators/upgrade-guides.md).
