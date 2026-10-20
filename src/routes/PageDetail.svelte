@@ -58,6 +58,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   } from "../lib/collections";
   import AppHeader from "../components/AppHeader.svelte";
   import SameUrlHint from "../components/SameUrlHint.svelte";
+  import WaybackBlock from "../components/WaybackBlock.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -944,6 +945,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         </li>
       {/each}
     </ul>
+
+    <WaybackBlock
+      url={page.normalized_url}
+      wayback={page.wayback}
+      submitPath={`/pages/${page.id}/wayback`}
+      onchange={(next) => {
+        if (page) page.wayback = next;
+      }}
+    />
 
     <div class="actions-row">
       <button

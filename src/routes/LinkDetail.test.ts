@@ -48,6 +48,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 
 import { push } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
+import { session } from "../lib/session.svelte";
 import type { Collection, LinkDetail } from "../lib/types";
 import LinkDetailRoute from "./LinkDetail.svelte";
 
@@ -57,6 +58,7 @@ const confirmMock = vi.fn();
 vi.stubGlobal("confirm", confirmMock);
 
 afterEach(() => {
+  session.waybackEnabled = false;
   cleanup();
   apiJSONMock.mockReset();
   confirmMock.mockReset();
@@ -99,6 +101,7 @@ const baseLink: LinkDetail = {
   updated_at: "2026-05-01T12:00:00Z",
   tags: [{ id: 1, name: "video", slug: "video" }],
   collections: [{ id: 5, name: "Watch later", parent_id: null }],
+  wayback: null,
 };
 
 type LoadOptions = {
@@ -732,6 +735,90 @@ describe("LinkDetail", () => {
       await fireEvent.click(checkbox);
       expect(
         await screen.findByText("failed to update mirror setting"),
+      ).toBeTruthy();
+    });
+  });
+
+  describe("the Internet Archive block", () => {
+    it("sits directly above the actions row, with the calendar link for the link's normalized URL", async () => {
+      session.waybackEnabled = true;
+      render42();
+      const heading = await screen.findByRole("heading", {
+        name: "Internet Archive",
+      });
+
+      const check = screen.getByRole("link", {
+        name: "Check for existing snapshots",
+      });
+      expect(check.getAttribute("href")).toBe(
+        "https://web.archive.org/web/*/https://example.com/watch?v=abc",
+      );
+      const actions = document.querySelector(".actions-row") as HTMLElement;
+      expect(
+        heading.compareDocumentPosition(actions) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(heading.closest("section")?.nextElementSibling).toBe(actions);
+    });
+
+    it("submits to this link's own route and shows the pending state without leaving the screen", async () => {
+      session.waybackEnabled = true;
+      render42();
+      await screen.findByRole("heading", { name: "Internet Archive" });
+
+      apiJSONMock.mockResolvedValueOnce({
+        status: "pending",
+        submitted_at: "2026-10-12T15:41:00Z",
+        last_submitted_at: null,
+        error: null,
+      });
+      await fireEvent.click(
+        screen.getByRole("button", { name: /Submit to Wayback Machine/ }),
+      );
+
+      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/wayback", {
+        method: "POST",
+      });
+      expect(
+        await screen.findByText("Submitting to the Wayback Machine…"),
+      ).toBeTruthy();
+      expect(
+        (
+          screen.getByRole("button", {
+            name: /Submitting…/,
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+    });
+
+    it("shows what the server recorded, when the link has been submitted before", async () => {
+      session.waybackEnabled = true;
+      render42({
+        link: {
+          ...baseLink,
+          wayback: {
+            status: "succeeded",
+            submitted_at: "2026-10-12T15:41:00Z",
+            last_submitted_at: "2026-10-12T15:41:00Z",
+            error: null,
+          },
+        },
+      });
+      expect(
+        await screen.findByText("Submitted to the Wayback Machine"),
+      ).toBeTruthy();
+      expect(screen.getByRole("link", { name: "View snapshots" })).toBeTruthy();
+    });
+
+    it("offers no button when submission isn't configured, only the link", async () => {
+      session.waybackEnabled = false;
+      render42();
+      await screen.findByRole("heading", { name: "Internet Archive" });
+      expect(
+        screen.queryByRole("button", { name: /Submit to Wayback Machine/ }),
+      ).toBeNull();
+      expect(
+        screen.getByRole("link", { name: "Check for existing snapshots" }),
       ).toBeTruthy();
     });
   });

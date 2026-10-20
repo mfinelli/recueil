@@ -2937,16 +2937,21 @@ stages; each says what has landed.
   response). The delete confirmations say "page or link" (tags) and "pages and
   links are kept" (collections), since deleting either only removes the
   membership. **Landed.**
-- **Wayback** (stage 3, §17i) gets an "Internet Archive" block directly above
-  the actions row on both detail screens. Never submitted: "Not submitted to the
-  Wayback Machine.", a "Check for existing snapshots" link and a "Submit to
-  Wayback Machine" button. Submitted: "Submitted to the Wayback Machine", the
-  last-submitted date-time, a "View snapshots" link and a "Submit again" button.
-  Both links go to the calendar of snapshots for the submitted URL; no snapshot
-  URL is stored for display, and the privacy line (archive.org fetches the URL
-  itself, as a logged-out visitor, and the URL is shared with a third party)
-  stays. The calendar link's shape (`web.archive.org/web/*/<url>`) is
-  unverified; check it with the rest of §17i. **Planned.**
+- **Wayback** (§17i) gets an "Internet Archive" block directly above the actions
+  row on both detail screens (`WaybackBlock.svelte`). Never submitted: "Not
+  submitted to the Wayback Machine.", a "Check for existing snapshots" link and
+  a "Submit to Wayback Machine" button. Pending: "Submitting to the Wayback
+  Machine…" with the button off. Submitted: "Submitted to the Wayback Machine",
+  the last-submitted date-time, a "View snapshots" link and a "Submit again"
+  button. Failed: archive.org's reason, "Try again", and any earlier success
+  alongside. Both links go to the calendar of snapshots for the submitted
+  (normalized) URL; no snapshot URL is stored for display. The privacy line says
+  archive.org fetches the URL itself as a logged-out visitor, that the URL is
+  shared with a third party, and that the snapshot will be public. **There is no
+  polling and no live progress:** submitting shows the pending state returned by
+  the request, and a result appears on a later load of the screen once the agent
+  has recorded it. Without a configured key pair (`wayback_enabled` false) only
+  the links are offered, with no button and no privacy line. **Landed.**
 - **The API** (`internal/httpapi/links.go`), all under `/api/links` and routed
   only with the flag on (with it off every one of them 404s): `GET /api/links`
   (newest saved first, paginated like `GET /api/pages`; `?q=` is a
@@ -3066,8 +3071,8 @@ Checked against the current Save Page Now 2 (SPN2) documentation (updated July
   failed so the Submit button can't stay disabled when the agent has been down.
   `GET /api/capture-config` gains `wayback_enabled` so the dashboard knows
   whether to offer the button.
-- **Landed so far:** the configuration, the table, the client and service, the
-  agent's sweep, and the API. The dashboard block is next.
+- **Landed:** the configuration, the table, the client and service, the agent's
+  sweep, the API, and the dashboard block.
 
 **Sources** (where the facts above come from, to re-check when the API changes):
 
@@ -3166,8 +3171,8 @@ mirror and docs at once, so it should be built in stages. A reasonable order:
 1. Tables and migrations, the flag, the favicon store, Worker endpoints, backend
    ingestion, the extension action, the dashboard Links page, and the MCP tools
    (all landed).
-2. Browser bookmark sync (§17j).
-3. Wayback submission (§17i), for links and pages together.
+2. Browser bookmark sync (§17j) (landed).
+3. Wayback submission (§17i), for links and pages together (landed).
 
 Housekeeping that should not be forgotten:
 

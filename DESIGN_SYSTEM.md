@@ -251,6 +251,18 @@ the Links page filtered by it, and that page says so with a "Filtered by tag"
 row tucked up under the toolbar: the filter's name in a pill with a brass-tinted
 border (the same tint as an AI tag's) and a small clear button.
 
+### A status box with one action (`WaybackBlock.svelte`)
+
+The "Internet Archive" block on both detail screens is a `--paper-raised` box
+with the state on the left and the one action on the right. The state is a line
+of text, with a mono, muted second line for detail (when it was last submitted,
+a failure's reason, "reload to see the result"), and the plain underlined link
+under it. The action is a `bordered-button` with a small icon; while its work is
+pending it is disabled and says so ("Submitting…"), rather than the screen
+polling for a result. The block that explains a third party (here, that the URL
+is shared and the snapshot public) puts that in a small muted paragraph under
+the box, only when the action it warns about is available.
+
 ### The same-URL callout (`SameUrlHint.svelte`)
 
 A page and a link can share a normalized URL, and each detail screen says so in

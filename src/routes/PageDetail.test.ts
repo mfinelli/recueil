@@ -74,6 +74,7 @@ vi.mock("../lib/api", async (importOriginal) => {
 
 import { push } from "svelte-spa-router";
 import { apiJSON, ApiError } from "../lib/api";
+import { session } from "../lib/session.svelte";
 import type {
   CaptureSummary,
   Collection,
@@ -185,6 +186,7 @@ const basePage: PageDetail = {
   links: [],
   matching_link_id: null,
   matching_link_title: null,
+  wayback: null,
 };
 
 type LoadOptions = {
@@ -1150,5 +1152,76 @@ describe("PageDetail: the same-URL hint", () => {
     render42();
     await screen.findByRole("heading", { name: "An example article" });
     expect(screen.queryByText(/also saved as a link/)).toBeNull();
+  });
+});
+
+describe("PageDetail: the Internet Archive block", () => {
+  afterEach(() => {
+    session.waybackEnabled = false;
+  });
+
+  it("sits directly above the actions row, with the calendar link for the page's normalized URL", async () => {
+    session.waybackEnabled = true;
+    render42();
+    const heading = await screen.findByRole("heading", {
+      name: "Internet Archive",
+    });
+
+    expect(
+      screen
+        .getByRole("link", { name: "Check for existing snapshots" })
+        .getAttribute("href"),
+    ).toBe("https://web.archive.org/web/*/example.com/article");
+    const actions = document.querySelector(".actions-row") as HTMLElement;
+    expect(heading.closest("section")?.nextElementSibling).toBe(actions);
+  });
+
+  it("submits to this page's own route and shows the pending state", async () => {
+    session.waybackEnabled = true;
+    render42();
+    await screen.findByRole("heading", { name: "Internet Archive" });
+
+    apiJSONMock.mockResolvedValueOnce({
+      status: "pending",
+      submitted_at: "2026-10-12T15:41:00Z",
+      last_submitted_at: null,
+      error: null,
+    });
+    await fireEvent.click(
+      screen.getByRole("button", { name: /Submit to Wayback Machine/ }),
+    );
+
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/wayback", {
+      method: "POST",
+    });
+    expect(
+      await screen.findByText("Submitting to the Wayback Machine…"),
+    ).toBeTruthy();
+  });
+
+  it("shows a failure the server recorded, with its reason", async () => {
+    session.waybackEnabled = true;
+    render42({
+      page: {
+        ...basePage,
+        wayback: {
+          status: "failed",
+          submitted_at: "2026-10-12T15:41:00Z",
+          last_submitted_at: null,
+          error: "Couldn't resolve host.",
+        },
+      },
+    });
+    expect(await screen.findByText("Couldn't resolve host.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Try again/ })).toBeTruthy();
+  });
+
+  it("offers no button when submission isn't configured", async () => {
+    session.waybackEnabled = false;
+    render42();
+    await screen.findByRole("heading", { name: "Internet Archive" });
+    expect(
+      screen.queryByRole("button", { name: /Submit to Wayback Machine/ }),
+    ).toBeNull();
   });
 });

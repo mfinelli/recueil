@@ -37,6 +37,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   } from "../lib/collections";
   import AppHeader from "../components/AppHeader.svelte";
   import SameUrlHint from "../components/SameUrlHint.svelte";
+  import WaybackBlock from "../components/WaybackBlock.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -625,6 +626,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         <p class="empty-note">{m.pagedetail_notes_empty()}</p>
       {/if}
     </section>
+
+    <WaybackBlock
+      url={detail.normalized_url}
+      wayback={detail.wayback}
+      submitPath={`/links/${detail.id}/wayback`}
+      onchange={(next) => {
+        if (detail) detail.wayback = next;
+      }}
+    />
 
     <div class="actions-row">
       <button

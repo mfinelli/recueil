@@ -40,6 +40,9 @@ class SessionState {
   // 401 there leaves it false -- the nav item and route it gates only exist
   // for a signed-in user anyway.
   linksEnabled = $state(false);
+  // Whether Wayback Machine submission is configured (GET /capture-config's
+  // wayback_enabled), read at the same time and false on the same terms.
+  waybackEnabled = $state(false);
   // null means "automatic". Read once by App.svelte after sessionReady;
   // nothing else in the app needs to read this reactively, so it's a plain
   // field here rather than anything more elaborate.
@@ -140,8 +143,10 @@ async function bootstrap(): Promise<void> {
   if (configResult.status === "fulfilled" && configResult.value.ok) {
     const body = (await configResult.value.json()) as {
       links_enabled?: boolean;
+      wayback_enabled?: boolean;
     };
     session.linksEnabled = body.links_enabled === true;
+    session.waybackEnabled = body.wayback_enabled === true;
   }
 }
 

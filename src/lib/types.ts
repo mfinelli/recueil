@@ -69,6 +69,8 @@ export interface LinkDetail extends Link {
   matching_page_title: string | null;
   tags: Tag[];
   collections: PageCollection[];
+  // null if the link's URL has never been submitted to the Wayback Machine.
+  wayback: WaybackState | null;
 }
 
 export interface LinkListResponse {
@@ -150,6 +152,18 @@ export interface PageLink {
 // PageDetail extends Page: internal/httpapi's pageDetailResponse embeds its
 // own pageResponse, flattening the same fields into one JSON object rather
 // than a nested envelope -- this mirrors that shape.
+// How a URL stands with the Wayback Machine: the latest attempt's status,
+// when it was submitted, when the last SUCCESSFUL one was (a later failure
+// doesn't erase it), and the latest failure's message. The server only reads
+// this from what the agent recorded, so a pending one resolves on a later
+// load, not live.
+export interface WaybackState {
+  status: "pending" | "succeeded" | "failed";
+  submitted_at: string;
+  last_submitted_at: string | null;
+  error: string | null;
+}
+
 export interface PageDetail extends Page {
   captures: CaptureSummary[];
   tags: PageTag[];
@@ -161,6 +175,8 @@ export interface PageDetail extends Page {
   // and always with links off.
   matching_link_id: number | null;
   matching_link_title: string | null;
+  // null if the page's URL has never been submitted to the Wayback Machine.
+  wayback: WaybackState | null;
 }
 
 // GET /api/tags' item shape -- also what the rename/delete-adjacent
@@ -420,6 +436,10 @@ export interface CaptureConfig {
   // Whether the links feature is on or not. Drives the Links
   // nav item and route; session.svelte.ts reads it once at bootstrap.
   links_enabled: boolean;
+  // Whether Wayback Machine submission is configured on the instance (an
+  // archive.org key pair); without it the dashboard offers only the calendar
+  // links, no Submit button.
+  wayback_enabled: boolean;
 }
 
 // POST /api/manual-upload -- multipart/form-data (not JSON) so this
