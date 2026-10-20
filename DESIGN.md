@@ -2802,6 +2802,9 @@ referenced by the row, is left for gc.
   raw) and the same closed `svg | png | ico` extension set; `Write` rejects
   anything else and empty data. `links.favicon_size_bytes` is the on-disk size
   and `links.favicon_hash` the SHA-256 of the original bytes, as on captures.
+  These rules are one piece of code, `archive.Store.WriteFavicon`, used by both
+  the link store and capture ingestion, so a page's favicon and a link's can't
+  drift apart.
 - **Startup check.** With links enabled, `server` and `agent` call
   `linkicons.Store.Check` before doing anything else: `links_dir` must exist, be
   a directory and be writable, or the process exits with an error that names

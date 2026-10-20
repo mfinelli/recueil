@@ -45,19 +45,11 @@
 package linkicons
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
-	"math"
 	"os"
 
 	"github.com/mfinelli/recueil/internal/archive"
 )
-
-// faviconName is the fixed base name of the one file in every favicon
-// directory, the same role-based naming captures use for their own favicon.
-const faviconName = "favicon"
 
 // Store writes link favicons under a root directory.
 type Store struct {
@@ -110,17 +102,9 @@ func (s *Store) Check() error {
 }
 
 // Favicon is what Write recorded: exactly the three values the links row
-// stores.
-type Favicon struct {
-	// Path is relative to the Store's root, and is what
-	// links.favicon_path holds.
-	Path string
-	// SizeBytes is the on-disk size (after zstd, for SVG), as
-	// captures.favicon_size_bytes is.
-	SizeBytes int32
-	// Hash is the hex SHA-256 of the original, uncompressed bytes.
-	Hash string
-}
+// stores (the path, the on-disk size, and the SHA-256 of the original bytes). It is
+// the archive's type, shared with page favicons.
+type Favicon = archive.Favicon
 
 // Write stores data as a favicon of the given format in a new directory of its
 // own and returns where it went. ext is one of "svg", "png" or "ico" -- the
@@ -131,29 +115,19 @@ type Favicon struct {
 // left behind for gc's empty-directory pass, exactly as a failed capture
 // ingestion's is.
 func (s *Store) Write(data []byte, ext string) (Favicon, error) {
-	switch ext {
-	case "svg", "png", "ico":
-	default:
-		return Favicon{}, fmt.Errorf("linkicons: unsupported favicon format %q", ext)
-	}
-	if len(data) == 0 {
-		return Favicon{}, errors.New("linkicons: empty favicon")
+	// Checked before a directory is minted, so a rejected favicon leaves nothing
+	// behind.
+	if err := archive.ValidateFavicon(data, ext); err != nil {
+		return Favicon{}, fmt.Errorf("linkicons: %w", err)
 	}
 
 	relDir, err := s.archive.NewCapture()
 	if err != nil {
 		return Favicon{}, fmt.Errorf("linkicons: creating favicon directory: %w", err)
 	}
-	relPath, written, err := s.archive.WriteAsset(relDir, faviconName, ext, data, ext == "svg")
+	favicon, err := s.archive.WriteFavicon(relDir, data, ext)
 	if err != nil {
-		return Favicon{}, fmt.Errorf("linkicons: writing favicon: %w", err)
+		return Favicon{}, fmt.Errorf("linkicons: %w", err)
 	}
-	if written > math.MaxInt32 {
-		// Same reasoning as internal/ingest: absurd on its face, and not
-		// worth overflowing the INTEGER column over.
-		return Favicon{}, fmt.Errorf("linkicons: favicon is %d bytes on disk, over the int32 limit", written)
-	}
-
-	sum := sha256.Sum256(data)
-	return Favicon{Path: relPath, SizeBytes: int32(written), Hash: hex.EncodeToString(sum[:])}, nil
+	return favicon, nil
 }

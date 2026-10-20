@@ -1532,8 +1532,8 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 // ".zst"-suffixed path (SVG favicons) and passes non-".zst" paths
 // (PNG/ICO favicons, all thumbnails) through unmodified, so this doesn't
 // need to know or care which case it's in.
-func (s *Server) serveAsset(w http.ResponseWriter, relPath string) {
-	reader, err := s.Store.Open(relPath)
+func serveAsset(w http.ResponseWriter, store *archive.Store, relPath string) {
+	reader, err := store.Open(relPath)
 	if err != nil {
 		log.Printf("warning: failed to open asset %q: %v", relPath, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -1594,7 +1594,7 @@ func (s *Server) GetPageFavicon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveAsset(w, page.FaviconPath.String)
+	serveAsset(w, s.Store, page.FaviconPath.String)
 }
 
 // GET /api/pages/{id}/thumbnail: resolves the page's most recent
@@ -1633,7 +1633,7 @@ func (s *Server) GetPageThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveAsset(w, capture.ThumbnailPath.String)
+	serveAsset(w, s.Store, capture.ThumbnailPath.String)
 }
 
 type patchPageRequest struct {

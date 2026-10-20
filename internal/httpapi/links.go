@@ -20,7 +20,6 @@ package httpapi
 
 import (
 	"errors"
-	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -491,18 +490,7 @@ func (s *Server) GetLinkFavicon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reader, err := s.LinkStore.Archive().Open(link.FaviconPath.String)
-	if err != nil {
-		log.Printf("warning: failed to open favicon %q for link %d: %v", link.FaviconPath.String, link.ID, err)
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
-	}
-	defer func() { _ = reader.Close() }()
-
-	w.Header().Set("Content-Type", contentTypeForAsset(link.FaviconPath.String))
-	if _, err := io.Copy(w, reader); err != nil {
-		log.Printf("warning: failed streaming favicon %q: %v", link.FaviconPath.String, err)
-	}
+	serveAsset(w, s.LinkStore.Archive(), link.FaviconPath.String)
 }
 
 // POST /api/links/{id}/tags: AddPageTag for a link -- gets-or-creates the tag by
