@@ -224,6 +224,11 @@ type linkDetailResponse struct {
 	// Wayback is how this link's URL stands with the Wayback Machine;
 	// null if it has never been submitted.
 	Wayback *waybackResponse `json:"wayback"`
+
+	// CleanedURL is what the link's raw URL would become if its tracking and
+	// other extras were removed (see cleanedLinkURL); null when it is already
+	// clean, so the screen offers the action only when it would change something.
+	CleanedURL *string `json:"cleaned_url"`
 }
 
 // parseLinkID reads {id} from the URL, writing the 400 itself on failure.
@@ -321,6 +326,7 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		Tags:              []tagResponse{},
 		Collections:       []pageCollectionResponse{},
 		Wayback:           wayback,
+		CleanedURL:        cleanedURLIfDifferent(link.RawUrl, link.NormalizedUrl),
 	}
 	for _, t := range tags {
 		resp.Tags = append(resp.Tags, tagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug})
@@ -632,4 +638,65 @@ func (s *Server) RemoveLinkFromCollection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// cleanedLinkURL is the URL a link would have with its tracking parameters and
+// other extras removed: its normalized URL, which is what normalization produced
+// by removing them, with the raw URL's #fragment put back. Normalization drops the
+// fragment, but a link keeps its raw URL precisely so hash-routed apps still work,
+// and cleaning must not break exactly those.
+func cleanedLinkURL(rawURL, normalizedURL string) string {
+	if _, fragment, ok := strings.Cut(rawURL, "#"); ok && fragment != "" {
+		return normalizedURL + "#" + fragment
+	}
+	return normalizedURL
+}
+
+// cleanedURLIfDifferent is cleanedLinkURL, or nil when it would change nothing.
+func cleanedURLIfDifferent(rawURL, normalizedURL string) *string {
+	cleaned := cleanedLinkURL(rawURL, normalizedURL)
+	if cleaned == rawURL {
+		return nil
+	}
+	return &cleaned
+}
+
+// POST /api/links/{id}/clean-url: replaces the link's raw URL with its cleaned
+// version (see cleanedLinkURL), so what it opens, what the bookmark sync pushes and
+// what the MCP tools return no longer carry the tracking. The server computes the
+// URL; the client can't supply one, since an arbitrary raw URL could stop matching
+// the link's normalized identity. Idempotent: an already-clean link is returned
+// unchanged. It isn't permanent: saving the same URL again from the browser
+// refreshes the raw URL from the tab, as it does the title.
+func (s *Server) CleanLinkURL(w http.ResponseWriter, r *http.Request) {
+	user, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	id, ok := parseLinkID(w, r)
+	if !ok {
+		return
+	}
+	link, ok := s.linkForUser(w, r, id, user.ID)
+	if !ok {
+		return
+	}
+
+	cleaned := cleanedLinkURL(link.RawUrl, link.NormalizedUrl)
+	if cleaned == link.RawUrl {
+		writeJSON(w, http.StatusOK, linkResponseFromLink(&link, nil))
+		return
+	}
+	updated, err := s.Queries.SetLinkRawURL(r.Context(), db.SetLinkRawURLParams{RawUrl: cleaned, ID: id, UserID: user.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "link not found")
+		return
+	}
+	if err != nil {
+		log.Printf("warning: failed to clean the URL of link %d: %v", id, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, linkResponseFromLink(&updated, nil))
 }

@@ -71,6 +71,9 @@ export interface LinkDetail extends Link {
   collections: PageCollection[];
   // null if the link's URL has never been submitted to the Wayback Machine.
   wayback: WaybackState | null;
+  // What raw_url would become with its tracking and other extras removed (its
+  // normalized URL, with the fragment put back), or null if it is already clean.
+  cleaned_url: string | null;
 }
 
 export interface LinkListResponse {

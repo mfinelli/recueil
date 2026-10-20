@@ -2915,6 +2915,23 @@ stages; each says what has landed.
   is no conflict: the user deletes whichever they don't want. Page detail reads
   `matching_link_id`, and both screens get the other entity's title from the
   same response (`SameUrlHint.svelte`, shared). **Landed.**
+- **Cleaning a link's URL.** A link keeps the URL as it was saved (`raw_url`),
+  tracking parameters and all, because that is what it opens, what the bookmark
+  sync pushes and what the MCP tools return. When that differs from what
+  normalization would make of it, the link's screen offers a **cleaner URL** and
+  a "Use this URL" action (`POST /api/links/{id}/clean-url`, with `cleaned_url`
+  on the detail response, null when there is nothing to clean). The cleaned URL
+  is the normalized URL **with the raw URL's fragment put back**, since
+  normalization drops the fragment and keeping raw URLs is precisely what lets
+  hash-routed apps work. **The server computes it; the client can't supply
+  one**, since an arbitrary raw URL could stop matching the link's normalized
+  identity, which is untouched. The action moves `updated_at`, so the bookmark
+  sync pushes the new URL. It is idempotent and **not permanent**: saving the
+  same URL again from the browser refreshes the raw URL from the tab, as it does
+  the title, rather than tracking an override (the screen doesn't mention it).
+  It applies to links only. A page keeps no raw URL (its screens already use the
+  normalized one), and a capture's raw URL is a record of what that version was
+  captured from, which is not rewritten. **Landed.**
 - **Adding a link by hand.** An "Add link" button in the toolbar opens a modal
   copied from the manual-upload one: URL (required), title (optional) and
   favicon (optional, `.svg`/`.png`/`.ico`), with the note that recueil never

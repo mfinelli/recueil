@@ -208,6 +208,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 				r.Get("/links/{id}", s.GetLink)
 				r.Patch("/links/{id}", s.PatchLink)
 				r.Delete("/links/{id}", s.DeleteLink)
+				r.Post("/links/{id}/clean-url", s.CleanLinkURL)
 				r.Get("/links/{id}/favicon", s.GetLinkFavicon)
 				r.Post("/links/{id}/tags", s.AddLinkTag)
 				r.Delete("/links/{id}/tags/{tagId}", s.RemoveLinkTag)

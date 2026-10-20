@@ -47,6 +47,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import X from "@lucide/svelte/icons/x";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import type {
+    Link,
     LinkDetail,
     TagCreated,
     Collection,
@@ -79,6 +80,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let savingNotes = $state(false);
   let deleting = $state(false);
   let togglingMirror = $state(false);
+  let cleaning = $state(false);
   // As on PageDetail: a single one-off image beside the source URL, so a
   // missing or broken favicon just means nothing renders there.
   let faviconFailed = $state(false);
@@ -327,6 +329,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
+  // Swaps in the cleaned URL. The server computes it (the client can't supply
+  // one), so all this sends is the request; what comes back is the link with its new
+  // raw_url, after which there is nothing more to clean.
+  async function useCleanedURL() {
+    if (!detail) return;
+    cleaning = true;
+    actionError = null;
+    try {
+      const updated = await apiJSON<Link>(`/links/${detail.id}/clean-url`, {
+        method: "POST",
+      });
+      detail.raw_url = updated.raw_url;
+      detail.cleaned_url = null;
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.linkdetail_clean_error();
+    } finally {
+      cleaning = false;
+    }
+  }
+
   async function deleteLink() {
     if (!detail) return;
     if (!confirm(m.linkdetail_delete_confirm({ title: displayTitle(detail) })))
@@ -414,6 +437,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         <span class="source-note">{m.linkdetail_added_manually()}</span>
       {/if}
     </div>
+
+    {#if detail.cleaned_url}
+      <div class="clean-url">
+        <span class="clean-label">{m.linkdetail_clean_label()}</span>
+        <code class="clean-value">{detail.cleaned_url}</code>
+        <button type="button" disabled={cleaning} onclick={useCleanedURL}
+          >{m.linkdetail_clean_use()}</button
+        >
+        <p class="clean-hint">{m.linkdetail_clean_hint()}</p>
+      </div>
+    {/if}
 
     {#if detail.matching_page_id !== null}
       <SameUrlHint
@@ -767,6 +801,35 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     &:focus-visible {
       @include mix.focus-ring;
     }
+  }
+
+  // The "cleaner URL" offer under the source row: a muted line with the cleaned URL
+  // and the one action, and the replaced-on-resave hint beneath.
+  .clean-url {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.6rem;
+    margin: -0.6rem 0 1.25rem;
+    font-size: 0.8125rem;
+    color: var(--ink-muted);
+
+    button {
+      padding: 0.2rem 0.6rem;
+      font-size: 0.8125rem;
+    }
+  }
+
+  .clean-value {
+    @include type.data-mono;
+    word-break: break-all;
+    color: var(--ink);
+  }
+
+  .clean-hint {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 0.75rem;
   }
 
   // Where the title and favicon came from, when it isn't a browser tab: the

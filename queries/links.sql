@@ -147,6 +147,14 @@ UPDATE links SET excluded_from_mirror = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
+-- name: SetLinkRawURL :one
+-- Replaces a link's raw URL: used to swap in its cleaned version (the "Clean URL"
+-- action). normalized_url, the link's identity, is untouched, and updated_at
+-- moves so the bookmark sync, which pushes raw_url, picks it up.
+UPDATE links SET raw_url = $1, updated_at = NOW()
+WHERE id = $2 AND user_id = $3
+RETURNING *;
+
 -- name: SetLinkNotes :one
 -- An empty value is meaningful (clearing a note is a normal action), same as
 -- SetPageNotes.

@@ -102,6 +102,7 @@ const baseLink: LinkDetail = {
   tags: [{ id: 1, name: "video", slug: "video" }],
   collections: [{ id: 5, name: "Watch later", parent_id: null }],
   wayback: null,
+  cleaned_url: null,
 };
 
 type LoadOptions = {
@@ -669,6 +670,89 @@ describe("LinkDetail", () => {
       expect(
         screen.getByRole("button", { name: "Remove from Watch later" }),
       ).toBeTruthy();
+    });
+  });
+
+  describe("cleaning the URL", () => {
+    const dirty = {
+      ...baseLink,
+      raw_url: "https://example.com/watch?v=abc&utm_source=news#t=30",
+      cleaned_url: "https://example.com/watch?v=abc#t=30",
+    };
+
+    it("offers the cleaner URL, with a hint saying what it does", async () => {
+      render42({ link: dirty });
+      await screen.findByRole("heading", { name: "An example video" });
+
+      expect(screen.getByText("Cleaner URL")).toBeTruthy();
+      expect(
+        screen.getByText("https://example.com/watch?v=abc#t=30"),
+      ).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Use this URL" })).toBeTruthy();
+      expect(
+        screen.getByText(
+          "Removes tracking and other extras from the URL this link opens.",
+        ),
+      ).toBeTruthy();
+    });
+
+    it("offers nothing when the URL is already clean", async () => {
+      render42();
+      await screen.findByRole("heading", { name: "An example video" });
+      expect(screen.queryByText("Cleaner URL")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Use this URL" })).toBeNull();
+    });
+
+    it("asks the server to clean it, then shows the new URL and stops offering", async () => {
+      render42({ link: dirty });
+      await screen.findByRole("heading", { name: "An example video" });
+      apiJSONMock.mockResolvedValueOnce({
+        ...baseLink,
+        raw_url: "https://example.com/watch?v=abc#t=30",
+      });
+
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Use this URL" }),
+      );
+
+      // Nothing is sent but the request: the server works out the URL.
+      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/clean-url", {
+        method: "POST",
+      });
+      await vi.waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "Use this URL" }),
+        ).toBeNull(),
+      );
+      const source = screen.getByRole("link", {
+        name: "https://example.com/watch?v=abc#t=30",
+      });
+      expect(source.getAttribute("href")).toBe(
+        "https://example.com/watch?v=abc#t=30",
+      );
+    });
+
+    it("keeps the offer, and shows the error, when it fails", async () => {
+      render42({ link: dirty });
+      await screen.findByRole("heading", { name: "An example video" });
+      apiJSONMock.mockRejectedValueOnce(new ApiError(500, "update rejected"));
+
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Use this URL" }),
+      );
+
+      expect(await screen.findByText("update rejected")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Use this URL" })).toBeTruthy();
+    });
+
+    it("falls back to a generic message for a non-API failure", async () => {
+      render42({ link: dirty });
+      await screen.findByRole("heading", { name: "An example video" });
+      apiJSONMock.mockRejectedValueOnce(new Error("network down"));
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Use this URL" }),
+      );
+      expect(await screen.findByText("failed to update the URL")).toBeTruthy();
     });
   });
 
