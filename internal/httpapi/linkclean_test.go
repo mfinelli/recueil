@@ -147,9 +147,9 @@ func TestCleanLinkURL(t *testing.T) {
 		changed, err := q.GetLinksUpdatedSince(ctx, pgtype.Timestamptz{Time: link.UpdatedAt.Time, Valid: true})
 		require.NoError(t, err)
 		var urls []string
-		for _, l := range changed {
-			if l.ID == link.ID {
-				urls = append(urls, l.RawUrl)
+		for i := range changed {
+			if changed[i].ID == link.ID {
+				urls = append(urls, changed[i].RawUrl)
 			}
 		}
 		assert.Equal(t, []string{"https://example.com/c"}, urls)

@@ -395,12 +395,12 @@ func TestRunner_Run_EmptyEverything(t *testing.T) {
 
 // linkWithFavicon writes data as a favicon into links and creates a link row
 // pointing at it, backdating the file past gc's recentThreshold.
-func linkWithFavicon(t *testing.T, pool *pgxpool.Pool, links *linkicons.Store, root string, userID int64, url string, data []byte) (db.Link, linkicons.Favicon) {
+func linkWithFavicon(t *testing.T, pool *pgxpool.Pool, links *linkicons.Store, root string, userID int64, url string, data []byte) (link db.Link, fav linkicons.Favicon) {
 	t.Helper()
 	fav, err := links.Write(data, "png")
 	require.NoError(t, err)
 	backdate(t, root, fav.Path)
-	link, err := db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
+	link, err = db.New(pool).UpsertLink(context.Background(), db.UpsertLinkParams{Source: "extension",
 		UserID:           userID,
 		RawUrl:           url,
 		NormalizedUrl:    url,
