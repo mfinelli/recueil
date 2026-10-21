@@ -71,8 +71,8 @@ func TestListLinks_Filters(t *testing.T) {
 
 	tagVideo, err := q.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: "Video", Slug: "video"})
 	require.NoError(t, err)
-	require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: video.ID, TagID: tagVideo.ID}))
-	require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: both.ID, TagID: tagVideo.ID}))
+	require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: video.ID, TagID: tagVideo.ID, UserID: video.UserID}))
+	require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: both.ID, TagID: tagVideo.ID, UserID: both.UserID}))
 
 	parent, err := q.CreateCollection(ctx, db.CreateCollectionParams{UserID: user.ID, Name: "Watch", Slug: "watch"})
 	require.NoError(t, err)
@@ -80,8 +80,8 @@ func TestListLinks_Filters(t *testing.T) {
 		UserID: user.ID, ParentID: pgtype.Int8{Int64: parent.ID, Valid: true}, Name: "Talks", Slug: "talks",
 	})
 	require.NoError(t, err)
-	require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: both.ID, CollectionID: parent.ID}))
-	require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: repo.ID, CollectionID: child.ID}))
+	require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: both.ID, CollectionID: parent.ID, UserID: both.UserID}))
+	require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: repo.ID, CollectionID: child.ID, UserID: repo.UserID}))
 
 	get := func(t *testing.T, query string) (int, filteredLinkList) {
 		resp := requestWithCookie(t, server, http.MethodGet, "/api/links"+query, cookie)
@@ -183,7 +183,7 @@ func TestListLinks_Filters(t *testing.T) {
 		theirs := saveLink(t, pool, other.ID, "https://example.com/theirs", "Theirs")
 		theirTag, err := q.UpsertTag(ctx, db.UpsertTagParams{UserID: other.ID, Name: "Video", Slug: "video"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: theirs.ID, TagID: theirTag.ID}))
+		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: theirs.ID, TagID: theirTag.ID, UserID: theirs.UserID}))
 
 		_, got := get(t, "?tag=video")
 		assert.ElementsMatch(t, []int64{video.ID, both.ID}, linkIDs(got), "same slug, different user's tag")
@@ -216,12 +216,12 @@ func TestTagAndCollectionPages_LinkCount(t *testing.T) {
 		require.NoError(t, err)
 		for i, url := range []string{"https://example.com/1", "https://example.com/2", "https://example.com/3"} {
 			link := saveLink(t, pool, user.ID, url, fmt.Sprintf("Link %d", i))
-			require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID}))
+			require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID, UserID: link.UserID}))
 			target := parent
 			if i == 2 {
 				target = child
 			}
-			require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: target.ID}))
+			require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: target.ID, UserID: link.UserID}))
 		}
 		return user, tag, parent, child
 	}

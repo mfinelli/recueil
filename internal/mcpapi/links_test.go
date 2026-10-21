@@ -179,8 +179,8 @@ func TestSearchLinks(t *testing.T) {
 		saveLink(t, q, user.ID, "https://example.com/other", "Rust other")
 		tag, err := q.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: "Watch", Slug: "watch"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: video.ID, TagID: tag.ID}))
-		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: repo.ID, TagID: tag.ID}))
+		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: video.ID, TagID: tag.ID, UserID: video.UserID}))
+		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: repo.ID, TagID: tag.ID, UserID: repo.UserID}))
 
 		_, out, err := tl.searchLinks(ctxFor(&user), nil, searchLinksInput{TagSlug: "watch"})
 		require.NoError(t, err)
@@ -201,8 +201,8 @@ func TestSearchLinks(t *testing.T) {
 			UserID: user.ID, ParentID: pgtype.Int8{Int64: parent.ID, Valid: true}, Name: "Child", Slug: "child",
 		})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: inParent.ID, CollectionID: parent.ID}))
-		require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: inChild.ID, CollectionID: child.ID}))
+		require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: inParent.ID, CollectionID: parent.ID, UserID: inParent.UserID}))
+		require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: inChild.ID, CollectionID: child.ID, UserID: inChild.UserID}))
 
 		_, out, err := tl.searchLinks(ctxFor(&user), nil, searchLinksInput{CollectionID: parent.ID})
 		require.NoError(t, err)
@@ -249,8 +249,8 @@ func TestGetLink(t *testing.T) {
 		require.NoError(t, err)
 		col, err := q.CreateCollection(ctx, db.CreateCollectionParams{UserID: user.ID, Name: "Watch later", Slug: "watch-later"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID}))
-		require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: col.ID}))
+		require.NoError(t, q.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID, UserID: link.UserID}))
+		require.NoError(t, q.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: col.ID, UserID: link.UserID}))
 
 		res, out, err := tl.getLink(ctxFor(&user), nil, getLinkInput{LinkID: link.ID})
 		require.NoError(t, err)

@@ -20,7 +20,7 @@
 -- ON CONFLICT DO NOTHING, same shape as AddPageToCollection. The caller is
 -- responsible for having verified that both the link and the collection belong
 -- to the requesting user.
-INSERT INTO link_collections (link_id, collection_id) VALUES ($1, $2)
+INSERT INTO link_collections (link_id, collection_id, user_id) VALUES ($1, $2, $3)
 ON CONFLICT (link_id, collection_id) DO NOTHING;
 
 -- name: RemoveLinkFromCollection :exec

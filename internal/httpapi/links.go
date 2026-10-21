@@ -555,7 +555,7 @@ func (s *Server) AddLinkTag(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "a different tag already uses that URL")
 		return
 	}
-	if err := s.Queries.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID}); err != nil {
+	if err := s.Queries.AddLinkTag(ctx, db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID, UserID: link.UserID}); err != nil {
 		log.Printf("warning: failed to add tag %d to link %d: %v", tag.ID, link.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -618,7 +618,7 @@ func (s *Server) AddLinkToCollection(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "collection not found")
 		return
 	}
-	if err := s.Queries.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: req.CollectionID}); err != nil {
+	if err := s.Queries.AddLinkToCollection(ctx, db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: req.CollectionID, UserID: link.UserID}); err != nil {
 		log.Printf("warning: failed to add link %d to collection %d: %v", link.ID, req.CollectionID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

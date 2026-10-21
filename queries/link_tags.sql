@@ -20,7 +20,7 @@
 -- ON CONFLICT DO NOTHING: adding a tag a link already has is a no-op, not an
 -- error. The caller is responsible for having verified that both the link and
 -- the tag belong to the requesting user.
-INSERT INTO link_tags (link_id, tag_id) VALUES ($1, $2)
+INSERT INTO link_tags (link_id, tag_id, user_id) VALUES ($1, $2, $3)
 ON CONFLICT (link_id, tag_id) DO NOTHING;
 
 -- name: ListLinkTags :many

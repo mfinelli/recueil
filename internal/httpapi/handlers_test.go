@@ -2582,10 +2582,10 @@ func TestDeletePage(t *testing.T) {
 		ctx := context.Background()
 		tag, err := q.UpsertTag(ctx, db.UpsertTagParams{UserID: user.ID, Name: "reading", Slug: "reading"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddPageTag(ctx, db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual"}))
+		require.NoError(t, q.AddPageTag(ctx, db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual", UserID: page.UserID}))
 		collection, err := q.CreateCollection(ctx, db.CreateCollectionParams{UserID: user.ID, Name: "Articles", Slug: "articles"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddPageToCollection(ctx, db.AddPageToCollectionParams{PageID: page.ID, CollectionID: collection.ID}))
+		require.NoError(t, q.AddPageToCollection(ctx, db.AddPageToCollectionParams{PageID: page.ID, CollectionID: collection.ID, UserID: page.UserID}))
 
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
@@ -3759,8 +3759,8 @@ func TestListTagPages(t *testing.T) {
 		q := db.New(pool)
 		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "recipes", Slug: "recipes"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: tagged1.ID, TagID: tag.ID, Source: "manual"}))
-		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: tagged2.ID, TagID: tag.ID, Source: "manual"}))
+		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: tagged1.ID, TagID: tag.ID, Source: "manual", UserID: tagged1.UserID}))
+		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: tagged2.ID, TagID: tag.ID, Source: "manual", UserID: tagged2.UserID}))
 
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
@@ -3813,7 +3813,7 @@ func TestDeleteTag(t *testing.T) {
 		q := db.New(pool)
 		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "recipes", Slug: "recipes"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual"}))
+		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual", UserID: page.UserID}))
 
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)

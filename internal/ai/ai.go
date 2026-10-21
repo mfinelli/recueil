@@ -423,6 +423,8 @@ func (r *Runner) commitDone(ctx context.Context, job db.ClaimDueAIJobsRow, summa
 			PageID: job.PageID,
 			TagID:  tag.ID,
 			Source: "ai",
+			// The job's owner also owns the tag just upserted for them
+			UserID: job.UserID,
 		}); err != nil {
 			return fmt.Errorf("adding page tag %q: %w", name, err)
 		}

@@ -98,9 +98,11 @@ yourself, the routes that relate pages to each other were renamed, so that
 
 Most of v2's migrations only add tables, which a v1 backend doesn't care about,
 so going back to v1 is normally just pointing your Compose file at the v1 image.
-v2 has one exception: migration `00016` renames the `page_links` table to
-`page_relations`, and a v1 backend would fail to load a page's related pages.
-Before starting v1 again, revert it with
+v2 has two exceptions that change tables v1 uses: migration `00016` renames the
+`page_links` table to `page_relations`, so a v1 backend would fail to load a
+page's related pages, and migration `00017` adds a `user_id` to the tables that
+tie pages to tags and collections, so a v1 backend's inserts into them would
+fail. Before starting v1 again, revert them with
 [goose](https://github.com/pressly/goose), using the `migrations/` directory
 from the v2 release you ran:
 
@@ -109,9 +111,10 @@ goose -dir migrations -table schema_migrations postgres "$DATABASE_URL" down-to 
 ```
 
 `down-to 15` undoes everything after the last migration that only added tables,
-which is just the rename. It changes the name back and nothing else: your links
-and any Wayback records stay where they are, ignored by v1, and are there again
-if you upgrade later. For now recueil cannot revert migrations itself.
+which is just those two. It restores the old table name and removes the added
+columns and constraints, and nothing else: your links and any Wayback records
+stay where they are, ignored by v1, and are there again if you upgrade later.
+For now recueil cannot revert migrations itself.
 
 ### If something goes wrong
 
@@ -122,5 +125,37 @@ if you upgrade later. For now recueil cannot revert migrations itself.
   are off, either in the backend (`enable_links`) or in Terraform; they have to
   agree. The extension also remembers the Worker's answer for up to a day, so a
   change can take a while to show; restarting the browser refreshes it.
+- **The upgrade stops with "rows in … join … owned by different users".**
+  Migration `00017` makes the database enforce that every tag, collection and
+  relation joins rows of one user, and first checks your data. It names the
+  table and how many rows break the rule. They should never exist, since the app
+  has always checked, so this is a sign of data that was changed outside
+  recueil. This is only a preflight check so nothing has been changed yet. Find
+  the rows with the matching query below, decide whether to delete or fix them,
+  and start again. (For `page_collections` and the `link_*` tables, swap in the
+  matching tables.)
+
+  ```sql
+  -- page_tags: a page and a tag owned by different users
+  SELECT pt.page_id, pt.tag_id
+  FROM page_tags pt
+  JOIN pages p ON p.id = pt.page_id
+  JOIN tags t ON t.id = pt.tag_id
+  WHERE p.user_id <> t.user_id;
+
+  -- page_relations: two pages owned by different users
+  SELECT r.page_id_a, r.page_id_b
+  FROM page_relations r
+  JOIN pages a ON a.id = r.page_id_a
+  JOIN pages b ON b.id = r.page_id_b
+  WHERE a.user_id <> b.user_id;
+
+  -- a collection whose parent belongs to someone else
+  SELECT c.id, c.parent_id
+  FROM collections c
+  JOIN collections parent ON parent.id = c.parent_id
+  WHERE c.user_id <> parent.user_id;
+  ```
+
 - **`agent` keeps warning that the Worker has no routes for links.** The backend
   is newer than the Worker. Apply the Terraform; the warnings stop on their own.

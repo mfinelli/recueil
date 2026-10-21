@@ -25,8 +25,8 @@ before you do. In short:
   `enable_links = false` in Terraform).
 - Update the browser extension; an older one keeps working, but without links.
 - If you call the API yourself, some routes were renamed (see **Changed**), and
-  rolling back to v1 takes one extra step, reverting a migration that renames a
-  table. Both are in the guide.
+  rolling back to v1 takes one extra step, reverting two migrations that change
+  existing tables. Both are in the guide.
 
 ### Added
 
@@ -48,6 +48,11 @@ before you do. In short:
 
 ### Changed
 
+- **The database enforces that relationships join rows owned by the same user.**
+  Tags, collections and related items (and a collection's parent) could only
+  ever join one user's rows, because the app checked; Postgres now checks too.
+  It verifies your existing data first and stops with a clear message if
+  anything breaks the rule, which it shouldn't.
 - **Relationships between items are now named by what they relate**, so "links"
   no longer means two things at once. What was "linked pages" is now **related
   pages**: `/api/pages/{id}/links` is `/api/pages/{id}/related-pages`, the

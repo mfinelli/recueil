@@ -24,10 +24,11 @@
 -- The explicit ::bigint casts and sqlc.arg names are for the same reasons given on
 -- AddPageRelation (sqlc can't infer a type through LEAST/GREATEST, and would give both
 -- generated fields the same name).
-INSERT INTO link_relations (link_id_a, link_id_b)
+INSERT INTO link_relations (link_id_a, link_id_b, user_id)
 VALUES (
   LEAST(sqlc.arg(link_a)::bigint, sqlc.arg(link_b)::bigint),
-  GREATEST(sqlc.arg(link_a)::bigint, sqlc.arg(link_b)::bigint)
+  GREATEST(sqlc.arg(link_a)::bigint, sqlc.arg(link_b)::bigint),
+  sqlc.arg(user_id)::bigint
 )
 ON CONFLICT (link_id_a, link_id_b) DO NOTHING;
 
