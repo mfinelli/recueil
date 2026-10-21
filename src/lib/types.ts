@@ -84,6 +84,9 @@ export interface LinkDetail extends Link {
   // The links related to this one, as a page detail's `related_pages` are its
   // related pages.
   related_links: RelatedLink[];
+  // The archived pages related to this link, as a page's `related_links` are its
+  // related links.
+  related_pages: RelatedPage[];
   // null if the link's URL has never been submitted to the Wayback Machine.
   wayback: WaybackState | null;
   // What raw_url would become with its tracking and other extras removed (its
@@ -177,8 +180,11 @@ export interface PageDetail extends Page {
   tags: PageTag[];
   collections: PageCollection[];
   related_pages: RelatedPage[];
+  // The links related to this page: a page and a link can be related, from either
+  // end. Always empty with links off.
+  related_links: RelatedLink[];
   // The same-URL hint: the user's link (a bookmark-only entry, not one of
-  // `related_pages` above) with this page's normalized URL,
+  // the related items above) with this page's normalized URL,
   // and its title (null if it has none). Both null when there's no such link,
   // and always with links off.
   matching_link_id: number | null;

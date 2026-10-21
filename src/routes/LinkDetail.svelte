@@ -96,6 +96,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     relateError: m.linkdetail_related_error(),
     removeError: m.linkdetail_remove_related_error(),
   });
+
+  // The same, for the archived pages related to this link.
+  const relatedPagesLabels = $derived({
+    heading: m.linkdetail_related_pages_heading(),
+    empty: m.linkdetail_related_pages_empty(),
+    edit: m.linkdetail_edit_related_pages(),
+    done: m.linkdetail_done_editing_related_pages(),
+    searchPlaceholder: m.linkdetail_related_search_placeholder(),
+    noResults: m.linkdetail_related_pages_no_results(),
+    remove: (name: string) => m.linkdetail_remove_related_aria({ name }),
+    relateError: m.linkdetail_related_pages_error(),
+    removeError: m.linkdetail_remove_related_error(),
+  });
   // Independent per section -- editing tags shouldn't pop open the collection
   // forms. Pills-only by default; the pencil/check toggle reveals the remove
   // buttons and add forms.
@@ -680,6 +693,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       labels={relatedLabels}
       onchange={(next) => {
         if (detail) detail.related_links = next;
+      }}
+      onerror={(message) => (actionError = message)}
+    />
+
+    <!-- No excludeId: a page's id and a link's id are different things, so nothing is
+         excluded from the search. -->
+    <RelatedItems
+      items={detail.related_pages}
+      kind="page"
+      ownerPath={`/links/${detail.id}`}
+      labels={relatedPagesLabels}
+      onchange={(next) => {
+        if (detail) detail.related_pages = next;
       }}
       onerror={(message) => (actionError = message)}
     />

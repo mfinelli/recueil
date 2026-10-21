@@ -79,6 +79,7 @@ import type {
   CaptureSummary,
   Collection,
   PageDetail,
+  RelatedLink,
   RelatedPage,
 } from "../lib/types";
 import PageDetailRoute from "./PageDetail.svelte";
@@ -184,6 +185,7 @@ const basePage: PageDetail = {
   tags: [{ id: 1, name: "reading", slug: "reading", source: "manual" }],
   collections: [{ id: 5, name: "Articles", parent_id: null }],
   related_pages: [],
+  related_links: [],
   matching_link_id: null,
   matching_link_title: null,
   wayback: null,
@@ -777,6 +779,151 @@ describe("PageDetail", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("failed to update notes")).toBeTruthy();
+  });
+
+  describe("related links", () => {
+    const relatedLink: RelatedLink = {
+      id: 7,
+      title: "A related repo",
+      normalized_url: "github.com/example/repo",
+      favicon_path: null,
+    };
+
+    afterEach(() => {
+      session.linksEnabled = false;
+      vi.useRealTimers();
+    });
+
+    // As for related pages, the list's own behavior is tested once, in
+    // RelatedItems.test.ts; these check this screen's wiring of the cross-kind list.
+    it("isn't offered when the instance has links off", async () => {
+      session.linksEnabled = false;
+      render42();
+      await screen.findByRole("heading", { name: "An example article" });
+      expect(
+        screen.queryByRole("heading", { name: "Related links" }),
+      ).toBeNull();
+      expect(
+        screen.getByRole("heading", { name: "Related pages" }),
+      ).toBeTruthy();
+    });
+
+    it("lists the page's related_links as rows that open those links, next to the related pages", async () => {
+      session.linksEnabled = true;
+      render42({ page: { ...basePage, related_links: [relatedLink] } });
+      await screen.findByRole("heading", { name: "An example article" });
+
+      expect(
+        screen.getByRole("heading", { name: "Related links" }),
+      ).toBeTruthy();
+      expect(
+        screen
+          .getByRole("link", { name: /A related repo/ })
+          .getAttribute("href"),
+      ).toBe("#/links/7");
+    });
+
+    it("says so when there are none", async () => {
+      session.linksEnabled = true;
+      render42();
+      expect(await screen.findByText("No related links yet.")).toBeTruthy();
+    });
+
+    it("searches the link picker without excluding anything, and relates through this page's related-links route", async () => {
+      session.linksEnabled = true;
+      vi.useFakeTimers();
+      const candidate: RelatedLink = {
+        id: 9,
+        title: "A candidate link",
+        normalized_url: "example.com/candidate",
+        favicon_path: null,
+      };
+      render42();
+      await vi.waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "An example article" }),
+        ).toBeTruthy(),
+      );
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Edit related links" }),
+      );
+
+      apiJSONMock.mockResolvedValueOnce({ links: [candidate] });
+      await fireEvent.input(
+        screen.getByPlaceholderText("Search by title or URL…"),
+        { target: { value: "cand" } },
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      // A link's id and a page's id aren't comparable, so no exclude.
+      expect(apiJSONMock).toHaveBeenLastCalledWith(
+        "/links/relation-candidates?q=cand",
+      );
+
+      apiJSONMock.mockResolvedValueOnce(candidate);
+      await fireEvent.click(
+        await screen.findByRole("button", {
+          name: "A candidate link example.com/candidate",
+        }),
+      );
+      expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-links", {
+        method: "POST",
+        body: { link_id: 9 },
+      });
+    });
+
+    it("removes a relation through this page's related-links route", async () => {
+      session.linksEnabled = true;
+      render42({ page: { ...basePage, related_links: [relatedLink] } });
+      await screen.findByRole("heading", { name: "An example article" });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Edit related links" }),
+      );
+
+      apiJSONMock.mockResolvedValueOnce(undefined);
+      await fireEvent.click(
+        screen.getByRole("button", {
+          name: "Remove relation to A related repo",
+        }),
+      );
+
+      expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-links/7", {
+        method: "DELETE",
+      });
+      expect(await screen.findByText("No related links yet.")).toBeTruthy();
+    });
+
+    it("reports a failure to relate in the screen's own banner, in this section's words", async () => {
+      session.linksEnabled = true;
+      vi.useFakeTimers();
+      const candidate: RelatedLink = {
+        id: 9,
+        title: "A candidate link",
+        normalized_url: "example.com/candidate",
+        favicon_path: null,
+      };
+      render42();
+      await vi.waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "An example article" }),
+        ).toBeTruthy(),
+      );
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Edit related links" }),
+      );
+      apiJSONMock.mockResolvedValueOnce({ links: [candidate] });
+      await fireEvent.input(
+        screen.getByPlaceholderText("Search by title or URL…"),
+        { target: { value: "cand" } },
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      apiJSONMock.mockRejectedValueOnce(new Error("network down"));
+      await fireEvent.click(
+        await screen.findByRole("button", {
+          name: "A candidate link example.com/candidate",
+        }),
+      );
+      expect(await screen.findByText("failed to relate link")).toBeTruthy();
+    });
   });
 
   describe("related pages", () => {

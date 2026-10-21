@@ -389,5 +389,17 @@
   "pagedetail_related_no_results": "No matching pages.",
   "pagedetail_remove_related_aria": "Remove relation to {name}",
   "pagedetail_related_error": "failed to relate page",
-  "pagedetail_remove_related_error": "failed to remove relation"
+  "pagedetail_remove_related_error": "failed to remove relation",
+  "pagedetail_related_links_heading": "Related links",
+  "pagedetail_related_links_empty": "No related links yet.",
+  "pagedetail_edit_related_links": "Edit related links",
+  "pagedetail_done_editing_related_links": "Done editing related links",
+  "pagedetail_related_links_no_results": "No matching links.",
+  "pagedetail_related_links_error": "failed to relate link",
+  "linkdetail_related_pages_heading": "Related pages",
+  "linkdetail_related_pages_empty": "No related pages yet.",
+  "linkdetail_edit_related_pages": "Edit related pages",
+  "linkdetail_done_editing_related_pages": "Done editing related pages",
+  "linkdetail_related_pages_no_results": "No matching pages.",
+  "linkdetail_related_pages_error": "failed to relate page"
 }

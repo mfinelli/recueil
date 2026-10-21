@@ -71,6 +71,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import Upload from "@lucide/svelte/icons/upload";
   import Favicon from "../components/Favicon.svelte";
   import RelatedItems from "../components/RelatedItems.svelte";
+  import { session } from "../lib/session.svelte";
   import type {
     PageDetail,
     TagCreated,
@@ -125,6 +126,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     noResults: m.pagedetail_related_no_results(),
     remove: (name: string) => m.pagedetail_remove_related_aria({ name }),
     relateError: m.pagedetail_related_error(),
+    removeError: m.pagedetail_remove_related_error(),
+  });
+
+  // The same, for the links related to this page (a page and a link can be related,
+  // from either end).
+  const relatedLinksLabels = $derived({
+    heading: m.pagedetail_related_links_heading(),
+    empty: m.pagedetail_related_links_empty(),
+    edit: m.pagedetail_edit_related_links(),
+    done: m.pagedetail_done_editing_related_links(),
+    searchPlaceholder: m.pagedetail_related_search_placeholder(),
+    noResults: m.pagedetail_related_links_no_results(),
+    remove: (name: string) => m.pagedetail_remove_related_aria({ name }),
+    relateError: m.pagedetail_related_links_error(),
     removeError: m.pagedetail_remove_related_error(),
   });
 
@@ -732,6 +747,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       }}
       onerror={(message) => (actionError = message)}
     />
+
+    <!-- Links only exist when the instance has them on. No excludeId: a link's id and
+         a page's id are different things, so nothing is excluded from the search. -->
+    {#if session.linksEnabled}
+      <RelatedItems
+        items={page.related_links}
+        kind="link"
+        ownerPath={`/pages/${page.id}`}
+        labels={relatedLinksLabels}
+        onchange={(next) => {
+          if (page) page.related_links = next;
+        }}
+        onerror={(message) => (actionError = message)}
+      />
+    {/if}
 
     <h2>{m.pagedetail_captures_heading()}</h2>
     <ul class="captures">

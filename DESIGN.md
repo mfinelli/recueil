@@ -2987,11 +2987,16 @@ stages; each says what has landed.
   Collections, Notes, **Related links**, the Internet Archive block (stage 3)
   and an actions row with Delete link only, and the same "Sync with my browser's
   bookmarks" checkbox as a page's (checked unless the link is excluded, §17j).
-  Related links are a page's "Related pages" for links (§17b), and both are the
-  one `RelatedItems.svelte` component driven by props: a compact list of rows
-  that open the other item, a pencil that reveals remove buttons and a debounced
-  title-or-URL search, already-related items filtered out client-side. It was
-  left off the original design by oversight. **Landed.**
+  Related links are a page's "Related pages" for links (§17b). Both detail
+  screens have **both** lists, "Related pages" and "Related links" (a page's
+  Related links only with links on), which is four instances of the one
+  `RelatedItems.svelte` component driven by props: a compact list of rows that
+  open the other item, a pencil that reveals remove buttons and a debounced
+  title-or-URL search of that kind, already-related items filtered out
+  client-side. A list of the owner's own kind excludes the owner from its
+  search; the cross-kind lists exclude nothing, since a page's id and a link's
+  id can't be compared. Related links were left off the original design by
+  oversight, and the cross-kind lists were added after it. **Landed.**
 - **Same-URL hint.** A one-line callout under the source row on both detail
   screens: "This URL is also archived as a page: {title}" and "This URL is also
   saved as a link: {title}". It is a read-time join on `normalized_url`, not a

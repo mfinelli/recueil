@@ -389,5 +389,17 @@
   "pagedetail_related_no_results": "Aucune page correspondante.",
   "pagedetail_remove_related_aria": "Retirer l'association avec {name}",
   "pagedetail_related_error": "échec de l'association de la page",
-  "pagedetail_remove_related_error": "échec du retrait de l'association"
+  "pagedetail_remove_related_error": "échec du retrait de l'association",
+  "pagedetail_related_links_heading": "Liens associés",
+  "pagedetail_related_links_empty": "Aucun lien associé pour l'instant.",
+  "pagedetail_edit_related_links": "Modifier les liens associés",
+  "pagedetail_done_editing_related_links": "Terminer la modification des liens associés",
+  "pagedetail_related_links_no_results": "Aucun lien correspondant.",
+  "pagedetail_related_links_error": "échec de l'association du lien",
+  "linkdetail_related_pages_heading": "Pages associées",
+  "linkdetail_related_pages_empty": "Aucune page associée pour l'instant.",
+  "linkdetail_edit_related_pages": "Modifier les pages associées",
+  "linkdetail_done_editing_related_pages": "Terminer la modification des pages associées",
+  "linkdetail_related_pages_no_results": "Aucune page correspondante.",
+  "linkdetail_related_pages_error": "échec de l'association de la page"
 }
