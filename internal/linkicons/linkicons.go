@@ -46,7 +46,6 @@ package linkicons
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/mfinelli/recueil/internal/archive"
 )
@@ -80,25 +79,10 @@ const checkHint = " -- provide that directory (a bind mount, so its contents " +
 // meant for startup, so that a missing bind mount fails loudly instead of the
 // first favicon silently going nowhere. It can't tell a real bind mount from a
 // directory inside the container's own filesystem, which loses its contents
-// whenever the container is recreated; the operator docs say so.
+// whenever the container is recreated; the operator docs say so. The probe itself is
+// archive.Store.Check, shared with the archive's own startup check.
 func (s *Store) Check() error {
-	info, err := os.Stat(s.root)
-	if err != nil {
-		return fmt.Errorf("links_dir %q is not usable: %w%s", s.root, err, checkHint)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("links_dir %q is not a directory%s", s.root, checkHint)
-	}
-	probe, err := os.CreateTemp(s.root, ".check-*")
-	if err != nil {
-		return fmt.Errorf("links_dir %q is not writable: %w%s", s.root, err, checkHint)
-	}
-	name := probe.Name()
-	_ = probe.Close()
-	if err := os.Remove(name); err != nil {
-		return fmt.Errorf("links_dir %q: removing write probe: %w", s.root, err)
-	}
-	return nil
+	return s.archive.Check("links_dir", checkHint)
 }
 
 // Favicon is what Write recorded: exactly the three values the links row

@@ -23,6 +23,9 @@ before you do. In short:
   unless they have somewhere to keep link icons. Add `LINKS_DIR` and its bind
   mount to both, or turn links off with `ENABLE_LINKS: "false"` (and
   `enable_links = false` in Terraform).
+- `server` and `agent` now check at startup that `ARCHIVE_DIR` exists and is
+  writable, and refuse to start otherwise (a missing bind mount used to fail
+  quietly). Mount it read-write in both.
 - Update the browser extension; an older one keeps working, but without links.
 - If you call the API yourself, some routes were renamed (see **Changed**), and
   rolling back to v1 takes one extra step, reverting two migrations that change

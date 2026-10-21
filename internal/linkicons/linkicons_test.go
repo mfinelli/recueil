@@ -133,6 +133,9 @@ func TestStore_Write(t *testing.T) {
 	})
 }
 
+// The probe itself is tested in internal/archive (Store.Check, shared with the archive's
+// own startup check); these only pin what is specific to the links store: the setting
+// it names and the way out its hint offers, so the wrapper can't drift.
 func TestStore_Check(t *testing.T) {
 	t.Run("passes for a writable directory and leaves nothing behind", func(t *testing.T) {
 		root := t.TempDir()
@@ -142,33 +145,11 @@ func TestStore_Check(t *testing.T) {
 		assert.Empty(t, entries)
 	})
 
-	t.Run("fails for a directory that doesn't exist", func(t *testing.T) {
+	t.Run("names links_dir and offers both ways out", func(t *testing.T) {
 		err := linkicons.New(filepath.Join(t.TempDir(), "missing")).Check()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "links_dir")
 		assert.Contains(t, err.Error(), "enable_links = false", "names the way out, not just the problem")
 		assert.Contains(t, err.Error(), "bind mount")
-	})
-
-	t.Run("fails for a path that is a file", func(t *testing.T) {
-		file := filepath.Join(t.TempDir(), "afile")
-		require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
-		err := linkicons.New(file).Check()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not a directory")
-		assert.Contains(t, err.Error(), "enable_links = false")
-	})
-
-	t.Run("fails for a directory that can't be written to", func(t *testing.T) {
-		if os.Geteuid() == 0 {
-			t.Skip("root ignores directory permissions")
-		}
-		root := t.TempDir()
-		require.NoError(t, os.Chmod(root, 0o500))
-		t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
-		err := linkicons.New(root).Check()
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "not writable")
-		assert.Contains(t, err.Error(), "enable_links = false")
 	})
 }

@@ -69,10 +69,12 @@ gover VERSION:
 
 serve:
     make all
+    mkdir -p tmp/archive tmp/links
     ./recueil server --config local.toml
 
 agent:
     make all
+    mkdir -p tmp/archive tmp/links
     ./recueil agent --config local.toml
 
 [private]

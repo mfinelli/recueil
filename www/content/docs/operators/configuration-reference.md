@@ -30,7 +30,7 @@ for any of them:
 | `cloudflare_account_id`     | Your Cloudflare account ID.                                                                                         |
 | `cloudflare_d1_database_id` | A Terraform output.                                                                                                 |
 | `cloudflare_api_token`      | The same Cloudflare API token used for the Terraform provider config.                                               |
-| `archive_dir`               | Root directory captures are stored under.                                                                           |
+| `archive_dir`               | Root directory captures are stored under. Must exist and be writable; checked at startup.                           |
 | `links_dir`                 | Root directory link favicons are stored under. Required while `enable_links` is on; must not overlap `archive_dir`. |
 | `r2_account_id`             | Same value as `cloudflare_account_id`.                                                                              |
 | `r2_bucket_name`            | A Terraform output.                                                                                                 |

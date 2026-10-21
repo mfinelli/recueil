@@ -48,10 +48,15 @@ there's one thing to do before the backend will start.
    [Running the backend](@/docs/operators/deploying-recueil.md#running-the-backend)
    for the full Compose example.
 
-3. **Bump the image tag and restart.** `server` applies the new Postgres and D1
+3. **Check your archive mount is read-write in both.** `server` and `agent` now
+   check at startup that `ARCHIVE_DIR` exists and is writable, and refuse to
+   start if it isn't. The Compose file in this documentation has always mounted
+   it read-write in both, so you only need to look if you changed that, for
+   instance by mounting it read-only in `server`.
+4. **Bump the image tag and restart.** `server` applies the new Postgres and D1
    migrations as it starts, as it does on every upgrade, and `agent` picks up
    saved links from then on. Nothing for you to run by hand.
-4. **Update the browser extension.** Firefox does this on its own. The new
+5. **Update the browser extension.** Firefox does this on its own. The new
    version adds **Save as link** and a second bookmark sync. An older extension
    keeps working exactly as before; it just doesn't know about links.
 
@@ -121,6 +126,11 @@ For now recueil cannot revert migrations itself.
 - **`server` or `agent` won't start and mentions `links_dir`.** The directory
   isn't set, doesn't exist or isn't writable by the container. Fix it, or turn
   links off in both places as in step 2.
+- **`server` or `agent` won't start and mentions `archive_dir`.** The archive
+  directory doesn't exist, isn't a directory, or isn't writable by the
+  container's user. If it's missing, a bind mount is missing; fix the mount
+  rather than creating the directory inside the container. If it's not writable,
+  it's usually owned by root, or mounted read-only.
 - **The Links screen, or the extension's "Save as link", doesn't appear.** Links
   are off, either in the backend (`enable_links`) or in Terraform; they have to
   agree. The extension also remembers the Worker's answer for up to a day, so a

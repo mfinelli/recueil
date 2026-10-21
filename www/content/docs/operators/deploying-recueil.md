@@ -190,6 +190,14 @@ services:
       - ./data/links:/data/links
 ```
 
+`ARCHIVE_DIR` must already exist and be writable, and both `server` and `agent`
+write to it, so it must be mounted as read-write in both. `server` and `agent`
+both check this when they start and refuse to start otherwise. They don't create
+missing directories because in a container (the recommended deployment option),
+a missing directory usually means a bind mount is missing, and creating one
+would put your archive in the container's filesystem, where it vanishes the next
+time the container is recreated.
+
 `LINKS_DIR` is where favicons for links (bookmark-only entries) are stored. It's
 deliberately a separate directory from `ARCHIVE_DIR` — neither can be inside the
 other — and, like the archive, should be a bind mount so it survives the
