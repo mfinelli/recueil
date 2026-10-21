@@ -156,6 +156,51 @@ func (s *Store) NewCapture() (relDir string, err error) {
 	return "", fmt.Errorf("archive: could not mint an unused capture directory in %d attempts", newCaptureAttempts)
 }
 
+// ErrInvalidPath is returned when a path (or a name or extension that becomes part of
+// one) isn't something the Store will turn into a filesystem path: absolute, climbing
+// out of the root with "..", or naming the root itself.
+var ErrInvalidPath = errors.New("archive: invalid path")
+
+// resolve turns a root-relative path into an absolute one inside the Store's root, or
+// ErrInvalidPath if it isn't a plain relative path that stays inside it. Every method
+// that builds a filesystem path from a caller-supplied relative path goes through it,
+// so the guarantee that nothing outside the root is ever read, written or removed
+// lives here, rather than depending on each caller having validated what it passes
+// (the paths come from the database and from minted directories today, plus the one
+// extension that arrives with an upload, but this isn't the place to rely on that).
+//
+// filepath.IsLocal rejects absolute paths, ones that climb out with "..", and empty
+// ones; the prefix check afterwards is the same guarantee on the joined result, which
+// makes the containment explicit rather than inferred.
+func (s *Store) resolve(relPath string) (string, error) {
+	if !filepath.IsLocal(relPath) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidPath, relPath)
+	}
+	root := filepath.Clean(s.root)
+	abs := filepath.Join(root, relPath)
+	if !strings.HasPrefix(abs, root+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrInvalidPath, relPath)
+	}
+	return abs, nil
+}
+
+// validAssetToken reports whether tok is safe to use as part of an asset's file name
+// (its role, or its extension): non-empty lowercase letters, digits, '_' and '-', so no
+// path separators, dots or anything else that could change where the file lands.
+func validAssetToken(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for _, r := range tok {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // WriteHTML zstd-compresses data and writes it to the fixed HTML filename
 // inside relDir (a directory previously returned by NewCapture, or
 // recovered via filepath.Dir of an existing capture's html_path),
@@ -191,6 +236,10 @@ func (s *Store) WriteHTML(relDir string, data []byte) (relPath string, compresse
 // captures.thumbnail_size_bytes) rather than each caller re-deriving it
 // from len(data) and silently getting it wrong for the compressed case.
 func (s *Store) WriteAsset(relDir, name, ext string, data []byte, compress bool) (relPath string, writtenSize int64, err error) {
+	// name and ext become part of a file name, so they can't carry a separator or a dot.
+	if !validAssetToken(name) || !validAssetToken(ext) {
+		return "", 0, fmt.Errorf("%w: asset %q with extension %q", ErrInvalidPath, name, ext)
+	}
 	filename := name + "." + ext
 	if compress {
 		filename += ".zst"
@@ -217,7 +266,10 @@ func (s *Store) WriteAsset(relDir, name, ext string, data []byte, compress bool)
 // already exists (every call after the first for a given capture), and
 // because a Store pointed at a not-yet-created root should still work.
 func (s *Store) writeAtomic(relPath string, data []byte, compress bool) (writtenSize int64, err error) {
-	absPath := filepath.Join(s.root, relPath)
+	absPath, err := s.resolve(relPath)
+	if err != nil {
+		return 0, err
+	}
 	dir := filepath.Dir(absPath)
 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -284,7 +336,10 @@ func writeCompressed(w io.Writer, data []byte) error {
 // response instead of paying a decompress-then-maybe-recompress cost).
 // The caller must Close the returned ReadCloser.
 func (s *Store) OpenRaw(relPath string) (io.ReadCloser, error) {
-	absPath := filepath.Join(s.root, relPath)
+	absPath, err := s.resolve(relPath)
+	if err != nil {
+		return nil, err
+	}
 
 	f, err := os.Open(absPath)
 	if err != nil {
@@ -302,7 +357,10 @@ func (s *Store) OpenRaw(relPath string) (io.ReadCloser, error) {
 // compressed" bookkeeping to keep in sync. The caller must Close the
 // returned ReadCloser.
 func (s *Store) Open(relPath string) (io.ReadCloser, error) {
-	absPath := filepath.Join(s.root, relPath)
+	absPath, err := s.resolve(relPath)
+	if err != nil {
+		return nil, err
+	}
 
 	f, err := os.Open(absPath)
 	if err != nil {
@@ -415,7 +473,10 @@ func (s *Store) WalkEmptyDirs(fn func(relPath string, modTime time.Time) error) 
 // as captures are garbage-collected over the life of an instance (see
 // pruneEmptyParents). Climbing never goes above the Store's own root.
 func (s *Store) Remove(relPath string) error {
-	absPath := filepath.Join(s.root, relPath)
+	absPath, err := s.resolve(relPath)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(absPath); err != nil {
 		return fmt.Errorf("archive: removing %q: %w", relPath, err)
 	}
@@ -439,7 +500,10 @@ func (s *Store) Remove(relPath string) error {
 // also keeps the Store's root, which is what "relPath is relative to"
 // actually means, from having to be exposed for it.
 func (s *Store) RemoveEmptyDir(relPath string) (removed bool, err error) {
-	absPath := filepath.Join(s.root, relPath)
+	absPath, err := s.resolve(relPath)
+	if err != nil {
+		return false, err
+	}
 
 	entries, err := os.ReadDir(absPath)
 	if err != nil {
