@@ -779,209 +779,108 @@ describe("PageDetail", () => {
     expect(await screen.findByText("failed to update notes")).toBeTruthy();
   });
 
-  it("shows an empty-links message when there are no links", async () => {
-    render42();
-    await screen.findByRole("heading", { name: "An example article" });
-
-    expect(screen.getByText("No related pages yet.")).toBeTruthy();
-  });
-
-  it("shows a linked page's title and normalized_url as a list row", async () => {
-    const discussion: RelatedPage = {
-      id: 7,
-      title: "Show HN: I built a self-hosted bookmarker",
-      normalized_url: "example.com/show-hn",
-      favicon_path: null,
-    };
-    render42({ page: { ...basePage, related_pages: [discussion] } });
-    await screen.findByRole("heading", { name: "An example article" });
-
-    expect(
-      screen.getByText("Show HN: I built a self-hosted bookmarker"),
-    ).toBeTruthy();
-    expect(screen.getByText("example.com/show-hn")).toBeTruthy();
-    expect(
-      screen.getByRole("link", {
-        name: "Show HN: I built a self-hosted bookmarker example.com/show-hn",
-      }),
-    ).toHaveProperty("href", expect.stringContaining("/pages/7"));
-  });
-
-  it("hides the remove buttons and search input until Edit related pages is clicked", async () => {
-    const linked: RelatedPage = {
+  describe("related pages", () => {
+    const related: RelatedPage = {
       id: 7,
       title: "Linked page",
-      normalized_url: "example.com/linked",
+      normalized_url: "example.com/discussion",
       favicon_path: null,
     };
-    render42({ page: { ...basePage, related_pages: [linked] } });
-    await screen.findByRole("heading", { name: "An example article" });
 
-    expect(
-      screen.queryByRole("button", { name: "Remove relation to Linked page" }),
-    ).toBeNull();
-    expect(screen.queryByPlaceholderText("Search by title or URL…")).toBeNull();
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Edit related pages" }),
-    );
-    expect(
-      screen.getByRole("button", { name: "Remove relation to Linked page" }),
-    ).toBeTruthy();
-    expect(screen.getByPlaceholderText("Search by title or URL…")).toBeTruthy();
-  });
-
-  it("searches for candidates after a debounce, excludes already-related pages, and adds one on click", async () => {
-    vi.useFakeTimers();
-    const alreadyLinked: RelatedPage = {
-      id: 5,
-      title: "Already linked",
-      normalized_url: "example.com/already-linked",
-      favicon_path: null,
-    };
-    const candidate: RelatedPage = {
-      id: 9,
-      title: "A Philosophy of Software Design",
-      normalized_url: "example.com/philosophy",
-      favicon_path: null,
-    };
-    render42({ page: { ...basePage, related_pages: [alreadyLinked] } });
-    await vi.waitFor(() =>
+    // The list's own behavior (the pencil, the debounced search, ordering, the stale
+    // response guard, both kinds of failure) is tested once, in RelatedItems.test.ts;
+    // these check only that this screen wires it to its own field, routes and labels.
+    it("shows the page's related pages under their own heading, with an empty message when there are none", async () => {
+      render42();
+      await screen.findByRole("heading", { name: "An example article" });
       expect(
-        screen.getByRole("heading", { name: "An example article" }),
-      ).toBeTruthy(),
-    );
-
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Edit related pages" }),
-    );
-
-    apiJSONMock.mockResolvedValueOnce({
-      pages: [alreadyLinked, candidate],
-    });
-    await fireEvent.input(
-      screen.getByPlaceholderText("Search by title or URL…"),
-      { target: { value: "philosophy" } },
-    );
-    // Not yet -- still within the 300ms debounce window.
-    expect(apiJSONMock).not.toHaveBeenCalledWith(
-      expect.stringContaining("relation-candidates"),
-    );
-
-    await vi.advanceTimersByTimeAsync(300);
-
-    expect(apiJSONMock).toHaveBeenLastCalledWith(
-      "/pages/relation-candidates?q=philosophy&exclude=42",
-    );
-    // alreadyLinked came back in the search results too (a realistic
-    // response, since the backend doesn't filter it out server-side --
-    // see SearchPagesForLinking's own comment), but only the genuinely
-    // new candidate should render *in the results dropdown* -- "Already
-    // linked" legitimately still appears elsewhere on the page, in its
-    // own linked-pages list, so the check is scoped to the dropdown.
-    const dropdown = document.querySelector(".link-results") as HTMLElement;
-    expect(within(dropdown).queryByText("Already linked")).toBeNull();
-    const resultButton = await screen.findByRole("button", {
-      name: "A Philosophy of Software Design example.com/philosophy",
+        screen.getByRole("heading", { name: "Related pages" }),
+      ).toBeTruthy();
+      expect(screen.getByText("No related pages yet.")).toBeTruthy();
     });
 
-    apiJSONMock.mockResolvedValueOnce(candidate);
-    await fireEvent.click(resultButton);
-
-    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-pages", {
-      method: "POST",
-      body: { page_id: 9 },
-    });
-    expect(
-      await screen.findByText("A Philosophy of Software Design"),
-    ).toBeTruthy();
-    // The search box clears itself after a successful add.
-    expect(
-      screen.getByPlaceholderText("Search by title or URL…"),
-    ).toHaveProperty("value", "");
-  });
-
-  it("removes a link", async () => {
-    const linked: RelatedPage = {
-      id: 7,
-      title: "Linked page",
-      normalized_url: "example.com/linked",
-      favicon_path: null,
-    };
-    render42({ page: { ...basePage, related_pages: [linked] } });
-    await screen.findByRole("heading", { name: "An example article" });
-
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Edit related pages" }),
-    );
-    apiJSONMock.mockResolvedValueOnce(undefined);
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Remove relation to Linked page" }),
-    );
-
-    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-pages/7", {
-      method: "DELETE",
-    });
-    expect(await screen.findByText("No related pages yet.")).toBeTruthy();
-  });
-
-  it("shows the API's own error message when adding a link fails", async () => {
-    vi.useFakeTimers();
-    const candidate: RelatedPage = {
-      id: 9,
-      title: "A candidate page",
-      normalized_url: "example.com/candidate",
-      favicon_path: null,
-    };
-    render42();
-    await vi.waitFor(() =>
+    it("lists the page's related_pages as rows that open those pages", async () => {
+      render42({ page: { ...basePage, related_pages: [related] } });
+      await screen.findByRole("heading", { name: "An example article" });
       expect(
-        screen.getByRole("heading", { name: "An example article" }),
-      ).toBeTruthy(),
-    );
-
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Edit related pages" }),
-    );
-    apiJSONMock.mockResolvedValueOnce({ pages: [candidate] });
-    await fireEvent.input(
-      screen.getByPlaceholderText("Search by title or URL…"),
-      { target: { value: "candidate" } },
-    );
-    await vi.advanceTimersByTimeAsync(300);
-    const resultButton = await screen.findByRole("button", {
-      name: "A candidate page example.com/candidate",
+        screen.getByRole("link", { name: /Linked page/ }).getAttribute("href"),
+      ).toBe("#/pages/7");
     });
 
-    apiJSONMock.mockRejectedValueOnce(
-      new ApiError(500, "failed to relate page"),
-    );
-    await fireEvent.click(resultButton);
+    it("removes a relation through this page's own route", async () => {
+      render42({ page: { ...basePage, related_pages: [related] } });
+      await screen.findByRole("heading", { name: "An example article" });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Edit related pages" }),
+      );
 
-    expect(await screen.findByText("failed to relate page")).toBeTruthy();
-  });
+      apiJSONMock.mockResolvedValueOnce(undefined);
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Remove relation to Linked page" }),
+      );
 
-  it("shows the API's own error message when removing a link fails", async () => {
-    const linked: RelatedPage = {
-      id: 7,
-      title: "Linked page",
-      normalized_url: "example.com/linked",
-      favicon_path: null,
-    };
-    render42({ page: { ...basePage, related_pages: [linked] } });
-    await screen.findByRole("heading", { name: "An example article" });
+      expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-pages/7", {
+        method: "DELETE",
+      });
+      expect(await screen.findByText("No related pages yet.")).toBeTruthy();
+    });
 
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Edit related pages" }),
-    );
-    apiJSONMock.mockRejectedValueOnce(
-      new ApiError(500, "failed to remove relation"),
-    );
-    await fireEvent.click(
-      screen.getByRole("button", { name: "Remove relation to Linked page" }),
-    );
+    it("searches the page picker excluding this page, and relates the choice through this page's route", async () => {
+      vi.useFakeTimers();
+      const candidate: RelatedPage = {
+        id: 9,
+        title: "A candidate page",
+        normalized_url: "example.com/candidate",
+        favicon_path: null,
+      };
+      render42();
+      await vi.waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "An example article" }),
+        ).toBeTruthy(),
+      );
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Edit related pages" }),
+      );
 
-    expect(await screen.findByText("failed to remove relation")).toBeTruthy();
+      apiJSONMock.mockResolvedValueOnce({ pages: [candidate] });
+      await fireEvent.input(
+        screen.getByPlaceholderText("Search by title or URL…"),
+        { target: { value: "cand" } },
+      );
+      await vi.advanceTimersByTimeAsync(300);
+      expect(apiJSONMock).toHaveBeenLastCalledWith(
+        "/pages/relation-candidates?q=cand&exclude=42",
+      );
+
+      apiJSONMock.mockResolvedValueOnce(candidate);
+      await fireEvent.click(
+        await screen.findByRole("button", {
+          name: "A candidate page example.com/candidate",
+        }),
+      );
+      expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-pages", {
+        method: "POST",
+        body: { page_id: 9 },
+      });
+    });
+
+    it("shows a failure in the screen's own error banner", async () => {
+      render42({ page: { ...basePage, related_pages: [related] } });
+      await screen.findByRole("heading", { name: "An example article" });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Edit related pages" }),
+      );
+      apiJSONMock.mockRejectedValueOnce(new ApiError(500, "boom"));
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Remove relation to Linked page" }),
+      );
+      expect(await screen.findByText("boom")).toBeTruthy();
+    });
   });
 
   it("queues a recapture, showing a transient confirmation", async () => {

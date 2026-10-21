@@ -59,14 +59,19 @@ export interface Link {
   updated_at: string;
 }
 
-// A link in another link's list of related links, and in the candidate search:
-// just enough for a row. The link counterpart of RelatedPage.
-export interface RelatedLink {
+// An item (a page or a link) in another item's list of related items, and in the
+// relation-candidates search: just enough for a row. The same shape for either kind
+// (see internal/httpapi's relatedPageResponse and relatedLinkResponse), so one type
+// covers both.
+export interface RelatedItem {
   id: number;
   title: string | null;
   normalized_url: string;
   favicon_path: string | null;
 }
+
+export type RelatedPage = RelatedItem;
+export type RelatedLink = RelatedItem;
 
 // GET /api/links/{id}: the link plus its tags (no source, unlike a page's: every
 // link tag is a manual one) and collections, flattened into one object like
@@ -150,16 +155,6 @@ export interface PageCollection {
   id: number;
   name: string;
   parent_id: number | null;
-}
-
-// A lightweight page reference -- both a related page on PageDetail and a
-// relation-candidates search result are shaped identically (see
-// internal/httpapi's relatedPageResponse), so one type covers both.
-export interface RelatedPage {
-  id: number;
-  title: string | null;
-  normalized_url: string;
-  favicon_path: string | null;
 }
 
 // PageDetail extends Page: internal/httpapi's pageDetailResponse embeds its

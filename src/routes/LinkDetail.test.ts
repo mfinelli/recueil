@@ -689,7 +689,10 @@ describe("LinkDetail", () => {
       vi.useRealTimers();
     });
 
-    it("says so when there are none", async () => {
+    // The list's behavior (the pencil, the debounced search, ordering, the stale
+    // response guard, both kinds of failure) is tested once, in RelatedItems.test.ts;
+    // these check only that this screen wires it to its own field, routes and labels.
+    it("shows the link's related links under their own heading, with an empty message when there are none", async () => {
       render42();
       expect(await screen.findByText("No related links yet.")).toBeTruthy();
       expect(
@@ -697,56 +700,17 @@ describe("LinkDetail", () => {
       ).toBeTruthy();
     });
 
-    it("lists related links as rows that open their own screens, each with its URL", async () => {
-      render42({ link: { ...baseLink, related_links: [related] } });
-      await screen.findByRole("heading", { name: "An example video" });
-
-      const row = screen.getByRole("link", { name: /A related repo/ });
-      expect(row.getAttribute("href")).toBe("#/links/7");
-      expect(screen.getByText("github.com/example/repo")).toBeTruthy();
-      expect(screen.queryByText("No related links yet.")).toBeNull();
-    });
-
-    it("shows a title-less related link by its URL", async () => {
-      render42({
-        link: { ...baseLink, related_links: [{ ...related, title: null }] },
-      });
-      await screen.findByRole("heading", { name: "An example video" });
-      expect(
-        screen.getAllByText("github.com/example/repo").length,
-      ).toBeGreaterThan(0);
-    });
-
-    it("keeps the remove buttons and the search box behind the pencil", async () => {
+    it("lists the link's related_links as rows that open those links", async () => {
       render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
       expect(
-        screen.queryByRole("button", {
-          name: "Remove relation to A related repo",
-        }),
-      ).toBeNull();
-      expect(
-        screen.queryByPlaceholderText("Search by title or URL…"),
-      ).toBeNull();
-
-      await fireEvent.click(
-        screen.getByRole("button", { name: "Edit related links" }),
-      );
-
-      expect(
-        screen.getByRole("button", {
-          name: "Remove relation to A related repo",
-        }),
-      ).toBeTruthy();
-      expect(
-        screen.getByPlaceholderText("Search by title or URL…"),
-      ).toBeTruthy();
-      expect(
-        screen.getByRole("button", { name: "Done editing related links" }),
-      ).toBeTruthy();
+        screen
+          .getByRole("link", { name: /A related repo/ })
+          .getAttribute("href"),
+      ).toBe("#/links/7");
     });
 
-    it("removes a relation through its own route", async () => {
+    it("removes a relation through this link's own route", async () => {
       render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
       await fireEvent.click(
@@ -766,142 +730,7 @@ describe("LinkDetail", () => {
       expect(await screen.findByText("No related links yet.")).toBeTruthy();
     });
 
-    it("searches after a debounce, leaves out links already related, and relates one on click", async () => {
-      vi.useFakeTimers();
-      const candidate: RelatedLink = {
-        id: 9,
-        title: "A candidate link",
-        normalized_url: "example.com/candidate",
-        favicon_path: null,
-      };
-      render42({ link: { ...baseLink, related_links: [related] } });
-      await vi.waitFor(() =>
-        expect(
-          screen.getByRole("heading", { name: "An example video" }),
-        ).toBeTruthy(),
-      );
-      await fireEvent.click(
-        screen.getByRole("button", { name: "Edit related links" }),
-      );
-
-      apiJSONMock.mockResolvedValueOnce({ links: [related, candidate] });
-      await fireEvent.input(
-        screen.getByPlaceholderText("Search by title or URL…"),
-        { target: { value: "cand" } },
-      );
-      // Still inside the 300ms debounce window.
-      expect(apiJSONMock).not.toHaveBeenCalledWith(
-        expect.stringContaining("relation-candidates"),
-      );
-
-      await vi.advanceTimersByTimeAsync(300);
-
-      expect(apiJSONMock).toHaveBeenLastCalledWith(
-        "/links/relation-candidates?q=cand&exclude=42",
-      );
-      // The already-related link came back too (the server doesn't filter it out),
-      // but only the new candidate belongs in the dropdown.
-      const dropdown = document.querySelector(
-        ".related-results",
-      ) as HTMLElement;
-      expect(within(dropdown).queryByText("A related repo")).toBeNull();
-      const result = await screen.findByRole("button", {
-        name: "A candidate link example.com/candidate",
-      });
-
-      apiJSONMock.mockResolvedValueOnce(candidate);
-      await fireEvent.click(result);
-
-      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/related-links", {
-        method: "POST",
-        body: { link_id: 9 },
-      });
-      // Added to the list, and the search box is cleared.
-      await vi.waitFor(() =>
-        expect(
-          (
-            screen.getByPlaceholderText(
-              "Search by title or URL…",
-            ) as HTMLInputElement
-          ).value,
-        ).toBe(""),
-      );
-      expect(
-        screen.getByRole("link", { name: /A candidate link/ }),
-      ).toBeTruthy();
-    });
-
-    it("keeps related links in title order as one is added", async () => {
-      vi.useFakeTimers();
-      const first: RelatedLink = { ...related, id: 3, title: "Zed" };
-      const added: RelatedLink = { ...related, id: 9, title: "Abe" };
-      render42({ link: { ...baseLink, related_links: [first] } });
-      await vi.waitFor(() =>
-        expect(
-          screen.getByRole("heading", { name: "An example video" }),
-        ).toBeTruthy(),
-      );
-      await fireEvent.click(
-        screen.getByRole("button", { name: "Edit related links" }),
-      );
-      apiJSONMock.mockResolvedValueOnce({ links: [added] });
-      await fireEvent.input(
-        screen.getByPlaceholderText("Search by title or URL…"),
-        { target: { value: "abe" } },
-      );
-      await vi.advanceTimersByTimeAsync(300);
-      apiJSONMock.mockResolvedValueOnce(added);
-      await fireEvent.click(await screen.findByRole("button", { name: /Abe/ }));
-
-      await vi.waitFor(() => {
-        const titles = Array.from(
-          document.querySelectorAll(".related-title"),
-        ).map((el) => el.textContent);
-        expect(titles).toEqual(["Abe", "Zed"]);
-      });
-    });
-
-    it("says when nothing matches", async () => {
-      vi.useFakeTimers();
-      render42();
-      await vi.waitFor(() =>
-        expect(
-          screen.getByRole("heading", { name: "An example video" }),
-        ).toBeTruthy(),
-      );
-      await fireEvent.click(
-        screen.getByRole("button", { name: "Edit related links" }),
-      );
-      apiJSONMock.mockResolvedValueOnce({ links: [] });
-      await fireEvent.input(
-        screen.getByPlaceholderText("Search by title or URL…"),
-        { target: { value: "zzz" } },
-      );
-      await vi.advanceTimersByTimeAsync(300);
-      expect(await screen.findByText("No matching links.")).toBeTruthy();
-    });
-
-    it("does not search for a blank query", async () => {
-      vi.useFakeTimers();
-      render42();
-      await vi.waitFor(() =>
-        expect(
-          screen.getByRole("heading", { name: "An example video" }),
-        ).toBeTruthy(),
-      );
-      await fireEvent.click(
-        screen.getByRole("button", { name: "Edit related links" }),
-      );
-      const before = apiJSONMock.mock.calls.length;
-      await fireEvent.input(
-        screen.getByPlaceholderText("Search by title or URL…"),
-        { target: { value: "   " } },
-      );
-      await vi.advanceTimersByTimeAsync(300);
-      expect(apiJSONMock.mock.calls.length).toBe(before);
-    });
-
-    it("shows the server's message when relating fails, and a generic one otherwise", async () => {
+    it("searches the link picker excluding this link, and relates the choice through this link's route", async () => {
       vi.useFakeTimers();
       const candidate: RelatedLink = {
         id: 9,
@@ -918,40 +747,42 @@ describe("LinkDetail", () => {
       await fireEvent.click(
         screen.getByRole("button", { name: "Edit related links" }),
       );
+
       apiJSONMock.mockResolvedValueOnce({ links: [candidate] });
       await fireEvent.input(
         screen.getByPlaceholderText("Search by title or URL…"),
         { target: { value: "cand" } },
       );
       await vi.advanceTimersByTimeAsync(300);
-      const result = await screen.findByRole("button", {
-        name: "A candidate link example.com/candidate",
+      expect(apiJSONMock).toHaveBeenLastCalledWith(
+        "/links/relation-candidates?q=cand&exclude=42",
+      );
+
+      apiJSONMock.mockResolvedValueOnce(candidate);
+      await fireEvent.click(
+        await screen.findByRole("button", {
+          name: "A candidate link example.com/candidate",
+        }),
+      );
+      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/related-links", {
+        method: "POST",
+        body: { link_id: 9 },
       });
-
-      apiJSONMock.mockRejectedValueOnce(new ApiError(404, "link not found"));
-      await fireEvent.click(result);
-      expect(await screen.findByText("link not found")).toBeTruthy();
-
-      apiJSONMock.mockRejectedValueOnce(new Error("network down"));
-      await fireEvent.click(result);
-      expect(await screen.findByText("failed to relate link")).toBeTruthy();
     });
 
-    it("shows the error when removing fails", async () => {
+    it("shows a failure in the screen's own error banner", async () => {
       render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
       await fireEvent.click(
         screen.getByRole("button", { name: "Edit related links" }),
       );
-      apiJSONMock.mockRejectedValueOnce(new Error("network down"));
+      apiJSONMock.mockRejectedValueOnce(new ApiError(500, "boom"));
       await fireEvent.click(
         screen.getByRole("button", {
           name: "Remove relation to A related repo",
         }),
       );
-      expect(await screen.findByText("failed to remove relation")).toBeTruthy();
-      // The row is still there: nothing was removed.
-      expect(screen.getByRole("link", { name: /A related repo/ })).toBeTruthy();
+      expect(await screen.findByText("boom")).toBeTruthy();
     });
   });
 

@@ -70,12 +70,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Upload from "@lucide/svelte/icons/upload";
   import Favicon from "../components/Favicon.svelte";
+  import RelatedItems from "../components/RelatedItems.svelte";
   import type {
     PageDetail,
     TagCreated,
     Collection,
     CollectionListResponse,
-    RelatedPage,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -113,14 +113,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   // buttons and add forms.
   let editingTags = $state(false);
   let editingCollections = $state(false);
-  let editingLinks = $state(false);
-  let linkSearchQuery = $state("");
-  let linkSearchResults = $state<RelatedPage[]>([]);
-  let addingLink = $state(false);
-  // Plain variable, not $state -- it's a setTimeout handle consumed only
-  // by clearTimeout/reassignment within handleLinkSearchInput itself,
-  // never read reactively, same as Library.svelte's searchDebounce.
-  let linkSearchDebounce: ReturnType<typeof setTimeout> | undefined;
+
+  // Related pages' own state (the pencil, the search) lives in RelatedItems; these
+  // are its labels, so the strings stay with the rest of this screen's messages.
+  const relatedLabels = $derived({
+    heading: m.pagedetail_related_heading(),
+    empty: m.pagedetail_related_empty(),
+    edit: m.pagedetail_edit_related(),
+    done: m.pagedetail_done_editing_related(),
+    searchPlaceholder: m.pagedetail_related_search_placeholder(),
+    noResults: m.pagedetail_related_no_results(),
+    remove: (name: string) => m.pagedetail_remove_related_aria({ name }),
+    relateError: m.pagedetail_related_error(),
+    removeError: m.pagedetail_remove_related_error(),
+  });
 
   $effect(() => {
     const id = params.id;
@@ -131,9 +137,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     editingTags = false;
     editingCollections = false;
     editingNotes = false;
-    editingLinks = false;
-    linkSearchQuery = "";
-    linkSearchResults = [];
 
     Promise.allSettled([
       apiJSON<PageDetail>(`/pages/${id}`),
@@ -206,106 +209,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     } catch (err) {
       actionError =
         err instanceof ApiError ? err.message : m.pagedetail_remove_tag_error();
-    }
-  }
-
-  // A related page that never had a favicon captured passes no src, so the request
-  // is skipped entirely (see Favicon.svelte).
-  function linkedFaviconSrc(linked: RelatedPage): string | null {
-    return linked.favicon_path !== null
-      ? `/api/pages/${linked.id}/favicon`
-      : null;
-  }
-
-  // page.related_pages already loaded with the page, so this only needs to
-  // exclude those from the *search* results client-side -- same
-  // approach as availableCollections above, and the same reasoning
-  // SearchPageRelationCandidates's backend comment gives for not also
-  // doing this filtering server-side.
-  function availableLinkResults(p: PageDetail): RelatedPage[] {
-    const linkedIds = new Set(p.related_pages.map((l) => l.id));
-    return linkSearchResults.filter((r) => !linkedIds.has(r.id));
-  }
-
-  // Paired with `bind:value={linkSearchQuery}` on the input rather than
-  // Library's uncontrolled-input pattern -- a successful addLink()
-  // below needs to clear the visible search text programmatically, which
-  // a controlled input makes trivial and an uncontrolled one wouldn't.
-  function handleLinkSearchInput() {
-    clearTimeout(linkSearchDebounce);
-    const value = linkSearchQuery;
-    if (!value.trim()) {
-      linkSearchResults = [];
-      return;
-    }
-    linkSearchDebounce = setTimeout(async () => {
-      if (!page) return;
-      const params = new URLSearchParams({
-        q: value,
-        exclude: String(page.id),
-      });
-      try {
-        const res = await apiJSON<{ pages: RelatedPage[] }>(
-          `/pages/relation-candidates?${params.toString()}`,
-        );
-        // Guards against a slower, now-stale request's response landing
-        // after a faster, more recent one and overwriting it -- the
-        // query the person is currently looking at is the source of
-        // truth for whether this response is still relevant.
-        if (linkSearchQuery === value) {
-          linkSearchResults = res.pages;
-        }
-      } catch {
-        // Best-effort, same reasoning as allCollections' load above:
-        // a failed search just leaves the dropdown with fewer/no
-        // results rather than surfacing its own error banner.
-        linkSearchResults = [];
-      }
-    }, 300);
-  }
-
-  async function addLink(target: RelatedPage) {
-    if (!page) return;
-    addingLink = true;
-    actionError = null;
-    try {
-      const linked = await apiJSON<RelatedPage>(
-        `/pages/${page.id}/related-pages`,
-        {
-          method: "POST",
-          body: { page_id: target.id },
-        },
-      );
-      page.related_pages = [...page.related_pages, linked].sort((a, b) =>
-        (a.title ?? a.normalized_url).localeCompare(
-          b.title ?? b.normalized_url,
-        ),
-      );
-      linkSearchQuery = "";
-      linkSearchResults = [];
-    } catch (err) {
-      actionError =
-        err instanceof ApiError ? err.message : m.pagedetail_related_error();
-    } finally {
-      addingLink = false;
-    }
-  }
-
-  async function removeLink(relatedPageId: number) {
-    if (!page) return;
-    actionError = null;
-    try {
-      await apiJSON(`/pages/${page.id}/related-pages/${relatedPageId}`, {
-        method: "DELETE",
-      });
-      page.related_pages = page.related_pages.filter(
-        (l) => l.id !== relatedPageId,
-      );
-    } catch (err) {
-      actionError =
-        err instanceof ApiError
-          ? err.message
-          : m.pagedetail_remove_related_error();
     }
   }
 
@@ -818,90 +721,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {/if}
     </section>
 
-    <section>
-      <div class="block-header">
-        <h2>{m.pagedetail_related_heading()}</h2>
-        <button
-          type="button"
-          class="edit-toggle"
-          class:active={editingLinks}
-          aria-label={editingLinks
-            ? m.pagedetail_done_editing_related()
-            : m.pagedetail_edit_related()}
-          onclick={() => (editingLinks = !editingLinks)}
-        >
-          {#if editingLinks}
-            <Check size={13} />
-          {:else}
-            <Pencil size={13} />
-          {/if}
-        </button>
-      </div>
-      {#if page.related_pages.length > 0}
-        <ul class="linked-list">
-          {#each page.related_pages as linked (linked.id)}
-            <li>
-              <a href={`/pages/${linked.id}`} use:link class="linked-row">
-                <span class="linked-favicon-cell">
-                  <Favicon src={linkedFaviconSrc(linked)} size={16} />
-                </span>
-                <span class="linked-title"
-                  >{linked.title ?? linked.normalized_url}</span
-                >
-                <span class="linked-url">{linked.normalized_url}</span>
-              </a>
-              {#if editingLinks}
-                <button
-                  type="button"
-                  class="remove"
-                  aria-label={m.pagedetail_remove_related_aria({
-                    name: linked.title ?? linked.normalized_url,
-                  })}
-                  onclick={() => removeLink(linked.id)}
-                >
-                  <X size={11} />
-                </button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="empty-note">{m.pagedetail_related_empty()}</p>
-      {/if}
-      {#if editingLinks}
-        <div class="link-search-wrap">
-          <input
-            type="text"
-            placeholder={m.pagedetail_related_search_placeholder()}
-            bind:value={linkSearchQuery}
-            oninput={handleLinkSearchInput}
-            disabled={addingLink}
-          />
-          {#if availableLinkResults(page).length > 0}
-            <ul class="link-results">
-              {#each availableLinkResults(page) as candidate (candidate.id)}
-                <li>
-                  <button
-                    type="button"
-                    onclick={() => addLink(candidate)}
-                    disabled={addingLink}
-                  >
-                    <span class="result-title"
-                      >{candidate.title ?? candidate.normalized_url}</span
-                    >
-                    <span class="result-url">{candidate.normalized_url}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {:else if linkSearchQuery.trim()}
-            <ul class="link-results">
-              <li class="no-results">{m.pagedetail_related_no_results()}</li>
-            </ul>
-          {/if}
-        </div>
-      {/if}
-    </section>
+    <RelatedItems
+      items={page.related_pages}
+      kind="page"
+      ownerPath={`/pages/${page.id}`}
+      excludeId={page.id}
+      labels={relatedLabels}
+      onchange={(next) => {
+        if (page) page.related_pages = next;
+      }}
+      onerror={(message) => (actionError = message)}
+    />
 
     <h2>{m.pagedetail_captures_heading()}</h2>
     <ul class="captures">
@@ -1091,147 +921,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     margin: 0.4rem 0 0;
     color: var(--ink-muted);
     font-size: 0.75rem;
-  }
-
-  // A lightweight version of Library's list-view row (favicon, with the
-  // title and url on two lines).
-  .linked-list {
-    list-style: none;
-    margin: 0 0 0.65rem;
-    padding: 0;
-    border-top: 1px dotted var(--rule);
-  }
-
-  .linked-list li {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    border-bottom: 1px dotted var(--rule);
-  }
-
-  .linked-row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: center;
-    gap: 0.05rem 0.6rem;
-    flex: 1;
-    min-width: 0;
-    padding: 0.45rem 0.25rem;
-    text-decoration: none;
-    color: inherit;
-
-    &:hover {
-      background: var(--paper-raised);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-      outline-offset: -2px;
-    }
-  }
-
-  .linked-favicon-cell {
-    display: flex;
-    grid-column: 1;
-    grid-row: 1 / 3;
-  }
-
-  .linked-title {
-    grid-column: 2;
-    font-size: 0.85rem;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .linked-url {
-    grid-column: 2;
-    @include type.data-mono;
-    color: var(--ink-muted);
-    font-size: 0.75rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .linked-list .remove {
-    flex: none;
-    margin-right: 0.4rem;
-  }
-
-  .link-search-wrap {
-    position: relative;
-    max-width: 26rem;
-
-    input[type="text"] {
-      @include comp.text-input;
-      display: block;
-      width: 100%;
-      padding: 0.45rem 0.65rem;
-      border-radius: 4px;
-      font-size: 0.875rem;
-    }
-  }
-
-  .link-results {
-    list-style: none;
-    margin: 0.3rem 0 0;
-    padding: 0;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper-raised);
-    overflow: hidden;
-
-    li + li {
-      border-top: 1px dotted var(--rule);
-    }
-
-    .no-results {
-      padding: 0.6rem 0.7rem;
-      color: var(--ink-muted);
-      font-size: 0.8rem;
-      font-style: italic;
-    }
-
-    button {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 0.1rem;
-      width: 100%;
-      text-align: left;
-      border: none;
-      border-radius: 0;
-      background: transparent;
-      padding: 0.5rem 0.7rem;
-      cursor: pointer;
-
-      &:hover:not(:disabled) {
-        background: var(--paper);
-      }
-
-      &:disabled {
-        opacity: 0.5;
-        cursor: default;
-      }
-
-      &:focus-visible {
-        @include mix.focus-ring;
-        outline-offset: -2px;
-      }
-    }
-
-    .result-title {
-      font-size: 0.85rem;
-      color: var(--ink);
-    }
-
-    .result-url {
-      @include type.data-mono;
-      font-size: 0.7rem;
-      color: var(--ink-muted);
-    }
   }
 
   .source-row {

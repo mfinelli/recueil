@@ -256,6 +256,21 @@ the Links page filtered by it, and that page says so with a "Filtered by tag"
 row tucked up under the toolbar: the filter's name in a pill with a brass-tinted
 border (the same tint as an AI tag's) and a small clear button.
 
+### A typeahead relation list (`RelatedItems.svelte`)
+
+"Related pages" and "Related links" are one component, driven entirely by props
+rather than by branching: `kind` says what the list holds (`page` or `link`),
+which fixes the row's destination, the favicon route, the picker
+(`/{kind}s/relation-candidates`) and the request body (`{ {kind}_id }`), and
+`ownerPath` says what it belongs to (`/pages/42`), which fixes where adding and
+removing go. `excludeId` is the owner's own id when the list holds the owner's
+own kind, so an item isn't offered to itself, and is left out for a list of the
+other kind. The compact list is rows of favicon, title and URL with a dotted
+rule between; the pencil reveals the remove buttons and a search box whose
+dropdown shows a handful of matches. The list lives in the parent, so changes go
+back through `onchange` and failures through `onerror`, landing in the screen's
+own error banner like every other action on it.
+
 ### A status box with one action (`WaybackBlock.svelte`)
 
 The "Internet Archive" block on both detail screens is a `--paper-raised` box
