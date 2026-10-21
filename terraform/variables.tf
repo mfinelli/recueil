@@ -91,6 +91,17 @@ variable "enable_browser_integrity_check_bypass" {
   default     = true
 }
 
+variable "enable_links" {
+  description = <<-EOT
+    Whether the links feature (bookmark-only entries) is enabled. This has to
+    match the backend's `enable_links` setting: the browser extension only
+    talks to the Worker, so this is how it learns whether to offer saving a
+    page as a link. Defaults to true.
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "enable_pwa" {
   description = <<-EOT
     Whether to deploy the share-sheet PWA's static assets alongside the Worker.

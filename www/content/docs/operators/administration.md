@@ -26,14 +26,16 @@ Runs continuously until stopped, on two independent schedules rather than one:
 
 - **Worker-facing** (`agent_worker_poll_interval_seconds`, 30 minutes by
   default): pulling completed captures in from R2/D1 into Postgres and local
-  disk, pushing the D1 bookmark-list mirror sync, and — every 12 hours,
-  piggybacked on this same cycle rather than its own — sweeping D1's terminal
-  rows older than 72 hours.
+  disk, pulling saved links in, pushing the D1 bookmark-list mirror sync for
+  pages and links, and — every 12 hours, piggybacked on this same cycle rather
+  than its own — sweeping D1's terminal rows older than 72 hours.
 - **Local-only** (`agent_local_poll_interval_seconds`, 5 minutes by default):
-  the screenshot job, the readability job, and AI enrichment (if configured) —
-  nothing here touches the Cloudflare Worker, so there's no free-tier budget to
-  be careful with, and this schedule can run more often than the Worker-facing
-  one.
+  the screenshot job, the readability job, AI enrichment (if configured), and
+  recording how pending
+  [Wayback Machine submissions](@/docs/operators/deploying-recueil.md#wayback-machine-submission-optional)
+  went (if configured) — nothing here touches the Cloudflare Worker, so there's
+  no free-tier budget to be careful with, and this schedule can run more often
+  than the Worker-facing one.
 
 Both run once immediately on startup rather than waiting for the first tick, so
 a freshly-deployed agent doesn't sit idle. Unlike `server`, `agent` never runs
@@ -45,14 +47,20 @@ doesn't crash the process; it's logged and tried again next tick.
 ## gc
 
 ```
-recueil gc [--dry-run] [--force]
+recueil gc [--dry-run] [--force] [--skip-captures] [--skip-links]
 ```
 
-Reclaims disk space left behind by deleted pages and captures. Deleting a page
-or capture is a pure database operation — the on-disk HTML/thumbnail/favicon
+Reclaims disk space left behind by deleted pages, captures and links. Deleting
+one of them is a pure database operation — the on-disk HTML/thumbnail/favicon
 files are left in place rather than deleted inline — so `gc` is the sweep that
 actually removes them, along with any capture directory left empty by an
 ingestion that failed partway through.
+
+It makes two passes in a single run: the captures archive (`archive_dir`), then
+the link favicon store (`links_dir`). Each pass has its own safety checks and
+its own report, and if one stops, the command stops before the next begins.
+`--skip-captures` and `--skip-links` run only the other pass; the link pass is
+skipped on its own when links are turned off.
 
 Two safety behaviors worth knowing about:
 
@@ -63,7 +71,7 @@ Two safety behaviors worth knowing about:
   without deleting anything and just reports what it found — that's far more
   likely to mean something's wrong with the sweep itself than that the archive
   is genuinely half garbage. `--force` proceeds anyway, for the rare case that's
-  actually expected.
+  actually expected. `--force` applies to each pass.
 
 Safe to run repeatedly; run with `--dry-run` first if you want to see what it
 would remove without actually removing anything.

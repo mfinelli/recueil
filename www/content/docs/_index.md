@@ -14,6 +14,12 @@ down, recueil keeps a full copy of everything you save — the original page, a
 cleaned-up readable version, and (optionally) a short summary — searchable from
 one dashboard.
 
+For what can't be archived well — a video, a code repository, or an interactive
+app, etc. — recueil can also keep just a **link**. It's basically a fancier
+version of your browser's existing bookmark functionality because you can add it
+to tags or collections, or add notes to it but there's no full archived copy.
+See [Links](@/docs/readers/links.md).
+
 ## How pages get in
 
 <dl class="intake-list">
@@ -32,7 +38,8 @@ one dashboard.
 The first four feed the same queue; nothing archives immediately — see
 [Getting Started](@/docs/readers/getting-started.md) for why, and what to expect
 the first time. Manual upload is slightly different and bypasses the queue. See
-[Manual Upload](@/docs/readers/manual-upload.md) for details.
+[Manual Upload](@/docs/readers/manual-upload.md) for details. Saving a link is a
+separate, lighter action: see [Links](@/docs/readers/links.md).
 
 ## How captures get past logins and paywalls
 

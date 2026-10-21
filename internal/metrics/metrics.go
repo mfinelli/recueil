@@ -18,7 +18,7 @@
 
 // Package metrics builds the Prometheus registry served at /metrics: the
 // standard Go runtime and process collectors, plus Recueil-specific
-// gauges -- user/page/capture counts, storage bytes by kind, background
+// gauges -- user/page/capture/link counts, storage bytes by kind, background
 // job counts/ages by type and status, and recueil agent's own last-
 // success age by cycle. Everything here is Postgres-only by design: none
 // of it ever calls the Cloudflare Worker, so scrape frequency has no
@@ -44,7 +44,13 @@ import (
 // far more predictably against a time series that's continuously present
 // at 0 than one that silently appears and disappears as data comes and
 // goes.
-var jobTypes = []string{"screenshot", "readability", "ai"}
+//
+// "wayback" is Wayback Machine submissions, reported in this vocabulary: its
+// 'succeeded' is 'done' (see CountJobsByStatus). Unlike the others it has one
+// row per URL, its latest attempt, so it is a count of URLs by state, not of
+// every submission ever made. A deployment without Wayback configured simply
+// reports zeros.
+var jobTypes = []string{"screenshot", "readability", "ai", "wayback"}
 var jobStatuses = []string{"pending", "processing", "done", "failed"}
 
 // storageBytesKinds enumerates every label GetSystemStats' byte totals can
@@ -52,6 +58,11 @@ var jobStatuses = []string{"pending", "processing", "done", "failed"}
 // above -- iterated in collectStorageStats against a map built from
 // GetSystemStatsRow's fields, so the two lists have to be kept in
 // sync by hand; nothing here is generated from the struct.
+//
+// These are the kinds GetSystemStats can report. The link favicon store (links_dir,
+// a separate store) adds one more, "link_favicon", but from its own query in
+// collectLinkStats: listing it here too would emit that series twice per scrape,
+// which Prometheus rejects.
 var storageBytesKinds = []string{"html_compressed", "html_uncompressed", "favicon", "screenshot"}
 
 // collector queries the database fresh on every scrape rather than
@@ -67,6 +78,7 @@ type collector struct {
 	jobsDesc                *prometheus.Desc
 	jobOldestPendingAgeDesc *prometheus.Desc
 	pagesDesc               *prometheus.Desc
+	linksDesc               *prometheus.Desc
 	capturesDesc            *prometheus.Desc
 	storageBytesDesc        *prometheus.Desc
 	agentLastSuccessDesc    *prometheus.Desc
@@ -96,6 +108,11 @@ func newCollector(queries *db.Queries) prometheus.Collector {
 			"Current number of archived pages, system-wide.",
 			nil, nil,
 		),
+		linksDesc: prometheus.NewDesc(
+			"recueil_links_total",
+			"Current number of saved links (bookmark-only entries), system-wide.",
+			nil, nil,
+		),
 		capturesDesc: prometheus.NewDesc(
 			"recueil_captures_total",
 			"Current number of captures (a page's version history), system-wide.",
@@ -120,6 +137,7 @@ func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.jobsDesc
 	ch <- c.jobOldestPendingAgeDesc
 	ch <- c.pagesDesc
+	ch <- c.linksDesc
 	ch <- c.capturesDesc
 	ch <- c.storageBytesDesc
 	ch <- c.agentLastSuccessDesc
@@ -139,6 +157,7 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectJobCounts(ctx, ch)
 	c.collectOldestPendingAge(ctx, ch)
 	c.collectStorageStats(ctx, ch)
+	c.collectLinkStats(ctx, ch)
 	c.collectAgentLastSuccess(ctx, ch)
 }
 
@@ -219,6 +238,25 @@ func (c *collector) collectStorageStats(ctx context.Context, ch chan<- prometheu
 		ch <- prometheus.MustNewConstMetric(c.storageBytesDesc, prometheus.GaugeValue,
 			float64(bytesByKind[kind]), kind)
 	}
+}
+
+// collectLinkStats is collectStorageStats's counterpart for links: the link
+// count, and the link favicon store's bytes under the same recueil_storage_bytes
+// series (its own "link_favicon" kind, always emitted). Always present, zero when
+// the feature is off, like every other series here. Pending saved links (the
+// extension's saves not yet ingested) live only in D1, so, as for pages, they are
+// deliberately not reported: the Postgres-only rule is why.
+func (c *collector) collectLinkStats(ctx context.Context, ch chan<- prometheus.Metric) {
+	stats, err := c.queries.GetLinkStats(ctx)
+	if err != nil {
+		log.Printf("metrics: failed to compute link stats: %v", err)
+		// recueil_storage_bytes{kind="link_favicon"} is skipped too, so the
+		// series disappears rather than claiming 0 when it couldn't be read.
+		return
+	}
+	ch <- prometheus.MustNewConstMetric(c.linksDesc, prometheus.GaugeValue, float64(stats.LinkCount))
+	ch <- prometheus.MustNewConstMetric(c.storageBytesDesc, prometheus.GaugeValue,
+		float64(stats.FaviconBytes), "link_favicon")
 }
 
 // collectAgentLastSuccess emits one gauge per cycle that has ever recorded

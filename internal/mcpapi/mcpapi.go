@@ -24,7 +24,8 @@
 // router (POST /mcp, alongside /api rather than nested under it).
 //
 // No write tools exist here, and none are planned -- this phase answers
-// questions about the archive, it doesn't change it.
+// questions about the archive (and, with links on, the saved links), it doesn't
+// change it.
 package mcpapi
 
 import (
@@ -49,14 +50,10 @@ const (
 // auth.RequireAPIToken to already be in front of it (mounted by
 // internal/httpapi's router, not here) -- tool handlers read the
 // authenticated user via auth.UserFromContext exactly like every
-// internal/httpapi handler does.
-func NewHandler(q *db.Queries, version string) http.Handler {
-	server := mcp.NewServer(&mcp.Implementation{
-		Name:    "recueil",
-		Version: version,
-	}, nil)
-
-	registerTools(server, q)
+// internal/httpapi handler does. enableLinks is the links feature flag: the
+// link tools (links.go) are registered only when it's on.
+func NewHandler(q *db.Queries, version string, enableLinks bool) http.Handler {
+	server := newServer(q, version, enableLinks)
 
 	getServer := func(*http.Request) *mcp.Server { return server }
 	handler := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
@@ -71,6 +68,22 @@ func NewHandler(q *db.Queries, version string) http.Handler {
 	// clients (which send neither Sec-Fetch-Site nor Origin,
 	// being non-browser HTTP clients) are unaffected.
 	return http.NewCrossOriginProtection().Handler(handler)
+}
+
+// newServer builds the MCP server with its tools registered, split out of
+// NewHandler so the registration itself (which tools exist under which flags)
+// can be tested without an HTTP round trip.
+func newServer(q *db.Queries, version string, enableLinks bool) *mcp.Server {
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "recueil",
+		Version: version,
+	}, nil)
+
+	registerTools(server, q)
+	if enableLinks {
+		registerLinkTools(server, q)
+	}
+	return server
 }
 
 // clampLimit applies this package's uniform default/cap to every

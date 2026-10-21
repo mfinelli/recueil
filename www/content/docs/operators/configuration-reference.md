@@ -31,6 +31,7 @@ for any of them:
 | `cloudflare_d1_database_id` | A Terraform output.                                                                                                 |
 | `cloudflare_api_token`      | The same Cloudflare API token used for the Terraform provider config.                                               |
 | `archive_dir`               | Root directory captures are stored under.                                                                           |
+| `links_dir`                 | Root directory link favicons are stored under. Required while `enable_links` is on; must not overlap `archive_dir`. |
 | `r2_account_id`             | Same value as `cloudflare_account_id`.                                                                              |
 | `r2_bucket_name`            | A Terraform output.                                                                                                 |
 | `r2_access_key_id`          | The manually-provisioned [R2 API credential](@/docs/operators/deploying-recueil.md#r2-api-credentials).             |
@@ -43,6 +44,7 @@ for any of them:
 | `listen_addr`                     | `:8080`           | Address the HTTP server binds to.                                                                                                                                                                                                                                                                                                                            |
 | `session_cookie_secure`           | `true`            | Sets the `Secure` flag on session cookies. Only turn this off for a plain-HTTP setup with no TLS at all, which isn't recommended.                                                                                                                                                                                                                            |
 | `enable_open_registration`        | `false`           | Lets anyone who can reach the dashboard create their own account without an invite. The bootstrap flow and `recueil user create` both work regardless of this setting.                                                                                                                                                                                       |
+| `enable_links`                    | `true`            | Turns the links feature (bookmark-only entries for pages that can't be archived) on or off. Keep it in step with the Terraform module's `enable_links` variable, which controls whether the browser extension offers saving a page as a link.                                                                                                                |
 | `capture_manual_upload_max_bytes` | 104857600 (100MB) | Size ceiling for `POST /api/manual-upload` — the dashboard's [manual upload](@/docs/readers/manual-upload.md) route is allowed a bigger body than the rest of the API's shared 1MB cap. Raising this past what your reverse proxy itself allows won't help; see [Deploying recueil](@/docs/operators/deploying-recueil.md#putting-a-reverse-proxy-in-front). |
 
 ## Agent scheduling
@@ -71,6 +73,28 @@ have no such budget to respect and can run more often.
 | `screenshot_max_attempts`        | 3       | Retries before a capture's screenshot is marked permanently failed. |
 | `readability_worker_concurrency` | 3       | Same idea, for extracting readable text.                            |
 | `readability_max_attempts`       | 3       | Same idea, for extracting readable text.                            |
+
+## Wayback Machine submission
+
+Entirely optional — leaving both keys unset turns it off, and the dashboard then
+only offers links to the public Wayback Machine calendar for a page or link,
+with no button to submit it. Setting just one of the two is a startup error.
+
+| Setting              | Default   | What it does                                                                                                                      |
+| -------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `wayback_access_key` | _(unset)_ | The access key half of an archive.org IA-S3 key pair, for the Internet Archive's Save Page Now API. Set together with the secret. |
+| `wayback_secret_key` | _(unset)_ | The secret key half. Treat it like a password.                                                                                    |
+
+The keys belong to an archive.org account. To get them, follow the Internet
+Archive's guide,
+[Get your Internet Archive credentials](https://archive.org/developers/tutorial-get-ia-credentials.html):
+sign in (or sign up) at archive.org, open
+[archive.org/account/s3.php](https://archive.org/account/s3.php), tick the box
+and choose **Generate New Keys**.
+
+How submission works, what is shared with the Internet Archive, and what to
+consider before enabling it are covered in
+[Deploying recueil](@/docs/operators/deploying-recueil.md#wayback-machine-submission-optional).
 
 ## AI enrichment
 

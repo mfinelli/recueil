@@ -29,7 +29,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -45,6 +48,20 @@ type Config struct {
 	// false: the bootstrap flow (POST /api/setup) already creates the
 	// first admin.
 	EnableOpenRegistration bool `mapstructure:"enable_open_registration"`
+
+	// EnableLinks gates the links feature: bookmark-only entries for
+	// pages that can't be archived. Defaults to true. Turning it off
+	// leaves every link route unregistered and tells the dashboard
+	// to hide the Links screen; it doesn't affect the schema, since the
+	// migrations that add links run regardless.
+	EnableLinks bool `mapstructure:"enable_links"`
+
+	// LinksDir is the root directory link favicons are stored under.
+	// Required while EnableLinks is true. Links keep their own store, apart
+	// from ArchiveDir, so the two must not overlap (neither inside the other):
+	// `recueil gc`'s sweep of ArchiveDir treats every file it doesn't
+	// recognize as garbage, link favicons included.
+	LinksDir string `mapstructure:"links_dir"`
 
 	// PairingTokenKey is a base64-encoded 32-byte AES-256 key, used to
 	// reversibly encrypt/decrypt each account's pairing token for storage
@@ -142,6 +159,17 @@ type Config struct {
 	ReadabilityWorkerConcurrency int `mapstructure:"readability_worker_concurrency"`
 	ReadabilityMaxAttempts       int `mapstructure:"readability_max_attempts"`
 
+	// WaybackAccessKey and WaybackSecretKey are an archive.org account's IA-S3
+	// keys (see https://archive.org/developers/tutorial-get-ia-credentials.html),
+	// which the Save Page Now 2 API needs to submit a page and, as importantly,
+	// to report back whether the capture worked. Setting both is how
+	// Wayback submission is switched on, rather than a separate boolean
+	// that could disagree with whether the keys are filled in (the same
+	// way that AIBaseURL works for AI enrichment). Setting just one is a
+	// configuration error.
+	WaybackAccessKey string `mapstructure:"wayback_access_key"`
+	WaybackSecretKey string `mapstructure:"wayback_secret_key"`
+
 	// AIBaseURL is the OpenAI-compatible API's base URL -- e.g.
 	// "https://api.openai.com/v1", "http://ollama:11434/v1", or a
 	// llama.cpp server's own address. A single path, not a separate
@@ -207,6 +235,7 @@ func init() {
 	viper.SetDefault("listen_addr", ":8080")
 	viper.SetDefault("session_cookie_secure", true)
 	viper.SetDefault("enable_open_registration", false)
+	viper.SetDefault("enable_links", true)
 	viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
 	viper.SetDefault("agent_local_poll_interval_seconds", 300)
 	viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")
@@ -266,10 +295,65 @@ func Load() (Config, error) {
 	if cfg.R2AccessKeySecret == "" {
 		missing = append(missing, "r2_access_key_secret")
 	}
+	if cfg.EnableLinks && cfg.LinksDir == "" {
+		missing = append(missing, "links_dir")
+	}
+	if (cfg.WaybackAccessKey == "") != (cfg.WaybackSecretKey == "") {
+		return cfg, errors.New("wayback_access_key and wayback_secret_key must be set together " +
+			"(Wayback submission needs both halves of an archive.org IA-S3 key pair, " +
+			"or neither to leave it off)")
+	}
 	if len(missing) > 0 {
-		return cfg, fmt.Errorf("missing required config values: %v",
-			missing)
+		msg := fmt.Sprintf("missing required config values: %v", missing)
+		if cfg.EnableLinks && cfg.LinksDir == "" {
+			msg += " (links_dir is required while enable_links is true: " +
+				"set it to a directory outside archive_dir, or set " +
+				"enable_links = false to turn links off)"
+		}
+		return cfg, errors.New(msg)
+	}
+
+	if cfg.EnableLinks {
+		if err := checkLinksDirSeparate(cfg.ArchiveDir, cfg.LinksDir); err != nil {
+			return cfg, err
+		}
 	}
 
 	return cfg, nil
+}
+
+// checkLinksDirSeparate rejects a links_dir that is archive_dir, inside it, or
+// that contains it. Paths are compared as cleaned absolute paths; symlinks
+// aren't resolved, since that would mean touching the filesystem from config
+// loading.
+func checkLinksDirSeparate(archiveDir, linksDir string) error {
+	archiveAbs, err := filepath.Abs(archiveDir)
+	if err != nil {
+		return fmt.Errorf("resolving archive_dir: %w", err)
+	}
+	linksAbs, err := filepath.Abs(linksDir)
+	if err != nil {
+		return fmt.Errorf("resolving links_dir: %w", err)
+	}
+	if isWithin(archiveAbs, linksAbs) || isWithin(linksAbs, archiveAbs) {
+		return fmt.Errorf("links_dir (%s) and archive_dir (%s) must be separate "+
+			"directories, neither inside the other: gc would treat one's files "+
+			"as garbage when sweeping the other", linksDir, archiveDir)
+	}
+	return nil
+}
+
+// isWithin reports whether path is dir itself or somewhere beneath it.
+func isWithin(dir, path string) bool {
+	rel, err := filepath.Rel(dir, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// WaybackEnabled reports whether Wayback Machine submission is configured: both
+// halves of the archive.org key pair are set (Load refuses just one).
+func (c *Config) WaybackEnabled() bool {
+	return c.WaybackAccessKey != "" && c.WaybackSecretKey != ""
 }

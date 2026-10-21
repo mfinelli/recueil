@@ -146,10 +146,10 @@ does an exact match against the element's `href`. For a nav item whose section
 has drill-down routes (e.g. Library → `/pages/:id`, Collections →
 `/collections/*`), pass an explicit `path` regex so the link stays active on
 those nested routes too — see `AppHeader.svelte`'s
-`libraryActive`/`collectionsActive`/`tagsActive` for the pattern. The active
-class itself needs `:global(.active)` in scoped component styles, since the
-class is added by the action at runtime and Svelte's scoped-CSS analysis can't
-otherwise see it's used.
+`libraryActive`/`collectionsActive`/`tagsActive`/`linksActive` for the pattern.
+The active class itself needs `:global(.active)` in scoped component styles,
+since the class is added by the action at runtime and Svelte's scoped-CSS
+analysis can't otherwise see it's used.
 
 ### Mobile disclosure (nav collapse)
 
@@ -183,26 +183,33 @@ field.
 
 ### Image fallbacks (favicon/thumbnail)
 
-Two independent rules, not one:
+**A favicon is always rendered through `Favicon.svelte`**, wherever it appears:
+the page and link lists, the grid cards, the linked-pages list, and the source
+row on both detail screens. It takes the image's URL (or `null`) and a size in
+px, and owns the rest, so there is one behavior everywhere:
 
-- **Check the data before requesting the image.** `Page.favicon_path` is
-  `string | null` from the API — `null` means no favicon was ever captured, a
-  known state, not a failure. `PageList.svelte`'s `showFavicon()` checks this
-  before rendering the `<img>` at all, so a page with no favicon skips the
-  request entirely instead of always firing one and waiting for `onerror`.
-  Thumbnails don't have an equivalent field on `Page`, so they still rely on
-  `onerror` alone — there's nothing to check ahead of time there.
-- **Track each image type's failures independently.** A single id-keyed set
-  covering both favicon and thumbnail state silently breaks the moment one
-  screen renders both images for the same page — grid view showing a favicon
-  alongside the thumbnail was what surfaced this. `PageList.svelte` keeps
-  `faviconLoadFailed` and `thumbnailLoadFailed` as two separate `SvelteSet`s for
-  exactly this reason.
+- **Check the data before requesting the image.** `Page.favicon_path` (and a
+  link's) is `string | null` from the API — `null` means no favicon was ever
+  captured, a known state, not a failure. The caller passes `null` as the `src`
+  for it, and the component skips the request entirely instead of always firing
+  one and waiting for `onerror`.
+- **Fail per image, not per list.** The component remembers which `src` failed,
+  so one broken favicon never hides another and there is no list-level set to
+  keep in step. A different `src` (another item reusing the instance) starts
+  fresh.
+- **The fallback is a small bordered `Globe`**, scaled to the size. The one
+  place that shows nothing instead is the source row on the detail screens: a
+  single image beside a URL has no list to keep aligned, so those pass
+  `placeholder={false}`.
 
-Fallback content: a small bordered `Globe` icon for a missing/broken favicon
-(list and grid both), the title's first letter in the display serif for a
-missing/broken thumbnail (grid only) — both are "this represents a generic page"
-states, not blank placeholder boxes.
+Sizes are 20px in list rows, 16px in the secondary list on a detail screen and
+in the source row, and 14px in grid cards.
+
+**Thumbnails** are the other image, and have no equivalent field on `Page`, so
+they still rely on `onerror` alone. `PageList.svelte` keeps its own
+`thumbnailLoadFailed` set for them (grid view only), falling back to the title's
+first letter in the display serif. Both fallbacks are "this represents a generic
+page" states, not blank placeholder boxes.
 
 ### De-emphasizing the common case
 
@@ -222,6 +229,70 @@ itself fails to load, both buttons default to showing rather than silently
 disappearing, since a missing capability is worse than an
 occasionally-unnecessary one. Reach for this same fail-open shape for any future
 "hide when redundant" control gated on a second, independent fetch.
+
+### A row with two destinations (`LinkList.svelte`)
+
+A link's row opens its detail screen, but the saved URL itself is one click away
+on a trailing icon button. Anchors can't nest, so these are siblings: the `li`
+is a two-column grid (`1fr auto`) with the row's link in the first column
+(favicon, title, URL and date, laid out as `PageList`'s list rows are) and an
+`icon-btn` link in the second. The `li` takes the hover background, so the two
+read as one row. Anything inside the row that would otherwise need to be its own
+link (the "Also archived" marker, which points at the matching page) is a plain
+indicator on its own third line, with `role="img"` and an `aria-label` that says
+what it means in full ("This URL is also archived as a page"), and the real link
+lives on the detail screen. The icon link needs an accessible name that says
+where it goes ("Open {title} in a new tab"), since the glyph alone doesn't, and
+it opens with `target="_blank" rel="noreferrer"`.
+
+### A pointer line, and a filter pill (`LinkCountLine.svelte`, the Links page)
+
+A tag's or collection's links aren't a second list on its screen (the page lists
+are built around grid and list views of pages, and a link has no thumbnail).
+They're one muted line under the heading, `Link` icon, "{n} links have this
+tag." and an underlined "View links", which shows only when the count is above
+zero so a tag with no links looks exactly as it always did. "View links" opens
+the Links page filtered by it, and that page says so with a "Filtered by tag"
+row tucked up under the toolbar: the filter's name in a pill with a brass-tinted
+border (the same tint as an AI tag's) and a small clear button.
+
+### A typeahead relation list (`RelatedItems.svelte`)
+
+"Related pages" and "Related links" are one component, driven entirely by props
+rather than by branching: `kind` says what the list holds (`page` or `link`),
+which fixes the row's destination, the favicon route, the picker
+(`/{kind}s/relation-candidates`) and the request body (`{ {kind}_id }`), and
+`ownerPath` says what it belongs to (`/pages/42`), which fixes where adding and
+removing go. `excludeId` is the owner's own id when the list holds the owner's
+own kind, so an item isn't offered to itself, and is left out for a list of the
+other kind. The compact list is rows of favicon, title and URL with a dotted
+rule between; the pencil reveals the remove buttons and a search box whose
+dropdown shows a handful of matches. The list lives in the parent, so changes go
+back through `onchange` and failures through `onerror`, landing in the screen's
+own error banner like every other action on it.
+
+### A status box with one action (`WaybackBlock.svelte`)
+
+The "Internet Archive" block on both detail screens is a `--paper-raised` box
+with the state on the left and the one action on the right. The state is a line
+of text, with a mono, muted second line for detail (when it was last submitted,
+a failure's reason, "reload to see the result"), and the plain underlined link
+under it. The action is a `bordered-button` with a small icon; while its work is
+pending it is disabled and says so ("Submitting…"), rather than the screen
+polling for a result. The block that explains a third party (here, that the URL
+is shared and the snapshot public) puts that in a small muted paragraph under
+the box, only when the action it warns about is available.
+
+### The same-URL callout (`SameUrlHint.svelte`)
+
+A page and a link can share a normalized URL, and each detail screen says so in
+one muted line on a `--paper-raised` card under the source row, naming the other
+and linking to it ("This URL is also archived as a page: {title}" on a link's
+screen with the `Archive` icon, "This URL is also saved as a link: {title}" on a
+page's with `Link`). It's one shared component so the two stay identical. The
+title comes in the same API response as the id, and falls back to the URL when
+the other entity has none. In a list row the same fact is only a small non-link
+marker, since a link can't nest in the row's own link.
 
 ### A `title` attribute alone isn't enough for a meaningful icon
 

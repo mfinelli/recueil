@@ -36,8 +36,8 @@
 // recently-done shape, POST /api/jobs/{kind}/{id}/retry for the screenshot/
 // readability/AI enrichment jobs -- {kind} one of "screenshot"/"readability"/
 // "ai" -- also strictly self-scoped, same reasoning), session-protected library
-// browsing/search (GET /api/pages, GET /api/pages/link-candidates -- a
-// separate title-or-URL search for the page-linking picker, not the same
+// browsing/search (GET /api/pages, GET /api/pages/relation-candidates -- a
+// separate title-or-URL search for the page-relating picker, not the same
 // query the library's own full-text search uses --
 // GET/PATCH/DELETE /api/pages/{id}, POST /api/pages/{id}/recapture,
 // session-protected capture detail/HTML/language
@@ -49,8 +49,8 @@
 // session-protected tags/collections/links (GET /api/tags,
 // POST/DELETE /api/pages/{id}/tags[/{tagId}], full collections CRUD under
 // /api/collections, page<->collection membership under
-// /api/pages/{id}/collections, and bidirectional page<->page links under
-// /api/pages/{id}/links[/{linkPageId}]), and one admin-only route
+// /api/pages/{id}/collections, and bidirectional page<->page relations under
+// /api/pages/{id}/related-pages[/{relatedPageId}]), and one admin-only route
 // (GET /api/admin/stats -- instance-wide archive stats plus the 5
 // heaviest users by storage. Routed via chi, with auth.RequireSession used as
 // ordinary chi middleware (no httpapi-specific auth plumbing of its own).
@@ -169,7 +169,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/jobs", s.ListJobs)
 			r.Post("/jobs/{kind}/{id}/retry", s.RetryJob)
 			r.Get("/pages", s.ListPages)
-			r.Get("/pages/link-candidates", s.SearchPagesForLinking)
+			r.Get("/pages/relation-candidates", s.SearchPageRelationCandidates)
 			r.Get("/pages/{id}", s.GetPage)
 			r.Patch("/pages/{id}", s.PatchPage)
 			r.Delete("/pages/{id}", s.DeletePage)
@@ -197,8 +197,40 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			r.Get("/collections/{id}/pages", s.ListCollectionPages)
 			r.Post("/pages/{id}/collections", s.AddPageToCollection)
 			r.Delete("/pages/{id}/collections/{collectionId}", s.RemovePageFromCollection)
-			r.Post("/pages/{id}/links", s.AddPageLink)
-			r.Delete("/pages/{id}/links/{linkPageId}", s.RemovePageLink)
+			r.Post("/pages/{id}/related-pages", s.AddPageRelation)
+			r.Delete("/pages/{id}/related-pages/{relatedPageId}", s.RemovePageRelation)
+
+			// Links (bookmark-only entries): only routed with the
+			// feature on, so with it off every one of these 404s.
+			if s.EnableLinks {
+				r.Get("/links", s.ListLinks)
+				r.Get("/links/relation-candidates", s.SearchLinkRelationCandidates)
+				r.Post("/links", s.CreateLink)
+				r.Get("/links/{id}", s.GetLink)
+				r.Patch("/links/{id}", s.PatchLink)
+				r.Delete("/links/{id}", s.DeleteLink)
+				r.Post("/links/{id}/clean-url", s.CleanLinkURL)
+				r.Get("/links/{id}/favicon", s.GetLinkFavicon)
+				r.Post("/links/{id}/tags", s.AddLinkTag)
+				r.Delete("/links/{id}/tags/{tagId}", s.RemoveLinkTag)
+				r.Post("/links/{id}/related-links", s.AddLinkRelation)
+				r.Delete("/links/{id}/related-links/{relatedLinkId}", s.RemoveLinkRelation)
+				r.Post("/links/{id}/related-pages", s.AddLinkRelatedPage)
+				r.Delete("/links/{id}/related-pages/{relatedPageId}", s.RemoveLinkRelatedPage)
+				r.Post("/pages/{id}/related-links", s.AddPageRelatedLink)
+				r.Delete("/pages/{id}/related-links/{relatedLinkId}", s.RemovePageRelatedLink)
+				r.Post("/links/{id}/collections", s.AddLinkToCollection)
+				r.Delete("/links/{id}/collections/{collectionId}", s.RemoveLinkFromCollection)
+				if s.Wayback != nil {
+					r.Post("/links/{id}/wayback", s.SubmitLinkWayback)
+				}
+			}
+			// Wayback Machine submission: only routed when an archive.org key
+			// pair is configured. Pages and links have one each, since
+			// either can be submitted.
+			if s.Wayback != nil {
+				r.Post("/pages/{id}/wayback", s.SubmitPageWayback)
+			}
 		})
 
 		r.Group(func(r chi.Router) {
@@ -212,7 +244,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 	// auth (api_tokens bearer tokens, not the dashboard's session
 	// cookies) and its own request framing (JSON-RPC over Streamable
 	// HTTP, not this package's REST conventions).
-	r.Handle("/mcp", auth.RequireAPIToken(q)(mcpapi.NewHandler(q, build.Version)))
+	r.Handle("/mcp", auth.RequireAPIToken(q)(mcpapi.NewHandler(q, build.Version, s.EnableLinks)))
 
 	// POST /api/manual-upload is also not registered inside the
 	// r.Route("/api", ...) block above because that block's

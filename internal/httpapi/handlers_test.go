@@ -118,7 +118,7 @@ func newTestServer(t *testing.T, pool *pgxpool.Pool, mirrorURL string) (server *
 	// happy-path coverage, keep exercising the real /api/auth/register
 	// flow unchanged. TestRegisterDisabledByDefault covers the
 	// default-false gate directly against its own server.
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -145,7 +145,7 @@ func newTestServerWithStore(t *testing.T, pool *pgxpool.Pool, mirrorURL string) 
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -239,7 +239,7 @@ func TestNewRouter_DashboardSPA(t *testing.T) {
 	store := archive.New(t.TempDir())
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, dashboard)
@@ -476,7 +476,7 @@ func TestRegisterDisabledByDefault(t *testing.T) {
 	bootstrap, _, err := auth.NewBootstrapTokenHolder()
 	require.NoError(t, err)
 
-	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes)
+	s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), false, "test-readability-version", "test-ai-model", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 	logger := httplog.NewLogger("recueil-test")
 	logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -3447,7 +3447,7 @@ func TestGetCaptureConfig(t *testing.T) {
 		// Deliberately "", "" here -- a dev build (no `make`-injected
 		// readability_version) with AI enrichment disabled entirely
 		// (cmd/server.go's own empty-AIBaseURL-means-disabled reasoning).
-		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes)
+		s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, true, nil, nil)
 		logger := httplog.NewLogger("recueil-test")
 		logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 		r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
@@ -3481,6 +3481,38 @@ func TestGetCaptureConfig(t *testing.T) {
 		}
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
 		assert.Equal(t, int64(testManualUploadMaxBytes), got.ManualUploadMaxBytes)
+	})
+
+	t.Run("reports links_enabled as configured or not", func(t *testing.T) {
+		for _, enabled := range []bool{true, false} {
+			user := dbtest.CreateUser(t, pool, "member")
+			q := db.New(pool)
+			m := mirror.NewClient(unreachable, "test-secret")
+			d := devices.NewClient(unreachable, "test-secret")
+			qi := queueitems.NewClient(unreachable, "test-secret")
+			pc := pendingcaptures.NewClient(unreachable, "test-secret")
+			store := archive.New(t.TempDir())
+			bootstrap, _, err := auth.NewBootstrapTokenHolder()
+			require.NoError(t, err)
+
+			s := httpapi.NewServer(q, pool, store, m, d, qi, pc, bootstrap, false, testPairingKey(t), true, "", "", "https://worker.test.example", testPipeline(t), testManualUploadMaxBytes, enabled, nil, nil)
+			logger := httplog.NewLogger("recueil-test")
+			logger.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+			r, err := httpapi.NewRouter(s, pool, q, logger, httpapi.BuildInfo{}, nil)
+			require.NoError(t, err)
+			server := httptest.NewServer(r)
+			t.Cleanup(server.Close)
+			cookie := sessionCookieFor(t, pool, &user)
+
+			resp := requestWithCookie(t, server, http.MethodGet, "/api/capture-config", cookie)
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+			var got struct {
+				LinksEnabled bool `json:"links_enabled"`
+			}
+			require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+			assert.Equal(t, enabled, got.LinksEnabled)
+		}
 	})
 
 	t.Run("without a session cookie returns 401", func(t *testing.T) {
@@ -4105,10 +4137,10 @@ func TestPageCollectionMembership(t *testing.T) {
 	})
 }
 
-func TestPageLinks(t *testing.T) {
+func TestPageRelations(t *testing.T) {
 	pool := dbtest.Setup(t)
 
-	t.Run("linking two pages is visible from both sides, then removing it is too", func(t *testing.T) {
+	t.Run("relating two pages is visible from both sides, then removing it is too", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		article := dbtest.CreatePage(t, pool, user.ID, "https://example.com/the-article")
 		discussion := dbtest.CreatePage(t, pool, user.ID, "https://example.com/the-discussion")
@@ -4116,39 +4148,39 @@ func TestPageLinks(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		addResp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", article.ID),
-			cookie, fmt.Sprintf(`{"link_page_id":%d}`, discussion.ID))
+		addResp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/related-pages", article.ID),
+			cookie, fmt.Sprintf(`{"page_id":%d}`, discussion.ID))
 		assert.Equal(t, http.StatusCreated, addResp.StatusCode)
 
-		type linksBody struct {
-			Links []struct {
+		type pageRelatedBody struct {
+			RelatedPages []struct {
 				ID int64 `json:"id"`
-			} `json:"links"`
+			} `json:"related_pages"`
 		}
 
 		// Visible from the article's own detail response...
 		articleDetail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", article.ID), cookie)
-		var articleLinks linksBody
+		var articleLinks pageRelatedBody
 		require.NoError(t, json.NewDecoder(articleDetail.Body).Decode(&articleLinks))
-		require.Len(t, articleLinks.Links, 1)
-		assert.Equal(t, discussion.ID, articleLinks.Links[0].ID)
+		require.Len(t, articleLinks.RelatedPages, 1)
+		assert.Equal(t, discussion.ID, articleLinks.RelatedPages[0].ID)
 
 		// ...and without a second POST -- this is the
 		// bidirectionality itself, not just that the write worked.
 		discussionDetail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", discussion.ID), cookie)
-		var discussionLinks linksBody
+		var discussionLinks pageRelatedBody
 		require.NoError(t, json.NewDecoder(discussionDetail.Body).Decode(&discussionLinks))
-		require.Len(t, discussionLinks.Links, 1)
-		assert.Equal(t, article.ID, discussionLinks.Links[0].ID)
+		require.Len(t, discussionLinks.RelatedPages, 1)
+		assert.Equal(t, article.ID, discussionLinks.RelatedPages[0].ID)
 
 		remResp := requestWithCookie(t, server, http.MethodDelete,
-			fmt.Sprintf("/api/pages/%d/links/%d", article.ID, discussion.ID), cookie)
+			fmt.Sprintf("/api/pages/%d/related-pages/%d", article.ID, discussion.ID), cookie)
 		assert.Equal(t, http.StatusNoContent, remResp.StatusCode)
 
 		afterResp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", discussion.ID), cookie)
-		var after linksBody
+		var after pageRelatedBody
 		require.NoError(t, json.NewDecoder(afterResp.Body).Decode(&after))
-		assert.Empty(t, after.Links)
+		assert.Empty(t, after.RelatedPages)
 	})
 
 	t.Run("removing a link from the other side works too, since the pair isn't directional", func(t *testing.T) {
@@ -4159,31 +4191,31 @@ func TestPageLinks(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", a.ID),
-			cookie, fmt.Sprintf(`{"link_page_id":%d}`, b.ID))
+		requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/related-pages", a.ID),
+			cookie, fmt.Sprintf(`{"page_id":%d}`, b.ID))
 
 		// Removed via b's URL, even though the link was created via a.
 		remResp := requestWithCookie(t, server, http.MethodDelete,
-			fmt.Sprintf("/api/pages/%d/links/%d", b.ID, a.ID), cookie)
+			fmt.Sprintf("/api/pages/%d/related-pages/%d", b.ID, a.ID), cookie)
 		assert.Equal(t, http.StatusNoContent, remResp.StatusCode)
 
 		detail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", a.ID), cookie)
 		var got struct {
-			Links []struct{} `json:"links"`
+			RelatedPages []struct{} `json:"related_pages"`
 		}
 		require.NoError(t, json.NewDecoder(detail.Body).Decode(&got))
-		assert.Empty(t, got.Links)
+		assert.Empty(t, got.RelatedPages)
 	})
 
-	t.Run("linking a page to itself is rejected", func(t *testing.T) {
+	t.Run("relating a page to itself is rejected", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		page := dbtest.CreatePage(t, pool, user.ID, "https://example.com/self-link")
 
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", page.ID),
-			cookie, fmt.Sprintf(`{"link_page_id":%d}`, page.ID))
+		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/related-pages", page.ID),
+			cookie, fmt.Sprintf(`{"page_id":%d}`, page.ID))
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
@@ -4196,8 +4228,8 @@ func TestPageLinks(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", page.ID),
-			cookie, fmt.Sprintf(`{"link_page_id":%d}`, theirPage.ID))
+		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/related-pages", page.ID),
+			cookie, fmt.Sprintf(`{"page_id":%d}`, theirPage.ID))
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
 
@@ -4209,28 +4241,28 @@ func TestPageLinks(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		first := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", a.ID),
-			cookie, fmt.Sprintf(`{"link_page_id":%d}`, b.ID))
+		first := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/related-pages", a.ID),
+			cookie, fmt.Sprintf(`{"page_id":%d}`, b.ID))
 		assert.Equal(t, http.StatusCreated, first.StatusCode)
 
 		// The second POST swaps which page initiates it too, exercising
-		// AddPageLink's own LEAST/GREATEST canonicalization -- this isn't
+		// AddPageRelation's own LEAST/GREATEST canonicalization -- this isn't
 		// just "the same request twice," it's "the same pair from the
 		// other direction."
-		second := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/links", b.ID),
-			cookie, fmt.Sprintf(`{"link_page_id":%d}`, a.ID))
+		second := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/pages/%d/related-pages", b.ID),
+			cookie, fmt.Sprintf(`{"page_id":%d}`, a.ID))
 		assert.Equal(t, http.StatusCreated, second.StatusCode)
 
 		detail := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/pages/%d", a.ID), cookie)
 		var got struct {
-			Links []struct{} `json:"links"`
+			RelatedPages []struct{} `json:"related_pages"`
 		}
 		require.NoError(t, json.NewDecoder(detail.Body).Decode(&got))
-		assert.Len(t, got.Links, 1)
+		assert.Len(t, got.RelatedPages, 1)
 	})
 }
 
-func TestSearchPagesForLinking(t *testing.T) {
+func TestSearchPageRelationCandidates(t *testing.T) {
 	pool := dbtest.Setup(t)
 
 	t.Run("matches by title or normalized_url in one query, excludes the given page, and caps at the link-candidate limit", func(t *testing.T) {
@@ -4258,7 +4290,7 @@ func TestSearchPagesForLinking(t *testing.T) {
 		cookie := sessionCookieFor(t, pool, &user)
 
 		resp := requestWithCookie(t, server, http.MethodGet,
-			fmt.Sprintf("/api/pages/link-candidates?q=philosophy&exclude=%d", current.ID), cookie)
+			fmt.Sprintf("/api/pages/relation-candidates?q=philosophy&exclude=%d", current.ID), cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var got struct {
@@ -4282,7 +4314,7 @@ func TestSearchPagesForLinking(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/link-candidates?q=", cookie)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/relation-candidates?q=", cookie)
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		var got struct {
@@ -4300,7 +4332,7 @@ func TestSearchPagesForLinking(t *testing.T) {
 		server, _ := newTestServer(t, pool, unreachable)
 		cookie := sessionCookieFor(t, pool, &user)
 
-		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/link-candidates?q=yours", cookie)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/pages/relation-candidates?q=yours", cookie)
 		var got struct {
 			Pages []struct{} `json:"pages"`
 		}

@@ -324,7 +324,7 @@ describe("Collections", () => {
     );
 
     expect(confirmMock).toHaveBeenCalledWith(
-      'Delete "Zebra"? Pages stay archived, but they\'ll no longer be in this collection.',
+      'Delete "Zebra"? Pages and links are kept, but they\'ll no longer be in this collection.',
     );
     expect(apiJSONMock).toHaveBeenCalledWith("/collections/1", {
       method: "DELETE",
@@ -347,7 +347,7 @@ describe("Collections", () => {
     );
 
     expect(confirmMock).toHaveBeenCalledWith(
-      'Delete "Zebra" and its 1 sub-collection? Pages stay archived, but they\'ll no longer be in any of these.',
+      'Delete "Zebra" and its 1 sub-collection? Pages and links are kept, but they\'ll no longer be in any of these.',
     );
     expect(screen.queryByText("Zebra")).toBeNull();
     expect(screen.queryByText("Sub")).toBeNull();

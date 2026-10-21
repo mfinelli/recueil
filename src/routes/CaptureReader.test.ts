@@ -108,6 +108,8 @@ const upToDateConfig: CaptureConfig = {
   // Not under test here (this file is about the readability/AI regenerate
   // buttons specifically) so an arbitrary fixed value is fine.
   manual_upload_max_bytes: 104857600,
+  links_enabled: true,
+  wayback_enabled: false,
 };
 
 interface LoadOptions {

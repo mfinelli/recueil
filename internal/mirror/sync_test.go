@@ -57,6 +57,13 @@ func newFakeWorkerMirror() *fakeWorkerMirror {
 
 func (f *fakeWorkerMirror) server() *httptest.Server {
 	mux := http.NewServeMux()
+	f.routes(mux)
+	return httptest.NewServer(mux)
+}
+
+// routes registers the four archived-pages endpoints on mux, so a test can put
+// them on the same server as the links fake's (links_sync_test.go).
+func (f *fakeWorkerMirror) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /internal/archived-pages/last-sync", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -118,8 +125,6 @@ func (f *fakeWorkerMirror) server() *httptest.Server {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"deleted": len(body.PageIDs)})
 	})
-
-	return httptest.NewServer(mux)
 }
 
 func (f *fakeWorkerMirror) pageIDs() []int64 {

@@ -5,7 +5,7 @@ template = "docs-page.html"
 
 [extra]
 audience = "readers"
-dek = "Capturing, working through your queue, and bookmark sync."
+dek = "Capturing, saving links, working through your queue, and bookmark sync."
 +++
 
 If you haven't already, [Getting Started](@/docs/readers/getting-started.md)
@@ -24,6 +24,13 @@ Browse to any page and click **Save this page**. That's a direct capture —
 recueil takes it from there, and it'll show up in your library once it's
 finished processing.
 
+## Saving a page as a link
+
+Under the **Save this page** button there's a plain **Save as link** link, for
+when you want the page remembered but not archived — a video, a code repository,
+or maybe an interactive app. See [Links](@/docs/readers/links.md) for more
+details.
+
 ## Working through your queue
 
 Pages queued from somewhere else — the
@@ -32,16 +39,16 @@ another paired device — show up under **Queue** in the popup, listed by URL.
 Click one to claim it: this opens it in a new tab so you can deal with
 whatever's in the way (if necessary) — a CAPTCHA or a login wall, for example —
 on your own time. Once you're ready, click **Save this page** the same as any
-direct capture.
+direct capture, or **Save as link** if a link is all you want.
 
 A few things to keep in mind about how this works:
 
 - **A claim only holds for 15 minutes.** If you open a queued item and don't get
   around to capturing it, it just goes back in the queue — where the same
   browser, or another one of yours, is now free to pick it up.
-- **The tab closes itself after a successful capture** — but only for tabs the
-  queue opened for you. A page you already had open and captured directly is
-  yours; recueil never closes a tab you opened yourself.
+- **The tab closes itself after a successful capture or link** — but only for
+  tabs the queue opened for you. A page you already had open and captured
+  directly is yours; recueil never closes a tab you opened yourself.
 - **↻ Refresh** checks the queue immediately, if you know something's waiting
   and don't want to wait for the extension's own periodic check.
 
@@ -62,6 +69,18 @@ only ever flows one way: archive to bookmarks.
 To leave a specific page out of the synced folder without turning off sync
 entirely, you can uncheck **Sync with my browser's bookmarks** on that page's
 detail view in the dashboard.
+
+### Saved links get their own folder
+
+If your instance has [links](@/docs/readers/links.md) enabled then a second
+checkbox, **Sync saved links to bookmarks**, appears under the first. It's
+separate and off by default: turn it on and recueil keeps a second folder,
+**recueil links**, in step with your saved links. Everything above applies to it
+the same way, including that it's one-directional and overwrites anything you
+change in it. The two syncs are independent, so you can have either, both or
+neither, and turning one off leaves the other's folder alone. To leave a
+particular link out, uncheck **Sync with my browser's bookmarks** on its details
+screen.
 
 ## Forgetting a device
 

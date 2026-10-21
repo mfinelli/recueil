@@ -84,3 +84,12 @@ ORDER BY
     + COALESCE(SUM(COALESCE(captures.favicon_size_bytes, 0) + COALESCE(captures.thumbnail_size_bytes, 0)), 0)
   DESC
 LIMIT 5;
+
+-- name: GetLinkStats :one
+-- Links, system-wide, for internal/metrics (the links counterpart of the page and
+-- capture counts GetSystemStats reports). favicon_bytes is the link favicon store's
+-- footprint, from the size recorded when each favicon was written.
+SELECT
+  COUNT(*) AS link_count,
+  COALESCE(SUM(favicon_size_bytes), 0)::bigint AS favicon_bytes
+FROM links;

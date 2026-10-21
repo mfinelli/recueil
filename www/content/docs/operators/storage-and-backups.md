@@ -29,6 +29,22 @@ You shouldn't ever need to touch these paths directly, but it's useful to know
 the shape if you're poking around during a backup restore or just curious what's
 actually on disk.
 
+## Link favicons
+
+Links (bookmark-only entries) have no archive of their own, only a favicon, and
+those live in a separate directory, `links_dir`, rather than alongside captures:
+links and captures are different things, and keeping their files apart keeps
+them that way. The layout inside it is the same as for captures — each saved
+favicon gets its own sharded directory:
+
+```
+links_dir/6a/d3/019fce71-a3bd-7ad7-b4d6-0238b3d96ad3/favicon.png
+```
+
+The two directories have to stay separate, with neither inside the other: `gc`
+treats any file under `archive_dir` it doesn't recognize as garbage, which would
+include these. recueil refuses to start if they overlap.
+
 ## Reclaiming space
 
 Deleting a page or capture from the dashboard is deliberately a pure database
@@ -42,6 +58,10 @@ it through the same image and environment `server` already uses:
 docker compose run --rm server recueil gc --dry-run
 ```
 
+`gc` makes two passes in the same run: the captures archive first, then the link
+favicon store (skipped when links are turned off). `--skip-captures` and
+`--skip-links` run just one of them.
+
 Safe to run whenever, on whatever schedule suits you — nothing else depends on
 it running promptly.
 
@@ -49,12 +69,14 @@ it running promptly.
 
 recueil doesn't back itself up and deliberately doesn't have any built-in backup
 functionality — it's the operator's responsibility. A backup consists of two
-things which must be run **on the same schedule**:
+things (three, with links turned on) which must be run **on the same schedule**:
 
 1. **The Postgres database** — via `pg_dump`, not a raw copy of the
    `./data/postgres` directory.
 2. **The archive directory** — the captures directory described above. A plain
    file copy is fine here, since these are static files once written.
+3. **The link favicon directory** — `links_dir`, only if links are on. Same kind
+   of plain file copy.
 
 If the two drift out of sync — backed up on different schedules, or one succeeds
 while the other fails silently — a restore can leave a `captures` row pointing
@@ -86,19 +108,24 @@ docker compose exec -T postgres \
 # Docker volume), so this is a plain tar (the files are already compressed),
 # and no disposable container is needed.
 tar cf "$backup_dir/archive.tar" -C ./data/archive .
+
+# Only if links are turned on:
+tar cf "$backup_dir/links.tar" -C ./data/links .
 ```
 
 **Intentionally not in this list**, since it's an easy thing to get backwards:
 R2 and D1 don't need to be backed up. R2 is a temporary upload buffer only,
-covered above. D1 holds device tokens (and the read-only bookmark-list mirror),
-not canonical data — Postgres is the source of truth for both, and D1 is rebuilt
-from it, not the other way around.
+covered above. D1 holds device tokens, saved links waiting to be pulled in, and
+the read-only bookmark-list mirrors of pages and links, not canonical data —
+Postgres is the source of truth for both, and D1 is rebuilt from it, not the
+other way around.
 
 ### Restoring
 
 Bring `postgres` up empty, `pg_restore` the dump into it (or load the plain-SQL
 equivalent), and untar the archive backup into a fresh `./data/archive`
-directory before starting `server`/`agent`. Then run `recueil user resync` (see
+directory (and the links backup into `./data/links`, if you use links) before
+starting `server`/`agent`. Then run `recueil user resync` (see
 [Administration](@/docs/operators/administration.md#user)) once the database is
 back — password changes, new accounts, or pairing-token regenerations made after
 the backup was taken won't be reflected in D1's credential mirror otherwise, and

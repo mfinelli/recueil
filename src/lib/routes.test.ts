@@ -49,6 +49,7 @@ import {
   requireGuest,
   requireOpenRegistration,
   requireAuth,
+  requireLinksEnabled,
 } from "./routes";
 
 const pushMock = vi.mocked(push);
@@ -165,5 +166,19 @@ describe("requireAuth", () => {
     session.user = null;
     expect(requireAuth(fakeDetail)).toBe(false);
     expect(pushMock).toHaveBeenCalledWith("/login");
+  });
+});
+
+describe("requireLinksEnabled", () => {
+  it("allows the route when links are on", () => {
+    session.linksEnabled = true;
+    expect(requireLinksEnabled(fakeDetail)).toBe(true);
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("sends the user to the library when links are off", () => {
+    session.linksEnabled = false;
+    expect(requireLinksEnabled(fakeDetail)).toBe(false);
+    expect(pushMock).toHaveBeenCalledWith("/");
   });
 });

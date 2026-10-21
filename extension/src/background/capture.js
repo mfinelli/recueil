@@ -217,13 +217,15 @@ export async function runCaptureInject(tabId) {
 }
 
 // R2's presigned PUT, not a Worker call -- see file doc comment for why
-// this is a plain fetch() rather than going through apiRequest.
+// this is a plain fetch() rather than going through apiRequest. Exported
+// because saving a link (link.js) uses the same route for a favicon too large
+// to send inline.
 /**
  * @param {string} url
  * @param {Record<string, string>} headers
  * @param {BufferSource} body
  */
-async function putToPresignedUrl(url, headers, body) {
+export async function putToPresignedUrl(url, headers, body) {
   let response;
   try {
     response = await fetch(url, { method: "PUT", headers, body });

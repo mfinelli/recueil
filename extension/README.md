@@ -2,7 +2,9 @@
 
 Pairing, capture (via
 [`single-file-core`](https://github.com/gildas-lormeau/single-file-core)), and
-upload to a self-hosted recueil instance.
+upload to a self-hosted recueil instance, plus saving a page as a bookmark-only
+link (its URL, title and icon, with no archived copy) when the instance has
+links turned on.
 
 See the [root README](../README.md) for repo-wide setup (submodules,
 `just fmt`/`just lint`/`just test`) — this one only covers what's specific to

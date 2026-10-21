@@ -100,6 +100,128 @@ describe("session bootstrap", () => {
     expect(session.theme).toBe("dark");
   });
 
+  it("populates linksEnabled from GET /capture-config", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(
+          jsonResponse({ id: 1, username: "alice", role: "member" }),
+        );
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
+      if (url.endsWith("/capture-config"))
+        return Promise.resolve(
+          jsonResponse({
+            readability_version: null,
+            ai_model: null,
+            manual_upload_max_bytes: 1,
+            links_enabled: true,
+          }),
+        );
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.linksEnabled).toBe(true);
+  });
+
+  it("populates waybackEnabled from GET /capture-config, independently of links", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(
+          jsonResponse({ id: 1, username: "alice", role: "member" }),
+        );
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: false }),
+        );
+      if (url.endsWith("/capture-config"))
+        return Promise.resolve(
+          jsonResponse({
+            readability_version: null,
+            ai_model: null,
+            manual_upload_max_bytes: 1,
+            links_enabled: false,
+            wayback_enabled: true,
+          }),
+        );
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.waybackEnabled).toBe(true);
+    expect(session.linksEnabled).toBe(false);
+  });
+
+  it("leaves waybackEnabled false when it's off, absent, or for a guest's 401", async () => {
+    for (const response of [
+      jsonResponse({ wayback_enabled: false }),
+      jsonResponse({}),
+      jsonResponse({ error: "unauthorized" }, 401),
+    ]) {
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/capture-config")) return Promise.resolve(response);
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { session, sessionReady } = await freshSession();
+      await sessionReady;
+
+      expect(session.waybackEnabled).toBe(false);
+    }
+  });
+
+  it("leaves linksEnabled false when links are off, or for a guest's 401", async () => {
+    for (const response of [
+      jsonResponse({ links_enabled: false }),
+      jsonResponse({ error: "unauthorized" }, 401),
+      jsonResponse({}),
+    ]) {
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/capture-config")) return Promise.resolve(response);
+        return Promise.resolve(jsonResponse({ error: "unauthorized" }, 401));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { session, sessionReady } = await freshSession();
+      await sessionReady;
+
+      expect(session.linksEnabled).toBe(false);
+    }
+  });
+
+  it("a failing capture-config request doesn't strand the rest of the session", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/auth/me"))
+        return Promise.resolve(
+          jsonResponse({ id: 1, username: "alice", role: "admin" }),
+        );
+      if (url.endsWith("/setup-status"))
+        return Promise.resolve(
+          jsonResponse({ needs_setup: false, open_registration: true }),
+        );
+      if (url.endsWith("/capture-config"))
+        return Promise.reject(new Error("network down"));
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { session, sessionReady } = await freshSession();
+    await sessionReady;
+
+    expect(session.user?.username).toBe("alice");
+    expect(session.openRegistration).toBe(true);
+    expect(session.linksEnabled).toBe(false);
+  });
+
   it("leaves session.theme null when the settings request fails", async () => {
     const fetchMock = vi.fn((url: string) => {
       if (url.endsWith("/auth/me"))

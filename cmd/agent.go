@@ -20,6 +20,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -37,14 +38,17 @@ import (
 	"github.com/mfinelli/recueil/internal/config"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/ingest"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
+	"github.com/mfinelli/recueil/internal/pendinglinks"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/r2"
 	"github.com/mfinelli/recueil/internal/readability"
 	"github.com/mfinelli/recueil/internal/screenshot"
 	"github.com/mfinelli/recueil/internal/sidecar"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+	"github.com/mfinelli/recueil/internal/wayback"
 )
 
 var (
@@ -74,6 +78,11 @@ func runAgent(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.EnableLinks {
+		if err := linkicons.New(cfg.LinksDir).Check(); err != nil {
+			return err
+		}
 	}
 
 	logger := httplog.NewLogger("recueil-agent", httplog.Options{
@@ -129,10 +138,29 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		Logger:   logger.Logger,
 	})
 
+	// The links counterparts of the ingester and its Worker client, only with
+	// links turned on (the link store was checked above): with the flag off
+	// there is nothing to claim, so the cycle simply doesn't ask.
+	var linkWorkerClient *pendinglinks.Client
+	var linkIngester *ingest.LinkIngester
+	if cfg.EnableLinks {
+		linkWorkerClient = pendinglinks.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
+		linkIngester = ingest.NewLinkIngester(ingest.LinkParams{
+			Queries:  queries,
+			Worker:   linkWorkerClient,
+			R2:       r2Client,
+			Store:    linkicons.New(cfg.LinksDir),
+			Pipeline: pipeline,
+			Logger:   logger.Logger,
+		})
+	}
+
 	mirrorClient := mirror.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	syncer := mirror.NewSyncer(mirror.SyncerParams{
-		Queries: queries,
-		Client:  mirrorClient,
+		Queries:      queries,
+		Client:       mirrorClient,
+		LinksEnabled: cfg.EnableLinks,
+		Logger:       logger.Logger,
 	})
 
 	// The one shared headless-Chrome connection + ephemeral render
@@ -205,25 +233,39 @@ func runAgent(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Wayback submissions: on only when an archive.org key pair is
+	// configured (same as AI enrichment is on only when a base URL is
+	// set). What the agent does for them is resolve the ones still pending.
+	// archive.org does the capturing itself, the agent only learns how
+	// each went. This goes in the local cycle because it talks to
+	// archive.org, not the Cloudflare Worker, so there's not free-tier
+	// budget to respect.
+	var waybackService *wayback.Service
+	if cfg.WaybackEnabled() {
+		waybackService = wayback.NewService(queries, wayback.NewClient(cfg.WaybackAccessKey, cfg.WaybackSecretKey), nil, logger.Logger)
+	}
+
 	workerInterval := time.Duration(cfg.AgentWorkerPollIntervalSeconds) * time.Second
 	localInterval := time.Duration(cfg.AgentLocalPollIntervalSeconds) * time.Second
 	log.Printf("recueil agent started, worker poll interval: %s, local poll interval: %s",
 		workerInterval, localInterval)
 
 	worker := &workerCycle{
-		ingester:   ingester,
-		syncer:     syncer,
-		worker:     workerClient,
-		queueItems: queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret),
-		queries:    queries,
-		logger:     logger.Logger,
+		ingester:     ingester,
+		linkIngester: linkIngester,
+		syncer:       syncer,
+		worker:       workerClient,
+		linkWorker:   linkWorkerClient,
+		queueItems:   queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret),
+		queries:      queries,
+		logger:       logger.Logger,
 	}
 
 	// Run one cycle of each immediately on startup, rather than waiting
 	// for their first tick -- otherwise a freshly-deployed agent sits
 	// idle for a full interval before doing anything.
 	worker.run(cmd.Context())
-	runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+	runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, waybackService, logger.Logger)
 
 	workerTicker := time.NewTicker(workerInterval)
 	defer workerTicker.Stop()
@@ -247,7 +289,7 @@ func runAgent(cmd *cobra.Command, args []string) error {
 			// since each is just another case in the same select.
 			worker.run(cmd.Context())
 		case <-localTicker.C:
-			runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, logger.Logger)
+			runLocalCycle(cmd.Context(), queries, screenshotRunner, readabilityRunner, aiRunner, waybackService, logger.Logger)
 		case <-cmd.Context().Done():
 			log.Println("shutting down...")
 			return nil
@@ -294,12 +336,16 @@ const (
 // deliberate: it's only ever called from the agent's single select loop,
 // synchronously, so successive cycles can never overlap.
 type workerCycle struct {
-	ingester   *ingest.Ingester
-	syncer     *mirror.Syncer
-	worker     *pendingcaptures.Client
-	queueItems *queueitems.Client
-	queries    *db.Queries
-	logger     *slog.Logger
+	ingester *ingest.Ingester
+	// linkIngester and linkWorker are nil when links are turned off, in which
+	// case the cycle neither ingests nor sweeps links.
+	linkIngester *ingest.LinkIngester
+	syncer       *mirror.Syncer
+	worker       *pendingcaptures.Client
+	linkWorker   *pendinglinks.Client
+	queueItems   *queueitems.Client
+	queries      *db.Queries
+	logger       *slog.Logger
 
 	// lastCleanup is the zero Time until the first sweep, which is what
 	// makes a freshly-started agent sweep on its very first cycle.
@@ -326,6 +372,12 @@ func (w *workerCycle) run(ctx context.Context) {
 		w.logger.ErrorContext(ctx, "agent: ingestion cycle failed", "error", err)
 		ok = false
 	}
+	if w.linkIngester != nil {
+		if err := w.linkIngester.RunOnce(ctx); err != nil {
+			w.logger.ErrorContext(ctx, "agent: link ingestion cycle failed", "error", err)
+			ok = false
+		}
+	}
 	if err := w.syncer.SyncOnce(ctx); err != nil {
 		w.logger.ErrorContext(ctx, "agent: mirror sync cycle failed", "error", err)
 		ok = false
@@ -344,8 +396,9 @@ func (w *workerCycle) run(ctx context.Context) {
 	}
 }
 
-// runCleanup sweeps both D1 tables that accumulate terminal rows. Each is
-// independent -- one failing doesn't skip the other, since there's no
+// runCleanup sweeps the D1 tables that accumulate terminal rows (pending
+// captures, pending links when links are on, and captured queue items). Each
+// is independent -- one failing doesn't skip the others, since there's no
 // ordering between them and no reason a Worker error on one implies
 // anything about the other.
 func (w *workerCycle) runCleanup(ctx context.Context) {
@@ -353,6 +406,17 @@ func (w *workerCycle) runCleanup(ctx context.Context) {
 		w.logger.ErrorContext(ctx, "agent: pending-captures cleanup failed", "error", err)
 	} else if deleted > 0 {
 		w.logger.InfoContext(ctx, "agent: swept ingested pending captures", "deleted", deleted)
+	}
+
+	// Skipped quietly for a Worker that predates links: it has nothing to sweep,
+	// and the ingestion cycle already says so every time it runs.
+	if w.linkWorker != nil {
+		deleted, err := w.linkWorker.CleanupPendingLinks(ctx)
+		if err != nil && !errors.Is(err, pendinglinks.ErrWorkerWithoutLinks) {
+			w.logger.ErrorContext(ctx, "agent: pending-links cleanup failed", "error", err)
+		} else if err == nil && deleted > 0 {
+			w.logger.InfoContext(ctx, "agent: swept ingested pending links", "deleted", deleted)
+		}
 	}
 
 	if deleted, err := w.queueItems.Cleanup(ctx); err != nil {
@@ -374,7 +438,7 @@ func (w *workerCycle) runCleanup(ctx context.Context) {
 // Same success-gated heartbeat as workerCycle.run, for the same reason:
 // recueil_agent_last_success_seconds{cycle="local"} should mean these
 // jobs are actually running, not just that the process is up.
-func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, logger *slog.Logger) {
+func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *screenshot.Runner, readabilityRunner *readability.Runner, aiRunner *ai.Runner, waybackService *wayback.Service, logger *slog.Logger) {
 	ok := true
 	if err := screenshotRunner.RunOnce(ctx); err != nil {
 		logger.ErrorContext(ctx, "agent: screenshot cycle failed", "error", err)
@@ -387,6 +451,12 @@ func runLocalCycle(ctx context.Context, queries *db.Queries, screenshotRunner *s
 	if aiRunner != nil {
 		if err := aiRunner.RunOnce(ctx); err != nil {
 			logger.ErrorContext(ctx, "agent: ai enrichment cycle failed", "error", err)
+			ok = false
+		}
+	}
+	if waybackService != nil {
+		if err := waybackService.SweepPending(ctx); err != nil {
+			logger.ErrorContext(ctx, "agent: wayback sweep failed", "error", err)
 			ok = false
 		}
 	}

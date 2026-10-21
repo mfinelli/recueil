@@ -40,11 +40,13 @@ import (
 	"github.com/mfinelli/recueil/internal/auth"
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/slug"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+	"github.com/mfinelli/recueil/internal/wayback"
 )
 
 type Server struct {
@@ -82,14 +84,28 @@ type Server struct {
 	// message, rather than only finding out after a slow upload that the
 	// server was always going to reject it.
 	ManualUploadMaxBytes int64
+
+	// EnableLinks is config.Config.EnableLinks, threaded through for
+	// GetCaptureConfig to report so the dashboard can hide the Links
+	// screen when the feature is off.
+	EnableLinks bool
+
+	// LinkStore is the link favicon store the favicon route reads from; nil
+	// when links are off.
+	LinkStore *linkicons.Store
+
+	// Wayback submits URLs to the Wayback Machine; nil unless an archive.org key
+	// pair is configured, and the submit routes only exist when it is.
+	Wayback *wayback.Service
 }
 
-func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64) *Server {
+func NewServer(q *db.Queries, pool *pgxpool.Pool, store *archive.Store, m *mirror.Client, d *devices.Client, qi *queueitems.Client, pc *pendingcaptures.Client, bootstrap *auth.BootstrapTokenHolder, cookieSecure bool, pairingKey auth.PairingKey, enableOpenRegistration bool, readabilityVersion, aiModel, workerURL string, pipeline *urlnorm.Pipeline, manualUploadMaxBytes int64, enableLinks bool, linkStore *linkicons.Store, waybackService *wayback.Service) *Server {
 	return &Server{
 		Queries: q, Pool: pool, Store: store, Mirror: m, Devices: d, QueueItems: qi, PendingCaptures: pc, Bootstrap: bootstrap,
 		CookieSecure: cookieSecure, PairingKey: pairingKey, EnableOpenRegistration: enableOpenRegistration,
 		ReadabilityVersion: readabilityVersion, AIModel: aiModel, WorkerURL: workerURL,
 		Pipeline: pipeline, ManualUploadMaxBytes: manualUploadMaxBytes,
+		EnableLinks: enableLinks, LinkStore: linkStore, Wayback: waybackService,
 	}
 }
 
@@ -1363,40 +1379,55 @@ type pageCollectionResponse struct {
 	ParentID *int64 `json:"parent_id"`
 }
 
-// pageLinkResponse is a lightweight page reference -- just enough to
-// render the linked-pages list's favicon/title/url row or a link-candidates
+// relatedPageResponse is a lightweight page reference -- just enough to
+// render the related-pages list's favicon/title/url row or a relation-candidates
 // search result, which is shaped identically. Doesn't carry the full
 // pageResponse's timestamps/excluded_from_mirror/notes -- none of which
 // either of those views needs.
-type pageLinkResponse struct {
+type relatedPageResponse struct {
 	ID            int64   `json:"id"`
 	Title         *string `json:"title"`
 	NormalizedURL string  `json:"normalized_url"`
 	FaviconPath   *string `json:"favicon_path"`
 }
 
-func pageLinkResponseFromListRow(p *db.ListPageLinksRow) pageLinkResponse {
-	return pageLinkResponse{
+func relatedPageFromListRow(p *db.ListPageRelationsRow) relatedPageResponse {
+	return relatedPageResponse{
 		ID: p.ID, Title: textOrNil(p.Title), NormalizedURL: p.NormalizedUrl, FaviconPath: textOrNil(p.FaviconPath),
 	}
 }
 
-func pageLinkResponseFromPage(p *db.Page) pageLinkResponse {
-	return pageLinkResponse{
+func relatedPageFromPage(p *db.Page) relatedPageResponse {
+	return relatedPageResponse{
 		ID: p.ID, Title: textOrNil(p.Title), NormalizedURL: p.NormalizedUrl, FaviconPath: textOrNil(p.FaviconPath),
 	}
 }
 
 // pageDetailResponse embeds pageResponse so its fields flatten into the
-// same top-level JSON object as "captures"/"tags"/"collections"/"links" --
+// same top-level JSON object as "captures"/"tags"/"collections"/"related_pages" --
 // the page detail view's natural shape is "the page, plus everything
 // attached to it," not a nested "page" envelope key.
 type pageDetailResponse struct {
 	pageResponse
-	Captures    []captureSummaryResponse `json:"captures"`
-	Tags        []pageTagResponse        `json:"tags"`
-	Collections []pageCollectionResponse `json:"collections"`
-	Links       []pageLinkResponse       `json:"links"`
+	Captures     []captureSummaryResponse `json:"captures"`
+	Tags         []pageTagResponse        `json:"tags"`
+	Collections  []pageCollectionResponse `json:"collections"`
+	RelatedPages []relatedPageResponse    `json:"related_pages"`
+	// RelatedLinks are the links related to this page (see pagelinkrelations.go):
+	// always empty with links off, as the same-URL hint is always null then.
+	RelatedLinks []relatedLinkResponse `json:"related_links"`
+
+	// MatchingLinkID is the same-URL hint: the id of the user's link (a
+	// bookmark-only entry, not one of RelatedPages above, which are
+	// related pages) with this page's normalized URL, and MatchingLinkTitle that
+	// link's title (null if it has none), so the callout can name it without
+	// fetching the link. Both are always null if links are off.
+	MatchingLinkID    *int64  `json:"matching_link_id"`
+	MatchingLinkTitle *string `json:"matching_link_title"`
+
+	// Wayback is how this page's URL stands with the Wayback Machine,
+	// null if it has never been submitted.
+	Wayback *waybackResponse `json:"wayback"`
 }
 
 // GET /api/pages/{id}: page detail plus full capture (version) history
@@ -1440,9 +1471,9 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	links, err := s.Queries.ListPageLinks(ctx, page.ID)
+	relatedPages, err := s.Queries.ListPageRelations(ctx, page.ID)
 	if err != nil {
-		log.Printf("warning: failed to list links for page %d: %v", page.ID, err)
+		log.Printf("warning: failed to list related pages for page %d: %v", page.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -1452,8 +1483,30 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		Captures:     []captureSummaryResponse{},
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
-		Links:        []pageLinkResponse{},
+		RelatedPages: []relatedPageResponse{},
+		RelatedLinks: []relatedLinkResponse{},
 	}
+	if s.EnableLinks {
+		link, err := s.Queries.GetLinkByNormalizedURL(ctx, db.GetLinkByNormalizedURLParams{
+			UserID: user.ID, NormalizedUrl: page.NormalizedUrl,
+		})
+		switch {
+		case err == nil:
+			resp.MatchingLinkID = &link.ID
+			resp.MatchingLinkTitle = textOrNil(link.Title)
+		case !errors.Is(err, pgx.ErrNoRows):
+			log.Printf("warning: failed to look up the link matching page %d: %v", page.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+	waybackState, err := s.waybackFor(ctx, user.ID, page.NormalizedUrl)
+	if err != nil {
+		log.Printf("warning: failed to look up the Wayback state of page %d: %v", page.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	resp.Wayback = waybackState
 	for i := range captures {
 		c := &captures[i]
 		resp.Captures = append(resp.Captures, captureSummaryResponse{
@@ -1469,8 +1522,19 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 	for _, c := range collections {
 		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})
 	}
-	for i := range links {
-		resp.Links = append(resp.Links, pageLinkResponseFromListRow(&links[i]))
+	for i := range relatedPages {
+		resp.RelatedPages = append(resp.RelatedPages, relatedPageFromListRow(&relatedPages[i]))
+	}
+	if s.EnableLinks {
+		relatedLinks, err := s.Queries.ListPageRelatedLinks(ctx, page.ID)
+		if err != nil {
+			log.Printf("warning: failed to list related links for page %d: %v", page.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		for i := range relatedLinks {
+			resp.RelatedLinks = append(resp.RelatedLinks, relatedLinkFromPageRelationRow(&relatedLinks[i]))
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -1483,8 +1547,8 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 // ".zst"-suffixed path (SVG favicons) and passes non-".zst" paths
 // (PNG/ICO favicons, all thumbnails) through unmodified, so this doesn't
 // need to know or care which case it's in.
-func (s *Server) serveAsset(w http.ResponseWriter, relPath string) {
-	reader, err := s.Store.Open(relPath)
+func serveAsset(w http.ResponseWriter, store *archive.Store, relPath string) {
+	reader, err := store.Open(relPath)
 	if err != nil {
 		log.Printf("warning: failed to open asset %q: %v", relPath, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -1545,7 +1609,7 @@ func (s *Server) GetPageFavicon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveAsset(w, page.FaviconPath.String)
+	serveAsset(w, s.Store, page.FaviconPath.String)
 }
 
 // GET /api/pages/{id}/thumbnail: resolves the page's most recent
@@ -1584,7 +1648,7 @@ func (s *Server) GetPageThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.serveAsset(w, capture.ThumbnailPath.String)
+	serveAsset(w, s.Store, capture.ThumbnailPath.String)
 }
 
 type patchPageRequest struct {
@@ -1976,6 +2040,11 @@ type captureConfigResponse struct {
 	ReadabilityVersion   *string `json:"readability_version"`
 	AIModel              *string `json:"ai_model"`
 	ManualUploadMaxBytes int64   `json:"manual_upload_max_bytes"`
+	LinksEnabled         bool    `json:"links_enabled"`
+	// WaybackEnabled is whether Wayback Machine submission is configured (an
+	// archive.org key pair), so the dashboard knows whether to offer the
+	// Submit button at all.
+	WaybackEnabled bool `json:"wayback_enabled"`
 }
 
 // GET /api/capture-config: this running agent's currently configured
@@ -1986,12 +2055,15 @@ type captureConfigResponse struct {
 // configured" (or AI enrichment disabled entirely) and is reported as null,
 // not "". Also reports manual_upload_max_bytes, so the manual-upload form
 // can reject an oversized file client-side rather than only after a slow
-// upload.
+// upload, and links_enabled, so the dashboard can hide the Links screen when
+// the feature is turned off.
 func (s *Server) GetCaptureConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, captureConfigResponse{
 		ReadabilityVersion:   stringOrNil(s.ReadabilityVersion),
 		AIModel:              stringOrNil(s.AIModel),
 		ManualUploadMaxBytes: s.ManualUploadMaxBytes,
+		LinksEnabled:         s.EnableLinks,
+		WaybackEnabled:       s.Wayback != nil,
 	})
 }
 
@@ -2357,14 +2429,26 @@ func (s *Server) ListTagPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
+	// How many links carry the tag, for the screen's "{n} links have this
+	// tag" line. Always 0 with links off.
+	var linkCount int64
+	if s.EnableLinks {
+		linkCount, err = s.Queries.CountTagLinks(ctx, tag.ID)
+		if err != nil {
+			log.Printf("warning: failed to count links for tag %d: %v", tag.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
 	// Includes the tag itself, not just its pages -- the caller (the
 	// TagDetail dashboard screen) needs the tag's name for its own
 	// heading and has no other endpoint that would give it that
 	// alongside the pages in one round trip. GetTagByID's own result is
 	// already in hand from the existence check above, so this is free.
 	writeJSON(w, http.StatusOK, map[string]any{
-		"tag":   tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
-		"pages": resp,
+		"tag":        tagResponse{ID: tag.ID, Name: tag.Name, Slug: tag.Slug},
+		"pages":      resp,
+		"link_count": linkCount,
 	})
 }
 
@@ -2630,7 +2714,26 @@ func (s *Server) ListCollectionPages(w http.ResponseWriter, r *http.Request) {
 	for i := range pages {
 		resp = append(resp, pageResponseFromPage(&pages[i]))
 	}
-	writeJSON(w, http.StatusOK, map[string][]pageResponse{"pages": resp})
+	// How many links are directly in the collection (not its sub-collections',
+	// like its pages), for the screen's "{n} links in this collection" line.
+	// Always 0 with links off.
+	var linkCount int64
+	if s.EnableLinks {
+		linkCount, err = s.Queries.CountCollectionLinks(ctx, id)
+		if err != nil {
+			log.Printf("warning: failed to count links for collection %d: %v", id, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, collectionPagesResponse{Pages: resp, LinkCount: linkCount})
+}
+
+// collectionPagesResponse is GET /api/collections/{id}/pages: the pages directly
+// in a collection, and how many links are.
+type collectionPagesResponse struct {
+	Pages     []pageResponse `json:"pages"`
+	LinkCount int64          `json:"link_count"`
 }
 
 type addPageToCollectionRequest struct {
@@ -2709,17 +2812,17 @@ func (s *Server) RemovePageFromCollection(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type addPageLinkRequest struct {
-	LinkPageID int64 `json:"link_page_id"`
+type addPageRelationRequest struct {
+	PageID int64 `json:"page_id"`
 }
 
-// POST /api/pages/{id}/links: links two pages bidirectionally -- both
+// POST /api/pages/{id}/related-pages: relates two pages bidirectionally -- both
 // must belong to the requesting user (checked independently, same as
 // AddPageToCollection checks both the page and the collection), and
-// AddPageLink itself canonicalizes which one is stored as page_id_a vs
+// AddPageRelation itself canonicalizes which one is stored as page_id_a vs
 // page_id_b, so the order these two ids are checked/passed in doesn't
 // matter.
-func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
+func (s *Server) AddPageRelation(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -2730,13 +2833,13 @@ func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid page id")
 		return
 	}
-	req, err := decodeJSON[addPageLinkRequest](r)
-	if err != nil || req.LinkPageID == 0 {
-		writeError(w, http.StatusBadRequest, "link_page_id is required")
+	req, err := decodeJSON[addPageRelationRequest](r)
+	if err != nil || req.PageID == 0 {
+		writeError(w, http.StatusBadRequest, "page_id is required")
 		return
 	}
-	if req.LinkPageID == pageID {
-		writeError(w, http.StatusBadRequest, "a page cannot be linked to itself")
+	if req.PageID == pageID {
+		writeError(w, http.StatusBadRequest, "a page cannot be related to itself")
 		return
 	}
 	ctx := r.Context()
@@ -2746,28 +2849,28 @@ func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "page not found")
 		return
 	}
-	linkPage, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: req.LinkPageID, UserID: user.ID})
+	relatedPage, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: req.PageID, UserID: user.ID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "page not found")
 		return
 	}
 
-	if err := s.Queries.AddPageLink(ctx, db.AddPageLinkParams{PageA: page.ID, PageB: linkPage.ID}); err != nil {
-		log.Printf("warning: failed to link page %d to page %d: %v", page.ID, linkPage.ID, err)
+	if err := s.Queries.AddPageRelation(ctx, db.AddPageRelationParams{PageA: page.ID, PageB: relatedPage.ID}); err != nil {
+		log.Printf("warning: failed to relate page %d to page %d: %v", page.ID, relatedPage.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, pageLinkResponseFromPage(&linkPage))
+	writeJSON(w, http.StatusCreated, relatedPageFromPage(&relatedPage))
 }
 
-// DELETE /api/pages/{id}/links/{linkPageId}: only the {id} side needs to
+// DELETE /api/pages/{id}/related-pages/{relatedPageId}: only the {id} side needs to
 // be verified as belonging to the requester (same reasoning as
 // RemovePageFromCollection not separately verifying {collectionId} --
 // the DELETE is scoped to a pair involving an already-verified,
-// user-owned page, so it simply matches zero rows if {linkPageId} isn't
-// actually linked to it, rather than needing its own ownership check).
-func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
+// user-owned page, so it simply matches zero rows if {relatedPageId} isn't
+// actually related to it, rather than needing its own ownership check).
+func (s *Server) RemovePageRelation(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -2778,9 +2881,9 @@ func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid page id")
 		return
 	}
-	linkPageID, err := strconv.ParseInt(chi.URLParam(r, "linkPageId"), 10, 64)
+	relatedPageID, err := strconv.ParseInt(chi.URLParam(r, "relatedPageId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid link page id")
+		writeError(w, http.StatusBadRequest, "invalid related page id")
 		return
 	}
 	ctx := r.Context()
@@ -2791,8 +2894,8 @@ func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.RemovePageLink(ctx, db.RemovePageLinkParams{PageA: page.ID, PageB: linkPageID}); err != nil {
-		log.Printf("warning: failed to remove link between page %d and page %d: %v", page.ID, linkPageID, err)
+	if err := s.Queries.RemovePageRelation(ctx, db.RemovePageRelationParams{PageA: page.ID, PageB: relatedPageID}); err != nil {
+		log.Printf("warning: failed to remove the relation between page %d and page %d: %v", page.ID, relatedPageID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -2800,21 +2903,21 @@ func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// linkCandidateLimit caps GET /api/pages/link-candidates -- a live
+// relationCandidateLimit caps GET /api/pages/relation-candidates -- a live
 // typeahead dropdown showing a handful of matches, deliberately much
 // smaller than defaultPageLimit/maxPageLimit above (those back a
 // browsable, paginated listing; this doesn't paginate at all).
-const linkCandidateLimit = 8
+const relationCandidateLimit = 8
 
-// GET /api/pages/link-candidates?q=...: title-or-normalized_url search
-// for the "link this page to..." picker, excluding the page being
-// linked from (?exclude=) so it can never show up as a candidate to
-// link to itself. Doesn't also exclude pages already linked to it --
+// GET /api/pages/relation-candidates?q=...: title-or-normalized_url search
+// for the "relate this page to..." picker, excluding the page being
+// related from (?exclude=) so it can never show up as a candidate to
+// relate to itself. Doesn't also exclude pages already related to it --
 // the frontend already has that full list loaded (GetPage's own
-// "links"), and filters candidates against it client-side, the same way
+// "related_pages"), and filters candidates against it client-side, the same way
 // PageDetail already filters the collections picker against
 // page.collections rather than asking the backend to.
-func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
+func (s *Server) SearchPageRelationCandidates(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -2822,8 +2925,8 @@ func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query().Get("q")
 	resp := struct {
-		Pages []pageLinkResponse `json:"pages"`
-	}{Pages: []pageLinkResponse{}}
+		Pages []relatedPageResponse `json:"pages"`
+	}{Pages: []relatedPageResponse{}}
 	if query == "" {
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -2835,8 +2938,8 @@ func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pages, err := s.Queries.SearchPagesForLinking(r.Context(), db.SearchPagesForLinkingParams{
-		UserID: user.ID, ExcludePageID: excludePageID, Query: query, Limit: linkCandidateLimit,
+	pages, err := s.Queries.SearchPageRelationCandidates(r.Context(), db.SearchPageRelationCandidatesParams{
+		UserID: user.ID, ExcludePageID: excludePageID, Query: query, Limit: relationCandidateLimit,
 	})
 	if err != nil {
 		log.Printf("warning: failed to search link candidates for user %d: %v", user.ID, err)
@@ -2844,7 +2947,7 @@ func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range pages {
-		resp.Pages = append(resp.Pages, pageLinkResponseFromPage(&pages[i]))
+		resp.Pages = append(resp.Pages, relatedPageFromPage(&pages[i]))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

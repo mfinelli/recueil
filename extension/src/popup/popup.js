@@ -35,6 +35,8 @@ import {
   PAIR_DEVICE,
   GET_AUTH_STATE,
   CAPTURE_ACTIVE_TAB,
+  SAVE_ACTIVE_TAB_AS_LINK,
+  GET_LINKS_ENABLED,
   UNPAIR_DEVICE,
   GET_QUEUE_LIST,
   REFRESH_QUEUE_LIST,
@@ -42,6 +44,9 @@ import {
   GET_BOOKMARK_SYNC_STATE,
   ENABLE_BOOKMARK_SYNC,
   DISABLE_BOOKMARK_SYNC,
+  GET_LINK_BOOKMARK_SYNC_STATE,
+  ENABLE_LINK_BOOKMARK_SYNC,
+  DISABLE_LINK_BOOKMARK_SYNC,
 } from "../common/messages.js";
 import {
   getPairingDraft,
@@ -272,6 +277,29 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   );
   captureBlock.append(captureButton);
 
+  // "Save as link": a plain link under the prominent capture button, not a
+  // second button -- saving a link is the lesser, occasional action (for what
+  // can't be archived well), and shouldn't compete with the one the popup is
+  // opened for. Hidden until the background confirms links are on for this
+  // instance (a cached answer, so this is almost always instant), and it shares
+  // the capture button's status line below, since only one runs at a time.
+  const saveLink = document.createElement("a");
+  saveLink.href = "#";
+  saveLink.className = "save-link";
+  saveLink.hidden = true;
+  saveLink.textContent = t("saveAsLinkLink");
+  saveLink.addEventListener("click", (event) => {
+    event.preventDefault();
+    handleSaveLinkClick(captureButton, saveLink);
+  });
+  captureBlock.append(saveLink);
+  browser.runtime
+    .sendMessage({ type: GET_LINKS_ENABLED })
+    .then((enabled) => {
+      saveLink.hidden = enabled !== true;
+    })
+    .catch(() => {});
+
   const status = document.createElement("div");
   status.id = "capture-status";
   captureBlock.append(status);
@@ -284,7 +312,8 @@ function renderPairedView({ workerBaseURL, deviceName }) {
   divider.className = "rule";
   app.append(divider);
 
-  app.append(renderBookmarkSyncSection());
+  app.append(renderBookmarkSyncSection(PAGES_SYNC_CONTROL));
+  app.append(renderBookmarkSyncSection(LINKS_SYNC_CONTROL));
 
   const unpairLink = document.createElement("a");
   unpairLink.href = "#";
@@ -458,34 +487,83 @@ function showAutoDismissingSuccess(status, text) {
   }, QUEUE_SUCCESS_DISMISS_MS);
 }
 
+/**
+ * What differs between the two bookmark-sync toggles (archived pages, saved
+ * links): their label, the messages that read, enable and disable them, and --
+ * for links only -- whether the toggle is shown at all.
+ *
+ * @typedef {Object} BookmarkSyncControl
+ * @property {string} id - prefix for the element ids ("" for pages)
+ * @property {string} labelKey
+ * @property {string} getStateType
+ * @property {string} enableType
+ * @property {string} disableType
+ * @property {boolean} onlyWithLinks - shown only when the instance has links
+ *   on, or when the sync is already on (so it can still be turned off after
+ *   links are disabled)
+ */
+
+/** @type {BookmarkSyncControl} */
+const PAGES_SYNC_CONTROL = {
+  id: "",
+  labelKey: "bookmarkSyncLabel",
+  getStateType: GET_BOOKMARK_SYNC_STATE,
+  enableType: ENABLE_BOOKMARK_SYNC,
+  disableType: DISABLE_BOOKMARK_SYNC,
+  onlyWithLinks: false,
+};
+
+/** @type {BookmarkSyncControl} */
+const LINKS_SYNC_CONTROL = {
+  id: "link-",
+  labelKey: "linkBookmarkSyncLabel",
+  getStateType: GET_LINK_BOOKMARK_SYNC_STATE,
+  enableType: ENABLE_LINK_BOOKMARK_SYNC,
+  disableType: DISABLE_LINK_BOOKMARK_SYNC,
+  onlyWithLinks: true,
+};
+
 // A checkbox toggle, not a button -- reflects an actual on/off state
 // (unlike "Save this page"/"Refresh", which are one-shot actions), and
 // checkboxes are the conventional control for that.
-function renderBookmarkSyncSection() {
+/** @param {BookmarkSyncControl} control */
+function renderBookmarkSyncSection(control) {
   const section = document.createElement("div");
   section.className = "bookmark-sync-section";
 
   const label = document.createElement("label");
   const labelText = document.createElement("span");
-  labelText.textContent = t("bookmarkSyncLabel");
+  labelText.textContent = t(control.labelKey);
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
-  checkbox.id = "bookmark-sync-toggle";
+  checkbox.id = `${control.id}bookmark-sync-toggle`;
   label.append(labelText, checkbox);
 
   const status = document.createElement("div");
-  status.id = "bookmark-sync-status";
+  status.id = `${control.id}bookmark-sync-status`;
 
   section.append(label, status);
 
-  browser.runtime
-    .sendMessage({ type: GET_BOOKMARK_SYNC_STATE })
-    .then((/** @type {any} */ enabled) => {
+  if (control.onlyWithLinks) {
+    section.hidden = true;
+  }
+
+  Promise.all([
+    browser.runtime.sendMessage({ type: control.getStateType }),
+    control.onlyWithLinks
+      ? browser.runtime.sendMessage({ type: GET_LINKS_ENABLED })
+      : Promise.resolve(true),
+  ])
+    .then(([enabled, linksOn]) => {
       checkbox.checked = Boolean(enabled);
-    });
+      if (control.onlyWithLinks) {
+        section.hidden = !(linksOn === true || enabled === true);
+      }
+    })
+    .catch(() => {});
 
   checkbox.addEventListener("change", () =>
-    handleBookmarkSyncToggle(checkbox, status),
+    handleBookmarkSyncToggle(checkbox, status, control),
   );
 
   return section;
@@ -494,8 +572,9 @@ function renderBookmarkSyncSection() {
 /**
  * @param {HTMLInputElement} checkbox
  * @param {HTMLElement} status
+ * @param {BookmarkSyncControl} control
  */
-async function handleBookmarkSyncToggle(checkbox, status) {
+async function handleBookmarkSyncToggle(checkbox, status, control) {
   checkbox.disabled = true;
   status.textContent = "";
 
@@ -506,7 +585,9 @@ async function handleBookmarkSyncToggle(checkbox, status) {
       // <all_urls> request (see auth.js's doc comment) -- once this
       // crosses the runtime.sendMessage boundary into the background,
       // whether the browser still considers it "triggered by a real user
-      // action" isn't reliable to assume across Chrome and Firefox.
+      // action" isn't reliable to assume across Chrome and Firefox. Both
+      // toggles share the one permission; asking for one already held is
+      // simply granted.
       const granted = await browser.permissions.request({
         permissions: ["bookmarks"],
       });
@@ -516,13 +597,13 @@ async function handleBookmarkSyncToggle(checkbox, status) {
         status.textContent = t("bookmarkSyncPermissionDenied");
         return;
       }
-      await browser.runtime.sendMessage({ type: ENABLE_BOOKMARK_SYNC });
+      await browser.runtime.sendMessage({ type: control.enableType });
     } else {
-      await browser.runtime.sendMessage({ type: DISABLE_BOOKMARK_SYNC });
+      await browser.runtime.sendMessage({ type: control.disableType });
     }
   } catch (error) {
     // Enabling failed (the initial sync itself, most likely -- see
-    // bookmarks.js's enableBookmarkSync doc comment for why that error is
+    // bookmarks.js's enableSync doc comment for why that error is
     // allowed to propagate this far rather than being swallowed like the
     // alarm's own retries are) -- reflect that the toggle didn't actually
     // end up in the state it looks like from the checkbox alone.
@@ -542,7 +623,11 @@ async function handleCaptureClick(captureButton) {
   const status = /** @type {HTMLElement} */ (
     document.getElementById("capture-status")
   );
+  // Only one of capture and save-as-link runs at a time: the other is held off
+  // while this one is in flight.
+  const saveLink = document.querySelector(".save-link");
   captureButton.disabled = true;
+  saveLink?.setAttribute("aria-disabled", "true");
   status.className = "status status--pending";
   status.textContent = t("capturing");
 
@@ -555,6 +640,39 @@ async function handleCaptureClick(captureButton) {
     status.textContent = error instanceof Error ? error.message : String(error);
   } finally {
     captureButton.disabled = false;
+    saveLink?.removeAttribute("aria-disabled");
+  }
+}
+
+/**
+ * @param {HTMLButtonElement} captureButton
+ * @param {HTMLAnchorElement} saveLink
+ */
+async function handleSaveLinkClick(captureButton, saveLink) {
+  // A link, not a button, so it has no disabled state of its own: this is the
+  // guard against a second click (or a click during a capture) doing a second
+  // save.
+  if (saveLink.getAttribute("aria-disabled") === "true") {
+    return;
+  }
+  const status = /** @type {HTMLElement} */ (
+    document.getElementById("capture-status")
+  );
+  captureButton.disabled = true;
+  saveLink.setAttribute("aria-disabled", "true");
+  status.className = "status status--pending";
+  status.textContent = t("savingLink");
+
+  try {
+    await browser.runtime.sendMessage({ type: SAVE_ACTIVE_TAB_AS_LINK });
+    status.className = "status status--success";
+    status.textContent = t("linkSaved");
+  } catch (error) {
+    status.className = "status status--error";
+    status.textContent = error instanceof Error ? error.message : String(error);
+  } finally {
+    captureButton.disabled = false;
+    saveLink.removeAttribute("aria-disabled");
   }
 }
 

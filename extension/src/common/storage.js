@@ -55,7 +55,38 @@ export async function setConfig(config) {
 }
 
 export async function clearConfig() {
+  // The feature cache belongs to the instance this config paired with, so it
+  // goes with it.
   await browser.storage.local.remove(STORAGE_KEY);
+  await browser.storage.local.remove(LINK_FEATURE_CACHE_KEY);
+}
+
+const LINK_FEATURE_CACHE_KEY = "recueil:link-features";
+
+/**
+ * What the Worker's GET /config last said about the links feature, cached
+ * so the popup and every save don't each cost a Worker request just to
+ * learn whether a feature is on.
+ * @typedef {Object} LinkFeatureCache
+ * @property {string} workerBaseURL - the instance this was fetched from; a
+ *   cache from another instance (the device re-paired elsewhere) is ignored
+ * @property {boolean} linksEnabled
+ * @property {number} faviconInlineMaxBytes - the largest favicon the Worker
+ *   accepts inline; anything larger goes through R2
+ * @property {string} fetchedAt - ISO timestamp of the last successful fetch
+ */
+
+/** @returns {Promise<LinkFeatureCache|null>} */
+export async function getLinkFeatureCache() {
+  const stored = await browser.storage.local.get(LINK_FEATURE_CACHE_KEY);
+  return /** @type {LinkFeatureCache|null} */ (
+    stored[LINK_FEATURE_CACHE_KEY] ?? null
+  );
+}
+
+/** @param {LinkFeatureCache} cache */
+export async function setLinkFeatureCache(cache) {
+  await browser.storage.local.set({ [LINK_FEATURE_CACHE_KEY]: cache });
 }
 
 // A separate key from STORAGE_KEY above, this is in-progress form state
@@ -209,4 +240,44 @@ export async function getBookmarksFolderId() {
 /** @param {string|null} folderId */
 export async function setBookmarksFolderId(folderId) {
   await browser.storage.local.set({ [BOOKMARKS_FOLDER_ID_KEY]: folderId });
+}
+
+// The saved-links bookmark sync's own state: the same two pieces as the
+// archived-pages sync above, under their own keys, since the two syncs are
+// independent -- separately opted into, each with its own folder.
+const LINK_BOOKMARK_SYNC_ENABLED_KEY = "recueil:link-bookmark-sync-enabled";
+
+/** @returns {Promise<boolean>} */
+export async function isLinkBookmarkSyncEnabled() {
+  const stored = await browser.storage.local.get(
+    LINK_BOOKMARK_SYNC_ENABLED_KEY,
+  );
+  return stored[LINK_BOOKMARK_SYNC_ENABLED_KEY] === true;
+}
+
+/** @param {boolean} enabled */
+export async function setLinkBookmarkSyncEnabled(enabled) {
+  await browser.storage.local.set({
+    [LINK_BOOKMARK_SYNC_ENABLED_KEY]: enabled,
+  });
+}
+
+// The browser-assigned id of the dedicated "recueil links" folder -- like the
+// pages folder's id, per-browser-installation, so it needs the same liveness
+// check before being trusted (see bookmarks.js's ensureFolder).
+const LINK_BOOKMARKS_FOLDER_ID_KEY = "recueil:link-bookmarks-folder-id";
+
+/** @returns {Promise<string|null>} */
+export async function getLinkBookmarksFolderId() {
+  const stored = await browser.storage.local.get(LINK_BOOKMARKS_FOLDER_ID_KEY);
+  return /** @type {string|null} */ (
+    stored[LINK_BOOKMARKS_FOLDER_ID_KEY] ?? null
+  );
+}
+
+/** @param {string|null} folderId */
+export async function setLinkBookmarksFolderId(folderId) {
+  await browser.storage.local.set({
+    [LINK_BOOKMARKS_FOLDER_ID_KEY]: folderId,
+  });
 }

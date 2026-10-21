@@ -1,6 +1,6 @@
 +++
 title = "Mobile Capture"
-weight = 3
+weight = 4
 template = "docs-page.html"
 
 [extra]

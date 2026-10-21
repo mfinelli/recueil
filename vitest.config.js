@@ -36,6 +36,7 @@ export default defineConfig(async () => {
                 d1Databases: { DB: "test-db" },
                 bindings: {
                   SERVICE_SECRET: "test-service-secret",
+                  LINKS_ENABLED: "true",
                   TEST_MIGRATIONS: migrations,
                   // Fake R2 S3 API credentials -- only exercised for
                   // presigned-URL *construction* in tests (see

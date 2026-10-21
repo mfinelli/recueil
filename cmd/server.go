@@ -44,11 +44,13 @@ import (
 	"github.com/mfinelli/recueil/internal/db"
 	"github.com/mfinelli/recueil/internal/devices"
 	"github.com/mfinelli/recueil/internal/httpapi"
+	"github.com/mfinelli/recueil/internal/linkicons"
 	"github.com/mfinelli/recueil/internal/mirror"
 	"github.com/mfinelli/recueil/internal/pendingcaptures"
 	"github.com/mfinelli/recueil/internal/pgmigrate"
 	"github.com/mfinelli/recueil/internal/queueitems"
 	"github.com/mfinelli/recueil/internal/urlnorm"
+	"github.com/mfinelli/recueil/internal/wayback"
 )
 
 var (
@@ -75,6 +77,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.EnableLinks {
+		if err := linkicons.New(cfg.LinksDir).Check(); err != nil {
+			return err
+		}
 	}
 
 	logger := httplog.NewLogger("recueil", httplog.Options{
@@ -117,6 +124,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 	queueItemsClient := queueitems.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	pendingCapturesClient := pendingcaptures.NewClient(cfg.WorkerURL, cfg.WorkerServiceSecret)
 	store := archive.New(cfg.ArchiveDir)
+
+	// Wayback Machine submission: on only when an archive.org key pair is
+	// configured. The server only ever starts a submission; recording how each
+	// went is the agent's job (see cmd/agent.go).
+	var waybackService *wayback.Service
+	if cfg.WaybackEnabled() {
+		waybackService = wayback.NewService(queries, wayback.NewClient(cfg.WaybackAccessKey, cfg.WaybackSecretKey), nil, nil)
+	}
+
+	// Only with links on; nil otherwise, and nothing then routes to it.
+	var linkStore *linkicons.Store
+	if cfg.EnableLinks {
+		linkStore = linkicons.New(cfg.LinksDir)
+	}
 	// AI enrichment is toggled off entirely via an empty AIBaseURL --
 	// cfg.AIModel itself has no such "unset" meaning of its own (a
 	// stale/leftover value there with AIBaseURL empty shouldn't be
@@ -137,7 +158,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 	pipeline := urlnorm.NewPipeline(clearURLs, urlnorm.Canonicalize{})
 
-	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes)
+	server := httpapi.NewServer(queries, pool, store, mirrorClient, devicesClient, queueItemsClient, pendingCapturesClient, bootstrap, cfg.SessionCookieSecure, pairingKey, cfg.EnableOpenRegistration, ReadabilityVersion, aiModel, cfg.WorkerURL, pipeline, cfg.ManualUploadMaxBytes, cfg.EnableLinks, linkStore, waybackService)
 
 	dashboard, err := fs.Sub(DashboardFS, "dist")
 	if err != nil {

@@ -161,6 +161,100 @@ describe("fetch (router)", () => {
     expect(response.status).toBe(401);
   });
 
+  it("routes POST /links to handleSaveLink (401 with no auth confirms it was reached)", async () => {
+    const response = await exports.default.fetch("https://example.com/links", {
+      method: "POST",
+      body: JSON.stringify({ link_id: "x" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /links/upload-urls to handleGetLinkUploadUrls (401 with no auth confirms it was reached)", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/links/upload-urls",
+      { method: "POST", body: JSON.stringify({ link_id: "x" }) },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /queue/:id/complete-link, extracting the id from the path correctly", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/queue/some-id/complete-link",
+      { method: "POST", body: JSON.stringify({ link_id: "x" }) },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("does not match /queue/complete-link (missing the id segment)", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/queue/complete-link",
+      { method: "POST", body: "{}" },
+    );
+    expect(response.status).toBe(404);
+  });
+
+  it("routes GET /archived-links to handleListArchivedLinks (401 with no auth confirms it was reached)", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/archived-links",
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it.each([
+    ["GET", "/internal/archived-links/last-sync"],
+    ["POST", "/internal/archived-links/mirror"],
+    ["GET", "/internal/archived-links/link-ids"],
+    ["POST", "/internal/archived-links/delete"],
+  ])(
+    "routes %s %s to its handler (401 with no service key confirms it was reached)",
+    async (method, path) => {
+      const response = await exports.default.fetch(
+        `https://example.com${path}`,
+        {
+          method,
+        },
+      );
+      expect(response.status).toBe(401);
+    },
+  );
+
+  it("returns 404 for GET /links (wrong method for this route)", async () => {
+    const response = await exports.default.fetch("https://example.com/links");
+    expect(response.status).toBe(404);
+  });
+
+  it("routes POST /internal/pending-links to the claim handler (401 with no service key confirms it was reached)", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/internal/pending-links",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("routes POST /internal/pending-links/:id/fetched, extracting the id from the path correctly", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/internal/pending-links/some-id/fetched",
+      { method: "POST", headers: { "X-Service-Key": "test-service-secret" } },
+    );
+    // 404 from the handler (no such row) rather than the router's own 404 is
+    // indistinguishable by status, so the unauthenticated call is the proof it
+    // was reached.
+    expect(response.status).toBe(404);
+    const unauthenticated = await exports.default.fetch(
+      "https://example.com/internal/pending-links/some-id/fetched",
+      { method: "POST" },
+    );
+    expect(unauthenticated.status).toBe(401);
+  });
+
+  it("routes POST /internal/pending-links/cleanup to the cleanup handler (401 with no service key confirms it was reached)", async () => {
+    const response = await exports.default.fetch(
+      "https://example.com/internal/pending-links/cleanup",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(401);
+  });
+
   it("routes POST /queue/:id/complete, extracting the id from the path correctly", async () => {
     const response = await exports.default.fetch(
       "https://example.com/queue/some-id/complete",

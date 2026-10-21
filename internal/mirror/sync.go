@@ -20,17 +20,27 @@ package mirror
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mfinelli/recueil/internal/db"
+	"github.com/mfinelli/recueil/internal/pendinglinks"
 )
 
-// SyncerParams are Syncer's dependencies, all required.
+// SyncerParams are Syncer's dependencies; Queries and Client are required.
 type SyncerParams struct {
 	Queries *db.Queries
 	Client  *Client
+
+	// LinksEnabled is the links feature flag: with it on, SyncOnce also keeps
+	// the link bookmark mirror (archived_links) in step with Postgres's links
+	// table.
+	LinksEnabled bool
+	// Logger defaults to slog.Default() if nil.
+	Logger *slog.Logger
 }
 
 // Syncer keeps the D1 bookmark-list mirror (archived_pages) in step with
@@ -40,12 +50,18 @@ type SyncerParams struct {
 // to remember to also push a D1 update. A schedule doesn't care how or where
 // Postgres changed; it just asks "what's different now."
 type Syncer struct {
-	queries *db.Queries
-	client  *Client
+	queries      *db.Queries
+	client       *Client
+	linksEnabled bool
+	logger       *slog.Logger
 }
 
 func NewSyncer(p SyncerParams) *Syncer {
-	return &Syncer{queries: p.Queries, client: p.Client}
+	logger := p.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Syncer{queries: p.Queries, client: p.Client, linksEnabled: p.LinksEnabled, logger: logger}
 }
 
 // SyncOnce runs one full sync cycle: an incremental upsert of whatever
@@ -67,12 +83,114 @@ func NewSyncer(p SyncerParams) *Syncer {
 // MAX(updated_at) correctly reflects all of them, or none do, and the
 // next cycle's "WHERE updated_at > lastSync" query picks up the exact
 // same unchanged set again -- a safe, idempotent retry either way.
+//
+// With links enabled, the same cycle runs for links against their own D1 table
+// (syncLinks). The two are independent -- a failure syncing one never stops the
+// other -- and both errors are reported if both fail.
 func (s *Syncer) SyncOnce(ctx context.Context) error {
+	var errs []error
+	if err := s.syncPages(ctx); err != nil {
+		errs = append(errs, err)
+	}
+	if s.linksEnabled {
+		if err := s.syncLinks(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Syncer) syncPages(ctx context.Context) error {
 	if err := s.syncIncremental(ctx); err != nil {
 		return fmt.Errorf("mirror: incremental sync: %w", err)
 	}
 	if err := s.reconcileDeletions(ctx); err != nil {
 		return fmt.Errorf("mirror: deletion reconciliation: %w", err)
+	}
+	return nil
+}
+
+// syncLinks is the links version of one full cycle: the incremental upsert, then
+// deletion reconciliation, exactly as for pages. A Worker that doesn't have the
+// archived-links routes yet (it was deployed before this backend) is not a
+// failure -- it's logged and skipped, and links start syncing as soon as the
+// Worker catches up.
+func (s *Syncer) syncLinks(ctx context.Context) error {
+	err := s.syncLinksIncremental(ctx)
+	if err == nil {
+		err = s.reconcileLinkDeletions(ctx)
+	}
+	if errors.Is(err, pendinglinks.ErrWorkerWithoutLinks) {
+		s.logger.WarnContext(ctx, "mirror: the Worker has no archived-links routes yet -- deploy the updated Worker (terraform apply); links are mirrored once it's there")
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("mirror: link sync: %w", err)
+	}
+	return nil
+}
+
+func (s *Syncer) syncLinksIncremental(ctx context.Context) error {
+	lastSync, err := s.client.GetArchivedLinksLastSync(ctx)
+	if err != nil {
+		return fmt.Errorf("getting last-sync checkpoint: %w", err)
+	}
+
+	since := pgtype.Timestamptz{Valid: false}
+	if lastSync != nil {
+		since = pgtype.Timestamptz{Time: *lastSync, Valid: true}
+	}
+
+	links, err := s.queries.GetLinksUpdatedSince(ctx, since)
+	if err != nil {
+		return fmt.Errorf("querying links updated since %v: %w", lastSync, err)
+	}
+	if len(links) == 0 {
+		return nil
+	}
+
+	entries := make([]ArchivedLink, len(links))
+	for i := range links {
+		l := links[i]
+		var title *string
+		if l.Title.Valid {
+			title = &l.Title.String
+		}
+		entries[i] = ArchivedLink{
+			LinkID:    l.ID,
+			UserID:    l.UserID,
+			RawURL:    l.RawUrl,
+			Title:     title,
+			UpdatedAt: l.UpdatedAt.Time,
+		}
+	}
+
+	if err := s.client.MirrorArchivedLinks(ctx, entries); err != nil {
+		return fmt.Errorf("pushing %d updated link(s): %w", len(entries), err)
+	}
+	return nil
+}
+
+func (s *Syncer) reconcileLinkDeletions(ctx context.Context) error {
+	d1IDs, err := s.client.ListArchivedLinkIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("listing D1 link ids: %w", err)
+	}
+	if len(d1IDs) == 0 {
+		return nil
+	}
+
+	pgIDs, err := s.queries.GetMirrorEligibleLinkIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("querying mirror-eligible postgres link ids: %w", err)
+	}
+
+	toDelete := idsNotIn(d1IDs, pgIDs)
+	if len(toDelete) == 0 {
+		return nil
+	}
+	if err := s.client.DeleteArchivedLinks(ctx, toDelete); err != nil {
+		return fmt.Errorf("deleting %d stale D1 link(s): %w", len(toDelete), err)
 	}
 	return nil
 }

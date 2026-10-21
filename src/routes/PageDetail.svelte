@@ -47,11 +47,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      run through that translation at all. -->
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
-  import { SvelteSet } from "svelte/reactivity";
   import { apiJSON, ApiError } from "../lib/api";
   import { formatBytes } from "../lib/format";
   import { renderMarkdown } from "../lib/markdown";
+  import {
+    availableCollections as availableIn,
+    collectionPath as pathIn,
+    collectionNamePath as namePathIn,
+  } from "../lib/collections";
   import AppHeader from "../components/AppHeader.svelte";
+  import SameUrlHint from "../components/SameUrlHint.svelte";
+  import WaybackBlock from "../components/WaybackBlock.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -63,13 +69,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Upload from "@lucide/svelte/icons/upload";
-  import Globe from "@lucide/svelte/icons/globe";
+  import Favicon from "../components/Favicon.svelte";
+  import RelatedItems from "../components/RelatedItems.svelte";
+  import { session } from "../lib/session.svelte";
   import type {
     PageDetail,
     TagCreated,
     Collection,
     CollectionListResponse,
-    PageLink,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -101,31 +108,40 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let recaptureQueued = $state(false);
   let deleting = $state(false);
 
-  // Unlike PageList's favicon handling, there's no placeholder/fallback
-  // shown here on failure -- a single one-off image next to the title
-  // doesn't need to preserve alignment across many rows the way a list
-  // does, so a missing/broken favicon just means nothing renders there.
-  let faviconFailed = $state(false);
-  // Keyed by linked page id, same reasoning as PageList's
-  // faviconLoadFailed: several linked pages render at once, so one
-  // shared boolean would incorrectly hide every favicon just because
-  // one of them 404ed.
-  let linkFaviconFailed = new SvelteSet<number>();
-
   // Independent per section (not one shared "edit mode" for the whole
   // page) -- editing tags shouldn't also pop open the collections forms.
   // Pills-only by default; the pencil/check toggle reveals the remove
   // buttons and add forms.
   let editingTags = $state(false);
   let editingCollections = $state(false);
-  let editingLinks = $state(false);
-  let linkSearchQuery = $state("");
-  let linkSearchResults = $state<PageLink[]>([]);
-  let addingLink = $state(false);
-  // Plain variable, not $state -- it's a setTimeout handle consumed only
-  // by clearTimeout/reassignment within handleLinkSearchInput itself,
-  // never read reactively, same as Library.svelte's searchDebounce.
-  let linkSearchDebounce: ReturnType<typeof setTimeout> | undefined;
+
+  // Related pages' own state (the pencil, the search) lives in RelatedItems; these
+  // are its labels, so the strings stay with the rest of this screen's messages.
+  const relatedLabels = $derived({
+    heading: m.pagedetail_related_heading(),
+    empty: m.pagedetail_related_empty(),
+    edit: m.pagedetail_edit_related(),
+    done: m.pagedetail_done_editing_related(),
+    searchPlaceholder: m.pagedetail_related_search_placeholder(),
+    noResults: m.pagedetail_related_no_results(),
+    remove: (name: string) => m.pagedetail_remove_related_aria({ name }),
+    relateError: m.pagedetail_related_error(),
+    removeError: m.pagedetail_remove_related_error(),
+  });
+
+  // The same, for the links related to this page (a page and a link can be related,
+  // from either end).
+  const relatedLinksLabels = $derived({
+    heading: m.pagedetail_related_links_heading(),
+    empty: m.pagedetail_related_links_empty(),
+    edit: m.pagedetail_edit_related_links(),
+    done: m.pagedetail_done_editing_related_links(),
+    searchPlaceholder: m.pagedetail_related_search_placeholder(),
+    noResults: m.pagedetail_related_links_no_results(),
+    remove: (name: string) => m.pagedetail_remove_related_aria({ name }),
+    relateError: m.pagedetail_related_links_error(),
+    removeError: m.pagedetail_remove_related_error(),
+  });
 
   $effect(() => {
     const id = params.id;
@@ -133,13 +149,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     loadError = null;
     actionError = null;
     page = null;
-    faviconFailed = false;
     editingTags = false;
     editingCollections = false;
     editingNotes = false;
-    editingLinks = false;
-    linkSearchQuery = "";
-    linkSearchResults = [];
 
     Promise.allSettled([
       apiJSON<PageDetail>(`/pages/${id}`),
@@ -212,105 +224,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     } catch (err) {
       actionError =
         err instanceof ApiError ? err.message : m.pagedetail_remove_tag_error();
-    }
-  }
-
-  function markLinkFaviconFailed(pageId: number) {
-    linkFaviconFailed.add(pageId);
-  }
-
-  // Same reasoning as PageList's showFavicon: skip the image request
-  // entirely (straight to the placeholder) for a link that never had a
-  // favicon captured, rather than waiting on a request that was always
-  // going to 404.
-  function showLinkFavicon(linked: PageLink): boolean {
-    return linked.favicon_path !== null && !linkFaviconFailed.has(linked.id);
-  }
-
-  // page.links already loaded with the page, so this only needs to
-  // exclude those from the *search* results client-side -- same
-  // approach as availableCollections above, and the same reasoning
-  // SearchPagesForLinking's backend comment gives for not also
-  // doing this filtering server-side.
-  function availableLinkResults(p: PageDetail): PageLink[] {
-    const linkedIds = new Set(p.links.map((l) => l.id));
-    return linkSearchResults.filter((r) => !linkedIds.has(r.id));
-  }
-
-  // Paired with `bind:value={linkSearchQuery}` on the input rather than
-  // Library's uncontrolled-input pattern -- a successful addLink()
-  // below needs to clear the visible search text programmatically, which
-  // a controlled input makes trivial and an uncontrolled one wouldn't.
-  function handleLinkSearchInput() {
-    clearTimeout(linkSearchDebounce);
-    const value = linkSearchQuery;
-    if (!value.trim()) {
-      linkSearchResults = [];
-      return;
-    }
-    linkSearchDebounce = setTimeout(async () => {
-      if (!page) return;
-      const params = new URLSearchParams({
-        q: value,
-        exclude: String(page.id),
-      });
-      try {
-        const res = await apiJSON<{ pages: PageLink[] }>(
-          `/pages/link-candidates?${params.toString()}`,
-        );
-        // Guards against a slower, now-stale request's response landing
-        // after a faster, more recent one and overwriting it -- the
-        // query the person is currently looking at is the source of
-        // truth for whether this response is still relevant.
-        if (linkSearchQuery === value) {
-          linkSearchResults = res.pages;
-        }
-      } catch {
-        // Best-effort, same reasoning as allCollections' load above:
-        // a failed search just leaves the dropdown with fewer/no
-        // results rather than surfacing its own error banner.
-        linkSearchResults = [];
-      }
-    }, 300);
-  }
-
-  async function addLink(target: PageLink) {
-    if (!page) return;
-    addingLink = true;
-    actionError = null;
-    try {
-      const linked = await apiJSON<PageLink>(`/pages/${page.id}/links`, {
-        method: "POST",
-        body: { link_page_id: target.id },
-      });
-      page.links = [...page.links, linked].sort((a, b) =>
-        (a.title ?? a.normalized_url).localeCompare(
-          b.title ?? b.normalized_url,
-        ),
-      );
-      linkSearchQuery = "";
-      linkSearchResults = [];
-    } catch (err) {
-      actionError =
-        err instanceof ApiError ? err.message : m.pagedetail_link_error();
-    } finally {
-      addingLink = false;
-    }
-  }
-
-  async function removeLink(linkPageId: number) {
-    if (!page) return;
-    actionError = null;
-    try {
-      await apiJSON(`/pages/${page.id}/links/${linkPageId}`, {
-        method: "DELETE",
-      });
-      page.links = page.links.filter((l) => l.id !== linkPageId);
-    } catch (err) {
-      actionError =
-        err instanceof ApiError
-          ? err.message
-          : m.pagedetail_remove_link_error();
     }
   }
 
@@ -399,72 +312,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  // Collections this page isn't already in -- what the picker should
-  // actually offer, rather than letting someone "add" a membership that
-  // already exists. Sorted by full name path (not the fetch's own
-  // parent_id-then-name order, which doesn't group a collection near its
-  // actual children) so that once collectionNamePath's disambiguating
-  // labels are in play below, same-named collections under different
-  // parents land near their real siblings instead of scattered
-  // arbitrarily through the list.
+  // The collection-tree helpers live in lib/collections.ts (shared with
+  // LinkDetail); these just bind them to this screen's own collection list.
   function availableCollections(p: PageDetail): Collection[] {
-    const memberIds = new Set(p.collections.map((c) => c.id));
-    return allCollections
-      .filter((c) => !memberIds.has(c.id))
-      .map((c) => ({ collection: c, path: collectionNamePath(c.id) }))
-      .sort((a, b) => a.path.localeCompare(b.path))
-      .map((entry) => entry.collection);
+    return availableIn(
+      allCollections,
+      p.collections.map((c) => c.id),
+    );
   }
 
-  // Walks a collection's parent_id chain in allCollections, collecting
-  // one segment per ancestor via `pick`. Shared by collectionPath (slugs,
-  // below) and collectionNamePath (names, for the "add to collection"
-  // picker) -- same traversal, just a different field per ancestor.
-  function collectionAncestorSegments(
-    collectionId: number,
-    pick: (c: Collection) => string,
-  ): string[] {
-    const byId = new Map(allCollections.map((c) => [c.id, c]));
-    const segments: string[] = [];
-    let current = byId.get(collectionId);
-    while (current) {
-      segments.unshift(pick(current));
-      current =
-        current.parent_id !== null ? byId.get(current.parent_id) : undefined;
-    }
-    return segments;
-  }
-
-  // page.collections (PageCollection) doesn't carry a slug, and routes.ts
-  // wildcards /collections/* to the full nested path (e.g.
-  // "zebra/side-dishes"), not just one collection's own slug -- but
-  // allCollections (fetched for the picker above) already has every
-  // collection's slug + parent_id, which is enough to walk the chain and
-  // rebuild the same path CollectionDetail/Collections.svelte's own
-  // rename-preview logic produces. Returns null if the collection can't
-  // be found there (allCollections fetch failed independently -- see the
-  // Promise.allSettled above -- or some other inconsistency), in which
-  // case the caller renders plain text instead of a broken link.
   function collectionPath(collectionId: number): string | null {
-    const segments = collectionAncestorSegments(collectionId, (c) => c.slug);
-    return segments.length > 0 ? segments.join("/") : null;
+    return pathIn(allCollections, collectionId);
   }
 
-  // Same ancestor walk as collectionPath, but names joined with " / "
-  // for human display rather than slugs joined with "/" for a URL --
-  // used as the "add to collection" picker's option labels, so two
-  // same-named collections under different parents (e.g. two separate
-  // "Recipes" collections) read as "Zebra / Recipes" vs
-  // "Cookbook / Recipes" instead of two indistinguishable "Recipes"
-  // entries. Every id this is called with comes from allCollections
-  // itself (see availableCollections above), so unlike collectionPath
-  // there's no fetch-failed/not-found case to handle here -- the walk
-  // always resolves at least the collection's own name.  A "/" inside a
-  // collection's own name would read oddly here (indistinguishable from
-  // an extra path segment), but that's an edge case not worth guarding
-  // against right now.
   function collectionNamePath(collectionId: number): string {
-    return collectionAncestorSegments(collectionId, (c) => c.name).join(" / ");
+    return namePathIn(allCollections, collectionId);
   }
 
   async function toggleExcludedFromMirror() {
@@ -646,15 +508,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {/if}
 
     <div class="source-row">
-      {#if page.favicon_path !== null && !faviconFailed}
-        <img
-          class="favicon"
-          src={`/api/pages/${page.id}/favicon`}
-          alt=""
-          loading="lazy"
-          onerror={() => (faviconFailed = true)}
-        />
-      {/if}
+      <!-- One image beside the URL has no list to keep aligned, so it shows nothing
+           rather than a placeholder when there's no favicon. -->
+      <Favicon
+        src={page.favicon_path !== null
+          ? `/api/pages/${page.id}/favicon`
+          : null}
+        size={16}
+        placeholder={false}
+      />
       <a
         class="source-url"
         href={page.normalized_url}
@@ -662,6 +524,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         rel="noreferrer">{page.normalized_url}<ExternalLink size={12} /></a
       >
     </div>
+
+    {#if page.matching_link_id !== null}
+      <SameUrlHint
+        kind="link"
+        id={page.matching_link_id}
+        title={page.matching_link_title ?? page.normalized_url}
+      />
+    {/if}
 
     {#if actionError}
       <p class="status error" role="alert">
@@ -866,100 +736,32 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {/if}
     </section>
 
-    <section>
-      <div class="block-header">
-        <h2>{m.pagedetail_links_heading()}</h2>
-        <button
-          type="button"
-          class="edit-toggle"
-          class:active={editingLinks}
-          aria-label={editingLinks
-            ? m.pagedetail_done_editing_links()
-            : m.pagedetail_edit_links()}
-          onclick={() => (editingLinks = !editingLinks)}
-        >
-          {#if editingLinks}
-            <Check size={13} />
-          {:else}
-            <Pencil size={13} />
-          {/if}
-        </button>
-      </div>
-      {#if page.links.length > 0}
-        <ul class="linked-list">
-          {#each page.links as linked (linked.id)}
-            <li>
-              <a href={`/pages/${linked.id}`} use:link class="linked-row">
-                {#if showLinkFavicon(linked)}
-                  <img
-                    class="linked-favicon"
-                    src={`/api/pages/${linked.id}/favicon`}
-                    alt=""
-                    loading="lazy"
-                    onerror={() => markLinkFaviconFailed(linked.id)}
-                  />
-                {:else}
-                  <span class="linked-favicon-placeholder" aria-hidden="true">
-                    <Globe size={11} />
-                  </span>
-                {/if}
-                <span class="linked-title"
-                  >{linked.title ?? linked.normalized_url}</span
-                >
-                <span class="linked-url">{linked.normalized_url}</span>
-              </a>
-              {#if editingLinks}
-                <button
-                  type="button"
-                  class="remove"
-                  aria-label={m.pagedetail_remove_link_aria({
-                    name: linked.title ?? linked.normalized_url,
-                  })}
-                  onclick={() => removeLink(linked.id)}
-                >
-                  <X size={11} />
-                </button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p class="empty-note">{m.pagedetail_links_empty()}</p>
-      {/if}
-      {#if editingLinks}
-        <div class="link-search-wrap">
-          <input
-            type="text"
-            placeholder={m.pagedetail_link_search_placeholder()}
-            bind:value={linkSearchQuery}
-            oninput={handleLinkSearchInput}
-            disabled={addingLink}
-          />
-          {#if availableLinkResults(page).length > 0}
-            <ul class="link-results">
-              {#each availableLinkResults(page) as candidate (candidate.id)}
-                <li>
-                  <button
-                    type="button"
-                    onclick={() => addLink(candidate)}
-                    disabled={addingLink}
-                  >
-                    <span class="result-title"
-                      >{candidate.title ?? candidate.normalized_url}</span
-                    >
-                    <span class="result-url">{candidate.normalized_url}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {:else if linkSearchQuery.trim()}
-            <ul class="link-results">
-              <li class="no-results">{m.pagedetail_link_no_results()}</li>
-            </ul>
-          {/if}
-        </div>
-      {/if}
-    </section>
+    <RelatedItems
+      items={page.related_pages}
+      kind="page"
+      ownerPath={`/pages/${page.id}`}
+      excludeId={page.id}
+      labels={relatedLabels}
+      onchange={(next) => {
+        if (page) page.related_pages = next;
+      }}
+      onerror={(message) => (actionError = message)}
+    />
+
+    <!-- Links only exist when the instance has them on. No excludeId: a link's id and
+         a page's id are different things, so nothing is excluded from the search. -->
+    {#if session.linksEnabled}
+      <RelatedItems
+        items={page.related_links}
+        kind="link"
+        ownerPath={`/pages/${page.id}`}
+        labels={relatedLinksLabels}
+        onchange={(next) => {
+          if (page) page.related_links = next;
+        }}
+        onerror={(message) => (actionError = message)}
+      />
+    {/if}
 
     <h2>{m.pagedetail_captures_heading()}</h2>
     <ul class="captures">
@@ -981,6 +783,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         </li>
       {/each}
     </ul>
+
+    <WaybackBlock
+      url={page.normalized_url}
+      wayback={page.wayback}
+      submitPath={`/pages/${page.id}/wayback`}
+      onchange={(next) => {
+        if (page) page.wayback = next;
+      }}
+    />
 
     <div class="actions-row">
       <button
@@ -1142,170 +953,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     font-size: 0.75rem;
   }
 
-  // A lightweight version of Library's list-view row (favicon, with the
-  // title and url on two lines).
-  .linked-list {
-    list-style: none;
-    margin: 0 0 0.65rem;
-    padding: 0;
-    border-top: 1px dotted var(--rule);
-  }
-
-  .linked-list li {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    border-bottom: 1px dotted var(--rule);
-  }
-
-  .linked-row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: center;
-    gap: 0.05rem 0.6rem;
-    flex: 1;
-    min-width: 0;
-    padding: 0.45rem 0.25rem;
-    text-decoration: none;
-    color: inherit;
-
-    &:hover {
-      background: var(--paper-raised);
-    }
-
-    &:focus-visible {
-      @include mix.focus-ring;
-      outline-offset: -2px;
-    }
-  }
-
-  .linked-favicon,
-  .linked-favicon-placeholder {
-    grid-column: 1;
-    grid-row: 1 / 3;
-    width: 1.05rem;
-    height: 1.05rem;
-    border-radius: 0.15rem;
-  }
-
-  .linked-favicon-placeholder {
-    display: grid;
-    place-items: center;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    color: var(--ink-muted);
-  }
-
-  .linked-title {
-    grid-column: 2;
-    font-size: 0.85rem;
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .linked-url {
-    grid-column: 2;
-    @include type.data-mono;
-    color: var(--ink-muted);
-    font-size: 0.75rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .linked-list .remove {
-    flex: none;
-    margin-right: 0.4rem;
-  }
-
-  .link-search-wrap {
-    position: relative;
-    max-width: 26rem;
-
-    input[type="text"] {
-      @include comp.text-input;
-      display: block;
-      width: 100%;
-      padding: 0.45rem 0.65rem;
-      border-radius: 4px;
-      font-size: 0.875rem;
-    }
-  }
-
-  .link-results {
-    list-style: none;
-    margin: 0.3rem 0 0;
-    padding: 0;
-    border: 1px solid var(--rule);
-    border-radius: 4px;
-    background: var(--paper-raised);
-    overflow: hidden;
-
-    li + li {
-      border-top: 1px dotted var(--rule);
-    }
-
-    .no-results {
-      padding: 0.6rem 0.7rem;
-      color: var(--ink-muted);
-      font-size: 0.8rem;
-      font-style: italic;
-    }
-
-    button {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 0.1rem;
-      width: 100%;
-      text-align: left;
-      border: none;
-      border-radius: 0;
-      background: transparent;
-      padding: 0.5rem 0.7rem;
-      cursor: pointer;
-
-      &:hover:not(:disabled) {
-        background: var(--paper);
-      }
-
-      &:disabled {
-        opacity: 0.5;
-        cursor: default;
-      }
-
-      &:focus-visible {
-        @include mix.focus-ring;
-        outline-offset: -2px;
-      }
-    }
-
-    .result-title {
-      font-size: 0.85rem;
-      color: var(--ink);
-    }
-
-    .result-url {
-      @include type.data-mono;
-      font-size: 0.7rem;
-      color: var(--ink-muted);
-    }
-  }
-
   .source-row {
     display: flex;
     align-items: center;
     gap: 0.4rem;
     margin-bottom: 1.25rem;
-  }
-
-  .favicon {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    flex: none;
   }
 
   .source-url {

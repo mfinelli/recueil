@@ -54,6 +54,12 @@ const {
   setBookmarkSyncEnabled,
   getBookmarksFolderId,
   setBookmarksFolderId,
+  getLinkFeatureCache,
+  setLinkFeatureCache,
+  isLinkBookmarkSyncEnabled,
+  setLinkBookmarkSyncEnabled,
+  getLinkBookmarksFolderId,
+  setLinkBookmarksFolderId,
 } = await import("../src/common/storage.js");
 
 beforeEach(() => {
@@ -199,5 +205,62 @@ describe("bookmark sync state", () => {
     expect(await getBookmarksFolderId()).toBe("folder-1");
     await setBookmarksFolderId(null);
     expect(await getBookmarksFolderId()).toBeNull();
+  });
+});
+
+describe("link feature cache", () => {
+  const cache = {
+    workerBaseURL: "https://recueil.example.com",
+    linksEnabled: true,
+    faviconInlineMaxBytes: 131072,
+    fetchedAt: "2026-10-17T12:00:00.000Z",
+  };
+
+  it("is null before anything has been cached", async () => {
+    expect(await getLinkFeatureCache()).toBeNull();
+  });
+
+  it("round-trips what was stored", async () => {
+    await setLinkFeatureCache(cache);
+    expect(await getLinkFeatureCache()).toEqual(cache);
+  });
+
+  it("is cleared along with the pairing config, since it belongs to that instance", async () => {
+    await setConfig({
+      workerBaseURL: "https://recueil.example.com",
+      token: "t",
+      deviceId: 1,
+      deviceName: "d",
+      deviceType: "extension",
+    });
+    await setLinkFeatureCache(cache);
+
+    await clearConfig();
+
+    expect(await getConfig()).toBeNull();
+    expect(await getLinkFeatureCache()).toBeNull();
+  });
+});
+
+describe("link bookmark sync state", () => {
+  it("is off, with no folder, by default", async () => {
+    expect(await isLinkBookmarkSyncEnabled()).toBe(false);
+    expect(await getLinkBookmarksFolderId()).toBeNull();
+  });
+
+  it("round-trips the flag and the folder id", async () => {
+    await setLinkBookmarkSyncEnabled(true);
+    await setLinkBookmarksFolderId("folder-9");
+    expect(await isLinkBookmarkSyncEnabled()).toBe(true);
+    expect(await getLinkBookmarksFolderId()).toBe("folder-9");
+  });
+
+  it("is independent of the archived-pages sync's own state", async () => {
+    await setBookmarkSyncEnabled(true);
+    await setLinkBookmarkSyncEnabled(false);
+    await setLinkBookmarksFolderId("links-folder");
+    expect(await isBookmarkSyncEnabled()).toBe(true);
+    expect(await getBookmarksFolderId()).toBeNull();
+    expect(await isLinkBookmarkSyncEnabled()).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 +++
 title = "Manual Upload"
-weight = 4
+weight = 5
 template = "docs-page.html"
 
 [extra]
@@ -12,6 +12,9 @@ Every other way of getting a page in — the extension, the PWA, a Shortcut, the
 CLI — feeds the same queue and eventually goes through a paired browser. Manual
 upload skips all of that: it's for when you already have a captured HTML file in
 hand and just want it in your archive.
+
+If you only want to remember a URL, with no copy of it, you want a
+[link](@/docs/readers/links.md) instead: **Add link** on the Links screen.
 
 That covers a few different situations: a page someone emailed you as an
 attachment, something captured on a device that doesn't have the extension

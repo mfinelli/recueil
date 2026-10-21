@@ -54,12 +54,14 @@ output "d1_database_id" {
 }
 ```
 
-Two other variables that aren't shown above but both default to `true`:
+Three other variables that aren't shown above but all default to `true`:
 `enable_browser_integrity_check_bypass` provisions a narrow WAF rule that skips
 Cloudflare's Browser Integrity Check for recueil's non-browser clients (the CLI,
 the backend itself) — harmless to leave on even if your zone doesn't have BIC
 enabled. `enable_pwa` deploys the share-sheet PWA's static assets alongside the
-Worker; turn it off if you don't want that client available.
+Worker; turn it off if you don't want that client available. `enable_links`
+controls whether the browser extension offers saving a page as a link, and
+should match the backend's `enable_links` setting.
 
 ### R2 API credentials
 
@@ -154,12 +156,14 @@ services:
       CLOUDFLARE_API_TOKEN:
         "<your Cloudflare API token, same as the provider config>"
       ARCHIVE_DIR: /data/archive
+      LINKS_DIR: /data/links
       R2_ACCOUNT_ID: "<your account_id, same as the module input>"
       R2_BUCKET_NAME: "<from terraform output>"
       R2_ACCESS_KEY_ID: "<the R2 API credential from above>"
       R2_ACCESS_KEY_SECRET: "<the R2 API credential from above>"
     volumes:
       - ./data/archive:/data/archive
+      - ./data/links:/data/links
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/info"]
       interval: 10s
@@ -183,7 +187,16 @@ services:
       SIDECAR_RENDER_HOST: "agent"
     volumes:
       - ./data/archive:/data/archive
+      - ./data/links:/data/links
 ```
+
+`LINKS_DIR` is where favicons for links (bookmark-only entries) are stored. It's
+deliberately a separate directory from `ARCHIVE_DIR` — neither can be inside the
+other — and, like the archive, should be a bind mount so it survives the
+container being recreated. Links are on by default; if you don't want them, set
+`ENABLE_LINKS: "false"` and leave `LINKS_DIR` and its volume out. The Terraform
+module's `enable_links` should match. With links on, `server` and `agent` refuse
+to start if `LINKS_DIR` isn't an existing, writable directory.
 
 Every setting here can also come from a TOML file instead of environment
 variables — mount it into the container and point `server`/`agent` at it with
@@ -205,6 +218,42 @@ providing for you — Postgres reachable at your `DATABASE_URL`, a
 place of `restart: unless-stopped`. The `Dockerfile` and `compose.yaml` in the
 repository spell out exactly what needs to be true at runtime; treat them as the
 reference if you go this route.
+
+## Wayback Machine submission (optional)
+
+recueil can ask the Internet Archive to capture a page or link on a user's
+request, which gives them a second public copy that doesn't depend on your
+server. It's off unless you configure it, and it needs an archive.org account's
+keys.
+
+**Getting the keys.** Follow the Internet Archive's guide,
+[Get your Internet Archive credentials](https://archive.org/developers/tutorial-get-ia-credentials.html):
+sign in (or sign up) at archive.org, open
+[archive.org/account/s3.php](https://archive.org/account/s3.php), tick the box
+and choose **Generate New Keys**. Put them in `wayback_access_key` and
+`wayback_secret_key` (see the
+[configuration reference](@/docs/operators/configuration-reference.md#wayback-machine-submission)).
+
+**What to know before turning it on.**
+
+- **One account for everyone.** Every submission on your instance goes out under
+  the same key pair, so the Internet Archive's limits (a handful of captures a
+  minute, a few of any one URL a day) are shared by all your users. Two users
+  submitting the same URL close together are handled by the Internet Archive
+  itself, which answers a request for a URL captured in the last hour with the
+  same recent capture, but a busy moment can still hit a limit; the user sees
+  its message and tries again later. Who submitted what stays private to each
+  user.
+- **It's only ever on demand.** Nothing is sent automatically, and viewing a
+  page or link never contacts the Internet Archive.
+- **Snapshots are public**, and the URL is shared with a third party. Your users
+  are told so on the screen and in the
+  [reader documentation](@/docs/readers/wayback-submission.md), but it's worth
+  deciding whether that's acceptable for the people who use your instance.
+- **`agent` only records the outcome.** The Internet Archive does the capturing
+  itself; `agent`'s local cycle (every `agent_local_poll_interval_seconds`, 5
+  minutes by default) asks how each pending submission went and stores the
+  answer, so a result appears within a few minutes.
 
 ## Putting a reverse proxy in front
 
@@ -254,6 +303,11 @@ value matches your own configured limit) — otherwise nginx itself rejects an
 oversized upload with a 413 before it ever reaches `server`, which looks like
 recueil's limit misbehaving when it's actually this one. {% </callout> %}
 
+{% <callout label="Heads up"> %} This example is intentionally simple: it
+forwards everything to `server`, including `/metrics`. If you want to restrict
+access see [Metrics](@/docs/operators/metrics.md#who-can-reach-metrics) for what
+exactly is exposed and the options that you have. {% </callout> %}
+
 ## Creating your first account
 
 On first startup, if there are no accounts yet, the backend generates a one-time
@@ -269,4 +323,5 @@ to sign in normally; create any further accounts with `recueil user create` (see
 Bump the image tag in your Compose file and the module ref in your Terraform
 config together, then redeploy. Database migrations — both Postgres and D1 — run
 automatically every time `recueil server` starts; there's no separate migration
-step to remember.
+step to remember. A release that needs more than that has a section in
+[Upgrade Guides](@/docs/operators/upgrade-guides.md).

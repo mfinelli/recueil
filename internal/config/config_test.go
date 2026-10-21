@@ -35,6 +35,7 @@ func allRequiredSet() {
 	viper.Set("cloudflare_d1_database_id", "db")
 	viper.Set("cloudflare_api_token", "token")
 	viper.Set("archive_dir", "/var/lib/recueil/archive")
+	viper.Set("links_dir", "/var/lib/recueil/links")
 	viper.Set("r2_account_id", "r2acct")
 	viper.Set("r2_bucket_name", "recueil-captures")
 	viper.Set("r2_access_key_id", "r2key")
@@ -63,6 +64,7 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, "db", cfg.CloudflareD1DatabaseID)
 				assert.Equal(t, "token", cfg.CloudflareAPIToken)
 				assert.Equal(t, "/var/lib/recueil/archive", cfg.ArchiveDir)
+				assert.Equal(t, "/var/lib/recueil/links", cfg.LinksDir)
 				assert.Equal(t, "r2acct", cfg.R2AccountID)
 				assert.Equal(t, "recueil-captures", cfg.R2BucketName)
 				assert.Equal(t, "r2key", cfg.R2AccessKeyID)
@@ -91,6 +93,142 @@ func TestLoad(t *testing.T) {
 				assert.Equal(t, 3, cfg.ScreenshotWorkerConcurrency)
 				assert.Equal(t, 3, cfg.ScreenshotMaxAttempts)
 				assert.Equal(t, int64(100<<20), cfg.ManualUploadMaxBytes)
+				assert.True(t, cfg.EnableLinks, "links default to on")
+			},
+		},
+		{
+			name: "wayback is off by default, with neither key set",
+			setup: func() {
+				allRequiredSet()
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.WaybackEnabled())
+				assert.Empty(t, cfg.WaybackAccessKey)
+				assert.Empty(t, cfg.WaybackSecretKey)
+			},
+		},
+		{
+			name: "wayback is on when both halves of the key pair are set",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("wayback_access_key", "access")
+				viper.Set("wayback_secret_key", "secret")
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.True(t, cfg.WaybackEnabled())
+				assert.Equal(t, "access", cfg.WaybackAccessKey)
+				assert.Equal(t, "secret", cfg.WaybackSecretKey)
+			},
+		},
+		{
+			name: "wayback needs both keys: just the access key is a config error",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("wayback_access_key", "access")
+			},
+			wantErr:     true,
+			errContains: "wayback_access_key and wayback_secret_key must be set together",
+		},
+		{
+			name: "wayback needs both keys: just the secret key is a config error",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("wayback_secret_key", "secret")
+			},
+			wantErr:     true,
+			errContains: "wayback_access_key and wayback_secret_key must be set together",
+		},
+		{
+			name: "wayback is independent of links: it can be on with links off",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("enable_links", false)
+				viper.Set("links_dir", "")
+				viper.Set("wayback_access_key", "access")
+				viper.Set("wayback_secret_key", "secret")
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.EnableLinks)
+				assert.True(t, cfg.WaybackEnabled())
+			},
+		},
+		{
+			name: "missing links_dir is caught while links are enabled, and says how to fix it",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("links_dir", "")
+			},
+			wantErr:     true,
+			errContains: "links_dir is required while enable_links is true",
+		},
+		{
+			name: "links_dir is not required once links are turned off",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("links_dir", "")
+				viper.Set("enable_links", false)
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.EnableLinks)
+				assert.Equal(t, "", cfg.LinksDir)
+			},
+		},
+		{
+			name: "links_dir may not be archive_dir",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("links_dir", "/var/lib/recueil/archive")
+			},
+			wantErr:     true,
+			errContains: "must be separate directories",
+		},
+		{
+			name: "links_dir may not be inside archive_dir",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("links_dir", "/var/lib/recueil/archive/links")
+			},
+			wantErr:     true,
+			errContains: "must be separate directories",
+		},
+		{
+			name: "archive_dir may not be inside links_dir",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("links_dir", "/var/lib/recueil")
+			},
+			wantErr:     true,
+			errContains: "must be separate directories",
+		},
+		{
+			name: "a sibling whose name merely starts the same is fine",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("links_dir", "/var/lib/recueil/archive-links")
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.Equal(t, "/var/lib/recueil/archive-links", cfg.LinksDir)
+			},
+		},
+		{
+			name: "the separation check is skipped when links are off",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("enable_links", false)
+				viper.Set("links_dir", "/var/lib/recueil/archive/links")
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.EnableLinks)
+			},
+		},
+		{
+			name: "enable_links can be turned off",
+			setup: func() {
+				allRequiredSet()
+				viper.Set("enable_links", false)
+			},
+			check: func(t *testing.T, cfg Config) {
+				assert.False(t, cfg.EnableLinks)
 			},
 		},
 		{
@@ -162,6 +300,7 @@ func TestLoad(t *testing.T) {
 			viper.Reset()
 			viper.SetDefault("listen_addr", ":8080")
 			viper.SetDefault("session_cookie_secure", true)
+			viper.SetDefault("enable_links", true)
 			viper.SetDefault("agent_worker_poll_interval_seconds", 1800)
 			viper.SetDefault("agent_local_poll_interval_seconds", 300)
 			viper.SetDefault("sidecar_url", "http://127.0.0.1:9222")

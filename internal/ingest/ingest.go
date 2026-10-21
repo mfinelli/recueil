@@ -346,32 +346,16 @@ func (ing *Ingester) captureFavicon(ctx context.Context, pc *pendingcaptures.Pen
 		return "", 0, ""
 	}
 
-	sum := sha256.Sum256(data)
-	faviconHash = hex.EncodeToString(sum[:])
-
-	// Only SVG (text-based) gets zstd'd -- see internal/archive's
-	// WriteAsset doc for why already-compressed binary formats (png, ico)
-	// aren't worth it.
-	compress := ext == "svg"
-
-	faviconPath, writtenSizeRaw, err := ing.store.WriteAsset(relDir, "favicon", ext, data, compress)
+	// The rules for what gets stored -- the format set, compressing only SVG, the
+	// hash of the original bytes, the int32 size guard -- are internal/archive's, shared
+	// with link favicons.
+	favicon, err := ing.store.WriteFavicon(relDir, data, ext)
 	if err != nil {
-		ing.logger.WarnContext(ctx, "ingest: failed to write favicon to local archive, continuing without one",
-			"capture_id", pc.ID, "error", err)
+		ing.logger.WarnContext(ctx, "ingest: failed to store favicon, continuing without one",
+			"capture_id", pc.ID, "r2_key_favicon", key, "error", err)
 		return "", 0, ""
 	}
-	if writtenSizeRaw > math.MaxInt32 {
-		// A multi-gigabyte favicon is absurd on its face -- treat it the
-		// same as any other favicon failure (cosmetic loss, not worth
-		// failing the capture over) rather than overflowing the int32
-		// column or silently truncating a bogus value into it.
-		ing.logger.WarnContext(ctx, "ingest: favicon size exceeds int32 range, continuing without one",
-			"capture_id", pc.ID, "written_size", writtenSize)
-		return "", 0, ""
-	}
-
-	writtenSize = int32(writtenSizeRaw)
-	return faviconPath, writtenSize, faviconHash
+	return favicon.Path, favicon.SizeBytes, favicon.Hash
 }
 
 type writeInput struct {
