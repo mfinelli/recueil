@@ -103,7 +103,7 @@ const baseLink: LinkDetail = {
   collections: [{ id: 5, name: "Watch later", parent_id: null }],
   wayback: null,
   cleaned_url: null,
-  links: [],
+  related_links: [],
 };
 
 type LoadOptions = {
@@ -698,7 +698,7 @@ describe("LinkDetail", () => {
     });
 
     it("lists related links as rows that open their own screens, each with its URL", async () => {
-      render42({ link: { ...baseLink, links: [related] } });
+      render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
 
       const row = screen.getByRole("link", { name: /A related repo/ });
@@ -708,7 +708,9 @@ describe("LinkDetail", () => {
     });
 
     it("shows a title-less related link by its URL", async () => {
-      render42({ link: { ...baseLink, links: [{ ...related, title: null }] } });
+      render42({
+        link: { ...baseLink, related_links: [{ ...related, title: null }] },
+      });
       await screen.findByRole("heading", { name: "An example video" });
       expect(
         screen.getAllByText("github.com/example/repo").length,
@@ -716,7 +718,7 @@ describe("LinkDetail", () => {
     });
 
     it("keeps the remove buttons and the search box behind the pencil", async () => {
-      render42({ link: { ...baseLink, links: [related] } });
+      render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
       expect(
         screen.queryByRole("button", {
@@ -745,7 +747,7 @@ describe("LinkDetail", () => {
     });
 
     it("removes a relation through its own route", async () => {
-      render42({ link: { ...baseLink, links: [related] } });
+      render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
       await fireEvent.click(
         screen.getByRole("button", { name: "Edit related links" }),
@@ -758,7 +760,7 @@ describe("LinkDetail", () => {
         }),
       );
 
-      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/links/7", {
+      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/related-links/7", {
         method: "DELETE",
       });
       expect(await screen.findByText("No related links yet.")).toBeTruthy();
@@ -772,7 +774,7 @@ describe("LinkDetail", () => {
         normalized_url: "example.com/candidate",
         favicon_path: null,
       };
-      render42({ link: { ...baseLink, links: [related] } });
+      render42({ link: { ...baseLink, related_links: [related] } });
       await vi.waitFor(() =>
         expect(
           screen.getByRole("heading", { name: "An example video" }),
@@ -789,13 +791,13 @@ describe("LinkDetail", () => {
       );
       // Still inside the 300ms debounce window.
       expect(apiJSONMock).not.toHaveBeenCalledWith(
-        expect.stringContaining("link-candidates"),
+        expect.stringContaining("relation-candidates"),
       );
 
       await vi.advanceTimersByTimeAsync(300);
 
       expect(apiJSONMock).toHaveBeenLastCalledWith(
-        "/links/link-candidates?q=cand&exclude=42",
+        "/links/relation-candidates?q=cand&exclude=42",
       );
       // The already-related link came back too (the server doesn't filter it out),
       // but only the new candidate belongs in the dropdown.
@@ -810,9 +812,9 @@ describe("LinkDetail", () => {
       apiJSONMock.mockResolvedValueOnce(candidate);
       await fireEvent.click(result);
 
-      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/links", {
+      expect(apiJSONMock).toHaveBeenCalledWith("/links/42/related-links", {
         method: "POST",
-        body: { related_link_id: 9 },
+        body: { link_id: 9 },
       });
       // Added to the list, and the search box is cleared.
       await vi.waitFor(() =>
@@ -833,7 +835,7 @@ describe("LinkDetail", () => {
       vi.useFakeTimers();
       const first: RelatedLink = { ...related, id: 3, title: "Zed" };
       const added: RelatedLink = { ...related, id: 9, title: "Abe" };
-      render42({ link: { ...baseLink, links: [first] } });
+      render42({ link: { ...baseLink, related_links: [first] } });
       await vi.waitFor(() =>
         expect(
           screen.getByRole("heading", { name: "An example video" }),
@@ -936,7 +938,7 @@ describe("LinkDetail", () => {
     });
 
     it("shows the error when removing fails", async () => {
-      render42({ link: { ...baseLink, links: [related] } });
+      render42({ link: { ...baseLink, related_links: [related] } });
       await screen.findByRole("heading", { name: "An example video" });
       await fireEvent.click(
         screen.getByRole("button", { name: "Edit related links" }),

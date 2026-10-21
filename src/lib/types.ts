@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Mirrors internal/httpapi's response DTOs by hand -- see lib/api.ts's own
+// Mirrors internal/httpapi's response DTOs by hand -- see lib/api.ts's
 // note on why (no OpenAPI spec/codegen from the Go side yet).
 
 export interface Page {
@@ -36,9 +36,7 @@ export interface PageListResponse {
   total: number;
 }
 
-// A link: a bookmark-only entry, saved without being archived. Not to be
-// confused with a page-to-page link (PageLink-shaped responses on a page's
-// `links`), which relates two archived pages. matching_page_id is the same-URL
+// A link: a bookmark-only entry, saved without being archived. matching_page_id is the same-URL
 // hint: the id of the user's archived page with this link's normalized_url,
 // if there is one.
 export interface Link {
@@ -62,7 +60,7 @@ export interface Link {
 }
 
 // A link in another link's list of related links, and in the candidate search:
-// just enough for a row. The link counterpart of PageLink.
+// just enough for a row. The link counterpart of RelatedPage.
 export interface RelatedLink {
   id: number;
   title: string | null;
@@ -78,9 +76,9 @@ export interface LinkDetail extends Link {
   matching_page_title: string | null;
   tags: Tag[];
   collections: PageCollection[];
-  // The links related to this one, as a page detail's `links` are its linked
-  // pages.
-  links: RelatedLink[];
+  // The links related to this one, as a page detail's `related_pages` are its
+  // related pages.
+  related_links: RelatedLink[];
   // null if the link's URL has never been submitted to the Wayback Machine.
   wayback: WaybackState | null;
   // What raw_url would become with its tracking and other extras removed (its
@@ -110,7 +108,7 @@ export interface CaptureSummary {
 }
 
 // GET /api/captures/{id} -- the full row, including reader_text/ai_summary
-// that CaptureSummary deliberately omits (see internal/httpapi's own
+// that CaptureSummary deliberately omits (see internal/httpapi's
 // GetPage doc comment: those belong to capture detail, not the page
 // detail's capture-history list). reader_text is plain extracted text
 // (Readability.js's textContent, not its HTML content field), so it's always
@@ -154,10 +152,10 @@ export interface PageCollection {
   parent_id: number | null;
 }
 
-// A lightweight page reference -- both a link on PageDetail and a
-// link-candidates search result are shaped identically (see
-// internal/httpapi's own pageLinkResponse), so one type covers both.
-export interface PageLink {
+// A lightweight page reference -- both a related page on PageDetail and a
+// relation-candidates search result are shaped identically (see
+// internal/httpapi's relatedPageResponse), so one type covers both.
+export interface RelatedPage {
   id: number;
   title: string | null;
   normalized_url: string;
@@ -183,9 +181,9 @@ export interface PageDetail extends Page {
   captures: CaptureSummary[];
   tags: PageTag[];
   collections: PageCollection[];
-  links: PageLink[];
+  related_pages: RelatedPage[];
   // The same-URL hint: the user's link (a bookmark-only entry, not one of
-  // `links` above, which are related pages) with this page's normalized URL,
+  // `related_pages` above) with this page's normalized URL,
   // and its title (null if it has none). Both null when there's no such link,
   // and always with links off.
   matching_link_id: number | null;
@@ -366,7 +364,7 @@ export interface QueueItem {
   manual_retry: boolean;
   claimed_at: string | null;
   // Which device holds (or last held) the claim, from a LEFT JOIN against
-  // the Worker's own tokens table. Null both for an item nobody has claimed
+  // the Worker's tokens table. Null both for an item nobody has claimed
   // yet and for one whose device has since been revoked -- device tokens
   // are revoked by row delete, so there is nothing left to name.
   claimed_by_device: string | null;
@@ -397,9 +395,9 @@ export interface PendingCaptureListResponse {
 }
 
 // GET /api/jobs' item shape -- one combined shape for all three job
-// kinds (screenshot/readability/AI), same as internal/httpapi's own job
+// kinds (screenshot/readability/AI), same as internal/httpapi's job
 // DTO. pending/processing/failed unconditionally, 'done' only within the
-// same recency window QueueItem's own 'captured' status uses. id is a
+// same recency window QueueItem's 'captured' status uses. id is a
 // plain job-table integer PK, unlike QueueItem's client-generated UUID.
 export interface Job {
   id: number;
@@ -433,10 +431,10 @@ export interface InfoResponse {
 
 // GET /api/capture-config -- this running agent's currently-configured
 // readability_version/ai_model, i.e. what a regenerate would actually
-// produce right now. Compared against a capture's own already-stored
+// produce right now. Compared against a capture's already-stored
 // readability_version/ai_model to decide whether to show a regenerate
 // button (equal means regenerating would just reproduce what's already
-// there). Both nullable independently of the capture's own fields --
+// there). Both nullable independently of the capture's fields --
 // null here means "not configured" (or AI disabled entirely), not "same
 // as the capture."
 export interface CaptureConfig {

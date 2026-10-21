@@ -16,11 +16,11 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
--- name: AddPageLink :exec
+-- name: AddPageRelation :exec
 -- LEAST/GREATEST canonicalize the pair here, so callers (internal/httpapi)
 -- can pass the two page ids in either order without computing the
 -- ordering themselves -- same ON CONFLICT DO NOTHING shape as
--- AddPageToCollection: linking two already-linked pages again is a
+-- AddPageToCollection: relating two already-related pages again is a
 -- no-op, not an error. Caller is responsible for having already verified
 -- both pages belong to the requesting user; this table has no user_id
 -- column of its own to check against.
@@ -31,33 +31,33 @@
 -- from the same comparison column -- so named explicitly rather
 -- than ending up with two same-looking fields that are easy to
 -- transpose by accident.
-INSERT INTO page_links (page_id_a, page_id_b)
+INSERT INTO page_relations (page_id_a, page_id_b)
 VALUES (
   LEAST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint),
   GREATEST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint)
 )
 ON CONFLICT (page_id_a, page_id_b) DO NOTHING;
 
--- name: RemovePageLink :exec
+-- name: RemovePageRelation :exec
 -- Same LEAST/GREATEST canonicalization and explicit-naming reasoning as
--- AddPageLink -- the caller doesn't need to know or care which side of
+-- AddPageRelation -- the caller doesn't need to know or care which side of
 -- the stored pair either id ended up on.
-DELETE FROM page_links
+DELETE FROM page_relations
 WHERE page_id_a = LEAST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint)
   AND page_id_b = GREATEST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint);
 
--- name: ListPageLinks :many
--- Every page linked to the given one, from either side of the stored
--- pair -- this is what makes the link bidirectional at read time: the
+-- name: ListPageRelations :many
+-- Every page related to the given one, from either side of the stored
+-- pair -- this is what makes the relation bidirectional at read time: the
 -- CASE picks whichever id in the pair *isn't* the page being looked up,
 -- so the same row is visible (as "the other page") from both ends
 -- without the row itself needing to say which side is "this" page.
 SELECT pages.id, pages.title, pages.normalized_url, pages.favicon_path
-FROM page_links
+FROM page_relations
 JOIN pages ON pages.id = CASE
-  WHEN page_links.page_id_a = sqlc.arg(page_id) THEN page_links.page_id_b
-  ELSE page_links.page_id_a
+  WHEN page_relations.page_id_a = sqlc.arg(page_id) THEN page_relations.page_id_b
+  ELSE page_relations.page_id_a
 END
-WHERE page_links.page_id_a = sqlc.arg(page_id)
-  OR page_links.page_id_b = sqlc.arg(page_id)
+WHERE page_relations.page_id_a = sqlc.arg(page_id)
+  OR page_relations.page_id_b = sqlc.arg(page_id)
 ORDER BY pages.title NULLS LAST, pages.normalized_url;

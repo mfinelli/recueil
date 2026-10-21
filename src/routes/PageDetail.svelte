@@ -75,7 +75,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     TagCreated,
     Collection,
     CollectionListResponse,
-    PageLink,
+    RelatedPage,
   } from "../lib/types";
   import { m } from "../paraglide/messages";
 
@@ -115,7 +115,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let editingCollections = $state(false);
   let editingLinks = $state(false);
   let linkSearchQuery = $state("");
-  let linkSearchResults = $state<PageLink[]>([]);
+  let linkSearchResults = $state<RelatedPage[]>([]);
   let addingLink = $state(false);
   // Plain variable, not $state -- it's a setTimeout handle consumed only
   // by clearTimeout/reassignment within handleLinkSearchInput itself,
@@ -209,21 +209,21 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  // A linked page that never had a favicon captured passes no src, so the request
+  // A related page that never had a favicon captured passes no src, so the request
   // is skipped entirely (see Favicon.svelte).
-  function linkedFaviconSrc(linked: PageLink): string | null {
+  function linkedFaviconSrc(linked: RelatedPage): string | null {
     return linked.favicon_path !== null
       ? `/api/pages/${linked.id}/favicon`
       : null;
   }
 
-  // page.links already loaded with the page, so this only needs to
+  // page.related_pages already loaded with the page, so this only needs to
   // exclude those from the *search* results client-side -- same
   // approach as availableCollections above, and the same reasoning
-  // SearchPagesForLinking's backend comment gives for not also
+  // SearchPageRelationCandidates's backend comment gives for not also
   // doing this filtering server-side.
-  function availableLinkResults(p: PageDetail): PageLink[] {
-    const linkedIds = new Set(p.links.map((l) => l.id));
+  function availableLinkResults(p: PageDetail): RelatedPage[] {
+    const linkedIds = new Set(p.related_pages.map((l) => l.id));
     return linkSearchResults.filter((r) => !linkedIds.has(r.id));
   }
 
@@ -245,8 +245,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         exclude: String(page.id),
       });
       try {
-        const res = await apiJSON<{ pages: PageLink[] }>(
-          `/pages/link-candidates?${params.toString()}`,
+        const res = await apiJSON<{ pages: RelatedPage[] }>(
+          `/pages/relation-candidates?${params.toString()}`,
         );
         // Guards against a slower, now-stale request's response landing
         // after a faster, more recent one and overwriting it -- the
@@ -264,16 +264,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }, 300);
   }
 
-  async function addLink(target: PageLink) {
+  async function addLink(target: RelatedPage) {
     if (!page) return;
     addingLink = true;
     actionError = null;
     try {
-      const linked = await apiJSON<PageLink>(`/pages/${page.id}/links`, {
-        method: "POST",
-        body: { link_page_id: target.id },
-      });
-      page.links = [...page.links, linked].sort((a, b) =>
+      const linked = await apiJSON<RelatedPage>(
+        `/pages/${page.id}/related-pages`,
+        {
+          method: "POST",
+          body: { page_id: target.id },
+        },
+      );
+      page.related_pages = [...page.related_pages, linked].sort((a, b) =>
         (a.title ?? a.normalized_url).localeCompare(
           b.title ?? b.normalized_url,
         ),
@@ -282,25 +285,27 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       linkSearchResults = [];
     } catch (err) {
       actionError =
-        err instanceof ApiError ? err.message : m.pagedetail_link_error();
+        err instanceof ApiError ? err.message : m.pagedetail_related_error();
     } finally {
       addingLink = false;
     }
   }
 
-  async function removeLink(linkPageId: number) {
+  async function removeLink(relatedPageId: number) {
     if (!page) return;
     actionError = null;
     try {
-      await apiJSON(`/pages/${page.id}/links/${linkPageId}`, {
+      await apiJSON(`/pages/${page.id}/related-pages/${relatedPageId}`, {
         method: "DELETE",
       });
-      page.links = page.links.filter((l) => l.id !== linkPageId);
+      page.related_pages = page.related_pages.filter(
+        (l) => l.id !== relatedPageId,
+      );
     } catch (err) {
       actionError =
         err instanceof ApiError
           ? err.message
-          : m.pagedetail_remove_link_error();
+          : m.pagedetail_remove_related_error();
     }
   }
 
@@ -815,14 +820,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
     <section>
       <div class="block-header">
-        <h2>{m.pagedetail_links_heading()}</h2>
+        <h2>{m.pagedetail_related_heading()}</h2>
         <button
           type="button"
           class="edit-toggle"
           class:active={editingLinks}
           aria-label={editingLinks
-            ? m.pagedetail_done_editing_links()
-            : m.pagedetail_edit_links()}
+            ? m.pagedetail_done_editing_related()
+            : m.pagedetail_edit_related()}
           onclick={() => (editingLinks = !editingLinks)}
         >
           {#if editingLinks}
@@ -832,9 +837,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           {/if}
         </button>
       </div>
-      {#if page.links.length > 0}
+      {#if page.related_pages.length > 0}
         <ul class="linked-list">
-          {#each page.links as linked (linked.id)}
+          {#each page.related_pages as linked (linked.id)}
             <li>
               <a href={`/pages/${linked.id}`} use:link class="linked-row">
                 <span class="linked-favicon-cell">
@@ -849,7 +854,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
                 <button
                   type="button"
                   class="remove"
-                  aria-label={m.pagedetail_remove_link_aria({
+                  aria-label={m.pagedetail_remove_related_aria({
                     name: linked.title ?? linked.normalized_url,
                   })}
                   onclick={() => removeLink(linked.id)}
@@ -861,13 +866,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           {/each}
         </ul>
       {:else}
-        <p class="empty-note">{m.pagedetail_links_empty()}</p>
+        <p class="empty-note">{m.pagedetail_related_empty()}</p>
       {/if}
       {#if editingLinks}
         <div class="link-search-wrap">
           <input
             type="text"
-            placeholder={m.pagedetail_link_search_placeholder()}
+            placeholder={m.pagedetail_related_search_placeholder()}
             bind:value={linkSearchQuery}
             oninput={handleLinkSearchInput}
             disabled={addingLink}
@@ -891,7 +896,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             </ul>
           {:else if linkSearchQuery.trim()}
             <ul class="link-results">
-              <li class="no-results">{m.pagedetail_link_no_results()}</li>
+              <li class="no-results">{m.pagedetail_related_no_results()}</li>
             </ul>
           {/if}
         </div>

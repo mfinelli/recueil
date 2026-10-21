@@ -1379,44 +1379,44 @@ type pageCollectionResponse struct {
 	ParentID *int64 `json:"parent_id"`
 }
 
-// pageLinkResponse is a lightweight page reference -- just enough to
-// render the linked-pages list's favicon/title/url row or a link-candidates
+// relatedPageResponse is a lightweight page reference -- just enough to
+// render the related-pages list's favicon/title/url row or a relation-candidates
 // search result, which is shaped identically. Doesn't carry the full
 // pageResponse's timestamps/excluded_from_mirror/notes -- none of which
 // either of those views needs.
-type pageLinkResponse struct {
+type relatedPageResponse struct {
 	ID            int64   `json:"id"`
 	Title         *string `json:"title"`
 	NormalizedURL string  `json:"normalized_url"`
 	FaviconPath   *string `json:"favicon_path"`
 }
 
-func pageLinkResponseFromListRow(p *db.ListPageLinksRow) pageLinkResponse {
-	return pageLinkResponse{
+func relatedPageFromListRow(p *db.ListPageRelationsRow) relatedPageResponse {
+	return relatedPageResponse{
 		ID: p.ID, Title: textOrNil(p.Title), NormalizedURL: p.NormalizedUrl, FaviconPath: textOrNil(p.FaviconPath),
 	}
 }
 
-func pageLinkResponseFromPage(p *db.Page) pageLinkResponse {
-	return pageLinkResponse{
+func relatedPageFromPage(p *db.Page) relatedPageResponse {
+	return relatedPageResponse{
 		ID: p.ID, Title: textOrNil(p.Title), NormalizedURL: p.NormalizedUrl, FaviconPath: textOrNil(p.FaviconPath),
 	}
 }
 
 // pageDetailResponse embeds pageResponse so its fields flatten into the
-// same top-level JSON object as "captures"/"tags"/"collections"/"links" --
+// same top-level JSON object as "captures"/"tags"/"collections"/"related_pages" --
 // the page detail view's natural shape is "the page, plus everything
 // attached to it," not a nested "page" envelope key.
 type pageDetailResponse struct {
 	pageResponse
-	Captures    []captureSummaryResponse `json:"captures"`
-	Tags        []pageTagResponse        `json:"tags"`
-	Collections []pageCollectionResponse `json:"collections"`
-	Links       []pageLinkResponse       `json:"links"`
+	Captures     []captureSummaryResponse `json:"captures"`
+	Tags         []pageTagResponse        `json:"tags"`
+	Collections  []pageCollectionResponse `json:"collections"`
+	RelatedPages []relatedPageResponse    `json:"related_pages"`
 
 	// MatchingLinkID is the same-URL hint: the id of the user's link (a
-	// bookmark-only entry, not one of Links above, which are related
-	// pages) with this page's normalized URL, and MatchingLinkTitle that
+	// bookmark-only entry, not one of RelatedPages above, which are
+	// related pages) with this page's normalized URL, and MatchingLinkTitle that
 	// link's title (null if it has none), so the callout can name it without
 	// fetching the link. Both are always null if links are off.
 	MatchingLinkID    *int64  `json:"matching_link_id"`
@@ -1468,9 +1468,9 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	links, err := s.Queries.ListPageLinks(ctx, page.ID)
+	relatedPages, err := s.Queries.ListPageRelations(ctx, page.ID)
 	if err != nil {
-		log.Printf("warning: failed to list links for page %d: %v", page.ID, err)
+		log.Printf("warning: failed to list related pages for page %d: %v", page.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -1480,7 +1480,7 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		Captures:     []captureSummaryResponse{},
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
-		Links:        []pageLinkResponse{},
+		RelatedPages: []relatedPageResponse{},
 	}
 	if s.EnableLinks {
 		link, err := s.Queries.GetLinkByNormalizedURL(ctx, db.GetLinkByNormalizedURLParams{
@@ -1518,8 +1518,8 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 	for _, c := range collections {
 		resp.Collections = append(resp.Collections, pageCollectionResponse{ID: c.CollectionID, Name: c.Name, ParentID: int8OrNil(c.ParentID)})
 	}
-	for i := range links {
-		resp.Links = append(resp.Links, pageLinkResponseFromListRow(&links[i]))
+	for i := range relatedPages {
+		resp.RelatedPages = append(resp.RelatedPages, relatedPageFromListRow(&relatedPages[i]))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -2797,17 +2797,17 @@ func (s *Server) RemovePageFromCollection(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-type addPageLinkRequest struct {
-	LinkPageID int64 `json:"link_page_id"`
+type addPageRelationRequest struct {
+	PageID int64 `json:"page_id"`
 }
 
-// POST /api/pages/{id}/links: links two pages bidirectionally -- both
+// POST /api/pages/{id}/related-pages: relates two pages bidirectionally -- both
 // must belong to the requesting user (checked independently, same as
 // AddPageToCollection checks both the page and the collection), and
-// AddPageLink itself canonicalizes which one is stored as page_id_a vs
+// AddPageRelation itself canonicalizes which one is stored as page_id_a vs
 // page_id_b, so the order these two ids are checked/passed in doesn't
 // matter.
-func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
+func (s *Server) AddPageRelation(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -2818,13 +2818,13 @@ func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid page id")
 		return
 	}
-	req, err := decodeJSON[addPageLinkRequest](r)
-	if err != nil || req.LinkPageID == 0 {
-		writeError(w, http.StatusBadRequest, "link_page_id is required")
+	req, err := decodeJSON[addPageRelationRequest](r)
+	if err != nil || req.PageID == 0 {
+		writeError(w, http.StatusBadRequest, "page_id is required")
 		return
 	}
-	if req.LinkPageID == pageID {
-		writeError(w, http.StatusBadRequest, "a page cannot be linked to itself")
+	if req.PageID == pageID {
+		writeError(w, http.StatusBadRequest, "a page cannot be related to itself")
 		return
 	}
 	ctx := r.Context()
@@ -2834,28 +2834,28 @@ func (s *Server) AddPageLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "page not found")
 		return
 	}
-	linkPage, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: req.LinkPageID, UserID: user.ID})
+	relatedPage, err := s.Queries.GetPageByIDForUser(ctx, db.GetPageByIDForUserParams{ID: req.PageID, UserID: user.ID})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "page not found")
 		return
 	}
 
-	if err := s.Queries.AddPageLink(ctx, db.AddPageLinkParams{PageA: page.ID, PageB: linkPage.ID}); err != nil {
-		log.Printf("warning: failed to link page %d to page %d: %v", page.ID, linkPage.ID, err)
+	if err := s.Queries.AddPageRelation(ctx, db.AddPageRelationParams{PageA: page.ID, PageB: relatedPage.ID}); err != nil {
+		log.Printf("warning: failed to relate page %d to page %d: %v", page.ID, relatedPage.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, pageLinkResponseFromPage(&linkPage))
+	writeJSON(w, http.StatusCreated, relatedPageFromPage(&relatedPage))
 }
 
-// DELETE /api/pages/{id}/links/{linkPageId}: only the {id} side needs to
+// DELETE /api/pages/{id}/related-pages/{relatedPageId}: only the {id} side needs to
 // be verified as belonging to the requester (same reasoning as
 // RemovePageFromCollection not separately verifying {collectionId} --
 // the DELETE is scoped to a pair involving an already-verified,
-// user-owned page, so it simply matches zero rows if {linkPageId} isn't
-// actually linked to it, rather than needing its own ownership check).
-func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
+// user-owned page, so it simply matches zero rows if {relatedPageId} isn't
+// actually related to it, rather than needing its own ownership check).
+func (s *Server) RemovePageRelation(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -2866,9 +2866,9 @@ func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid page id")
 		return
 	}
-	linkPageID, err := strconv.ParseInt(chi.URLParam(r, "linkPageId"), 10, 64)
+	relatedPageID, err := strconv.ParseInt(chi.URLParam(r, "relatedPageId"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid link page id")
+		writeError(w, http.StatusBadRequest, "invalid related page id")
 		return
 	}
 	ctx := r.Context()
@@ -2879,8 +2879,8 @@ func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.RemovePageLink(ctx, db.RemovePageLinkParams{PageA: page.ID, PageB: linkPageID}); err != nil {
-		log.Printf("warning: failed to remove link between page %d and page %d: %v", page.ID, linkPageID, err)
+	if err := s.Queries.RemovePageRelation(ctx, db.RemovePageRelationParams{PageA: page.ID, PageB: relatedPageID}); err != nil {
+		log.Printf("warning: failed to remove the relation between page %d and page %d: %v", page.ID, relatedPageID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -2888,21 +2888,21 @@ func (s *Server) RemovePageLink(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// linkCandidateLimit caps GET /api/pages/link-candidates -- a live
+// relationCandidateLimit caps GET /api/pages/relation-candidates -- a live
 // typeahead dropdown showing a handful of matches, deliberately much
 // smaller than defaultPageLimit/maxPageLimit above (those back a
 // browsable, paginated listing; this doesn't paginate at all).
-const linkCandidateLimit = 8
+const relationCandidateLimit = 8
 
-// GET /api/pages/link-candidates?q=...: title-or-normalized_url search
-// for the "link this page to..." picker, excluding the page being
-// linked from (?exclude=) so it can never show up as a candidate to
-// link to itself. Doesn't also exclude pages already linked to it --
+// GET /api/pages/relation-candidates?q=...: title-or-normalized_url search
+// for the "relate this page to..." picker, excluding the page being
+// related from (?exclude=) so it can never show up as a candidate to
+// relate to itself. Doesn't also exclude pages already related to it --
 // the frontend already has that full list loaded (GetPage's own
-// "links"), and filters candidates against it client-side, the same way
+// "related_pages"), and filters candidates against it client-side, the same way
 // PageDetail already filters the collections picker against
 // page.collections rather than asking the backend to.
-func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
+func (s *Server) SearchPageRelationCandidates(w http.ResponseWriter, r *http.Request) {
 	user, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -2910,8 +2910,8 @@ func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
 	}
 	query := r.URL.Query().Get("q")
 	resp := struct {
-		Pages []pageLinkResponse `json:"pages"`
-	}{Pages: []pageLinkResponse{}}
+		Pages []relatedPageResponse `json:"pages"`
+	}{Pages: []relatedPageResponse{}}
 	if query == "" {
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -2923,8 +2923,8 @@ func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	pages, err := s.Queries.SearchPagesForLinking(r.Context(), db.SearchPagesForLinkingParams{
-		UserID: user.ID, ExcludePageID: excludePageID, Query: query, Limit: linkCandidateLimit,
+	pages, err := s.Queries.SearchPageRelationCandidates(r.Context(), db.SearchPageRelationCandidatesParams{
+		UserID: user.ID, ExcludePageID: excludePageID, Query: query, Limit: relationCandidateLimit,
 	})
 	if err != nil {
 		log.Printf("warning: failed to search link candidates for user %d: %v", user.ID, err)
@@ -2932,7 +2932,7 @@ func (s *Server) SearchPagesForLinking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range pages {
-		resp.Pages = append(resp.Pages, pageLinkResponseFromPage(&pages[i]))
+		resp.Pages = append(resp.Pages, relatedPageFromPage(&pages[i]))
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

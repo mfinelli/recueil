@@ -381,13 +381,13 @@
   "pagedetail_notes_placeholder": "Add a note…",
   "pagedetail_notes_hint": "Supports **bold**, *italic* / _italic_, and - lists.",
   "pagedetail_notes_error": "failed to update notes",
-  "pagedetail_links_heading": "Linked pages",
-  "pagedetail_edit_links": "Edit linked pages",
-  "pagedetail_done_editing_links": "Done editing linked pages",
-  "pagedetail_links_empty": "No pages linked yet.",
-  "pagedetail_link_search_placeholder": "Search by title or URL…",
-  "pagedetail_link_no_results": "No matching pages.",
-  "pagedetail_remove_link_aria": "Remove link to {name}",
-  "pagedetail_link_error": "failed to link page",
-  "pagedetail_remove_link_error": "failed to remove link"
+  "pagedetail_related_heading": "Related pages",
+  "pagedetail_edit_related": "Edit related pages",
+  "pagedetail_done_editing_related": "Done editing related pages",
+  "pagedetail_related_empty": "No related pages yet.",
+  "pagedetail_related_search_placeholder": "Search by title or URL…",
+  "pagedetail_related_no_results": "No matching pages.",
+  "pagedetail_remove_related_aria": "Remove relation to {name}",
+  "pagedetail_related_error": "failed to relate page",
+  "pagedetail_remove_related_error": "failed to remove relation"
 }

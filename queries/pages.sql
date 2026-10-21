@@ -94,7 +94,7 @@ UPDATE pages SET excluded_from_mirror = $1, updated_at = NOW()
 WHERE id = $2 AND user_id = $3
 RETURNING *;
 
--- name: SearchPagesForLinking :many
+-- name: SearchPageRelationCandidates :many
 -- Combined title-or-normalized_url search, one input matched against
 -- both columns, for the "link this page to..." picker -- the person
 -- searching may remember either. Plain ILIKE, not a tsvector/trigram

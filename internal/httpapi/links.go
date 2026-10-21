@@ -38,10 +38,9 @@ import (
 // routed when links are enabled (Server.EnableLinks, see router.go), so with
 // the feature off every route here simply 404s.
 //
-// Not to be confused with the page-to-page relationship routes
-// (/pages/{id}/links, AddPageLink and friends), which relate two archived
-// pages to each other and are unrelated to this. This file's routes are all
-// under /api/links.
+// Relationships between items are named by what they relate: page to page is
+// /pages/{id}/related-pages, and link to link is /links/{id}/related-links
+// (linkrelations.go), both under /api/links here.
 
 // linkResponse is a link as the dashboard sees it. MatchingPageID is the
 // same-URL hint: the id of the user's archived page with this link's
@@ -224,9 +223,9 @@ type linkDetailResponse struct {
 	// null if it has never been submitted.
 	Wayback *waybackResponse `json:"wayback"`
 
-	// Links are the links related to this one (see linklinks.go), as a page
-	// detail's "links" are its linked pages.
-	Links []relatedLinkResponse `json:"links"`
+	// RelatedLinks are the links related to this one (see linkrelations.go), as a
+	// page detail's related_pages are its related pages.
+	RelatedLinks []relatedLinkResponse `json:"related_links"`
 
 	// CleanedURL is what the link's raw URL would become if its tracking and
 	// other extras were removed (see cleanedLinkURL); null when it is already
@@ -310,7 +309,7 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	related, err := s.Queries.ListLinkLinks(ctx, link.ID)
+	related, err := s.Queries.ListLinkRelations(ctx, link.ID)
 	if err != nil {
 		log.Printf("warning: failed to list related links for link %d: %v", link.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
@@ -336,10 +335,10 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		Collections:       []pageCollectionResponse{},
 		Wayback:           wayback,
 		CleanedURL:        cleanedURLIfDifferent(link.RawUrl, link.NormalizedUrl),
-		Links:             []relatedLinkResponse{},
+		RelatedLinks:      []relatedLinkResponse{},
 	}
 	for i := range related {
-		resp.Links = append(resp.Links, relatedLinkFromListRow(&related[i]))
+		resp.RelatedLinks = append(resp.RelatedLinks, relatedLinkFromListRow(&related[i]))
 	}
 	for _, t := range tags {
 		resp.Tags = append(resp.Tags, tagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug})

@@ -1814,33 +1814,33 @@ CREATE TABLE page_collections (
 );
 CREATE INDEX idx_page_collections_collection_id ON page_collections(collection_id);
 
--- Explicit, bidirectional page-to-page links — pairwise edges, not a
--- shared link-group/cluster concept: linking B and C to each other later
+-- Explicit, bidirectional page-to-page relations — pairwise edges, not a
+-- shared group/cluster concept: relating B and C to each other later
 -- doesn't imply any relationship between A and C just because both are
--- linked to B. Each relationship stored once, as a canonically-ordered
+-- related to B. Each relationship stored once, as a canonically-ordered
 -- pair (the CHECK enforces page_id_a < page_id_b), rather than twice as
--- both A-B and B-A rows — "everything linked to page X" is simply
+-- both A-B and B-A rows — "everything related to page X" is simply
 -- WHERE page_id_a = X OR page_id_b = X, so there's no direction to get
 -- backwards and no risk of a duplicate reverse-direction insert. The
--- ordering check also rules out a page linking to itself as a side effect
--- (page_id_a < page_id_b can never hold when they're equal). No user_id
+-- ordering check also rules out a page being related to itself as a side
+-- effect (page_id_a < page_id_b can never hold when they're equal). No user_id
 -- column, same as page_tags/page_collections above: ownership is already
--- enforced by both referenced pages belonging to the same user.
-CREATE TABLE page_links (
+-- enforced by both referenced pages belonging to the same user. (Named
+-- page_links in v1; renamed in v2 by migration 00016, §17b.)
+CREATE TABLE page_relations (
   page_id_a BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   page_id_b BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (page_id_a, page_id_b),
   CHECK (page_id_a < page_id_b)
 );
-CREATE INDEX idx_page_links_page_id_b ON page_links(page_id_b);  -- the
+CREATE INDEX idx_page_relations_page_id_b ON page_relations(page_id_b);  -- the
                                       -- primary key covers page_id_a = X
                                       -- efficiently; this covers the other
                                       -- half of the bidirectional OR query
 
 -- Links (§17): bookmark-only entries, their own entity rather than pages
--- with zero captures. Not to be confused with page_links above, which are
--- page-to-page relationships. raw_url is what was open in the tab (what the
+-- with zero captures. raw_url is what was open in the tab (what the
 -- dashboard opens); normalized_url is the same urlnorm output pages use, and
 -- is what de-duplicates a link and lets the dashboard notice the same URL is
 -- also an archived page. title and the favicon come from the extension's
@@ -1891,16 +1891,16 @@ CREATE TABLE link_collections (
 CREATE INDEX idx_link_collections_collection_id
   ON link_collections(collection_id);
 
--- Links related to other links, as page_links relates pages: one row per pair,
--- smaller id first, visible from both ends.
-CREATE TABLE link_links (
+-- Links related to other links, as page_relations relates pages: one row per
+-- pair, smaller id first, visible from both ends.
+CREATE TABLE link_relations (
   link_id_a BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
   link_id_b BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (link_id_a, link_id_b),
   CHECK (link_id_a < link_id_b)
 );
-CREATE INDEX idx_link_links_link_id_b ON link_links(link_id_b);
+CREATE INDEX idx_link_relations_link_id_b ON link_relations(link_id_b);
 
 -- Wayback Machine submissions (§17i): one row per user and URL, holding the state
 -- of the latest attempt. last_submitted_at is the last SUCCESSFUL attempt's
@@ -2538,27 +2538,44 @@ latest save too, so a manually added link saved again from the browser becomes
 an `extension` link (its title and favicon now come from the tab). `notes` are
 the user's own and `created_at` is the first save; a re-save touches neither.
 The queries (`queries/links.sql`, `link_tags.sql`, `link_collections.sql`,
-`link_links.sql`) mirror the page equivalents.
+`link_relations.sql`) mirror the page equivalents.
 
-**Related links.** A link can be related to other links as a page can be linked
-to other pages, with a table of the same shape, `link_links`: one row per pair
-with the smaller id first (a `CHECK` that also rules out relating a link to
+**Related links.** A link can be related to other links as a page can be related
+to other pages, with a table of the same shape, `link_relations`: one row per
+pair with the smaller id first (a `CHECK` that also rules out relating a link to
 itself), no `user_id` of its own (the handlers verify both links belong to the
 requester before writing a pair), cascading when either link is deleted, and
 visible from both ends. The API mirrors the page routes:
-`GET /api/links/link-candidates` (title-or-URL typeahead, capped like the page
-picker), `POST /api/links/{id}/links` and
-`DELETE /api/links/{id}/links/{relatedLinkId}`, and the link detail response
-carries `links`, the related links. The screen calls the section "Related
-links", where a page's is "Linked pages". The MCP tools don't expose either.
-Relating a link to a _page_ is not covered: the two kinds relate only to their
-own.
+`GET /api/links/relation-candidates` (title-or-URL typeahead, capped like the
+page picker), `POST /api/links/{id}/related-links` with `{"link_id": …}` and
+`DELETE /api/links/{id}/related-links/{relatedLinkId}`, and the link detail
+response carries `related_links`. The screen calls the section "Related links".
+The MCP tools don't expose any relationship.
 
-**Not to be confused with `page_links`**, which already exists (§10) and holds
-explicit page-to-page relationships; `link_links` and the `/links` routes under
-`/api/links/{id}` are its link counterpart, and neither has anything to do with
-the `/api/links` routes as such beyond sharing the word. Keep the distinction
-clear in UI labels, API route names and MCP tool descriptions.
+**Naming relationships.** Every relationship between two items is named by _what
+it relates_, so "links" never means two things at once (it had come to mean the
+entity, a page related to pages, and a link related to links). Before v2 the
+page version was `page_links`, `/api/pages/{id}/links` and the `links` field on
+a page, shown as "Linked pages". For v2, a major release and so the time for a
+breaking change, it became:
+
+|             | Table                 | Routes                          | Response field  | UI section    |
+| ----------- | --------------------- | ------------------------------- | --------------- | ------------- |
+| page ↔ page | `page_relations`      | `/api/pages/{id}/related-pages` | `related_pages` | Related pages |
+| link ↔ link | `link_relations`      | `/api/links/{id}/related-links` | `related_links` | Related links |
+| page ↔ link | `page_link_relations` | see below                       | see below       | see below     |
+
+The pickers are `GET /api/pages/relation-candidates` and
+`GET /api/links/relation-candidates`, and a request body names the target by its
+kind, `{"page_id": …}` or `{"link_id": …}`. Migration `00016` renames
+`page_links`, its constraints and its index; its `Down` is the exact reverse and
+is tested. **It is the one v2 migration that changes something v1 uses.** Every
+other v2 migration only adds tables, which an older binary never looks at
+(tested: an older migration set starts cleanly against a database that is ahead
+of it), so rolling back to v1 is normally just the image tag. With this rename
+it also takes reverting `00016`, which nothing in recueil runs by itself
+(`recueil` only ever applies migrations upward); the upgrade guide gives the one
+goose command.
 
 - **Tags and collections are shared with pages** (working assumption, to be
   confirmed when the UX is mocked up, §17h): the existing `tags`/`collections`
@@ -2943,7 +2960,7 @@ stages; each says what has landed.
   Collections, Notes, **Related links**, the Internet Archive block (stage 3)
   and an actions row with Delete link only, and the same "Sync with my browser's
   bookmarks" checkbox as a page's (checked unless the link is excluded, §17j).
-  Related links are a page's "Linked pages" for links (§17b): a compact list of
+  Related links are a page's "Related pages" for links (§17b): a compact list of
   rows that open the other link, a pencil that reveals remove buttons and a
   debounced title-or-URL search, already-related links filtered out client-side.
   It was left off the original design by oversight. **Landed.**
@@ -3044,9 +3061,7 @@ stages; each says what has landed.
   links off). Each detail response also carries the other entity's title
   (`matching_page_title` on a link, `matching_link_title` on a page, null when
   it has none), so the same-URL callout can name it without a second request;
-  list rows carry only the id. These are unrelated to `/api/pages/{id}/links`,
-  the page-to-page relationship routes, and the two must stay distinct in
-  routes, labels and docs. A tag's or a collection's links are listed by
+  list rows carry only the id. A tag's or a collection's links are listed by
   filtering rather than by their own routes: `GET /api/links` also takes `?tag=`
   (a slug) and `?collection=` (an id, direct links only, like a collection's
   page list), each of which must be the caller's own (a `404` otherwise) and

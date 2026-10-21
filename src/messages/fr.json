@@ -381,13 +381,13 @@
   "pagedetail_notes_placeholder": "Ajouter une note…",
   "pagedetail_notes_hint": "Prend en charge **gras**, *italique* / _italique_, et les listes avec -.",
   "pagedetail_notes_error": "échec de la mise à jour des notes",
-  "pagedetail_links_heading": "Pages liées",
-  "pagedetail_edit_links": "Modifier les pages liées",
-  "pagedetail_done_editing_links": "Terminer la modification des pages liées",
-  "pagedetail_links_empty": "Aucune page liée pour le moment.",
-  "pagedetail_link_search_placeholder": "Rechercher par titre ou URL…",
-  "pagedetail_link_no_results": "Aucune page correspondante.",
-  "pagedetail_remove_link_aria": "Supprimer le lien vers {name}",
-  "pagedetail_link_error": "échec de la liaison de la page",
-  "pagedetail_remove_link_error": "échec de la suppression du lien"
+  "pagedetail_related_heading": "Pages associées",
+  "pagedetail_edit_related": "Modifier les pages associées",
+  "pagedetail_done_editing_related": "Terminer la modification des pages associées",
+  "pagedetail_related_empty": "Aucune page associée pour l'instant.",
+  "pagedetail_related_search_placeholder": "Rechercher par titre ou URL…",
+  "pagedetail_related_no_results": "Aucune page correspondante.",
+  "pagedetail_remove_related_aria": "Retirer l'association avec {name}",
+  "pagedetail_related_error": "échec de l'association de la page",
+  "pagedetail_remove_related_error": "échec du retrait de l'association"
 }

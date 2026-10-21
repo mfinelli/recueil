@@ -213,7 +213,7 @@ ORDER BY updated_at ASC;
 -- or newly excluded -- the two look identical from here.
 SELECT id FROM links WHERE NOT excluded_from_mirror;
 
--- name: SearchLinksForLinking :many
+-- name: SearchLinkRelationCandidates :many
 -- The candidate search behind the "relate this link to..." picker, as
 -- SearchPagesForLinking is for pages: one input matched against both the title and
 -- the normalized URL, plain ILIKE, no pagination (it backs a live typeahead showing

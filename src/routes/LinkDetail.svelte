@@ -347,10 +347,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       : null;
   }
 
-  // detail.links is already loaded with the link, so search results are only
+  // detail.related_links is already loaded with the link, so search results are only
   // filtered against it client-side, as PageDetail does for its linked pages.
   function availableRelatedResults(d: LinkDetail): RelatedLink[] {
-    const relatedIds = new Set(d.links.map((l) => l.id));
+    const relatedIds = new Set(d.related_links.map((l) => l.id));
     return relatedSearchResults.filter((r) => !relatedIds.has(r.id));
   }
 
@@ -371,7 +371,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       });
       try {
         const res = await apiJSON<{ links: RelatedLink[] }>(
-          `/links/link-candidates?${params.toString()}`,
+          `/links/relation-candidates?${params.toString()}`,
         );
         // A slower, now-stale response must not overwrite a newer one: the query
         // being looked at now decides whether this one is still relevant.
@@ -390,11 +390,14 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     addingRelated = true;
     actionError = null;
     try {
-      const related = await apiJSON<RelatedLink>(`/links/${detail.id}/links`, {
-        method: "POST",
-        body: { related_link_id: target.id },
-      });
-      detail.links = [...detail.links, related].sort((a, b) =>
+      const related = await apiJSON<RelatedLink>(
+        `/links/${detail.id}/related-links`,
+        {
+          method: "POST",
+          body: { link_id: target.id },
+        },
+      );
+      detail.related_links = [...detail.related_links, related].sort((a, b) =>
         (a.title ?? a.normalized_url).localeCompare(
           b.title ?? b.normalized_url,
         ),
@@ -413,10 +416,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     if (!detail) return;
     actionError = null;
     try {
-      await apiJSON(`/links/${detail.id}/links/${relatedLinkId}`, {
+      await apiJSON(`/links/${detail.id}/related-links/${relatedLinkId}`, {
         method: "DELETE",
       });
-      detail.links = detail.links.filter((l) => l.id !== relatedLinkId);
+      detail.related_links = detail.related_links.filter(
+        (l) => l.id !== relatedLinkId,
+      );
     } catch (err) {
       actionError =
         err instanceof ApiError
@@ -776,9 +781,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           {/if}
         </button>
       </div>
-      {#if detail.links.length > 0}
+      {#if detail.related_links.length > 0}
         <ul class="related-list">
-          {#each detail.links as related (related.id)}
+          {#each detail.related_links as related (related.id)}
             <li>
               <a href={`/links/${related.id}`} use:link class="related-row">
                 <span class="related-favicon-cell">
@@ -1150,7 +1155,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   // Delete only, so it sits at the end of the row rather than spreading apart
   // from a recapture button as on PageDetail.
-  // Related links: the same compact list and typeahead as a page's linked pages.
+  // Related links: the same compact list and typeahead as a page's related pages.
   .related-list {
     list-style: none;
     margin: 0 0 0.65rem;

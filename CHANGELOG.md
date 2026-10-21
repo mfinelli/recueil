@@ -24,6 +24,9 @@ before you do. In short:
   mount to both, or turn links off with `ENABLE_LINKS: "false"` (and
   `enable_links = false` in Terraform).
 - Update the browser extension; an older one keeps working, but without links.
+- If you call the API yourself, some routes were renamed (see **Changed**), and
+  rolling back to v1 takes one extra step, reverting a migration that renames a
+  table. Both are in the guide.
 
 ### Added
 
@@ -42,6 +45,18 @@ before you do. In short:
   a page or link from its screen. Needs an archive.org account's keys
   (`wayback_access_key`, `wayback_secret_key`).
 - **MCP**: `search_links` and `get_link` (only when links are on).
+
+### Changed
+
+- **Relationships between items are now named by what they relate**, so "links"
+  no longer means two things at once. What was "linked pages" is now **related
+  pages**: `/api/pages/{id}/links` is `/api/pages/{id}/related-pages`, the
+  `links` field on a page is `related_pages`, `/api/pages/link-candidates` is
+  `/api/pages/relation-candidates`, a request body names its target as `page_id`
+  rather than `link_page_id`, and the table `page_links` is `page_relations`.
+  **This breaks API clients that used the old names**; the dashboard and
+  everything else in recueil is updated together, however, so you shouldn't need
+  to worry about this.
 
 ## v1.0.1 — 2026/09/16
 

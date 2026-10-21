@@ -79,7 +79,7 @@ import type {
   CaptureSummary,
   Collection,
   PageDetail,
-  PageLink,
+  RelatedPage,
 } from "../lib/types";
 import PageDetailRoute from "./PageDetail.svelte";
 
@@ -183,7 +183,7 @@ const basePage: PageDetail = {
   captures: [exampleCapture],
   tags: [{ id: 1, name: "reading", slug: "reading", source: "manual" }],
   collections: [{ id: 5, name: "Articles", parent_id: null }],
-  links: [],
+  related_pages: [],
   matching_link_id: null,
   matching_link_title: null,
   wayback: null,
@@ -783,17 +783,17 @@ describe("PageDetail", () => {
     render42();
     await screen.findByRole("heading", { name: "An example article" });
 
-    expect(screen.getByText("No pages linked yet.")).toBeTruthy();
+    expect(screen.getByText("No related pages yet.")).toBeTruthy();
   });
 
   it("shows a linked page's title and normalized_url as a list row", async () => {
-    const discussion: PageLink = {
+    const discussion: RelatedPage = {
       id: 7,
       title: "Show HN: I built a self-hosted bookmarker",
       normalized_url: "example.com/show-hn",
       favicon_path: null,
     };
-    render42({ page: { ...basePage, links: [discussion] } });
+    render42({ page: { ...basePage, related_pages: [discussion] } });
     await screen.findByRole("heading", { name: "An example article" });
 
     expect(
@@ -807,45 +807,45 @@ describe("PageDetail", () => {
     ).toHaveProperty("href", expect.stringContaining("/pages/7"));
   });
 
-  it("hides the remove buttons and search input until Edit linked pages is clicked", async () => {
-    const linked: PageLink = {
+  it("hides the remove buttons and search input until Edit related pages is clicked", async () => {
+    const linked: RelatedPage = {
       id: 7,
       title: "Linked page",
       normalized_url: "example.com/linked",
       favicon_path: null,
     };
-    render42({ page: { ...basePage, links: [linked] } });
+    render42({ page: { ...basePage, related_pages: [linked] } });
     await screen.findByRole("heading", { name: "An example article" });
 
     expect(
-      screen.queryByRole("button", { name: "Remove link to Linked page" }),
+      screen.queryByRole("button", { name: "Remove relation to Linked page" }),
     ).toBeNull();
     expect(screen.queryByPlaceholderText("Search by title or URL…")).toBeNull();
 
     await fireEvent.click(
-      screen.getByRole("button", { name: "Edit linked pages" }),
+      screen.getByRole("button", { name: "Edit related pages" }),
     );
     expect(
-      screen.getByRole("button", { name: "Remove link to Linked page" }),
+      screen.getByRole("button", { name: "Remove relation to Linked page" }),
     ).toBeTruthy();
     expect(screen.getByPlaceholderText("Search by title or URL…")).toBeTruthy();
   });
 
-  it("searches for candidates after a debounce, excludes already-linked pages, and adds one on click", async () => {
+  it("searches for candidates after a debounce, excludes already-related pages, and adds one on click", async () => {
     vi.useFakeTimers();
-    const alreadyLinked: PageLink = {
+    const alreadyLinked: RelatedPage = {
       id: 5,
       title: "Already linked",
       normalized_url: "example.com/already-linked",
       favicon_path: null,
     };
-    const candidate: PageLink = {
+    const candidate: RelatedPage = {
       id: 9,
       title: "A Philosophy of Software Design",
       normalized_url: "example.com/philosophy",
       favicon_path: null,
     };
-    render42({ page: { ...basePage, links: [alreadyLinked] } });
+    render42({ page: { ...basePage, related_pages: [alreadyLinked] } });
     await vi.waitFor(() =>
       expect(
         screen.getByRole("heading", { name: "An example article" }),
@@ -853,7 +853,7 @@ describe("PageDetail", () => {
     );
 
     await fireEvent.click(
-      screen.getByRole("button", { name: "Edit linked pages" }),
+      screen.getByRole("button", { name: "Edit related pages" }),
     );
 
     apiJSONMock.mockResolvedValueOnce({
@@ -865,13 +865,13 @@ describe("PageDetail", () => {
     );
     // Not yet -- still within the 300ms debounce window.
     expect(apiJSONMock).not.toHaveBeenCalledWith(
-      expect.stringContaining("link-candidates"),
+      expect.stringContaining("relation-candidates"),
     );
 
     await vi.advanceTimersByTimeAsync(300);
 
     expect(apiJSONMock).toHaveBeenLastCalledWith(
-      "/pages/link-candidates?q=philosophy&exclude=42",
+      "/pages/relation-candidates?q=philosophy&exclude=42",
     );
     // alreadyLinked came back in the search results too (a realistic
     // response, since the backend doesn't filter it out server-side --
@@ -888,9 +888,9 @@ describe("PageDetail", () => {
     apiJSONMock.mockResolvedValueOnce(candidate);
     await fireEvent.click(resultButton);
 
-    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/links", {
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-pages", {
       method: "POST",
-      body: { link_page_id: 9 },
+      body: { page_id: 9 },
     });
     expect(
       await screen.findByText("A Philosophy of Software Design"),
@@ -902,32 +902,32 @@ describe("PageDetail", () => {
   });
 
   it("removes a link", async () => {
-    const linked: PageLink = {
+    const linked: RelatedPage = {
       id: 7,
       title: "Linked page",
       normalized_url: "example.com/linked",
       favicon_path: null,
     };
-    render42({ page: { ...basePage, links: [linked] } });
+    render42({ page: { ...basePage, related_pages: [linked] } });
     await screen.findByRole("heading", { name: "An example article" });
 
     await fireEvent.click(
-      screen.getByRole("button", { name: "Edit linked pages" }),
+      screen.getByRole("button", { name: "Edit related pages" }),
     );
     apiJSONMock.mockResolvedValueOnce(undefined);
     await fireEvent.click(
-      screen.getByRole("button", { name: "Remove link to Linked page" }),
+      screen.getByRole("button", { name: "Remove relation to Linked page" }),
     );
 
-    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/links/7", {
+    expect(apiJSONMock).toHaveBeenCalledWith("/pages/42/related-pages/7", {
       method: "DELETE",
     });
-    expect(await screen.findByText("No pages linked yet.")).toBeTruthy();
+    expect(await screen.findByText("No related pages yet.")).toBeTruthy();
   });
 
   it("shows the API's own error message when adding a link fails", async () => {
     vi.useFakeTimers();
-    const candidate: PageLink = {
+    const candidate: RelatedPage = {
       id: 9,
       title: "A candidate page",
       normalized_url: "example.com/candidate",
@@ -941,7 +941,7 @@ describe("PageDetail", () => {
     );
 
     await fireEvent.click(
-      screen.getByRole("button", { name: "Edit linked pages" }),
+      screen.getByRole("button", { name: "Edit related pages" }),
     );
     apiJSONMock.mockResolvedValueOnce({ pages: [candidate] });
     await fireEvent.input(
@@ -953,33 +953,35 @@ describe("PageDetail", () => {
       name: "A candidate page example.com/candidate",
     });
 
-    apiJSONMock.mockRejectedValueOnce(new ApiError(500, "failed to link page"));
+    apiJSONMock.mockRejectedValueOnce(
+      new ApiError(500, "failed to relate page"),
+    );
     await fireEvent.click(resultButton);
 
-    expect(await screen.findByText("failed to link page")).toBeTruthy();
+    expect(await screen.findByText("failed to relate page")).toBeTruthy();
   });
 
   it("shows the API's own error message when removing a link fails", async () => {
-    const linked: PageLink = {
+    const linked: RelatedPage = {
       id: 7,
       title: "Linked page",
       normalized_url: "example.com/linked",
       favicon_path: null,
     };
-    render42({ page: { ...basePage, links: [linked] } });
+    render42({ page: { ...basePage, related_pages: [linked] } });
     await screen.findByRole("heading", { name: "An example article" });
 
     await fireEvent.click(
-      screen.getByRole("button", { name: "Edit linked pages" }),
+      screen.getByRole("button", { name: "Edit related pages" }),
     );
     apiJSONMock.mockRejectedValueOnce(
-      new ApiError(500, "failed to remove link"),
+      new ApiError(500, "failed to remove relation"),
     );
     await fireEvent.click(
-      screen.getByRole("button", { name: "Remove link to Linked page" }),
+      screen.getByRole("button", { name: "Remove relation to Linked page" }),
     );
 
-    expect(await screen.findByText("failed to remove link")).toBeTruthy();
+    expect(await screen.findByText("failed to remove relation")).toBeTruthy();
   });
 
   it("queues a recapture, showing a transient confirmation", async () => {

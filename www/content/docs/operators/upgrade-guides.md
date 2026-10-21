@@ -80,6 +80,39 @@ captures.
   select a particular `job`, it now includes Wayback submissions too. See
   [Metrics](@/docs/operators/metrics.md).
 
+### API changes
+
+If you only use the dashboard, there's nothing to do. If you call the API
+yourself, the routes that relate pages to each other were renamed, so that
+"links" now means only the saved-link entity. The old routes return `404`.
+
+| Before                             | Now                                        |
+| ---------------------------------- | ------------------------------------------ |
+| `POST /api/pages/{id}/links`       | `POST /api/pages/{id}/related-pages`       |
+| `DELETE /api/pages/{id}/links/{n}` | `DELETE /api/pages/{id}/related-pages/{n}` |
+| `GET /api/pages/link-candidates`   | `GET /api/pages/relation-candidates`       |
+| `links` on a page's detail         | `related_pages`                            |
+| request body `{"link_page_id": n}` | `{"page_id": n}`                           |
+
+### Rolling back
+
+Most of v2's migrations only add tables, which a v1 backend doesn't care about,
+so going back to v1 is normally just pointing your Compose file at the v1 image.
+v2 has one exception: migration `00016` renames the `page_links` table to
+`page_relations`, and a v1 backend would fail to load a page's related pages.
+Before starting v1 again, revert it with
+[goose](https://github.com/pressly/goose), using the `migrations/` directory
+from the v2 release you ran:
+
+```sh
+goose -dir migrations -table schema_migrations postgres "$DATABASE_URL" down-to 15
+```
+
+`down-to 15` undoes everything after the last migration that only added tables,
+which is just the rename. It changes the name back and nothing else: your links
+and any Wayback records stay where they are, ignored by v1, and are there again
+if you upgrade later. For now recueil cannot revert migrations itself.
+
 ### If something goes wrong
 
 - **`server` or `agent` won't start and mentions `links_dir`.** The directory

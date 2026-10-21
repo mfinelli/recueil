@@ -39,29 +39,33 @@ type relatedBody struct {
 	FaviconPath   *string `json:"favicon_path"`
 }
 
-type linkWithRelated struct {
+type linkDetailWithRelated struct {
+	RelatedLinks []relatedBody `json:"related_links"`
+}
+
+type candidatesBody struct {
 	Links []relatedBody `json:"links"`
 }
 
-func TestLinkLinks(t *testing.T) {
+func TestLinkRelations(t *testing.T) {
 	pool := dbtest.Setup(t)
 	server, _ := newLinksTestServer(t, pool, true)
 	q := db.New(pool)
 	ctx := context.Background()
 
 	relate := func(t *testing.T, cookie *http.Cookie, id, other int64) *http.Response {
-		return requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/links/%d/links", id), cookie,
-			fmt.Sprintf(`{"related_link_id":%d}`, other))
+		return requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/links/%d/related-links", id), cookie,
+			fmt.Sprintf(`{"link_id":%d}`, other))
 	}
 	unrelate := func(t *testing.T, cookie *http.Cookie, id, other int64) *http.Response {
-		return requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/links/%d/links/%d", id, other), cookie)
+		return requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/links/%d/related-links/%d", id, other), cookie)
 	}
 	relatedOf := func(t *testing.T, cookie *http.Cookie, id int64) []int64 {
 		t.Helper()
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/links/%d", id), cookie)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		var ids []int64
-		for _, l := range decodeBody[linkWithRelated](t, resp).Links {
+		for _, l := range decodeBody[linkDetailWithRelated](t, resp).RelatedLinks {
 			ids = append(ids, l.ID)
 		}
 		return ids
@@ -95,7 +99,7 @@ func TestLinkLinks(t *testing.T) {
 
 		var rows int
 		require.NoError(t, pool.QueryRow(ctx,
-			"SELECT COUNT(*) FROM link_links WHERE link_id_a = LEAST($1::bigint,$2::bigint) AND link_id_b = GREATEST($1::bigint,$2::bigint)", a.ID, b.ID).Scan(&rows))
+			"SELECT COUNT(*) FROM link_relations WHERE link_id_a = LEAST($1::bigint,$2::bigint) AND link_id_b = GREATEST($1::bigint,$2::bigint)", a.ID, b.ID).Scan(&rows))
 		assert.Equal(t, 1, rows)
 		assert.Equal(t, []int64{b.ID}, relatedOf(t, cookie, a.ID))
 	})
@@ -119,7 +123,7 @@ func TestLinkLinks(t *testing.T) {
 		link := saveLink(t, pool, user.ID, "https://example.com/lonely", "Lonely")
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/links/%d", link.ID), sessionCookieFor(t, pool, &user))
 		body := new(strings.Builder)
-		_, err := fmt.Fprint(body, decodeBody[map[string]any](t, resp)["links"])
+		_, err := fmt.Fprint(body, decodeBody[map[string]any](t, resp)["related_links"])
 		require.NoError(t, err)
 		assert.Equal(t, "[]", body.String())
 	})
@@ -131,11 +135,11 @@ func TestLinkLinks(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
-	t.Run("requires related_link_id", func(t *testing.T) {
+	t.Run("requires link_id", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		link := saveLink(t, pool, user.ID, "https://example.com/missing", "Missing")
 		cookie := sessionCookieFor(t, pool, &user)
-		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/links/%d/links", link.ID), cookie, `{}`)
+		resp := requestWithCookieBody(t, server, http.MethodPost, fmt.Sprintf("/api/links/%d/related-links", link.ID), cookie, `{}`)
 		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 	})
 
@@ -151,7 +155,7 @@ func TestLinkLinks(t *testing.T) {
 		assert.Equal(t, http.StatusNotFound, relate(t, cookie, mine.ID, 999999999).StatusCode)
 
 		var rows int
-		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM link_links WHERE link_id_a = ANY($1) OR link_id_b = ANY($1)", []int64{mine.ID, theirs.ID}).Scan(&rows))
+		require.NoError(t, pool.QueryRow(ctx, "SELECT COUNT(*) FROM link_relations WHERE link_id_a = ANY($1) OR link_id_b = ANY($1)", []int64{mine.ID, theirs.ID}).Scan(&rows))
 		assert.Zero(t, rows)
 	})
 
@@ -207,10 +211,10 @@ func TestLinkLinks(t *testing.T) {
 	t.Run("a bad id is a 400, and a session is required", func(t *testing.T) {
 		user := dbtest.CreateUser(t, pool, "member")
 		cookie := sessionCookieFor(t, pool, &user)
-		assert.Equal(t, http.StatusBadRequest, requestWithCookieBody(t, server, http.MethodPost, "/api/links/abc/links", cookie, `{"related_link_id":1}`).StatusCode)
-		assert.Equal(t, http.StatusBadRequest, requestWithCookie(t, server, http.MethodDelete, "/api/links/1/links/abc", cookie).StatusCode)
+		assert.Equal(t, http.StatusBadRequest, requestWithCookieBody(t, server, http.MethodPost, "/api/links/abc/related-links", cookie, `{"link_id":1}`).StatusCode)
+		assert.Equal(t, http.StatusBadRequest, requestWithCookie(t, server, http.MethodDelete, "/api/links/1/related-links/abc", cookie).StatusCode)
 
-		resp, err := http.Post(server.URL+"/api/links/1/links", "application/json", strings.NewReader(`{"related_link_id":2}`))
+		resp, err := http.Post(server.URL+"/api/links/1/related-links", "application/json", strings.NewReader(`{"link_id":2}`))
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
@@ -222,10 +226,10 @@ func TestSearchLinksForLinking(t *testing.T) {
 
 	search := func(t *testing.T, cookie *http.Cookie, query string) []int64 {
 		t.Helper()
-		resp := requestWithCookie(t, server, http.MethodGet, "/api/links/link-candidates"+query, cookie)
+		resp := requestWithCookie(t, server, http.MethodGet, "/api/links/relation-candidates"+query, cookie)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 		var ids []int64
-		for _, l := range decodeBody[linkWithRelated](t, resp).Links {
+		for _, l := range decodeBody[candidatesBody](t, resp).Links {
 			ids = append(ids, l.ID)
 		}
 		return ids
@@ -267,22 +271,22 @@ func TestSearchLinksForLinking(t *testing.T) {
 	})
 
 	t.Run("requires a session", func(t *testing.T) {
-		resp, err := http.Get(server.URL + "/api/links/link-candidates?q=x")
+		resp, err := http.Get(server.URL + "/api/links/relation-candidates?q=x")
 		require.NoError(t, err)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 	})
 }
 
-func TestLinkLinks_NotRoutedWithLinksOff(t *testing.T) {
+func TestLinkRelations_NotRoutedWithLinksOff(t *testing.T) {
 	pool := dbtest.Setup(t)
 	server, _ := newLinksTestServer(t, pool, false)
 	user := dbtest.CreateUser(t, pool, "member")
 	cookie := sessionCookieFor(t, pool, &user)
 
 	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/api/links/link-candidates?q=x"},
-		{http.MethodPost, "/api/links/1/links"},
-		{http.MethodDelete, "/api/links/1/links/2"},
+		{http.MethodGet, "/api/links/relation-candidates?q=x"},
+		{http.MethodPost, "/api/links/1/related-links"},
+		{http.MethodDelete, "/api/links/1/related-links/2"},
 	} {
 		resp := requestWithCookieBody(t, server, tc.method, tc.path, cookie, `{}`)
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode, "%s %s", tc.method, tc.path)
