@@ -204,6 +204,7 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 			// feature on, so with it off every one of these 404s.
 			if s.EnableLinks {
 				r.Get("/links", s.ListLinks)
+				r.Get("/links/link-candidates", s.SearchLinksForLinking)
 				r.Post("/links", s.CreateLink)
 				r.Get("/links/{id}", s.GetLink)
 				r.Patch("/links/{id}", s.PatchLink)
@@ -212,6 +213,8 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 				r.Get("/links/{id}/favicon", s.GetLinkFavicon)
 				r.Post("/links/{id}/tags", s.AddLinkTag)
 				r.Delete("/links/{id}/tags/{tagId}", s.RemoveLinkTag)
+				r.Post("/links/{id}/links", s.AddLinkLink)
+				r.Delete("/links/{id}/links/{relatedLinkId}", s.RemoveLinkLink)
 				r.Post("/links/{id}/collections", s.AddLinkToCollection)
 				r.Delete("/links/{id}/collections/{collectionId}", s.RemoveLinkFromCollection)
 				if s.Wayback != nil {

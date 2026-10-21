@@ -1891,6 +1891,17 @@ CREATE TABLE link_collections (
 CREATE INDEX idx_link_collections_collection_id
   ON link_collections(collection_id);
 
+-- Links related to other links, as page_links relates pages: one row per pair,
+-- smaller id first, visible from both ends.
+CREATE TABLE link_links (
+  link_id_a BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  link_id_b BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (link_id_a, link_id_b),
+  CHECK (link_id_a < link_id_b)
+);
+CREATE INDEX idx_link_links_link_id_b ON link_links(link_id_b);
+
 -- Wayback Machine submissions (§17i): one row per user and URL, holding the state
 -- of the latest attempt. last_submitted_at is the last SUCCESSFUL attempt's
 -- submitted_at and survives a later failure.
@@ -2526,11 +2537,27 @@ capture; the old favicon file is simply no longer referenced, and gc reclaims it
 latest save too, so a manually added link saved again from the browser becomes
 an `extension` link (its title and favicon now come from the tab). `notes` are
 the user's own and `created_at` is the first save; a re-save touches neither.
-The queries (`queries/links.sql`, `link_tags.sql`, `link_collections.sql`)
-mirror the page equivalents.
+The queries (`queries/links.sql`, `link_tags.sql`, `link_collections.sql`,
+`link_links.sql`) mirror the page equivalents.
+
+**Related links.** A link can be related to other links as a page can be linked
+to other pages, with a table of the same shape, `link_links`: one row per pair
+with the smaller id first (a `CHECK` that also rules out relating a link to
+itself), no `user_id` of its own (the handlers verify both links belong to the
+requester before writing a pair), cascading when either link is deleted, and
+visible from both ends. The API mirrors the page routes:
+`GET /api/links/link-candidates` (title-or-URL typeahead, capped like the page
+picker), `POST /api/links/{id}/links` and
+`DELETE /api/links/{id}/links/{relatedLinkId}`, and the link detail response
+carries `links`, the related links. The screen calls the section "Related
+links", where a page's is "Linked pages". The MCP tools don't expose either.
+Relating a link to a _page_ is not covered: the two kinds relate only to their
+own.
 
 **Not to be confused with `page_links`**, which already exists (§10) and holds
-explicit page-to-page relationships. The two are unrelated; keep the distinction
+explicit page-to-page relationships; `link_links` and the `/links` routes under
+`/api/links/{id}` are its link counterpart, and neither has anything to do with
+the `/api/links` routes as such beyond sharing the word. Keep the distinction
 clear in UI labels, API route names and MCP tool descriptions.
 
 - **Tags and collections are shared with pages** (working assumption, to be

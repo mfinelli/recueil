@@ -212,3 +212,19 @@ ORDER BY updated_at ASC;
 -- against the set in D1 to find what to remove, whether the link was deleted
 -- or newly excluded -- the two look identical from here.
 SELECT id FROM links WHERE NOT excluded_from_mirror;
+
+-- name: SearchLinksForLinking :many
+-- The candidate search behind the "relate this link to..." picker, as
+-- SearchPagesForLinking is for pages: one input matched against both the title and
+-- the normalized URL, plain ILIKE, no pagination (it backs a live typeahead showing
+-- a handful of matches). The link being related from is excluded so it can't
+-- be offered to itself; ones already related are filtered out client-side, from the
+-- list the screen has already loaded.
+SELECT *
+FROM links
+WHERE user_id = sqlc.arg(user_id)
+  AND id != sqlc.arg(exclude_link_id)
+  AND (title ILIKE '%' || sqlc.arg(query)::text || '%'
+    OR normalized_url ILIKE '%' || sqlc.arg(query)::text || '%')
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('limit');

@@ -94,7 +94,30 @@ CREATE TABLE link_collections (
 
 CREATE INDEX idx_link_collections_collection_id ON link_collections(collection_id);
 
+-- Links related to other links: one row per related pair, stored with the
+-- smaller id first so a pair has exactly one representation and is visible
+-- from both ends. Like page_links it has no user_id of its own; the handlers
+-- check that both links belong to the user before writing a pair.
+CREATE TABLE link_links (
+  link_id_a BIGINT NOT NULL,
+  link_id_b BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT link_links_pkey PRIMARY KEY (link_id_a, link_id_b),
+  CONSTRAINT link_links_link_id_a_fkey FOREIGN KEY (link_id_a)
+    REFERENCES links(id) ON DELETE CASCADE,
+  CONSTRAINT link_links_link_id_b_fkey FOREIGN KEY (link_id_b)
+    REFERENCES links(id) ON DELETE CASCADE,
+  -- Enforces the canonical ordering and, as a side effect, rules out a link being
+  -- related to itself: link_id_a < link_id_b can never hold when they're equal.
+  CONSTRAINT link_links_ordered_check CHECK (link_id_a < link_id_b)
+);
+
+-- The primary key covers "link_id_a = X"; this covers the other half of the
+-- bidirectional OR query.
+CREATE INDEX idx_link_links_link_id_b ON link_links(link_id_b);
+
 -- +goose Down
+DROP TABLE link_links;
 DROP TABLE link_collections;
 DROP TABLE link_tags;
 DROP TABLE links;
