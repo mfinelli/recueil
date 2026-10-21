@@ -88,8 +88,7 @@ func (s *Server) CreateLink(w http.ResponseWriter, r *http.Request) {
 
 	req, err := decodeJSON[createLinkRequest](r)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			writeError(w, http.StatusRequestEntityTooLarge, "request too large: the favicon may be at most 512 KB")
 			return
 		}
