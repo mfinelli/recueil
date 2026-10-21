@@ -61,6 +61,15 @@ export interface Link {
   updated_at: string;
 }
 
+// A link in another link's list of related links, and in the candidate search:
+// just enough for a row. The link counterpart of PageLink.
+export interface RelatedLink {
+  id: number;
+  title: string | null;
+  normalized_url: string;
+  favicon_path: string | null;
+}
+
 // GET /api/links/{id}: the link plus its tags (no source, unlike a page's: every
 // link tag is a manual one) and collections, flattened into one object like
 // PageDetail. matching_page_title is the title of the page matching
@@ -69,6 +78,9 @@ export interface LinkDetail extends Link {
   matching_page_title: string | null;
   tags: Tag[];
   collections: PageCollection[];
+  // The links related to this one, as a page detail's `links` are its linked
+  // pages.
+  links: RelatedLink[];
   // null if the link's URL has never been submitted to the Wayback Machine.
   wayback: WaybackState | null;
   // What raw_url would become with its tracking and other extras removed (its

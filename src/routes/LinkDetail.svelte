@@ -50,6 +50,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import type {
     Link,
     LinkDetail,
+    RelatedLink,
     TagCreated,
     Collection,
     CollectionListResponse,
@@ -82,6 +83,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let deleting = $state(false);
   let togglingMirror = $state(false);
   let cleaning = $state(false);
+  // Related links, as PageDetail's linked pages: a pencil toggles the remove
+  // buttons and the search box, which looks links up by title or URL.
+  let editingRelated = $state(false);
+  let relatedSearchQuery = $state("");
+  let relatedSearchResults = $state<RelatedLink[]>([]);
+  let addingRelated = $state(false);
+  // A setTimeout handle consumed only by clearTimeout/reassignment, never read
+  // reactively, so not $state (same as Library's searchDebounce).
+  let relatedSearchDebounce: ReturnType<typeof setTimeout> | undefined;
   // Independent per section -- editing tags shouldn't pop open the collection
   // forms. Pills-only by default; the pencil/check toggle reveals the remove
   // buttons and add forms.
@@ -98,6 +108,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     editingTags = false;
     editingCollections = false;
     editingNotes = false;
+    editingRelated = false;
+    relatedSearchQuery = "";
+    relatedSearchResults = [];
 
     Promise.allSettled([
       apiJSON<LinkDetail>(`/links/${id}`),
@@ -323,6 +336,92 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
         err instanceof ApiError ? err.message : m.pagedetail_mirror_error();
     } finally {
       togglingMirror = false;
+    }
+  }
+
+  // A related link that never had a favicon passes no src, so the request is
+  // skipped entirely (see Favicon.svelte).
+  function relatedFaviconSrc(related: RelatedLink): string | null {
+    return related.favicon_path !== null
+      ? `/api/links/${related.id}/favicon`
+      : null;
+  }
+
+  // detail.links is already loaded with the link, so search results are only
+  // filtered against it client-side, as PageDetail does for its linked pages.
+  function availableRelatedResults(d: LinkDetail): RelatedLink[] {
+    const relatedIds = new Set(d.links.map((l) => l.id));
+    return relatedSearchResults.filter((r) => !relatedIds.has(r.id));
+  }
+
+  // Paired with `bind:value={relatedSearchQuery}` so a successful addRelated() can
+  // clear the visible text programmatically.
+  function handleRelatedSearchInput() {
+    clearTimeout(relatedSearchDebounce);
+    const value = relatedSearchQuery;
+    if (!value.trim()) {
+      relatedSearchResults = [];
+      return;
+    }
+    relatedSearchDebounce = setTimeout(async () => {
+      if (!detail) return;
+      const params = new URLSearchParams({
+        q: value,
+        exclude: String(detail.id),
+      });
+      try {
+        const res = await apiJSON<{ links: RelatedLink[] }>(
+          `/links/link-candidates?${params.toString()}`,
+        );
+        // A slower, now-stale response must not overwrite a newer one: the query
+        // being looked at now decides whether this one is still relevant.
+        if (relatedSearchQuery === value) {
+          relatedSearchResults = res.links;
+        }
+      } catch {
+        // Best-effort: a failed search just leaves the dropdown empty.
+        relatedSearchResults = [];
+      }
+    }, 300);
+  }
+
+  async function addRelated(target: RelatedLink) {
+    if (!detail) return;
+    addingRelated = true;
+    actionError = null;
+    try {
+      const related = await apiJSON<RelatedLink>(`/links/${detail.id}/links`, {
+        method: "POST",
+        body: { related_link_id: target.id },
+      });
+      detail.links = [...detail.links, related].sort((a, b) =>
+        (a.title ?? a.normalized_url).localeCompare(
+          b.title ?? b.normalized_url,
+        ),
+      );
+      relatedSearchQuery = "";
+      relatedSearchResults = [];
+    } catch (err) {
+      actionError =
+        err instanceof ApiError ? err.message : m.linkdetail_related_error();
+    } finally {
+      addingRelated = false;
+    }
+  }
+
+  async function removeRelated(relatedLinkId: number) {
+    if (!detail) return;
+    actionError = null;
+    try {
+      await apiJSON(`/links/${detail.id}/links/${relatedLinkId}`, {
+        method: "DELETE",
+      });
+      detail.links = detail.links.filter((l) => l.id !== relatedLinkId);
+    } catch (err) {
+      actionError =
+        err instanceof ApiError
+          ? err.message
+          : m.linkdetail_remove_related_error();
     }
   }
 
@@ -658,6 +757,91 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       {/if}
     </section>
 
+    <section>
+      <div class="block-header">
+        <h2>{m.linkdetail_related_heading()}</h2>
+        <button
+          type="button"
+          class="edit-toggle"
+          class:active={editingRelated}
+          aria-label={editingRelated
+            ? m.linkdetail_done_editing_related()
+            : m.linkdetail_edit_related()}
+          onclick={() => (editingRelated = !editingRelated)}
+        >
+          {#if editingRelated}
+            <Check size={13} />
+          {:else}
+            <Pencil size={13} />
+          {/if}
+        </button>
+      </div>
+      {#if detail.links.length > 0}
+        <ul class="related-list">
+          {#each detail.links as related (related.id)}
+            <li>
+              <a href={`/links/${related.id}`} use:link class="related-row">
+                <span class="related-favicon-cell">
+                  <Favicon src={relatedFaviconSrc(related)} size={16} />
+                </span>
+                <span class="related-title"
+                  >{related.title ?? related.normalized_url}</span
+                >
+                <span class="related-url">{related.normalized_url}</span>
+              </a>
+              {#if editingRelated}
+                <button
+                  type="button"
+                  class="remove"
+                  aria-label={m.linkdetail_remove_related_aria({
+                    name: related.title ?? related.normalized_url,
+                  })}
+                  onclick={() => removeRelated(related.id)}
+                >
+                  <X size={11} />
+                </button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="empty-note">{m.linkdetail_related_empty()}</p>
+      {/if}
+      {#if editingRelated}
+        <div class="related-search-wrap">
+          <input
+            type="text"
+            placeholder={m.linkdetail_related_search_placeholder()}
+            bind:value={relatedSearchQuery}
+            oninput={handleRelatedSearchInput}
+            disabled={addingRelated}
+          />
+          {#if availableRelatedResults(detail).length > 0}
+            <ul class="related-results">
+              {#each availableRelatedResults(detail) as candidate (candidate.id)}
+                <li>
+                  <button
+                    type="button"
+                    onclick={() => addRelated(candidate)}
+                    disabled={addingRelated}
+                  >
+                    <span class="result-title"
+                      >{candidate.title ?? candidate.normalized_url}</span
+                    >
+                    <span class="result-url">{candidate.normalized_url}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {:else if relatedSearchQuery.trim()}
+            <ul class="related-results">
+              <li class="no-results">{m.linkdetail_related_no_results()}</li>
+            </ul>
+          {/if}
+        </div>
+      {/if}
+    </section>
+
     <WaybackBlock
       url={detail.normalized_url}
       wayback={detail.wayback}
@@ -966,6 +1150,143 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
   // Delete only, so it sits at the end of the row rather than spreading apart
   // from a recapture button as on PageDetail.
+  // Related links: the same compact list and typeahead as a page's linked pages.
+  .related-list {
+    list-style: none;
+    margin: 0 0 0.65rem;
+    padding: 0;
+    border-top: 1px dotted var(--rule);
+  }
+
+  .related-list li {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-bottom: 1px dotted var(--rule);
+  }
+
+  .related-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.05rem 0.6rem;
+    flex: 1;
+    min-width: 0;
+    padding: 0.45rem 0.25rem;
+    text-decoration: none;
+    color: inherit;
+
+    &:hover {
+      background: var(--paper-raised);
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+      outline-offset: -2px;
+    }
+  }
+
+  .related-favicon-cell {
+    display: flex;
+    grid-column: 1;
+    grid-row: 1 / 3;
+  }
+
+  .related-title {
+    grid-column: 2;
+    font-size: 0.85rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .related-url {
+    grid-column: 2;
+    @include type.data-mono;
+    color: var(--ink-muted);
+    font-size: 0.75rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .related-list .remove {
+    flex: none;
+    margin-right: 0.4rem;
+  }
+
+  .related-search-wrap {
+    position: relative;
+    max-width: 26rem;
+
+    input[type="text"] {
+      display: block;
+      width: 100%;
+      padding: 0.45rem 0.65rem;
+    }
+  }
+
+  .related-results {
+    list-style: none;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    background: var(--paper-raised);
+    overflow: hidden;
+
+    li + li {
+      border-top: 1px dotted var(--rule);
+    }
+
+    .no-results {
+      padding: 0.6rem 0.7rem;
+      color: var(--ink-muted);
+      font-size: 0.8rem;
+      font-style: italic;
+    }
+
+    button {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.1rem;
+      width: 100%;
+      text-align: left;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      padding: 0.5rem 0.7rem;
+      cursor: pointer;
+
+      &:hover:not(:disabled) {
+        background: var(--paper);
+      }
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
+      &:focus-visible {
+        @include mix.focus-ring;
+        outline-offset: -2px;
+      }
+    }
+
+    .result-title {
+      font-size: 0.85rem;
+      color: var(--ink);
+    }
+
+    .result-url {
+      @include type.data-mono;
+      font-size: 0.7rem;
+      color: var(--ink-muted);
+    }
+  }
+
   .mirror-toggle {
     display: flex;
     align-items: center;

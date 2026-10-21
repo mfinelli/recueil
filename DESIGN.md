@@ -2937,12 +2937,16 @@ stages; each says what has landed.
   link, because it can't nest inside the row link; the detail screen carries the
   real link. No Wayback state appears in rows. **Landed.**
 - **Link detail (`/links/:id`)** mirrors the page detail minus captures,
-  recapture, AI tags, linked pages and versions: a back link, the title with a
-  pencil (hint: "Saving this link again from your browser replaces the title."),
-  a source row (`raw_url` and an external-link icon), the same-URL callout,
-  Tags, Collections, Notes, the Internet Archive block (stage 3) and an actions
-  row with Delete link only, and the same "Sync with my browser's bookmarks"
-  checkbox as a page's (checked unless the link is excluded, §17j). **Landed.**
+  recapture, AI tags and versions: a back link, the title with a pencil (hint:
+  "Saving this link again from your browser replaces the title."), a source row
+  (`raw_url` and an external-link icon), the same-URL callout, Tags,
+  Collections, Notes, **Related links**, the Internet Archive block (stage 3)
+  and an actions row with Delete link only, and the same "Sync with my browser's
+  bookmarks" checkbox as a page's (checked unless the link is excluded, §17j).
+  Related links are a page's "Linked pages" for links (§17b): a compact list of
+  rows that open the other link, a pencil that reveals remove buttons and a
+  debounced title-or-URL search, already-related links filtered out client-side.
+  It was left off the original design by oversight. **Landed.**
 - **Same-URL hint.** A one-line callout under the source row on both detail
   screens: "This URL is also archived as a page: {title}" and "This URL is also
   saved as a link: {title}". It is a read-time join on `normalized_url`, not a
