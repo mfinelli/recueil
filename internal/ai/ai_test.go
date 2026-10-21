@@ -246,7 +246,7 @@ func TestRunner_RunOnce_TagCollidingWithManualTagIsANoOp(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{
-		PageID: capture.PageID, TagID: tag.ID, Source: "manual",
+		PageID: capture.PageID, TagID: tag.ID, Source: "manual", UserID: tag.UserID,
 	}))
 
 	r := newRunner(t, pool, server.URL, 3)

@@ -31,10 +31,11 @@
 -- from the same comparison column -- so named explicitly rather
 -- than ending up with two same-looking fields that are easy to
 -- transpose by accident.
-INSERT INTO page_relations (page_id_a, page_id_b)
+INSERT INTO page_relations (page_id_a, page_id_b, user_id)
 VALUES (
   LEAST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint),
-  GREATEST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint)
+  GREATEST(sqlc.arg(page_a)::bigint, sqlc.arg(page_b)::bigint),
+  sqlc.arg(user_id)::bigint
 )
 ON CONFLICT (page_id_a, page_id_b) DO NOTHING;
 

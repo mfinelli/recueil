@@ -88,7 +88,7 @@ func (s *Server) AddLinkRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.AddLinkRelation(r.Context(), db.AddLinkRelationParams{LinkA: link.ID, LinkB: related.ID}); err != nil {
+	if err := s.Queries.AddLinkRelation(r.Context(), db.AddLinkRelationParams{LinkA: link.ID, LinkB: related.ID, UserID: user.ID}); err != nil {
 		log.Printf("warning: failed to relate link %d to link %d: %v", link.ID, related.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

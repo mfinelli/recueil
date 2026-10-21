@@ -18,11 +18,12 @@
 
 -- name: AddPageLinkRelation :exec
 -- Relates a page to a link. One row per pair, and relating them again is a no-op,
--- not an error. The caller has already verified both belong to the requesting user;
--- this table has no user_id of its own. There is no ordering to canonicalize, since
--- the two ends are different kinds of item.
-INSERT INTO page_link_relations (page_id, link_id)
-VALUES ($1, $2)
+-- not an error. The caller has already verified both belong to the requesting user,
+-- and user_id is that owner, which composite foreign keys on the table enforce: a pair
+-- owned by different users is refused by Postgres. There is no ordering to
+-- canonicalize, since the two ends are different kinds of item.
+INSERT INTO page_link_relations (page_id, link_id, user_id)
+VALUES ($1, $2, $3)
 ON CONFLICT (page_id, link_id) DO NOTHING;
 
 -- name: RemovePageLinkRelation :exec

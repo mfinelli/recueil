@@ -272,8 +272,8 @@ func TestGetLink(t *testing.T) {
 		require.NoError(t, err)
 		parent, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{UserID: user.ID, Name: "Watch", Slug: "watch"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkTag(context.Background(), db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID}))
-		require.NoError(t, q.AddLinkToCollection(context.Background(), db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: parent.ID}))
+		require.NoError(t, q.AddLinkTag(context.Background(), db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID, UserID: link.UserID}))
+		require.NoError(t, q.AddLinkToCollection(context.Background(), db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: parent.ID, UserID: link.UserID}))
 
 		resp := requestWithCookie(t, server, http.MethodGet, fmt.Sprintf("/api/links/%d", link.ID), sessionCookieFor(t, pool, &user))
 		require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -510,7 +510,7 @@ func TestDeleteLink(t *testing.T) {
 		require.NoError(t, err)
 		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "t", Slug: "t"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkTag(context.Background(), db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID}))
+		require.NoError(t, q.AddLinkTag(context.Background(), db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID, UserID: link.UserID}))
 
 		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/links/%d", link.ID), sessionCookieFor(t, pool, &user))
 		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
@@ -695,7 +695,7 @@ func TestLinkTags(t *testing.T) {
 		link := saveLink(t, pool, owner.ID, "https://example.com/theirs-tag", "Theirs")
 		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: owner.ID, Name: "keep", Slug: "keep"})
 		require.NoError(t, err)
-		require.NoError(t, q.AddLinkTag(context.Background(), db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID}))
+		require.NoError(t, q.AddLinkTag(context.Background(), db.AddLinkTagParams{LinkID: link.ID, TagID: tag.ID, UserID: link.UserID}))
 
 		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/links/%d/tags/%d", link.ID, tag.ID), sessionCookieFor(t, pool, &other))
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
@@ -785,7 +785,7 @@ func TestLinkCollections(t *testing.T) {
 		other := dbtest.CreateUser(t, pool, "member")
 		link := saveLink(t, pool, owner.ID, "https://example.com/theirs-col", "Theirs")
 		col := createCollection(t, owner.ID, "Keep", "keep")
-		require.NoError(t, q.AddLinkToCollection(context.Background(), db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: col.ID}))
+		require.NoError(t, q.AddLinkToCollection(context.Background(), db.AddLinkToCollectionParams{LinkID: link.ID, CollectionID: col.ID, UserID: link.UserID}))
 
 		resp := requestWithCookie(t, server, http.MethodDelete, fmt.Sprintf("/api/links/%d/collections/%d", link.ID, col.ID), sessionCookieFor(t, pool, &other))
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)

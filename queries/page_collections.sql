@@ -20,9 +20,10 @@
 -- ON CONFLICT DO NOTHING: adding a page to a collection it's already in is
 -- a no-op, not an error -- same shape as page_tags.AddPageTag. Caller
 -- (internal/httpapi) is responsible for having already verified both the
--- page and the collection belong to the requesting user; this table has no
--- user_id column of its own to check against.
-INSERT INTO page_collections (page_id, collection_id) VALUES ($1, $2)
+-- page and the collection belong to the requesting user. user_id is that owner,
+-- which composite foreign keys on the table enforce: a pair owned by different users
+-- is refused by Postgres.
+INSERT INTO page_collections (page_id, collection_id, user_id) VALUES ($1, $2, $3)
 ON CONFLICT (page_id, collection_id) DO NOTHING;
 
 -- name: RemovePageFromCollection :exec

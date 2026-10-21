@@ -107,7 +107,7 @@ func (s *Server) AddPageRelatedLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.AddPageLinkRelation(r.Context(), db.AddPageLinkRelationParams{PageID: page.ID, LinkID: link.ID}); err != nil {
+	if err := s.Queries.AddPageLinkRelation(r.Context(), db.AddPageLinkRelationParams{PageID: page.ID, LinkID: link.ID, UserID: user.ID}); err != nil {
 		log.Printf("warning: failed to relate page %d to link %d: %v", page.ID, link.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -173,7 +173,7 @@ func (s *Server) AddLinkRelatedPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.AddPageLinkRelation(r.Context(), db.AddPageLinkRelationParams{PageID: page.ID, LinkID: link.ID}); err != nil {
+	if err := s.Queries.AddPageLinkRelation(r.Context(), db.AddPageLinkRelationParams{PageID: page.ID, LinkID: link.ID, UserID: user.ID}); err != nil {
 		log.Printf("warning: failed to relate link %d to page %d: %v", link.ID, page.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

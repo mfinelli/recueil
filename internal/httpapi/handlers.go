@@ -2313,7 +2313,7 @@ func (s *Server) AddPageTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.AddPageTag(ctx, db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual"}); err != nil {
+	if err := s.Queries.AddPageTag(ctx, db.AddPageTagParams{PageID: page.ID, TagID: tag.ID, Source: "manual", UserID: page.UserID}); err != nil {
 		log.Printf("warning: failed to add tag %d to page %d: %v", tag.ID, page.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -2769,7 +2769,7 @@ func (s *Server) AddPageToCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.AddPageToCollection(ctx, db.AddPageToCollectionParams{PageID: page.ID, CollectionID: req.CollectionID}); err != nil {
+	if err := s.Queries.AddPageToCollection(ctx, db.AddPageToCollectionParams{PageID: page.ID, CollectionID: req.CollectionID, UserID: page.UserID}); err != nil {
 		log.Printf("warning: failed to add page %d to collection %d: %v", page.ID, req.CollectionID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -2855,7 +2855,7 @@ func (s *Server) AddPageRelation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Queries.AddPageRelation(ctx, db.AddPageRelationParams{PageA: page.ID, PageB: relatedPage.ID}); err != nil {
+	if err := s.Queries.AddPageRelation(ctx, db.AddPageRelationParams{PageA: page.ID, PageB: relatedPage.ID, UserID: user.ID}); err != nil {
 		log.Printf("warning: failed to relate page %d to page %d: %v", page.ID, relatedPage.ID, err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

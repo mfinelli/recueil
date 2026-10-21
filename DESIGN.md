@@ -1625,7 +1625,9 @@ CREATE TABLE pages (
                                       -- collections, not per-capture.
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  UNIQUE (user_id, normalized_url)
+  UNIQUE (user_id, normalized_url),
+  UNIQUE (id, user_id)                -- what the relation tables' composite foreign
+                                      -- keys reference (§17b)
 );
 CREATE INDEX idx_pages_user_id ON pages(user_id);
 
@@ -1751,17 +1753,27 @@ CREATE TABLE tags (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, name),
-  UNIQUE (user_id, slug)
+  UNIQUE (user_id, slug),
+  UNIQUE (id, user_id)                -- referenced by the composite keys below
 );
 
+-- Every table that relates two user-owned rows (page_tags, page_collections,
+-- page_relations, and the link tables in §17) carries a user_id and composite
+-- foreign keys, (page_id, user_id) REFERENCES pages(id, user_id) and so on, so
+-- Postgres refuses a pair owned by different users whatever code wrote it (§17b,
+-- migration 00017).
+--
 -- Tags live on pages, not captures: tags describe the subject matter of
 -- the URL, which doesn't change per-version. Both manual and AI-applied
 -- tags coexist here, distinguished by `source`.
 CREATE TABLE page_tags (
-  page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  page_id BIGINT NOT NULL,
+  tag_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
   source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai')),
-  PRIMARY KEY (page_id, tag_id)
+  PRIMARY KEY (page_id, tag_id),
+  FOREIGN KEY (page_id, user_id) REFERENCES pages(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (tag_id, user_id) REFERENCES tags(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_page_tags_tag_id ON page_tags(tag_id);
 
@@ -1784,12 +1796,15 @@ CREATE INDEX idx_page_tags_tag_id ON page_tags(tag_id);
 CREATE TABLE collections (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  parent_id BIGINT REFERENCES collections(id) ON DELETE CASCADE,
+  parent_id BIGINT,
   name TEXT NOT NULL,
   slug TEXT NOT NULL,
   description TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (id, user_id),
+  -- A parent has to be the same user's. A NULL parent_id (top level) isn't checked.
+  FOREIGN KEY (parent_id, user_id) REFERENCES collections(id, user_id) ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX collections_user_id_name_top_level_key
   ON collections(user_id, name) WHERE parent_id IS NULL;
@@ -1807,10 +1822,13 @@ CREATE INDEX idx_collections_parent ON collections(parent_id);
 -- *membership* rows here. There is no dedicated "Unsorted" collection row;
 -- absence of membership rows IS the Unsorted state.
 CREATE TABLE page_collections (
-  page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  page_id BIGINT NOT NULL,
+  collection_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
   added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (page_id, collection_id)
+  PRIMARY KEY (page_id, collection_id),
+  FOREIGN KEY (page_id, user_id) REFERENCES pages(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id, user_id) REFERENCES collections(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_page_collections_collection_id ON page_collections(collection_id);
 
@@ -1823,16 +1841,18 @@ CREATE INDEX idx_page_collections_collection_id ON page_collections(collection_i
 -- WHERE page_id_a = X OR page_id_b = X, so there's no direction to get
 -- backwards and no risk of a duplicate reverse-direction insert. The
 -- ordering check also rules out a page being related to itself as a side
--- effect (page_id_a < page_id_b can never hold when they're equal). No user_id
--- column, same as page_tags/page_collections above: ownership is already
--- enforced by both referenced pages belonging to the same user. (Named
+-- effect (page_id_a < page_id_b can never hold when they're equal). One user_id
+-- for both pages, so the composite keys require them to be the same user's. (Named
 -- page_links in v1; renamed in v2 by migration 00016, §17b.)
 CREATE TABLE page_relations (
-  page_id_a BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  page_id_b BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  page_id_a BIGINT NOT NULL,
+  page_id_b BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (page_id_a, page_id_b),
-  CHECK (page_id_a < page_id_b)
+  CHECK (page_id_a < page_id_b),
+  FOREIGN KEY (page_id_a, user_id) REFERENCES pages(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (page_id_b, user_id) REFERENCES pages(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_page_relations_page_id_b ON page_relations(page_id_b);  -- the
                                       -- primary key covers page_id_a = X
@@ -1868,25 +1888,32 @@ CREATE TABLE links (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT links_source_check CHECK (source IN ('extension', 'manual')),
-  UNIQUE (user_id, normalized_url)
+  UNIQUE (user_id, normalized_url),
+  UNIQUE (id, user_id)                -- referenced by the relation tables below
 );
 
 -- Tags and collections are the same rows pages use; only the membership
 -- tables are separate. No source column, unlike page_tags: a link has no body
--- text for the AI job to read, so every link tag is manual. No user_id on
--- either, same as page_tags/page_collections.
+-- text for the AI job to read, so every link tag is manual. A user_id and composite
+-- keys on each, same as page_tags/page_collections.
 CREATE TABLE link_tags (
-  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
-  tag_id BIGINT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
-  PRIMARY KEY (link_id, tag_id)
+  link_id BIGINT NOT NULL,
+  tag_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  PRIMARY KEY (link_id, tag_id),
+  FOREIGN KEY (link_id, user_id) REFERENCES links(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (tag_id, user_id) REFERENCES tags(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_link_tags_tag_id ON link_tags(tag_id);
 
 CREATE TABLE link_collections (
-  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
-  collection_id BIGINT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  link_id BIGINT NOT NULL,
+  collection_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
   added_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (link_id, collection_id)
+  PRIMARY KEY (link_id, collection_id),
+  FOREIGN KEY (link_id, user_id) REFERENCES links(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (collection_id, user_id) REFERENCES collections(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_link_collections_collection_id
   ON link_collections(collection_id);
@@ -1894,21 +1921,27 @@ CREATE INDEX idx_link_collections_collection_id
 -- Links related to other links, as page_relations relates pages: one row per
 -- pair, smaller id first, visible from both ends.
 CREATE TABLE link_relations (
-  link_id_a BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
-  link_id_b BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  link_id_a BIGINT NOT NULL,
+  link_id_b BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (link_id_a, link_id_b),
-  CHECK (link_id_a < link_id_b)
+  CHECK (link_id_a < link_id_b),
+  FOREIGN KEY (link_id_a, user_id) REFERENCES links(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (link_id_b, user_id) REFERENCES links(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_link_relations_link_id_b ON link_relations(link_id_b);
 
 -- A page related to a link, in either direction: two different kinds of item, so
 -- just (page, link) with no ordering rule, one row per pair.
 CREATE TABLE page_link_relations (
-  page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  page_id BIGINT NOT NULL,
+  link_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (page_id, link_id)
+  PRIMARY KEY (page_id, link_id),
+  FOREIGN KEY (page_id, user_id) REFERENCES pages(id, user_id) ON DELETE CASCADE,
+  FOREIGN KEY (link_id, user_id) REFERENCES links(id, user_id) ON DELETE CASCADE
 );
 CREATE INDEX idx_page_link_relations_link_id ON page_link_relations(link_id);
 
@@ -2553,11 +2586,11 @@ The queries (`queries/links.sql`, `link_tags.sql`, `link_collections.sql`,
 **Related links.** A link can be related to other links as a page can be related
 to other pages, with a table of the same shape, `link_relations`: one row per
 pair with the smaller id first (a `CHECK` that also rules out relating a link to
-itself), no `user_id` of its own (the handlers verify both links belong to the
-requester before writing a pair), cascading when either link is deleted, and
-visible from both ends. The API mirrors the page routes:
-`GET /api/links/relation-candidates` (title-or-URL typeahead, capped like the
-page picker), `POST /api/links/{id}/related-links` with `{"link_id": …}` and
+itself), one `user_id` for both links (see "Same-owner relationships" below),
+cascading when either link is deleted, and visible from both ends. The API
+mirrors the page routes: `GET /api/links/relation-candidates` (title-or-URL
+typeahead, capped like the page picker), `POST /api/links/{id}/related-links`
+with `{"link_id": …}` and
 `DELETE /api/links/{id}/related-links/{relatedLinkId}`, and the link detail
 response carries `related_links`. The screen calls the section "Related links".
 The MCP tools don't expose any relationship.
@@ -2581,28 +2614,52 @@ kind, `{"page_id": …}` or `{"link_id": …}`.
 
 **Relating a page to a link** is the third table, and it is just
 `(page_id, link_id)`: two different kinds of item, so there is no ordering rule
-and no `CHECK`, one row per pair, cascading when either end is deleted, and like
-the others no `user_id` of its own (the handlers verify both ends belong to the
-requester). Both ends have routes, named by what they relate, and write the same
-row: `POST /api/pages/{id}/related-links` with `{"link_id": …}` and
-`POST /api/links/{id}/related-pages` with `{"page_id": …}`, each with a matching
-`DELETE …/{relatedLinkId}` or `…/{relatedPageId}`. A page's detail carries
-`related_links` (always empty with links off, as the same-URL hint is always
-null then) and a link's carries `related_pages`. **A page and a link with the
-same URL can be related**: the same-URL hint already ties those, relating them
-is harmless, and filtering them out of the picker would cost more than it saves.
-The pickers are the existing ones for the kind being searched, called without an
-exclusion since a page's id and a link's id can't be compared. The screens show
-it as a second section on each: "Related pages" and "Related links" on both a
-page and a link, one list per kind, each searching only its own kind. A merged
-mixed list is a possible later change. Migration `00016` renames `page_links`,
-its constraints and its index; its `Down` is the exact reverse. **It is the one
-v2 migration that changes something v1 uses.** Every other v2 migration only
-adds tables, which an older binary never looks at (goose doesn't object to a
-database that is ahead of the migrations it embeds), so rolling back to v1 is
-normally just the image tag. With this rename it also takes reverting `00016`,
-which nothing in recueil runs by itself (`recueil` only ever applies migrations
-upward); the upgrade guide gives the one goose command.
+and no `CHECK`, one row per pair, cascading when either end is deleted, and a
+`user_id` like the others. Both ends have routes, named by what they relate, and
+write the same row: `POST /api/pages/{id}/related-links` with `{"link_id": …}`
+and `POST /api/links/{id}/related-pages` with `{"page_id": …}`, each with a
+matching `DELETE …/{relatedLinkId}` or `…/{relatedPageId}`. A page's detail
+carries `related_links` (always empty with links off, as the same-URL hint is
+always null then) and a link's carries `related_pages`. **A page and a link with
+the same URL can be related**: the same-URL hint already ties those, relating
+them is harmless, and filtering them out of the picker would cost more than it
+saves. The pickers are the existing ones for the kind being searched, called
+without an exclusion since a page's id and a link's id can't be compared. The
+screens show it as a second section on each: "Related pages" and "Related links"
+on both a page and a link, one list per kind, each searching only its own kind.
+A merged mixed list is a possible later change. Migration `00016` renames
+`page_links`, its constraints and its index; its `Down` is the exact reverse.
+
+**Same-owner relationships.** Every relationship between two user-owned rows
+(`page_tags`, `page_collections`, `page_relations`, `link_tags`,
+`link_collections`, `link_relations`, `page_link_relations`, and a collection's
+parent) has to join rows owned by the _same_ user, and Postgres enforces it, not
+only the handlers' ownership checks. Each relation table carries a `user_id`,
+and its foreign keys are composite,
+`(page_id, user_id) REFERENCES pages(id, user_id)`,
+`(tag_id, user_id) REFERENCES tags(id, user_id)` and so on, so a row can only
+reference parents with its own owner, from any writer (a handler, the AI job,
+manual SQL). `pages`, `tags`, `collections` and `links` gain a
+`UNIQUE (id, user_id)`, which composite keys need to reference and which
+restricts nothing since `id` is already unique. A collection's parent is the
+same, `(parent_id, user_id)`, and a top-level collection's NULL `parent_id`
+isn't checked. The add queries take the `user_id`, the owner of both sides,
+which the handlers already have; a mismatch is a foreign key violation, not a
+silent wrong row. All of it is migration `00017`, which first checks every
+existing row and **refuses to run, naming the table and the count, if any joins
+two users' data** (there should be none), then adds `user_id` backfilled from
+the parent and swaps the keys. It lives in one migration, including the link
+tables created in `00014`, because their composite keys need constraints on
+`pages`, `tags` and `collections` that don't exist yet when `00014` runs.
+
+**Rolling back.** Every v2 migration but two only adds tables, which an older
+binary never looks at (goose doesn't object to a database that is ahead of the
+migrations it embeds), so rolling back to v1 is normally just the image tag.
+**`00016` and `00017` change tables v1 uses** (v1 reads `page_links`, and
+inserts into `page_tags` without a `user_id`, which is now `NOT NULL`), so a
+rollback also reverts them, which nothing in recueil runs by itself (it only
+ever applies migrations upward). The upgrade guide gives the one goose command,
+`down-to 15`, which undoes both; each `Down` is the exact reverse.
 
 - **Tags and collections are shared with pages** (working assumption, to be
   confirmed when the UX is mocked up, §17h): the existing `tags`/`collections`

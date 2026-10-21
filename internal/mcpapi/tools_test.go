@@ -137,7 +137,7 @@ func TestListPagesByTag(t *testing.T) {
 		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "reading", Slug: "reading"})
 		require.NoError(t, err)
 		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{
-			PageID: page.ID, TagID: tag.ID, Source: "manual",
+			PageID: page.ID, TagID: tag.ID, Source: "manual", UserID: page.UserID,
 		}))
 
 		_, out, err := tl.listPagesByTag(ctxFor(&user), nil, listPagesByTagInput{TagSlug: "reading"})
@@ -205,7 +205,7 @@ func TestListPagesByCollection(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.NoError(t, q.AddPageToCollection(context.Background(), db.AddPageToCollectionParams{
-			PageID: page.ID, CollectionID: collection.ID,
+			PageID: page.ID, CollectionID: collection.ID, UserID: page.UserID,
 		}))
 
 		_, out, err := tl.listPagesByCollection(ctxFor(&user), nil, listPagesByCollectionInput{CollectionID: collection.ID})
@@ -252,14 +252,14 @@ func TestGetPage(t *testing.T) {
 		tag, err := q.UpsertTag(context.Background(), db.UpsertTagParams{UserID: user.ID, Name: "golang", Slug: "golang"})
 		require.NoError(t, err)
 		require.NoError(t, q.AddPageTag(context.Background(), db.AddPageTagParams{
-			PageID: page.ID, TagID: tag.ID, Source: "manual",
+			PageID: page.ID, TagID: tag.ID, Source: "manual", UserID: page.UserID,
 		}))
 		collection, err := q.CreateCollection(context.Background(), db.CreateCollectionParams{
 			UserID: user.ID, Name: "Reading list", Slug: "reading-list",
 		})
 		require.NoError(t, err)
 		require.NoError(t, q.AddPageToCollection(context.Background(), db.AddPageToCollectionParams{
-			PageID: page.ID, CollectionID: collection.ID,
+			PageID: page.ID, CollectionID: collection.ID, UserID: page.UserID,
 		}))
 
 		_, out, err := tl.getPage(ctxFor(&user), nil, getPageInput{PageID: page.ID})

@@ -19,7 +19,7 @@
 -- name: AddPageTag :exec
 -- ON CONFLICT DO NOTHING: adding a tag that's already present on a page
 -- (from either source) is a no-op, not an error.
-INSERT INTO page_tags (page_id, tag_id, source) VALUES ($1, $2, $3)
+INSERT INTO page_tags (page_id, tag_id, source, user_id) VALUES ($1, $2, $3, $4)
 ON CONFLICT (page_id, tag_id) DO NOTHING;
 
 -- name: ListPageTags :many
