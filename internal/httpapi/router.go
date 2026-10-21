@@ -215,6 +215,10 @@ func NewRouter(s *Server, pool *pgxpool.Pool, q *db.Queries, logger *httplog.Log
 				r.Delete("/links/{id}/tags/{tagId}", s.RemoveLinkTag)
 				r.Post("/links/{id}/related-links", s.AddLinkRelation)
 				r.Delete("/links/{id}/related-links/{relatedLinkId}", s.RemoveLinkRelation)
+				r.Post("/links/{id}/related-pages", s.AddLinkRelatedPage)
+				r.Delete("/links/{id}/related-pages/{relatedPageId}", s.RemoveLinkRelatedPage)
+				r.Post("/pages/{id}/related-links", s.AddPageRelatedLink)
+				r.Delete("/pages/{id}/related-links/{relatedLinkId}", s.RemovePageRelatedLink)
 				r.Post("/links/{id}/collections", s.AddLinkToCollection)
 				r.Delete("/links/{id}/collections/{collectionId}", s.RemoveLinkFromCollection)
 				if s.Wayback != nil {

@@ -116,7 +116,30 @@ CREATE TABLE link_relations (
 -- bidirectional OR query.
 CREATE INDEX idx_link_relations_link_id_b ON link_relations(link_id_b);
 
+-- A page related to a link, in either direction. Unlike page_relations and
+-- link_relations this relates two different kinds of item, so it isn't a
+-- symmetric pair with an ordering rule: it is just (page, link), one row
+-- per pair, visible from the page and from the link. Like them it has no
+-- user_id of its own; the handlers verify the page and the link both belong
+-- to the user before writing a pair. Nothing stops a page and a link with the
+-- same URL from being related: the same-URL hint already ties those, and
+-- relating them is harmless.
+CREATE TABLE page_link_relations (
+  page_id BIGINT NOT NULL,
+  link_id BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT page_link_relations_pkey PRIMARY KEY (page_id, link_id),
+  CONSTRAINT page_link_relations_page_id_fkey FOREIGN KEY (page_id)
+    REFERENCES pages(id) ON DELETE CASCADE,
+  CONSTRAINT page_link_relations_link_id_fkey FOREIGN KEY (link_id)
+    REFERENCES links(id) ON DELETE CASCADE
+);
+
+-- The primary key covers "page_id = X"; this covers "link_id = X".
+CREATE INDEX idx_page_link_relations_link_id ON page_link_relations(link_id);
+
 -- +goose Down
+DROP TABLE page_link_relations;
 DROP TABLE link_relations;
 DROP TABLE link_collections;
 DROP TABLE link_tags;

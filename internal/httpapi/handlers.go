@@ -1413,6 +1413,9 @@ type pageDetailResponse struct {
 	Tags         []pageTagResponse        `json:"tags"`
 	Collections  []pageCollectionResponse `json:"collections"`
 	RelatedPages []relatedPageResponse    `json:"related_pages"`
+	// RelatedLinks are the links related to this page (see pagelinkrelations.go):
+	// always empty with links off, as the same-URL hint is always null then.
+	RelatedLinks []relatedLinkResponse `json:"related_links"`
 
 	// MatchingLinkID is the same-URL hint: the id of the user's link (a
 	// bookmark-only entry, not one of RelatedPages above, which are
@@ -1481,6 +1484,7 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 		Tags:         []pageTagResponse{},
 		Collections:  []pageCollectionResponse{},
 		RelatedPages: []relatedPageResponse{},
+		RelatedLinks: []relatedLinkResponse{},
 	}
 	if s.EnableLinks {
 		link, err := s.Queries.GetLinkByNormalizedURL(ctx, db.GetLinkByNormalizedURLParams{
@@ -1520,6 +1524,17 @@ func (s *Server) GetPage(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range relatedPages {
 		resp.RelatedPages = append(resp.RelatedPages, relatedPageFromListRow(&relatedPages[i]))
+	}
+	if s.EnableLinks {
+		relatedLinks, err := s.Queries.ListPageRelatedLinks(ctx, page.ID)
+		if err != nil {
+			log.Printf("warning: failed to list related links for page %d: %v", page.ID, err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		for i := range relatedLinks {
+			resp.RelatedLinks = append(resp.RelatedLinks, relatedLinkFromPageRelationRow(&relatedLinks[i]))
+		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

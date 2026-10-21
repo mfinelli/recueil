@@ -1902,6 +1902,16 @@ CREATE TABLE link_relations (
 );
 CREATE INDEX idx_link_relations_link_id_b ON link_relations(link_id_b);
 
+-- A page related to a link, in either direction: two different kinds of item, so
+-- just (page, link) with no ordering rule, one row per pair.
+CREATE TABLE page_link_relations (
+  page_id BIGINT NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+  link_id BIGINT NOT NULL REFERENCES links(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (page_id, link_id)
+);
+CREATE INDEX idx_page_link_relations_link_id ON page_link_relations(link_id);
+
 -- Wayback Machine submissions (§17i): one row per user and URL, holding the state
 -- of the latest attempt. last_submitted_at is the last SUCCESSFUL attempt's
 -- submitted_at and survives a later failure.
@@ -2559,22 +2569,40 @@ page version was `page_links`, `/api/pages/{id}/links` and the `links` field on
 a page, shown as "Linked pages". For v2, a major release and so the time for a
 breaking change, it became:
 
-|             | Table                 | Routes                          | Response field  | UI section    |
-| ----------- | --------------------- | ------------------------------- | --------------- | ------------- |
-| page ↔ page | `page_relations`      | `/api/pages/{id}/related-pages` | `related_pages` | Related pages |
-| link ↔ link | `link_relations`      | `/api/links/{id}/related-links` | `related_links` | Related links |
-| page ↔ link | `page_link_relations` | see below                       | see below       | see below     |
+|             | Table                 | Routes                                                           | Response field                                       | UI section                                       |
+| ----------- | --------------------- | ---------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------ |
+| page ↔ page | `page_relations`      | `/api/pages/{id}/related-pages`                                  | `related_pages`                                      | Related pages                                    |
+| link ↔ link | `link_relations`      | `/api/links/{id}/related-links`                                  | `related_links`                                      | Related links                                    |
+| page ↔ link | `page_link_relations` | `/api/pages/{id}/related-links`, `/api/links/{id}/related-pages` | `related_links` on a page, `related_pages` on a link | Related links on a page, Related pages on a link |
 
 The pickers are `GET /api/pages/relation-candidates` and
 `GET /api/links/relation-candidates`, and a request body names the target by its
-kind, `{"page_id": …}` or `{"link_id": …}`. Migration `00016` renames
-`page_links`, its constraints and its index; its `Down` is the exact reverse.
-**It is the one v2 migration that changes something v1 uses.** Every other v2
-migration only adds tables, which an older binary never looks at (goose doesn't
-object to a database that is ahead of the migrations it embeds), so rolling back
-to v1 is normally just the image tag. With this rename it also takes reverting
-`00016`, which nothing in recueil runs by itself (`recueil` only ever applies
-migrations upward); the upgrade guide gives the one goose command.
+kind, `{"page_id": …}` or `{"link_id": …}`.
+
+**Relating a page to a link** is the third table, and it is just
+`(page_id, link_id)`: two different kinds of item, so there is no ordering rule
+and no `CHECK`, one row per pair, cascading when either end is deleted, and like
+the others no `user_id` of its own (the handlers verify both ends belong to the
+requester). Both ends have routes, named by what they relate, and write the same
+row: `POST /api/pages/{id}/related-links` with `{"link_id": …}` and
+`POST /api/links/{id}/related-pages` with `{"page_id": …}`, each with a matching
+`DELETE …/{relatedLinkId}` or `…/{relatedPageId}`. A page's detail carries
+`related_links` (always empty with links off, as the same-URL hint is always
+null then) and a link's carries `related_pages`. **A page and a link with the
+same URL can be related**: the same-URL hint already ties those, relating them
+is harmless, and filtering them out of the picker would cost more than it saves.
+The pickers are the existing ones for the kind being searched, called without an
+exclusion since a page's id and a link's id can't be compared. The screens show
+it as a second section on each: "Related pages" and "Related links" on both a
+page and a link, one list per kind, each searching only its own kind. A merged
+mixed list is a possible later change. Migration `00016` renames `page_links`,
+its constraints and its index; its `Down` is the exact reverse. **It is the one
+v2 migration that changes something v1 uses.** Every other v2 migration only
+adds tables, which an older binary never looks at (goose doesn't object to a
+database that is ahead of the migrations it embeds), so rolling back to v1 is
+normally just the image tag. With this rename it also takes reverting `00016`,
+which nothing in recueil runs by itself (`recueil` only ever applies migrations
+upward); the upgrade guide gives the one goose command.
 
 - **Tags and collections are shared with pages** (working assumption, to be
   confirmed when the UX is mocked up, §17h): the existing `tags`/`collections`

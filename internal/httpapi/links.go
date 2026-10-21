@@ -226,6 +226,9 @@ type linkDetailResponse struct {
 	// RelatedLinks are the links related to this one (see linkrelations.go), as a
 	// page detail's related_pages are its related pages.
 	RelatedLinks []relatedLinkResponse `json:"related_links"`
+	// RelatedPages are the archived pages related to this link (see
+	// pagelinkrelations.go), which a link can be related to as well as other links.
+	RelatedPages []relatedPageResponse `json:"related_pages"`
 
 	// CleanedURL is what the link's raw URL would become if its tracking and
 	// other extras were removed (see cleanedLinkURL); null when it is already
@@ -315,6 +318,12 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	relatedPages, err := s.Queries.ListLinkRelatedPages(ctx, link.ID)
+	if err != nil {
+		log.Printf("warning: failed to list related pages for link %d: %v", link.ID, err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
 
 	var pageID *int64
 	var pageTitle *string
@@ -336,9 +345,13 @@ func (s *Server) GetLink(w http.ResponseWriter, r *http.Request) {
 		Wayback:           wayback,
 		CleanedURL:        cleanedURLIfDifferent(link.RawUrl, link.NormalizedUrl),
 		RelatedLinks:      []relatedLinkResponse{},
+		RelatedPages:      []relatedPageResponse{},
 	}
 	for i := range related {
 		resp.RelatedLinks = append(resp.RelatedLinks, relatedLinkFromListRow(&related[i]))
+	}
+	for i := range relatedPages {
+		resp.RelatedPages = append(resp.RelatedPages, relatedPageFromLinkRelationRow(&relatedPages[i]))
 	}
 	for _, t := range tags {
 		resp.Tags = append(resp.Tags, tagResponse{ID: t.TagID, Name: t.Name, Slug: t.Slug})
