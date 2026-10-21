@@ -599,6 +599,18 @@ wherever one exists.
   ingestion and its jobs); `gc` isn't checked. It can't tell a real mount from a
   directory in the container's own filesystem, but the image doesn't pre-create
   `/data/*`, so an unmounted path is missing and fails.
+- **The store never leaves its root.** Every method that turns a root-relative
+  path into a filesystem path (`archive.Store`'s `resolve`) refuses, with
+  `ErrInvalidPath`, anything absolute, empty, naming the root itself, or
+  climbing out of it with `..` (`filepath.IsLocal`, then an explicit prefix
+  check on the joined path), and `WriteAsset` accepts only plain lowercase
+  tokens for an asset's name and extension, never a separator or a dot. The
+  paths reaching it come from the database and from minted directories, plus the
+  one favicon extension that arrives with an upload (itself checked against an
+  allow-list), but the guarantee belongs to the store rather than to every
+  caller having validated, which is also what static analysis for path injection
+  looks for. It is about `..` and absolute paths, not symlinks: a symlink an
+  operator puts inside `archive_dir` is theirs.
 - **One capture, one directory.** Each capture's directory is minted by
   `internal/archive`'s `Store.NewCapture` as a backend-generated UUIDv7, sharded
   three levels deep (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's object-store shape — a
