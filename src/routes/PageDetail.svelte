@@ -58,6 +58,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import AppHeader from "../components/AppHeader.svelte";
   import SameUrlHint from "../components/SameUrlHint.svelte";
   import WaybackBlock from "../components/WaybackBlock.svelte";
+  import Archive from "@lucide/svelte/icons/archive";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
   import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import ExternalLink from "@lucide/svelte/icons/external-link";
@@ -525,6 +526,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
       >
     </div>
 
+    <!-- The stored copy of the most recent capture (captures arrive newest first),
+         opened directly: reading the latest version is the common case, and it
+         shouldn't take a trip through that capture's screen. Opened in a new tab,
+         like the same link on the capture screen. -->
+    {#if page.captures.length > 0}
+      <a
+        class="latest-archived"
+        href={`/api/captures/${page.captures[0].id}/html`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        <Archive size={12} />
+        {m.pagedetail_view_latest_archived()}
+      </a>
+    {/if}
+
     {#if page.matching_link_id !== null}
       <SameUrlHint
         kind="link"
@@ -958,6 +975,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     gap: 0.4rem;
     margin-bottom: 1.25rem;
+  }
+
+  // Sits just under the source row, closer to it than the row's own bottom margin.
+  .latest-archived {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin: -0.6rem 0 1.25rem;
+    color: var(--ink-muted);
+    text-decoration: none;
+    font-size: 0.8125rem;
+
+    &:hover {
+      color: var(--accent);
+      text-decoration: underline;
+    }
+
+    &:focus-visible {
+      @include mix.focus-ring;
+    }
   }
 
   .source-url {

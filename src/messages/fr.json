@@ -401,5 +401,6 @@
   "linkdetail_edit_related_pages": "Modifier les pages associées",
   "linkdetail_done_editing_related_pages": "Terminer la modification des pages associées",
   "linkdetail_related_pages_no_results": "Aucune page correspondante.",
-  "linkdetail_related_pages_error": "échec de l'association de la page"
+  "linkdetail_related_pages_error": "échec de l'association de la page",
+  "pagedetail_view_latest_archived": "Voir la dernière page archivée"
 }
