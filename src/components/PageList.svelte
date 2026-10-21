@@ -31,7 +31,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import { SvelteSet } from "svelte/reactivity";
   import ListIcon from "@lucide/svelte/icons/list";
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
-  import Globe from "@lucide/svelte/icons/globe";
+  import Favicon from "./Favicon.svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import type { Page } from "../lib/types";
   import { m } from "../paraglide/messages";
@@ -49,20 +49,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     $props();
 
   let viewMode = $state<ViewMode>(loadViewMode());
-  // Favicon and thumbnail are two independent images per page (grid view
-  // renders both at once), so they need two independent failure states --
-  // a single id-keyed set here would incorrectly hide a working favicon
-  // just because that page's thumbnail 404ed, or vice versa.
-  let faviconLoadFailed = new SvelteSet<number>();
+  // A thumbnail that fails to load falls back to the page's first letter
+  // (favicons look after their own failure, see Favicon.svelte). Reset per `pages`
+  // prop identity, not per individual page: a fresh array (a new search, or this
+  // component mounted for a different tag/collection) means any previously-failed
+  // thumbnail ids no longer necessarily apply to what's now being shown.
   let thumbnailLoadFailed = new SvelteSet<number>();
 
-  // Reset per `pages` prop identity, not per individual page: a fresh
-  // array (a new search, or this component mounted for a different
-  // tag/collection) means any previously-failed image ids no longer
-  // necessarily apply to what's now being shown.
   $effect(() => {
     void pages;
-    faviconLoadFailed.clear();
     thumbnailLoadFailed.clear();
   });
 
@@ -75,22 +70,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     thumbnailLoadFailed.add(pageId);
   }
 
-  // Distinct from markThumbnailFailed: an <img onerror> handler, for when
-  // the request itself 404s despite favicon_path being set (a stale path,
-  // a file removed from disk, etc.) -- not to be confused with
-  // showFavicon()'s favicon_path check below, which skips the request
-  // entirely for the far more common case of a page that never had a
-  // favicon captured at all.
-  function markFaviconFailed(pageId: number) {
-    faviconLoadFailed.add(pageId);
-  }
-
-  // page.favicon_path is already null on the API response for a page with
-  // no captured favicon -- checking it here means those pages skip the
-  // image request entirely (straight to the fallback) rather than waiting
-  // on a request that was always going to 404.
-  function showFavicon(page: Page): boolean {
-    return page.favicon_path !== null && !faviconLoadFailed.has(page.id);
+  // page.favicon_path is already null on the API response for a page with no
+  // captured favicon, so those pages pass no src and skip the request entirely.
+  function faviconSrc(page: Page): string | null {
+    return page.favicon_path !== null ? `/api/pages/${page.id}/favicon` : null;
   }
 
   function displayTitle(page: Page): string {
@@ -133,19 +116,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#each pages as page (page.id)}
       <li>
         <a href={`/pages/${page.id}`} use:link>
-          {#if showFavicon(page)}
-            <img
-              class="favicon"
-              src={`/api/pages/${page.id}/favicon`}
-              alt=""
-              loading="lazy"
-              onerror={() => markFaviconFailed(page.id)}
-            />
-          {:else}
-            <span class="favicon-placeholder" aria-hidden="true">
-              <Globe size={12} />
-            </span>
-          {/if}
+          <span class="favicon-cell">
+            <Favicon src={faviconSrc(page)} size={20} />
+          </span>
           <span class="title">{displayTitle(page)}</span>
           <span class="url">{page.normalized_url}</span>
           <span class="date">{formatDate(page.latest_capture_at)}</span>
@@ -174,19 +147,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
             {/if}
           </span>
           <span class="title-row">
-            {#if showFavicon(page)}
-              <img
-                class="grid-favicon"
-                src={`/api/pages/${page.id}/favicon`}
-                alt=""
-                loading="lazy"
-                onerror={() => markFaviconFailed(page.id)}
-              />
-            {:else}
-              <span class="grid-favicon-placeholder" aria-hidden="true">
-                <Globe size={9} />
-              </span>
-            {/if}
+            <Favicon src={faviconSrc(page)} size={14} />
             <span class="title">{displayTitle(page)}</span>
           </span>
           <span class="url">{page.normalized_url}</span>
@@ -262,21 +223,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  .favicon,
-  .favicon-placeholder {
+  // The row's favicon sits in the first grid column, spanning title and URL.
+  .favicon-cell {
+    display: flex;
     grid-column: 1;
     grid-row: 1 / 3;
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-
-  .favicon-placeholder {
-    display: grid;
-    place-items: center;
-    border-radius: 0.1875rem;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    color: var(--ink-muted);
   }
 
   .pages-list .title {
@@ -350,22 +301,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     display: flex;
     align-items: center;
     gap: 0.35rem;
-  }
-
-  .grid-favicon,
-  .grid-favicon-placeholder {
-    flex: none;
-    width: 0.875rem;
-    height: 0.875rem;
-    border-radius: 0.125rem;
-  }
-
-  .grid-favicon-placeholder {
-    display: grid;
-    place-items: center;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    color: var(--ink-muted);
   }
 
   .pages-grid .title {

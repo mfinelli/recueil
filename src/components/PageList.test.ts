@@ -187,7 +187,7 @@ describe("PageList", () => {
       emptyMessage: "Nothing here.",
     });
 
-    const favicon = container.querySelector<HTMLImageElement>(".grid-favicon");
+    const favicon = container.querySelector<HTMLImageElement>(".favicon");
     expect(favicon?.src).toContain("/api/pages/1/favicon");
     expect(screen.getByText("example.com/article")).toBeTruthy();
   });
@@ -199,11 +199,11 @@ describe("PageList", () => {
       emptyMessage: "Nothing here.",
     });
 
-    const favicon = container.querySelector<HTMLImageElement>(".grid-favicon");
+    const favicon = container.querySelector<HTMLImageElement>(".favicon");
     await fireEvent.error(favicon as HTMLImageElement);
 
     // The favicon failing shouldn't touch the thumbnail's own state.
-    expect(container.querySelector(".grid-favicon-placeholder")).toBeTruthy();
+    expect(container.querySelector(".favicon-placeholder")).toBeTruthy();
     expect(container.querySelector(".thumbnail")).toBeTruthy();
     expect(container.querySelector(".thumbnail-placeholder")).toBeNull();
   });

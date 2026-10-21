@@ -200,6 +200,8 @@ describe("LinkDetail", () => {
       const second = render42();
       await screen.findByRole("heading", { name: "An example video" });
       expect(second.container.querySelector(".favicon")).toBeNull();
+      // The source row shows nothing, not a placeholder (unlike the lists).
+      expect(second.container.querySelector(".favicon-placeholder")).toBeNull();
     });
 
     it("drops a favicon that fails to load, leaving nothing in its place", async () => {
@@ -209,6 +211,7 @@ describe("LinkDetail", () => {
       await screen.findByRole("heading", { name: "An example video" });
       await fireEvent.error(container.querySelector(".favicon") as Element);
       expect(container.querySelector(".favicon")).toBeNull();
+      expect(container.querySelector(".favicon-placeholder")).toBeNull();
     });
 
     it("says a manually added link was added manually, and a browser-saved one says nothing", async () => {

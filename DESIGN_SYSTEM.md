@@ -183,28 +183,33 @@ field.
 
 ### Image fallbacks (favicon/thumbnail)
 
-Two independent rules, not one:
+**A favicon is always rendered through `Favicon.svelte`**, wherever it appears:
+the page and link lists, the grid cards, the linked-pages list, and the source
+row on both detail screens. It takes the image's URL (or `null`) and a size in
+px, and owns the rest, so there is one behavior everywhere:
 
-- **Check the data before requesting the image.** `Page.favicon_path` is
-  `string | null` from the API — `null` means no favicon was ever captured, a
-  known state, not a failure. `PageList.svelte`'s `showFavicon()` checks this
-  before rendering the `<img>` at all, so a page with no favicon skips the
-  request entirely instead of always firing one and waiting for `onerror`.
-  Thumbnails don't have an equivalent field on `Page`, so they still rely on
-  `onerror` alone — there's nothing to check ahead of time there.
-- **Track each image type's failures independently.** A single id-keyed set
-  covering both favicon and thumbnail state silently breaks the moment one
-  screen renders both images for the same page — grid view showing a favicon
-  alongside the thumbnail was what surfaced this. `PageList.svelte` keeps
-  `faviconLoadFailed` and `thumbnailLoadFailed` as two separate `SvelteSet`s for
-  exactly this reason.
+- **Check the data before requesting the image.** `Page.favicon_path` (and a
+  link's) is `string | null` from the API — `null` means no favicon was ever
+  captured, a known state, not a failure. The caller passes `null` as the `src`
+  for it, and the component skips the request entirely instead of always firing
+  one and waiting for `onerror`.
+- **Fail per image, not per list.** The component remembers which `src` failed,
+  so one broken favicon never hides another and there is no list-level set to
+  keep in step. A different `src` (another item reusing the instance) starts
+  fresh.
+- **The fallback is a small bordered `Globe`**, scaled to the size. The one
+  place that shows nothing instead is the source row on the detail screens: a
+  single image beside a URL has no list to keep aligned, so those pass
+  `placeholder={false}`.
 
-`LinkList.svelte` applies the favicon half of this (a link has no thumbnail).
+Sizes are 20px in list rows, 16px in the secondary list on a detail screen and
+in the source row, and 14px in grid cards.
 
-Fallback content: a small bordered `Globe` icon for a missing/broken favicon
-(list and grid both), the title's first letter in the display serif for a
-missing/broken thumbnail (grid only) — both are "this represents a generic page"
-states, not blank placeholder boxes.
+**Thumbnails** are the other image, and have no equivalent field on `Page`, so
+they still rely on `onerror` alone. `PageList.svelte` keeps its own
+`thumbnailLoadFailed` set for them (grid view only), falling back to the title's
+first letter in the display serif. Both fallbacks are "this represents a generic
+page" states, not blank placeholder boxes.
 
 ### De-emphasizing the common case
 

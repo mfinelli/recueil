@@ -47,7 +47,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      run through that translation at all. -->
 <script lang="ts">
   import { link, push } from "svelte-spa-router";
-  import { SvelteSet } from "svelte/reactivity";
   import { apiJSON, ApiError } from "../lib/api";
   import { formatBytes } from "../lib/format";
   import { renderMarkdown } from "../lib/markdown";
@@ -70,7 +69,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   import RotateCw from "@lucide/svelte/icons/rotate-cw";
   import Trash2 from "@lucide/svelte/icons/trash-2";
   import Upload from "@lucide/svelte/icons/upload";
-  import Globe from "@lucide/svelte/icons/globe";
+  import Favicon from "../components/Favicon.svelte";
   import type {
     PageDetail,
     TagCreated,
@@ -108,17 +107,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let recaptureQueued = $state(false);
   let deleting = $state(false);
 
-  // Unlike PageList's favicon handling, there's no placeholder/fallback
-  // shown here on failure -- a single one-off image next to the title
-  // doesn't need to preserve alignment across many rows the way a list
-  // does, so a missing/broken favicon just means nothing renders there.
-  let faviconFailed = $state(false);
-  // Keyed by linked page id, same reasoning as PageList's
-  // faviconLoadFailed: several linked pages render at once, so one
-  // shared boolean would incorrectly hide every favicon just because
-  // one of them 404ed.
-  let linkFaviconFailed = new SvelteSet<number>();
-
   // Independent per section (not one shared "edit mode" for the whole
   // page) -- editing tags shouldn't also pop open the collections forms.
   // Pills-only by default; the pencil/check toggle reveals the remove
@@ -140,7 +128,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     loadError = null;
     actionError = null;
     page = null;
-    faviconFailed = false;
     editingTags = false;
     editingCollections = false;
     editingNotes = false;
@@ -222,16 +209,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  function markLinkFaviconFailed(pageId: number) {
-    linkFaviconFailed.add(pageId);
-  }
-
-  // Same reasoning as PageList's showFavicon: skip the image request
-  // entirely (straight to the placeholder) for a link that never had a
-  // favicon captured, rather than waiting on a request that was always
-  // going to 404.
-  function showLinkFavicon(linked: PageLink): boolean {
-    return linked.favicon_path !== null && !linkFaviconFailed.has(linked.id);
+  // A linked page that never had a favicon captured passes no src, so the request
+  // is skipped entirely (see Favicon.svelte).
+  function linkedFaviconSrc(linked: PageLink): string | null {
+    return linked.favicon_path !== null
+      ? `/api/pages/${linked.id}/favicon`
+      : null;
   }
 
   // page.links already loaded with the page, so this only needs to
@@ -602,15 +585,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {/if}
 
     <div class="source-row">
-      {#if page.favicon_path !== null && !faviconFailed}
-        <img
-          class="favicon"
-          src={`/api/pages/${page.id}/favicon`}
-          alt=""
-          loading="lazy"
-          onerror={() => (faviconFailed = true)}
-        />
-      {/if}
+      <!-- One image beside the URL has no list to keep aligned, so it shows nothing
+           rather than a placeholder when there's no favicon. -->
+      <Favicon
+        src={page.favicon_path !== null
+          ? `/api/pages/${page.id}/favicon`
+          : null}
+        size={16}
+        placeholder={false}
+      />
       <a
         class="source-url"
         href={page.normalized_url}
@@ -854,19 +837,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
           {#each page.links as linked (linked.id)}
             <li>
               <a href={`/pages/${linked.id}`} use:link class="linked-row">
-                {#if showLinkFavicon(linked)}
-                  <img
-                    class="linked-favicon"
-                    src={`/api/pages/${linked.id}/favicon`}
-                    alt=""
-                    loading="lazy"
-                    onerror={() => markLinkFaviconFailed(linked.id)}
-                  />
-                {:else}
-                  <span class="linked-favicon-placeholder" aria-hidden="true">
-                    <Globe size={11} />
-                  </span>
-                {/if}
+                <span class="linked-favicon-cell">
+                  <Favicon src={linkedFaviconSrc(linked)} size={16} />
+                </span>
                 <span class="linked-title"
                   >{linked.title ?? linked.normalized_url}</span
                 >
@@ -1152,21 +1125,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     }
   }
 
-  .linked-favicon,
-  .linked-favicon-placeholder {
+  .linked-favicon-cell {
+    display: flex;
     grid-column: 1;
     grid-row: 1 / 3;
-    width: 1.05rem;
-    height: 1.05rem;
-    border-radius: 0.15rem;
-  }
-
-  .linked-favicon-placeholder {
-    display: grid;
-    place-items: center;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    color: var(--ink-muted);
   }
 
   .linked-title {
@@ -1272,13 +1234,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     gap: 0.4rem;
     margin-bottom: 1.25rem;
-  }
-
-  .favicon {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    flex: none;
   }
 
   .source-url {

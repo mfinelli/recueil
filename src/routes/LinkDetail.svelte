@@ -36,6 +36,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     collectionNamePath as namePathIn,
   } from "../lib/collections";
   import AppHeader from "../components/AppHeader.svelte";
+  import Favicon from "../components/Favicon.svelte";
   import SameUrlHint from "../components/SameUrlHint.svelte";
   import WaybackBlock from "../components/WaybackBlock.svelte";
   import ChevronLeft from "@lucide/svelte/icons/chevron-left";
@@ -81,9 +82,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
   let deleting = $state(false);
   let togglingMirror = $state(false);
   let cleaning = $state(false);
-  // As on PageDetail: a single one-off image beside the source URL, so a
-  // missing or broken favicon just means nothing renders there.
-  let faviconFailed = $state(false);
   // Independent per section -- editing tags shouldn't pop open the collection
   // forms. Pills-only by default; the pencil/check toggle reveals the remove
   // buttons and add forms.
@@ -96,7 +94,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     loadError = null;
     actionError = null;
     detail = null;
-    faviconFailed = false;
     editingTitle = false;
     editingTags = false;
     editingCollections = false;
@@ -418,15 +415,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {/if}
 
     <div class="source-row">
-      {#if detail.favicon_path !== null && !faviconFailed}
-        <img
-          class="favicon"
-          src={`/api/links/${detail.id}/favicon`}
-          alt=""
-          loading="lazy"
-          onerror={() => (faviconFailed = true)}
-        />
-      {/if}
+      <!-- As on PageDetail: one image beside the URL has no list to keep aligned,
+           so it shows nothing rather than a placeholder when there's no favicon. -->
+      <Favicon
+        src={detail.favicon_path !== null
+          ? `/api/links/${detail.id}/favicon`
+          : null}
+        size={16}
+        placeholder={false}
+      />
       <a
         class="source-url"
         href={detail.raw_url}
@@ -775,13 +772,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     align-items: center;
     gap: 0.4rem;
     margin-bottom: 1.25rem;
-  }
-
-  .favicon {
-    width: 16px;
-    height: 16px;
-    border-radius: 3px;
-    flex: none;
   }
 
   .source-url {

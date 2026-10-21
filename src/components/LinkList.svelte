@@ -34,8 +34,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
      the matching page. -->
 <script lang="ts">
   import { link } from "svelte-spa-router";
-  import { SvelteSet } from "svelte/reactivity";
-  import Globe from "@lucide/svelte/icons/globe";
+  import Favicon from "./Favicon.svelte";
   import Archive from "@lucide/svelte/icons/archive";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import Link2 from "@lucide/svelte/icons/link";
@@ -48,20 +47,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     emptyHint,
   }: { links: Link[]; emptyMessage: string; emptyHint?: string } = $props();
 
-  // A link with no favicon (link.favicon_path is null) skips the image request
-  // entirely; this set is only for the other case, a favicon_path that is set
-  // but whose request 404s (a stale path, a file removed from disk).
-  let faviconLoadFailed = new SvelteSet<number>();
-
-  // Reset per `links` prop identity, as in PageList: a fresh array (a new
-  // search, a new page) means previously-failed ids needn't still apply.
-  $effect(() => {
-    void links;
-    faviconLoadFailed.clear();
-  });
-
-  function showFavicon(l: Link): boolean {
-    return l.favicon_path !== null && !faviconLoadFailed.has(l.id);
+  // A link with no favicon (link.favicon_path is null) passes no src, so the
+  // request is skipped entirely (see Favicon.svelte).
+  function faviconSrc(l: Link): string | null {
+    return l.favicon_path !== null ? `/api/links/${l.id}/favicon` : null;
   }
 
   function displayTitle(l: Link): string {
@@ -90,19 +79,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     {#each links as l (l.id)}
       <li>
         <a class="row" href={`/links/${l.id}`} use:link>
-          {#if showFavicon(l)}
-            <img
-              class="favicon"
-              src={`/api/links/${l.id}/favicon`}
-              alt=""
-              loading="lazy"
-              onerror={() => faviconLoadFailed.add(l.id)}
-            />
-          {:else}
-            <span class="favicon-placeholder" aria-hidden="true">
-              <Globe size={12} />
-            </span>
-          {/if}
+          <span class="favicon-cell">
+            <Favicon src={faviconSrc(l)} size={20} />
+          </span>
           <span class="title">{displayTitle(l)}</span>
           <span class="url">{l.normalized_url}</span>
           <span class="date">{formatDate(l.created_at)}</span>
@@ -185,21 +164,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
     color: inherit;
   }
 
-  .favicon,
-  .favicon-placeholder {
+  // The row's favicon sits in the first grid column, spanning title and URL.
+  .favicon-cell {
+    display: flex;
     grid-column: 1;
     grid-row: 1 / 3;
-    width: 1.25rem;
-    height: 1.25rem;
-  }
-
-  .favicon-placeholder {
-    display: grid;
-    place-items: center;
-    border-radius: 0.1875rem;
-    background: var(--paper-raised);
-    border: 1px solid var(--rule);
-    color: var(--ink-muted);
   }
 
   .title {
