@@ -142,8 +142,6 @@ func (e *linkEnv) fileCount() int {
 	return n
 }
 
-func strp(s string) *string { return &s }
-
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
@@ -152,8 +150,8 @@ func sha256Hex(data []byte) string {
 func inlineLink(userID int64, id, url, savedAt, ext string, data []byte) pendinglinks.PendingLink {
 	pl := pendinglinks.PendingLink{ID: id, UserID: userID, URL: url, SavedAt: savedAt}
 	if ext != "" {
-		pl.FaviconExt = strp(ext)
-		pl.FaviconData = strp(base64.StdEncoding.EncodeToString(data))
+		pl.FaviconExt = new(ext)
+		pl.FaviconData = new(base64.StdEncoding.EncodeToString(data))
 	}
 	return pl
 }
@@ -163,7 +161,7 @@ func TestLinkIngester_RunOnce_InlineFavicon(t *testing.T) {
 	icon := []byte("\x89PNG pretend favicon bytes")
 	pl := inlineLink(e.user.ID, "link-1", "https://example.com/page?utm_source=newsletter&id=42",
 		"2026-07-12T12:00:00.000Z", "png", icon)
-	pl.Title = strp("  An Example  ")
+	pl.Title = new("  An Example  ")
 	e.worker.pending = []pendinglinks.PendingLink{pl}
 
 	require.NoError(t, e.run())
@@ -196,7 +194,7 @@ func TestLinkIngester_RunOnce_R2FaviconIsPulledStoredAndDeleted(t *testing.T) {
 	e.r2.objects[key] = icon
 	e.worker.pending = []pendinglinks.PendingLink{{
 		ID: "link-r2", UserID: e.user.ID, URL: "https://example.com/r2",
-		FaviconExt: strp("ico"), R2KeyFavicon: strp(key), SavedAt: "2026-07-12T12:00:00.000Z",
+		FaviconExt: new("ico"), R2KeyFavicon: new(key), SavedAt: "2026-07-12T12:00:00.000Z",
 	}}
 
 	require.NoError(t, e.run())
@@ -245,7 +243,7 @@ func TestLinkIngester_RunOnce_NoFavicon(t *testing.T) {
 func TestLinkIngester_RunOnce_AnEmptyTitleIsStoredAsNull(t *testing.T) {
 	e := newLinkEnv(t)
 	e.worker.pending = []pendinglinks.PendingLink{
-		{ID: "link-empty-title", UserID: e.user.ID, URL: "https://example.com/t", Title: strp(""), SavedAt: "2026-07-12T12:00:00.000Z"},
+		{ID: "link-empty-title", UserID: e.user.ID, URL: "https://example.com/t", Title: new(""), SavedAt: "2026-07-12T12:00:00.000Z"},
 	}
 	require.NoError(t, e.run())
 	assert.False(t, e.link("https://example.com/t").Title.Valid)
@@ -302,7 +300,7 @@ func TestLinkIngester_RunOnce_ARefreshKeepsNotesAndCreatedAtAndAdvancesUpdatedAt
 	e := newLinkEnv(t)
 	url := "https://example.com/refresh"
 	e.worker.pending = []pendinglinks.PendingLink{
-		{ID: "link-a", UserID: e.user.ID, URL: url, Title: strp("Old title"), SavedAt: "2026-07-12T12:00:00.000Z"},
+		{ID: "link-a", UserID: e.user.ID, URL: url, Title: new("Old title"), SavedAt: "2026-07-12T12:00:00.000Z"},
 	}
 	require.NoError(t, e.run())
 	first := e.link(url)
@@ -312,7 +310,7 @@ func TestLinkIngester_RunOnce_ARefreshKeepsNotesAndCreatedAtAndAdvancesUpdatedAt
 	require.NoError(t, err)
 
 	e.worker.pending = []pendinglinks.PendingLink{
-		{ID: "link-b", UserID: e.user.ID, URL: url + "#frag", Title: strp("New title"), SavedAt: "2026-07-13T09:30:00.000Z"},
+		{ID: "link-b", UserID: e.user.ID, URL: url + "#frag", Title: new("New title"), SavedAt: "2026-07-13T09:30:00.000Z"},
 	}
 	require.NoError(t, e.run())
 
@@ -337,7 +335,7 @@ func TestLinkIngester_RunOnce_ADeclaredButUnstorableFaviconKeepsTheExistingOne(t
 			pending: func(userID int64, url string) pendinglinks.PendingLink {
 				return pendinglinks.PendingLink{
 					ID: "link-b", UserID: userID, URL: url, SavedAt: "2026-07-13T12:00:00.000Z",
-					FaviconExt: strp("png"), R2KeyFavicon: strp("pending-links/1/link-b/favicon.png"),
+					FaviconExt: new("png"), R2KeyFavicon: new("pending-links/1/link-b/favicon.png"),
 				}
 			},
 		},
@@ -346,7 +344,7 @@ func TestLinkIngester_RunOnce_ADeclaredButUnstorableFaviconKeepsTheExistingOne(t
 			pending: func(userID int64, url string) pendinglinks.PendingLink {
 				return pendinglinks.PendingLink{
 					ID: "link-b", UserID: userID, URL: url, SavedAt: "2026-07-13T12:00:00.000Z",
-					FaviconExt: strp("png"), FaviconData: strp("***"),
+					FaviconExt: new("png"), FaviconData: new("***"),
 				}
 			},
 		},
@@ -360,7 +358,7 @@ func TestLinkIngester_RunOnce_ADeclaredButUnstorableFaviconKeepsTheExistingOne(t
 			name: "the favicon declares itself but carries nothing",
 			pending: func(userID int64, url string) pendinglinks.PendingLink {
 				return pendinglinks.PendingLink{
-					ID: "link-b", UserID: userID, URL: url, SavedAt: "2026-07-13T12:00:00.000Z", FaviconExt: strp("png"),
+					ID: "link-b", UserID: userID, URL: url, SavedAt: "2026-07-13T12:00:00.000Z", FaviconExt: new("png"),
 				}
 			},
 		},
@@ -393,7 +391,7 @@ func TestLinkIngester_RunOnce_ADeclaredButUnstorableFaviconKeepsTheExistingOne(t
 				tc.setup(e)
 			}
 			pl := tc.pending(e.user.ID, url)
-			pl.Title = strp("Refreshed title")
+			pl.Title = new("Refreshed title")
 			e.worker.pending = []pendinglinks.PendingLink{pl}
 			e.worker.fetched = nil
 			require.NoError(t, e.run())
@@ -412,7 +410,7 @@ func TestLinkIngester_RunOnce_AnUnstorableFaviconOnANewLinkLeavesItWithNone(t *t
 	e := newLinkEnv(t)
 	e.worker.pending = []pendinglinks.PendingLink{{
 		ID: "link-1", UserID: e.user.ID, URL: "https://example.com/new", SavedAt: "2026-07-12T12:00:00.000Z",
-		FaviconExt: strp("png"), R2KeyFavicon: strp("pending-links/1/link-1/favicon.png"),
+		FaviconExt: new("png"), R2KeyFavicon: new("pending-links/1/link-1/favicon.png"),
 	}}
 	require.NoError(t, e.run())
 	assert.False(t, e.link("https://example.com/new").FaviconPath.Valid)
@@ -428,8 +426,8 @@ func TestLinkIngester_RunOnce_ARetryAfterTheR2ObjectWasDeletedKeepsTheFavicon(t 
 	const key = "pending-links/1/link-r2/favicon.png"
 	e.r2.objects[key] = icon
 	e.worker.pending = []pendinglinks.PendingLink{{
-		ID: "link-r2", UserID: e.user.ID, URL: "https://example.com/crashy", Title: strp("Crashy"),
-		FaviconExt: strp("png"), R2KeyFavicon: strp(key), SavedAt: "2026-07-12T12:00:00.000Z",
+		ID: "link-r2", UserID: e.user.ID, URL: "https://example.com/crashy", Title: new("Crashy"),
+		FaviconExt: new("png"), R2KeyFavicon: new(key), SavedAt: "2026-07-12T12:00:00.000Z",
 	}}
 	e.worker.failMarkFetchedTimes = 1
 
@@ -481,8 +479,8 @@ func TestLinkIngester_RunOnce_TheLaterOfTwoSavesInOneBatchWins(t *testing.T) {
 	e := newLinkEnv(t)
 	url := "https://example.com/twice"
 	e.worker.pending = []pendinglinks.PendingLink{
-		{ID: "link-first", UserID: e.user.ID, URL: url, Title: strp("First"), SavedAt: "2026-07-12T12:00:00.000Z"},
-		{ID: "link-second", UserID: e.user.ID, URL: url, Title: strp("Second"), SavedAt: "2026-07-12T12:05:00.000Z"},
+		{ID: "link-first", UserID: e.user.ID, URL: url, Title: new("First"), SavedAt: "2026-07-12T12:00:00.000Z"},
+		{ID: "link-second", UserID: e.user.ID, URL: url, Title: new("Second"), SavedAt: "2026-07-12T12:05:00.000Z"},
 	}
 
 	require.NoError(t, e.run())
@@ -540,7 +538,7 @@ func TestLinkIngester_RunOnce_OneBadLinkDoesNotStopTheBatch(t *testing.T) {
 func TestLinkIngester_RunOnce_ARetryAfterAFailedMarkFetchedIsIdempotent(t *testing.T) {
 	e := newLinkEnv(t)
 	e.worker.pending = []pendinglinks.PendingLink{
-		{ID: "link-1", UserID: e.user.ID, URL: "https://example.com/idem", Title: strp("T"), SavedAt: "2026-07-12T12:00:00.000Z"},
+		{ID: "link-1", UserID: e.user.ID, URL: "https://example.com/idem", Title: new("T"), SavedAt: "2026-07-12T12:00:00.000Z"},
 	}
 	e.worker.failMarkFetchedTimes = 1
 
@@ -560,7 +558,7 @@ func TestLinkIngester_RunOnce_AFailedR2DeleteIsHarmless(t *testing.T) {
 	e.r2.objects[key] = []byte("icon")
 	e.worker.pending = []pendinglinks.PendingLink{{
 		ID: "link-1", UserID: e.user.ID, URL: "https://example.com/del", SavedAt: "2026-07-12T12:00:00.000Z",
-		FaviconExt: strp("png"), R2KeyFavicon: strp(key),
+		FaviconExt: new("png"), R2KeyFavicon: new(key),
 	}}
 
 	ing := ingest.NewLinkIngester(ingest.LinkParams{
@@ -609,7 +607,7 @@ func TestLinkIngester_RunOnce_AFaviconBodyThatFailsMidReadStillSavesTheLink(t *t
 	e := newLinkEnv(t)
 	e.worker.pending = []pendinglinks.PendingLink{{
 		ID: "link-1", UserID: e.user.ID, URL: "https://example.com/reset", SavedAt: "2026-07-12T12:00:00.000Z",
-		FaviconExt: strp("png"), R2KeyFavicon: strp("pending-links/1/link-1/favicon.png"),
+		FaviconExt: new("png"), R2KeyFavicon: new("pending-links/1/link-1/favicon.png"),
 	}}
 
 	ing := ingest.NewLinkIngester(ingest.LinkParams{
@@ -635,7 +633,7 @@ func TestLinkIngester_RunOnce_AnExtensionSaveOfAManualLinkBecomesAnExtensionLink
 	require.Equal(t, "manual", manual.Source)
 
 	e.worker.pending = []pendinglinks.PendingLink{
-		{ID: "link-1", UserID: e.user.ID, URL: url, Title: strp("From the tab"), SavedAt: "2026-07-12T12:00:00.000Z"},
+		{ID: "link-1", UserID: e.user.ID, URL: url, Title: new("From the tab"), SavedAt: "2026-07-12T12:00:00.000Z"},
 	}
 	require.NoError(t, e.run())
 
@@ -649,7 +647,7 @@ func TestLinkIngester_RunOnce_AFailedFaviconKeepsTheLinkAnExtensionLink(t *testi
 	e := newLinkEnv(t)
 	e.worker.pending = []pendinglinks.PendingLink{{
 		ID: "link-1", UserID: e.user.ID, URL: "https://example.com/keep-source", SavedAt: "2026-07-12T12:00:00.000Z",
-		FaviconExt: strp("png"), R2KeyFavicon: strp("pending-links/1/link-1/favicon.png"),
+		FaviconExt: new("png"), R2KeyFavicon: new("pending-links/1/link-1/favicon.png"),
 	}}
 	require.NoError(t, e.run())
 	assert.Equal(t, "extension", e.link("https://example.com/keep-source").Source)
