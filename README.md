@@ -88,6 +88,7 @@ parts with their own independent build tooling.
 | `pendingcaptures` | The backend's client for the Worker's pending-captures endpoints.                                   |
 | `pendinglinks`    | The backend's client for the Worker's saved-links endpoints.                                        |
 | `pgmigrate`       | Applies pending Postgres schema migrations via goose.                                               |
+| `preflight`       | Startup checks `server` and `agent` run first, such as that their storage directories exist.        |
 | `queueitems`      | The backend's client for the dashboard's Queue screen.                                              |
 | `r2`              | The backend's R2 client (distinct from the Worker's presigned-upload path).                         |
 | `readability`     | The async reader-text extraction job.                                                               |
@@ -117,7 +118,8 @@ just agent   # recueil agent, against local.toml
 ```
 
 Both rebuild (`make all`) before running, so they always reflect your current
-changes.
+changes, and create the `tmp/archive` and `tmp/links` directories that
+`local.toml` defaults to, as necessary.
 
 > [!IMPORTANT]
 >

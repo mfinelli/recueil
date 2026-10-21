@@ -585,6 +585,20 @@ wherever one exists.
   local disk, referenced by path from the `captures` table. Thumbnails (§6a) and
   favicons (§3g) are also stored on local disk — every asset for one capture
   lives together under a single directory.
+- **Startup check.** `server` and `agent` verify `archive_dir` before anything
+  else (`archive.Store.Check`, called from `internal/preflight`'s `StorageDirs`,
+  which also checks `links_dir` while links are on): it must exist, be a
+  directory and accept a write, probed with a temporary file that is removed
+  straight away, or the process exits with an error naming the setting and what
+  to do. It **never creates** the directory. `NewCapture`'s `MkdirAll` would
+  quietly create a missing one, and in a container that is a directory in the
+  writable layer where a bind mount was meant to be: captures that appear to
+  work and vanish when the container is recreated, while Postgres still points
+  at them. A missing directory is exactly the signal that a mount is missing.
+  Both processes need it read-write (`server` for manual upload, `agent` for
+  ingestion and its jobs); `gc` isn't checked. It can't tell a real mount from a
+  directory in the container's own filesystem, but the image doesn't pre-create
+  `/data/*`, so an unmounted path is missing and fails.
 - **One capture, one directory.** Each capture's directory is minted by
   `internal/archive`'s `Store.NewCapture` as a backend-generated UUIDv7, sharded
   three levels deep (`{id[-4:-2]}/{id[-2:]}/{id}/`, git's object-store shape — a
@@ -2933,13 +2947,14 @@ referenced by the row, is left for gc.
   These rules are one piece of code, `archive.Store.WriteFavicon`, used by both
   the link store and capture ingestion, so a page's favicon and a link's can't
   drift apart.
-- **Startup check.** With links enabled, `server` and `agent` call
-  `linkicons.Store.Check` before doing anything else: `links_dir` must exist, be
-  a directory and be writable, or the process exits with an error that names
-  both fixes (provide the directory, or set `enable_links = false`). It can't
-  tell a real bind mount from a directory inside the container's own filesystem,
-  which loses its contents when the container is recreated, so the operator docs
-  say so explicitly.
+- **Startup check.** With links enabled, `server` and `agent` check `links_dir`
+  before doing anything else (`archive.Store.Check`, which the archive's own
+  check shares, wrapped by `linkicons.Store.Check`): it must exist, be a
+  directory and be writable, or the process exits with an error that names both
+  fixes (provide the directory, or set `enable_links = false`). It can't tell a
+  real bind mount from a directory inside the container's own filesystem, which
+  loses its contents when the container is recreated, so the operator docs say
+  so explicitly.
 - **Reclaiming.** The second `recueil gc` pass (§4) sweeps this store against
   `ListReferencedLinkFaviconPaths`, with the same recency floor, orphan-fraction
   refusal, empty-directory pruning and `--dry-run`/`--force` as the first. It
