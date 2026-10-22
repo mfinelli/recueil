@@ -401,5 +401,6 @@
   "linkdetail_edit_related_pages": "Edit related pages",
   "linkdetail_done_editing_related_pages": "Done editing related pages",
   "linkdetail_related_pages_no_results": "No matching pages.",
-  "linkdetail_related_pages_error": "failed to relate page"
+  "linkdetail_related_pages_error": "failed to relate page",
+  "pagedetail_view_latest_archived": "View latest archived page"
 }

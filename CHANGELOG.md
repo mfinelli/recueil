@@ -48,6 +48,9 @@ before you do. In short:
   a page or link from its screen. Needs an archive.org account's keys
   (`wayback_access_key`, `wayback_secret_key`).
 - **MCP**: `search_links` and `get_link` (only when links are on).
+- **View the latest capture directly**: a page's screen has a **View latest
+  archived page** link under its URL that opens the most recent capture's
+  archived copy in a new tab, without going through that capture's screen first.
 
 ### Changed
 

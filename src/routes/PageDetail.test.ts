@@ -1273,3 +1273,58 @@ describe("PageDetail: the Internet Archive block", () => {
     ).toBeNull();
   });
 });
+
+describe("PageDetail: viewing the latest capture directly", () => {
+  const older = {
+    ...exampleCapture,
+    id: 100,
+    captured_at: "2026-09-01T10:00:00Z",
+  };
+  const newer = {
+    ...exampleCapture,
+    id: 200,
+    captured_at: "2026-10-12T15:41:00Z",
+  };
+
+  it("links to the newest capture's archived copy, in a new tab, without opening a capture first", async () => {
+    // Captures arrive newest first.
+    render42({ page: { ...basePage, captures: [newer, older] } });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    const link = screen.getByRole("link", {
+      name: "View latest archived page",
+    });
+    expect(link.getAttribute("href")).toBe("/api/captures/200/html");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noreferrer");
+  });
+
+  it("follows the newest capture when there is only one", async () => {
+    render42({ page: { ...basePage, captures: [older] } });
+    await screen.findByRole("heading", { name: "An example article" });
+    expect(
+      screen
+        .getByRole("link", { name: "View latest archived page" })
+        .getAttribute("href"),
+    ).toBe("/api/captures/100/html");
+  });
+
+  it("is absent when the page has no captures", async () => {
+    render42({ page: { ...basePage, captures: [] } });
+    await screen.findByRole("heading", { name: "An example article" });
+    expect(
+      screen.queryByRole("link", { name: "View latest archived page" }),
+    ).toBeNull();
+  });
+
+  it("leaves the captures list as it was, each opening its own screen", async () => {
+    render42({ page: { ...basePage, captures: [newer, older] } });
+    await screen.findByRole("heading", { name: "An example article" });
+
+    const hrefs = screen
+      .getAllByRole("link")
+      .map((a) => a.getAttribute("href"))
+      .filter((h) => h?.startsWith("#/captures/"));
+    expect(hrefs).toEqual(["#/captures/200", "#/captures/100"]);
+  });
+});
