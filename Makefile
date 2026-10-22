@@ -108,7 +108,7 @@ recueil: $(SOURCES) internal/db/db.go dist/index.html
 internal/db/db.go: $(MIGRATIONS) $(QUERIES) sqlc.yaml
 	$(SQLC) generate
 
-dist/index.html: $(FRONTEND)
+dist/index.html: $(FRONTEND) logo.png favicon.json
 	$(PNPM) run build
 
 recueil.bash: recueil

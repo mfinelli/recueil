@@ -1,0 +1,33 @@
+{
+  "icon": {
+    "desktop": {
+      "regularIconTransformation": {
+        "type": "none"
+      },
+      "darkIconType": "none"
+    },
+    "touch": {
+      "transformation": {
+        "type": "background",
+        "backgroundColor": "#ffffff",
+        "backgroundRadius": 0,
+        "imageScale": 0.9
+      },
+      "appTitle": "Recueil"
+    },
+    "webAppManifest": {
+      "transformation": {
+        "type": "background",
+        "backgroundColor": "#ffffff",
+        "backgroundRadius": 0,
+        "imageScale": 0.7
+      },
+      "backgroundColor": "#ffffff",
+      "name": "Recueil",
+      "shortName": "Recueil",
+      "themeColor": "#ffffff"
+    }
+  },
+  "path": "/",
+  "skipMetadataInjection": true
+}
