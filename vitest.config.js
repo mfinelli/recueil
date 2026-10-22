@@ -52,6 +52,7 @@ export default defineConfig(async () => {
           ],
           test: {
             name: "worker",
+            fsModuleCache: false,
             include: ["terraform/worker/tests/**/*.test.js"],
             setupFiles: ["terraform/worker/tests/apply-migrations.js"],
           },
