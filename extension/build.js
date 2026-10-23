@@ -35,10 +35,20 @@
 
 import { build } from "esbuild";
 import { compileAsync } from "sass";
+import sharp from "sharp";
 import { readFile, writeFile, mkdir, cp, copyFile } from "node:fs/promises";
 
 const BROWSERS = ["chrome", "firefox"];
 const watch = process.argv.includes("--watch");
+
+// The extension's icons are derived from the repo's logo.png at build time.
+// Chrome wants 16/32/48/128 and Firefox wants 48 (plus 96 for HiDPI); one set
+// of PNGs covers both browsers and the toolbar button (16/32) as well.
+const ICON_SIZES = [16, 32, 48, 96, 128];
+// The Chrome Web Store's 128px icon is meant to be 96px of artwork centred on
+// a transparent 128px canvas, i.e. 16px of padding on every side.
+const STORE_ICON_SIZE = 128;
+const STORE_ICON_ART_SIZE = 96;
 
 async function readJSON(relPath) {
   return JSON.parse(await readFile(new URL(relPath, import.meta.url), "utf8"));
@@ -59,6 +69,34 @@ async function buildManifest(browser) {
     new URL("manifest.json", outDir),
     JSON.stringify(merged, null, 2) + "\n",
   );
+}
+
+async function buildIcons(browser) {
+  const logo = new URL("../logo.png", import.meta.url).pathname;
+  const outDir = new URL(`./dist/${browser}/icons/`, import.meta.url);
+  await mkdir(outDir, { recursive: true });
+
+  const transparent = { r: 0, g: 0, b: 0, alpha: 0 };
+  for (const size of ICON_SIZES) {
+    const art = size === STORE_ICON_SIZE ? STORE_ICON_ART_SIZE : size;
+    const pad = (size - art) / 2;
+
+    let image = sharp(logo).resize(art, art, {
+      fit: "contain",
+      background: transparent,
+    });
+    if (pad > 0) {
+      image = image.extend({
+        top: pad,
+        bottom: pad,
+        left: pad,
+        right: pad,
+        background: transparent,
+      });
+    }
+
+    await image.png().toFile(new URL(`icon-${size}.png`, outDir).pathname);
+  }
 }
 
 function buildBundle(browser, { entry, outfile }) {
@@ -116,6 +154,7 @@ async function copyLocales(browser) {
 async function buildAll() {
   for (const browser of BROWSERS) {
     await buildManifest(browser);
+    await buildIcons(browser);
     await buildBundle(browser, {
       entry: "./src/background/index.js",
       outfile: "background.js",

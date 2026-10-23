@@ -20,7 +20,8 @@ pnpm --filter @recueil/extension build
 Produces `dist/chrome/` and `dist/firefox/` — two independent, complete
 extension trees from the same source, per-browser manifest differences merged in
 at build time (see `build.js`). Both are gitignored; nothing here is meant to be
-committed.
+committed. The icons in `dist/<browser>/icons/` are likewise generated at build
+time, from the repository's top-level `logo.png`.
 
 ## Internationalization
 
