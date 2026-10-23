@@ -3,6 +3,7 @@
 /extension/node_modules/*
 /internal/db/*
 /node_modules/*
+/public/*
 /recueil
 /recueil.bash
 /recueil.fish
@@ -14,5 +15,8 @@
 /tmp/*
 /vendor/*
 /www/public/*
+/www/static/apple-touch-icon.png
+/www/static/favicon-96x96.png
+/www/static/favicon.ico
 /www/static/fonts/*
 /www/static/icons/*

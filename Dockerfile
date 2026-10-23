@@ -30,7 +30,7 @@ COPY extension/package.json /app/extension/package.json
 COPY terraform/worker/package.json /app/terraform/worker/package.json
 COPY www/package.json /app/www/package.json
 RUN pnpm install --frozen-lockfile --filter .
-COPY index.html vite.config.ts svelte.config.js tsconfig.json /app/
+COPY index.html logo.png favicon.json vite.config.ts svelte.config.js tsconfig.json /app/
 COPY src /app/src
 RUN pnpm run build
 
