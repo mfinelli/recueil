@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "assets": "node build-assets.mjs && pnpm run favicons",
-    "favicons": "mkdir -p ../tmp && realfavicon generate ../logo.png ../favicon.json ../tmp/favicon-data.json static && rm static/favicon.svg"
+    "favicons": "mkdir -p ../tmp && realfavicon generate ../logo.png ../favicon.json ../tmp/favicon-data.json static && rm static/favicon.svg static/site.webmanifest static/web-app-manifest-*.png"
   },
   "dependencies": {
     "@fontsource/fraunces": "^5.3.0",
