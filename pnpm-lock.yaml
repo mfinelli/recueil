@@ -103,8 +103,8 @@ importers:
   extension:
     dependencies:
       single-file-core:
-        specifier: ^1.6.31
-        version: 1.6.31
+        specifier: ^1.6.41
+        version: 1.6.41
       webextension-polyfill:
         specifier: ^0.12.0
         version: 0.12.0
@@ -3528,8 +3528,8 @@ packages:
     resolution: {integrity: sha512-TCfl/2+GTrx0nCo4pEWGvxhOb8c6NsqOU1OpwjtF4lwJAthB8IYVD0fuIMjLMg6JFuG1YBO0t1iETQqJLqkoJA==}
     engines: {node: '>=0.12.18'}
 
-  single-file-core@1.6.31:
-    resolution: {integrity: sha512-99xsXt9zatfO1mSrswN6tcFeZR0IjbOUyZnVckXfk0JLYJCqd+FBVjOS7qwY64x/CymW3yRZw8A8jZghI7jllg==}
+  single-file-core@1.6.41:
+    resolution: {integrity: sha512-8oT2WMxbP8R9zJgGmkUjlA14Zqt1UWDsCZ8ExliUzAEEXF6dSSFwDcxNuhkB0ryWoy6NcgATKfih2RtN3ARNyA==}
 
   smart-buffer@4.2.0:
     resolution: {integrity: sha512-94hK0Hh8rPqQl2xXc3HsaBoOXKV20MToPkcXvwbISWLEs+64sBq5kFgn2kJDHb1Pry9yrP0dxrCI9RRci7RXKg==}
@@ -7408,7 +7408,7 @@ snapshots:
 
   simple-icons@16.35.0: {}
 
-  single-file-core@1.6.31: {}
+  single-file-core@1.6.41: {}
 
   smart-buffer@4.2.0: {}
 

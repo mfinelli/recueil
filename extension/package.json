@@ -15,7 +15,7 @@
     "types": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "single-file-core": "^1.6.31",
+    "single-file-core": "^1.6.41",
     "webextension-polyfill": "^0.12.0"
   },
   "devDependencies": {
