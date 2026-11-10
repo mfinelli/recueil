@@ -24,7 +24,7 @@ RUN go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
 
 FROM node:lts-alpine AS buildjs
 WORKDIR /app
-RUN corepack enable
+RUN npm install --global corepack@0.36.0 && corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml /app/
 COPY extension/package.json /app/extension/package.json
 COPY terraform/worker/package.json /app/terraform/worker/package.json
